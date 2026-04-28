@@ -883,11 +883,11 @@ mod phase2 {
             config_snapshot.cwd.as_path(),
             memory_root(&harness.config.codex_home).as_path()
         );
-        match &config_snapshot.sandbox_policy {
+        let sandbox_policy = config_snapshot.sandbox_policy();
+        match &sandbox_policy {
             SandboxPolicy::WorkspaceWrite { network_access, .. } => {
                 assert!(!*network_access);
-                let effective_writable_roots: Vec<_> = config_snapshot
-                    .sandbox_policy
+                let effective_writable_roots: Vec<_> = sandbox_policy
                     .get_writable_roots_with_cwd(config_snapshot.cwd.as_path())
                     .into_iter()
                     .map(|root| root.root)
@@ -917,7 +917,7 @@ mod phase2 {
         let file_system_sandbox_policy = turn_context.file_system_sandbox_policy();
         let legacy_file_system_sandbox_policy =
             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-                &config_snapshot.sandbox_policy,
+                &sandbox_policy,
                 config_snapshot.cwd.as_path(),
             );
         assert!(
