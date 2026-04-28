@@ -156,6 +156,20 @@ just downstream-docs-check
 git diff --check
 ```
 
+For changes that touch the divergence registry or current divergence baseline,
+also run the hosted-equivalent downstream docs lane locally when the checkout
+can access the shared git metadata:
+
+```bash
+bash .github/scripts/validation-lanes/downstream-docs-check.sh
+```
+
+That lane runs the registry/code divergence audit against the checked-out head
+and the current upstream mirror snapshot. If it cannot run locally because the
+mirror or shared git configuration is unavailable, use the hosted
+`codex.downstream-docs-check` lane instead of treating the lightweight
+whitespace check as the full proof.
+
 For implementation changes, prefer hosted validation through `validation-lab`.
 The focused lanes are:
 
@@ -196,6 +210,7 @@ not the generic Codex computer-use contract.
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+- `codex-rs/tui/src/android_computer_use_provider.rs`
 - `codex-rs/tui/src/app/app_server_adapter.rs`
 - `codex-rs/tui/src/chatwidget.rs`
 - `codex-rs/tui/src/history_cell.rs`
