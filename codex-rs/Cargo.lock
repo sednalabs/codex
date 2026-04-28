@@ -4094,6 +4094,7 @@ dependencies = [
  "assert_cmd",
  "base64 0.22.1",
  "codex-arg0",
+ "codex-config",
  "codex-core",
  "codex-exec-server",
  "codex-features",
