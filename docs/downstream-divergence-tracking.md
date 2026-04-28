@@ -170,6 +170,11 @@ but that PAT path should be retired after the GitHub App proof run succeeds.
 Pull request validation is read-only. The `codex.downstream-docs-check` lane
 fetches live `upstream/main`; when the public mirror is stale it audits against
 that exact fetched snapshot and leaves mirror updates to `sedna-sync-upstream`.
+The rendered tree diff still shows both upstream-ahead and downstream-ahead
+paths, but registry enforcement is scoped to the downstream carry diff from the
+merge base to the audited downstream ref. That keeps upstream-only files visible
+without requiring the downstream registry to document upstream work before a
+sync lands.
 
 ## Phased Adoption
 

@@ -64,6 +64,10 @@ RESOLVE_SEDNA_RELEASE_VERSION = load_module(
     "resolve_sedna_release_version_module",
     SCRIPTS_DIR / "resolve_sedna_release_version.py",
 )
+DOWNSTREAM_DIVERGENCE_AUDIT = load_module(
+    "downstream_divergence_audit_module",
+    REPO_ROOT / "scripts" / "downstream-divergence-audit.py",
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -617,6 +621,82 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertTrue(lane["needs_linux_build_deps"])
         self.assertTrue(lane["needs_dotslash"])
         self.assertFalse(lane["needs_sccache"])
+
+
+class DownstreamDivergenceAuditTests(unittest.TestCase):
+    def run_git(self, repo: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def commit_all(self, repo: Path, message: str) -> str:
+        self.run_git(repo, "add", ".")
+        self.run_git(repo, "commit", "-m", message)
+        return self.run_git(repo, "rev-parse", "HEAD")
+
+    def test_registry_gate_uses_downstream_carry_not_upstream_ahead_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "shared.py").write_text("print('base')\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "upstream_only.py").write_text("print('upstream')\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "downstream_only.py").write_text("print('downstream')\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream")
+
+            all_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            all_code_items = [item for item in all_items if item.is_code]
+            all_paths = sorted({path for item in all_code_items for path in item.paths})
+            self.assertEqual(all_paths, ["downstream_only.py", "upstream_only.py"])
+
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                merge_base,
+                downstream_sha,
+            )
+            carry_code_items = [item for item in carry_items if item.is_code]
+            registry = {
+                "_path": "docs/divergences/index.yaml",
+                "divergences": [
+                    {
+                        "id": "downstream-only",
+                        "status": "live",
+                        "files": ["downstream_only.py"],
+                    }
+                ],
+            }
+
+            registry_state = DOWNSTREAM_DIVERGENCE_AUDIT.reconcile_registry(
+                registry,
+                carry_code_items,
+            )
+
+            self.assertEqual(registry_state["uncovered_code_paths"], [])
+            self.assertEqual(
+                registry_state["path_registry_ids"],
+                {"downstream_only.py": ["downstream-only"]},
+            )
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
@@ -3213,9 +3293,11 @@ class HelperScriptTests(unittest.TestCase):
             (route_job.get("steps") or [])
         )
         named_steps = {step.get("name"): step for step in router_steps if "name" in step}
+        resolve_job = jobs.get("resolve") or {}
         release_job = jobs.get("release-linux") or {}
 
         self.assertIn("main release gate", release_payload.get("run-name") or "")
+        self.assertNotIn("concurrency", release_payload)
         self.assertEqual(route_job.get("name"), "Release request gate")
         self.assertEqual(route_job.get("runs-on"), "ubuntu-slim")
         self.assertEqual(release_push.get("branches"), ["main"])
@@ -3229,11 +3311,33 @@ class HelperScriptTests(unittest.TestCase):
             "Publisher job: ${publisher_job}",
             named_steps["Summarize release gate"].get("run") or "",
         )
-        self.assertEqual(release_job.get("name"), "Publish Linux release")
-        self.assertEqual(release_job.get("needs"), "route")
+        self.assertEqual(resolve_job.get("name"), "Resolve release metadata")
+        self.assertEqual(resolve_job.get("needs"), "route")
         self.assertIn(
             "needs.route.outputs.release_requested == 'true'",
+            resolve_job.get("if") or "",
+        )
+        self.assertIn("release_tag", resolve_job.get("outputs") or {})
+        resolve_steps = resolve_job.get("steps") or []
+        resolve_named_steps = {
+            step.get("name"): step for step in resolve_steps if "name" in step
+        }
+        self.assertIn(
+            "--missing-marker error",
+            resolve_named_steps["Resolve release metadata"].get("run") or "",
+        )
+        self.assertEqual(release_job.get("name"), "Publish Linux release")
+        self.assertEqual(release_job.get("needs"), "resolve")
+        self.assertIn(
+            "needs.resolve.outputs.release_requested == 'true'",
             release_job.get("if") or "",
+        )
+        self.assertEqual(
+            release_job.get("concurrency"),
+            {
+                "group": "${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}",
+                "cancel-in-progress": "false",
+            },
         )
         self.assertEqual(
             release_job.get("permissions"),
@@ -3476,7 +3580,7 @@ class HelperScriptTests(unittest.TestCase):
                     "CODEX_UPSTREAM_DISTANCE_FROM_TAG"
                 )
             ),
-            "${{ steps.meta.outputs.upstream_distance_from_tag }}",
+            "${{ needs.resolve.outputs.upstream_distance_from_tag }}",
         )
         self.assertIn(
             "upstream_position=${UPSTREAM_POSITION}",
@@ -3714,6 +3818,7 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
         release_tag: str | None = None,
         current_release_tag: str | None = None,
         require_marker: bool = False,
+        missing_marker: str = "skip",
     ) -> dict:
         return RESOLVE_SEDNA_RELEASE_VERSION.resolve_release(
             repo=repo.root,
@@ -3725,6 +3830,7 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
             release_tag=release_tag,
             current_release_tag=current_release_tag,
             require_marker=require_marker,
+            missing_marker=missing_marker,
             github_releases="off",
         )
 
@@ -3795,6 +3901,96 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
             "0.126.0-alpha.3-sedna.1+upstream.1 "
             f"(up:rust-v0.126.0-alpha.3+1@{upstream_plus_one[:8]} down:{downstream[:8]})",
         )
+
+    def test_consecutive_release_markers_get_deterministic_ordinals(self) -> None:
+        repo, _upstream, first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            first_result = self.resolve(
+                repo,
+                first_release,
+                channel="auto",
+                require_marker=True,
+            )
+            second_result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                require_marker=True,
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "first": first_result["release_tag"],
+                "second": second_result["release_tag"],
+            },
+            {
+                "first": "v0.126.0-alpha.3-sedna.1",
+                "second": "v0.126.0-alpha.3-sedna.2",
+            },
+        )
+
+    def test_release_marker_after_existing_tag_uses_next_ordinal(self) -> None:
+        repo, _upstream, first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("tag", "v0.126.0-alpha.3-sedna.1", first_release)
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                require_marker=True,
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.2")
+
+    def test_supplied_tag_can_assert_second_pending_release_marker(self) -> None:
+        repo, _upstream, _first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                release_tag="v0.126.0-alpha.3-sedna.2",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.2")
+
+    def test_manual_markerless_release_without_tag_can_error(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "manual markerless releases must supply release_tag",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="auto",
+                    require_marker=True,
+                    missing_marker="error",
+                )
+        finally:
+            repo.cleanup()
 
     def test_manual_auto_channel_infers_prerelease_from_upstream_track(self) -> None:
         repo, _upstream, downstream = self.create_fixture(marker=None)
