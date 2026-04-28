@@ -1527,17 +1527,12 @@ async fn session_configured_reports_permission_profile_for_external_sandbox() ->
 
     let test = builder.build(&server).await?;
 
-    assert_eq!(
-        test.session_configured.sandbox_policy,
-        expected_sandbox_policy
-    );
     let expected_permission_profile =
         codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
             &expected_sandbox_policy,
         );
     assert_eq!(
-        test.session_configured.permission_profile,
-        Some(expected_permission_profile),
+        test.session_configured.permission_profile, expected_permission_profile,
         "ExternalSandbox is represented explicitly instead of as a lossy root-write profile"
     );
     Ok(())
