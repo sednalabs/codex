@@ -159,8 +159,7 @@ changes can be detected explicitly instead of inferred from tag shape alone.
 ### Release install verification workflow
 
 `sedna-release-install` verifies already published Sedna release assets on a GitHub-hosted
-runner. It intentionally does not perform production installation, because public self-hosted
-Actions logs can expose runner and machine identity before workflow-level masking is available.
+runner. It intentionally does not perform host-local installation from the public Actions surface.
 
 - Official release verification is explicitly dispatched by `sedna-release` after publishing a
   non-draft GitHub Release. This avoids relying on implicit follow-on workflow events from the
@@ -168,6 +167,6 @@ Actions logs can expose runner and machine identity before workflow-level maskin
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
 - The verifier checks the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
-- Production installs should be performed by private deployment infrastructure outside the public
+- Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

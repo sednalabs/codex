@@ -3531,7 +3531,7 @@ class HelperScriptTests(unittest.TestCase):
         self.assertNotIn("self-hosted", workflow_json)
         self.assertIn("public workflow requires true", workflow_json)
         self.assertIn("--dry-run", workflow_json)
-        self.assertIn("private deployment path", workflow_json)
+        self.assertIn("external deployment path", workflow_json)
 
     def test_sedna_release_reuses_caches_without_reusing_smoke_artifacts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
@@ -3681,7 +3681,7 @@ jobs:
             violations,
             [
                 ".github/workflows/deploy.yml: public workflows must not use self-hosted "
-                "runners; use private deployment infrastructure for host-local operations."
+                "runners; use external deployment automation for host-local operations."
             ],
         )
 
