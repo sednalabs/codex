@@ -703,7 +703,7 @@ impl App {
             AppEvent::BeginWindowsSandboxElevatedSetup { preset } => {
                 #[cfg(target_os = "windows")]
                 {
-                    let policy = preset.sandbox.clone();
+                    let permission_profile = preset.permission_profile.clone();
                     let policy_cwd = self.config.cwd.clone();
                     let command_cwd = policy_cwd.clone();
                     let env_map: std::collections::HashMap<String, String> =
@@ -726,6 +726,18 @@ impl App {
                     self.chat_widget.show_windows_sandbox_setup_status();
                     self.windows_sandbox.setup_started_at = Some(Instant::now());
                     let session_telemetry = self.session_telemetry.clone();
+                    let Ok(policy) = permission_profile
+                        .to_legacy_sandbox_policy(policy_cwd.as_path())
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                %err,
+                                "approval preset permissions cannot be projected for elevated Windows sandbox setup"
+                            );
+                        })
+                    else {
+                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt { preset });
+                        return Ok(AppRunControl::Continue);
+                    };
                     tokio::task::spawn_blocking(move || {
                         let result = crate::legacy_core::windows_sandbox::run_elevated_setup(
                             &policy,
@@ -789,7 +801,7 @@ impl App {
             AppEvent::BeginWindowsSandboxLegacySetup { preset } => {
                 #[cfg(target_os = "windows")]
                 {
-                    let policy = preset.sandbox.clone();
+                    let permission_profile = preset.permission_profile.clone();
                     let policy_cwd = self.config.cwd.clone();
                     let command_cwd = policy_cwd.clone();
                     let env_map: std::collections::HashMap<String, String> =
@@ -799,6 +811,18 @@ impl App {
                     let session_telemetry = self.session_telemetry.clone();
 
                     self.chat_widget.show_windows_sandbox_setup_status();
+                    let Ok(policy) = permission_profile
+                        .to_legacy_sandbox_policy(policy_cwd.as_path())
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                %err,
+                                "approval preset permissions cannot be projected for legacy Windows sandbox setup"
+                            );
+                        })
+                    else {
+                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt { preset });
+                        return Ok(AppRunControl::Continue);
+                    };
                     tokio::task::spawn_blocking(move || {
                         if let Err(err) =
                             crate::legacy_core::windows_sandbox::run_legacy_setup_preflight(
@@ -935,7 +959,7 @@ impl App {
                                         /*cwd*/ None,
                                         /*approval_policy*/ None,
                                         /*approvals_reviewer*/ None,
-                                        /*sandbox_policy*/ None,
+                                        /*permission_profile*/ None,
                                         #[cfg(target_os = "windows")]
                                         Some(windows_sandbox_level),
                                         /*model*/ None,
@@ -961,7 +985,7 @@ impl App {
                                         /*cwd*/ None,
                                         Some(preset.approval),
                                         Some(self.config.approvals_reviewer),
-                                        Some(preset.sandbox.clone()),
+                                        Some(preset.permission_profile.clone()),
                                         #[cfg(target_os = "windows")]
                                         Some(windows_sandbox_level),
                                         /*model*/ None,
@@ -975,8 +999,9 @@ impl App {
                                 ));
                                 self.app_event_tx
                                     .send(AppEvent::UpdateAskForApprovalPolicy(preset.approval));
-                                self.app_event_tx
-                                    .send(AppEvent::UpdateSandboxPolicy(preset.sandbox.clone()));
+                                self.app_event_tx.send(AppEvent::UpdatePermissionProfile(
+                                    preset.permission_profile.clone(),
+                                ));
                                 let _ = mode;
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
@@ -1228,40 +1253,38 @@ impl App {
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
             }
-            AppEvent::UpdateSandboxPolicy(policy) => {
+            AppEvent::UpdatePermissionProfile(permission_profile) => {
                 #[cfg(target_os = "windows")]
-                let policy_is_workspace_write_or_ro = matches!(
-                    &policy,
-                    codex_protocol::protocol::SandboxPolicy::WorkspaceWrite { .. }
-                        | codex_protocol::protocol::SandboxPolicy::ReadOnly { .. }
-                );
-                let policy_for_chat = policy.clone();
+                let permission_profile_is_managed_restricted =
+                    managed_filesystem_sandbox_is_restricted(&permission_profile);
+                let permission_profile_for_chat = permission_profile.clone();
 
                 let mut config = self.config.clone();
-                if !self.try_set_sandbox_policy_on_config(
+                if !self.try_set_permission_profile_on_config(
                     &mut config,
-                    policy,
-                    "Failed to set sandbox policy",
-                    "failed to set sandbox policy on app config",
+                    permission_profile,
+                    "Failed to set permission profile",
+                    "failed to set permission profile on app config",
                 ) {
                     return Ok(AppRunControl::Continue);
                 }
                 self.config = config;
-                if let Err(err) = self.chat_widget.set_sandbox_policy(policy_for_chat) {
-                    tracing::warn!(%err, "failed to set sandbox policy on chat config");
+                if let Err(err) = self
+                    .chat_widget
+                    .set_permission_profile(permission_profile_for_chat)
+                {
+                    tracing::warn!(%err, "failed to set permission profile on chat config");
                     self.chat_widget
-                        .add_error_message(format!("Failed to set sandbox policy: {err}"));
+                        .add_error_message(format!("Failed to set permission profile: {err}"));
                     return Ok(AppRunControl::Continue);
                 }
-                self.runtime_sandbox_policy_override = Some(
-                    self.config
-                        .permissions
-                        .legacy_sandbox_policy(self.config.cwd.as_path()),
-                );
+                self.runtime_permission_profile_override =
+                    Some(self.config.permissions.permission_profile());
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
 
-                // If sandbox policy becomes workspace-write or read-only, run the Windows world-writable scan.
+                // If a managed filesystem sandbox is active, run the Windows
+                // world-writable scan.
                 #[cfg(target_os = "windows")]
                 {
                     // One-shot suppression if the user just confirmed continue.
@@ -1272,7 +1295,7 @@ impl App {
 
                     let should_check = WindowsSandboxLevel::from_config(&self.config)
                         != WindowsSandboxLevel::Disabled
-                        && policy_is_workspace_write_or_ro
+                        && permission_profile_is_managed_restricted
                         && !self.chat_widget.world_writable_warning_hidden();
                     if should_check {
                         let cwd = self.config.cwd.clone();
@@ -1280,15 +1303,12 @@ impl App {
                             std::env::vars().collect();
                         let tx = self.app_event_tx.clone();
                         let logs_base_dir = self.config.codex_home.clone();
-                        let sandbox_policy = self
-                            .config
-                            .permissions
-                            .legacy_sandbox_policy(self.config.cwd.as_path());
+                        let permission_profile = self.config.permissions.permission_profile();
                         Self::spawn_world_writable_scan(
                             cwd,
                             env_map,
                             logs_base_dir,
-                            sandbox_policy,
+                            permission_profile,
                             tx,
                         );
                     }

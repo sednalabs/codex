@@ -882,9 +882,8 @@ pub async fn run_main(
 
     if let Some(warning) = add_dir_warning_message(
         &cli.add_dir,
-        &config
-            .permissions
-            .legacy_sandbox_policy(config.cwd.as_path()),
+        &config.permissions.permission_profile(),
+        config.cwd.as_path(),
     ) {
         #[allow(clippy::print_stderr)]
         {
@@ -2211,6 +2210,10 @@ mod tests {
             .model
             .clone()
             .unwrap_or_else(|| "gpt-5.1".to_string());
+        let permission_profile = config.permissions.permission_profile();
+        let sandbox_policy = permission_profile
+            .to_legacy_sandbox_policy(config.cwd.as_path())
+            .expect("configured permissions must have a legacy compatibility projection");
         TurnContextItem {
             turn_id: None,
             trace_id: None,
@@ -2218,10 +2221,8 @@ mod tests {
             current_date: None,
             timezone: None,
             approval_policy: config.permissions.approval_policy.value(),
-            sandbox_policy: config
-                .permissions
-                .legacy_sandbox_policy(config.cwd.as_path()),
-            permission_profile: None,
+            sandbox_policy,
+            permission_profile: Some(permission_profile),
             network: None,
             file_system_sandbox_policy: None,
             model,
