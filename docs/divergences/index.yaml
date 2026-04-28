@@ -578,6 +578,7 @@
       "surface": [
         "native computer-use protocol events",
         "Android observe/step function tools",
+        "native Android image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
       ],
@@ -594,6 +595,7 @@
         "codex-rs/app-server-protocol/src/protocol/common.rs",
         "codex-rs/app-server-protocol/src/protocol/v2.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/tui/src/android_computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
@@ -605,7 +607,7 @@
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
         "docs/native-computer-use.md"
       ],
-      "behavior": "Bare android_observe and android_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability.",
+      "behavior": "Bare android_observe and android_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -628,7 +630,7 @@
         "computer_use_call_response_is_tool_runtime_end"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
+      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Android screenshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
     },
     {
       "id": "codex-tui-session-surfaces",
@@ -820,7 +822,6 @@
         ".github/workflows/sedna-release-install.yml",
         "pnpm-lock.yaml",
         "pnpm-workspace.yaml",
-        "scripts/github_webhook_receiver.py",
         "scripts/install_sedna_release_asset",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",

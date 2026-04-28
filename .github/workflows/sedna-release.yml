@@ -37,10 +37,6 @@ on:
         default: false
         type: boolean
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (inputs.release_tag || inputs.target_sha || github.sha) || github.ref_name }}
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
@@ -170,23 +166,36 @@ jobs:
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  release-linux:
-    name: Publish Linux release
+  resolve:
+    name: Resolve release metadata
     needs: route
     if: ${{ needs.route.outputs.release_requested == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    environment: release
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     permissions:
-      actions: write
-      contents: write
-      id-token: write
-    env:
-      CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 2G
-      SCCACHE_IDLE_TIMEOUT: "0"
-      TARGET: x86_64-unknown-linux-gnu
-
+      contents: read
+    outputs:
+      build_provenance: ${{ steps.meta.outputs.build_provenance }}
+      downstream_commit: ${{ steps.meta.outputs.downstream_commit }}
+      downstream_commit_short: ${{ steps.meta.outputs.downstream_commit_short }}
+      draft: ${{ steps.meta.outputs.draft }}
+      github_prerelease: ${{ steps.meta.outputs.github_prerelease }}
+      release_channel: ${{ steps.meta.outputs.release_channel }}
+      release_marker: ${{ steps.meta.outputs.release_marker }}
+      release_requested: ${{ steps.meta.outputs.release_requested }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+      skip_reason: ${{ steps.meta.outputs.skip_reason }}
+      target_commit: ${{ steps.meta.outputs.target_commit }}
+      upstream_base_commit: ${{ steps.meta.outputs.upstream_base_commit }}
+      upstream_base_commit_short: ${{ steps.meta.outputs.upstream_base_commit_short }}
+      upstream_base_tag: ${{ steps.meta.outputs.upstream_base_tag }}
+      upstream_base_tag_exact: ${{ steps.meta.outputs.upstream_base_tag_exact }}
+      upstream_distance_from_tag: ${{ steps.meta.outputs.upstream_distance_from_tag }}
+      upstream_position: ${{ steps.meta.outputs.upstream_position }}
+      upstream_track: ${{ steps.meta.outputs.upstream_track }}
+      version_display: ${{ steps.meta.outputs.version_display }}
+      version_policy: ${{ steps.meta.outputs.version_policy }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -202,6 +211,7 @@ jobs:
           if ! git remote get-url upstream >/dev/null 2>&1; then
             git remote add upstream https://github.com/openai/codex.git
           fi
+          git fetch origin --tags
           git fetch upstream --tags
 
       - name: Resolve release metadata
@@ -233,6 +243,8 @@ jobs:
             args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
             if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
               args+=(--release-tag "${INPUT_RELEASE_TAG}")
+            else
+              args+=(--require-marker --missing-marker error)
             fi
             {
               echo "draft=${INPUT_DRAFT}"
@@ -258,17 +270,74 @@ jobs:
           python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check out release target
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
+  release-linux:
+    name: Publish Linux release
+    needs: resolve
+    if: ${{ needs.resolve.outputs.release_requested == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: release
+    concurrency:
+      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_IDLE_TIMEOUT: "0"
+      TARGET: x86_64-unknown-linux-gnu
+
+    steps:
+      - name: Check for existing release
         shell: bash
         env:
-          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; refusing to rebuild or clobber official assets."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check out release target
+        shell: bash
+        env:
+          TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
         run: |
           set -euo pipefail
           git checkout --detach "${TARGET_COMMIT}"
 
+      - name: Check release publisher app configuration
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          if [[ -z "${APP_CLIENT_ID}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID")
+          fi
+          if [[ -z "${APP_PRIVATE_KEY}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY")
+          fi
+
+          if ((${#missing[@]} > 0)); then
+            printf 'Missing release publisher GitHub App configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Install Linux build dependencies
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -276,12 +345,10 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
 
       - uses: dtolnay/rust-toolchain@1.93.0
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         with:
           targets: ${{ env.TARGET }}
 
       - name: Compute lockfile hash
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         id: lockhash
         shell: bash
         run: |
@@ -290,7 +357,6 @@ jobs:
           echo "toolchain_hash=$(sha256sum codex-rs/rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Restore cargo home cache
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         id: cache_cargo_home_restore
         uses: actions/cache/restore@v5
         with:
@@ -303,19 +369,17 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
         with:
           tool: sccache
 
       - name: Configure sccache backend
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         id: sccache_backend
         shell: bash
         run: bash .github/scripts/configure_sccache_backend.sh write-fallback
 
       - name: Enable sccache wrapper and reset stats
-        if: ${{ steps.meta.outputs.release_requested == 'true' && steps.sccache_backend.outputs.backend != 'off' }}
+        if: ${{ steps.sccache_backend.outputs.backend != 'off' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -326,7 +390,7 @@ jobs:
           sccache --zero-stats || true
 
       - name: Restore sccache cache (fallback)
-        if: ${{ steps.meta.outputs.release_requested == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
+        if: ${{ steps.sccache_backend.outputs.backend == 'fallback' }}
         id: cache_sccache_restore
         uses: actions/cache/restore@v5
         with:
@@ -337,24 +401,24 @@ jobs:
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
 
       - name: Build release binaries
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         id: build_release
         shell: bash
         working-directory: codex-rs
         env:
           CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
           CODEX_RELEASE_TAG_PREFIX: v
-          CODEX_RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
-          CODEX_UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
-          CODEX_UPSTREAM_BASE_COMMIT: ${{ steps.meta.outputs.upstream_base_commit_short }}
-          CODEX_UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
-          CODEX_DOWNSTREAM_COMMIT: ${{ steps.meta.outputs.downstream_commit_short }}
+          CODEX_RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          CODEX_UPSTREAM_TRACK: ${{ needs.resolve.outputs.upstream_track }}
+          CODEX_UPSTREAM_BASE_COMMIT: ${{ needs.resolve.outputs.upstream_base_commit_short }}
+          CODEX_UPSTREAM_BASE_TAG: ${{ needs.resolve.outputs.upstream_base_tag }}
+          CODEX_UPSTREAM_DISTANCE_FROM_TAG: ${{ needs.resolve.outputs.upstream_distance_from_tag }}
+          CODEX_DOWNSTREAM_COMMIT: ${{ needs.resolve.outputs.downstream_commit_short }}
         run: |
           set -euo pipefail
           cargo build --locked --target "${TARGET}" --release --bin codex --bin codex-responses-api-proxy
 
       - name: Check post-build disk headroom
-        if: ${{ always() && !cancelled() && steps.meta.outputs.release_requested == 'true' }}
+        if: ${{ always() && !cancelled() }}
         id: disk_guard
         shell: bash
         run: |
@@ -407,7 +471,7 @@ jobs:
           key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
-        if: ${{ always() && steps.meta.outputs.release_requested == 'true' && steps.sccache_backend.outputs.backend != 'off' }}
+        if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
         continue-on-error: true
         shell: bash
         run: |
@@ -424,32 +488,31 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Sign Linux binaries
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         uses: ./.github/actions/linux-code-sign
         with:
           target: ${{ env.TARGET }}
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ env.TARGET }}/release
 
       - name: Stage release assets
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         working-directory: codex-rs
         env:
-          BUILD_PROVENANCE: ${{ steps.meta.outputs.build_provenance }}
-          DOWNSTREAM_COMMIT_FULL: ${{ steps.meta.outputs.downstream_commit }}
-          RELEASE_CHANNEL: ${{ steps.meta.outputs.release_channel }}
-          RELEASE_MARKER: ${{ steps.meta.outputs.release_marker }}
-          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          BUILD_PROVENANCE: ${{ needs.resolve.outputs.build_provenance }}
+          DOWNSTREAM_COMMIT_FULL: ${{ needs.resolve.outputs.downstream_commit }}
+          RELEASE_CHANNEL: ${{ needs.resolve.outputs.release_channel }}
+          RELEASE_MARKER: ${{ needs.resolve.outputs.release_marker }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
           REPOSITORY: ${{ github.repository }}
-          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
-          UPSTREAM_BASE_COMMIT_FULL: ${{ steps.meta.outputs.upstream_base_commit }}
-          UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
-          UPSTREAM_BASE_TAG_EXACT: ${{ steps.meta.outputs.upstream_base_tag_exact }}
-          UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
-          UPSTREAM_TRACK: ${{ steps.meta.outputs.upstream_track }}
-          VERSION_DISPLAY: ${{ steps.meta.outputs.version_display }}
-          VERSION_POLICY: ${{ steps.meta.outputs.version_policy }}
+          TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+          UPSTREAM_BASE_COMMIT_FULL: ${{ needs.resolve.outputs.upstream_base_commit }}
+          UPSTREAM_BASE_TAG: ${{ needs.resolve.outputs.upstream_base_tag }}
+          UPSTREAM_BASE_TAG_EXACT: ${{ needs.resolve.outputs.upstream_base_tag_exact }}
+          UPSTREAM_DISTANCE_FROM_TAG: ${{ needs.resolve.outputs.upstream_distance_from_tag }}
+          UPSTREAM_POSITION: ${{ needs.resolve.outputs.upstream_position }}
+          UPSTREAM_TRACK: ${{ needs.resolve.outputs.upstream_track }}
+          VERSION_DISPLAY: ${{ needs.resolve.outputs.version_display }}
+          VERSION_POLICY: ${{ needs.resolve.outputs.version_policy }}
         run: |
           set -euo pipefail
 
@@ -481,6 +544,7 @@ jobs:
           upstream_base_tag=${UPSTREAM_BASE_TAG}
           upstream_base_tag_exact=${UPSTREAM_BASE_TAG_EXACT}
           upstream_distance_from_tag=${UPSTREAM_DISTANCE_FROM_TAG}
+          upstream_position=${UPSTREAM_POSITION}
           downstream_commit=${DOWNSTREAM_COMMIT_FULL}
           target_commit=${TARGET_COMMIT}
           repository=${REPOSITORY}
@@ -506,6 +570,7 @@ jobs:
                   "upstream_base_tag": os.environ["UPSTREAM_BASE_TAG"] or None,
                   "upstream_base_tag_exact": os.environ["UPSTREAM_BASE_TAG_EXACT"] == "true",
                   "upstream_distance_from_tag": int(os.environ["UPSTREAM_DISTANCE_FROM_TAG"]),
+                  "upstream_position": os.environ["UPSTREAM_POSITION"],
                   "downstream_commit": os.environ["DOWNSTREAM_COMMIT_FULL"],
                   "target_commit": os.environ["TARGET_COMMIT"],
                   "repository": os.environ["REPOSITORY"],
@@ -524,24 +589,31 @@ jobs:
           )
 
       - name: Upload workflow artifacts
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: sedna-release-linux
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
+      - name: Generate release publisher app token
+        id: release_publisher_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-contents: write
+
       - name: Create GitHub release
-        if: ${{ steps.meta.outputs.release_requested == 'true' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_DRAFT: ${{ steps.meta.outputs.draft }}
-          RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
-          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
-          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
+          RELEASE_DRAFT: ${{ needs.resolve.outputs.draft }}
+          RELEASE_PRERELEASE: ${{ needs.resolve.outputs.github_prerelease }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -576,13 +648,13 @@ jobs:
             "${draft_flag[@]}"
 
       - name: Dispatch release asset verifier
-        if: ${{ steps.meta.outputs.release_requested == 'true' && steps.meta.outputs.draft != 'true' }}
+        if: ${{ needs.resolve.outputs.draft != 'true' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_PRERELEASE: ${{ steps.meta.outputs.github_prerelease }}
-          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ needs.resolve.outputs.github_prerelease }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
 
@@ -597,13 +669,13 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          RELEASE_REQUESTED: ${{ steps.meta.outputs.release_requested }}
-          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
-          SKIP_REASON: ${{ steps.meta.outputs.skip_reason }}
-          TARGET_COMMIT: ${{ steps.meta.outputs.target_commit }}
-          UPSTREAM_BASE_TAG: ${{ steps.meta.outputs.upstream_base_tag }}
-          UPSTREAM_DISTANCE_FROM_TAG: ${{ steps.meta.outputs.upstream_distance_from_tag }}
+          RELEASE_REQUESTED: ${{ needs.resolve.outputs.release_requested }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          SKIP_REASON: ${{ needs.resolve.outputs.skip_reason }}
+          TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+          UPSTREAM_BASE_TAG: ${{ needs.resolve.outputs.upstream_base_tag }}
+          UPSTREAM_DISTANCE_FROM_TAG: ${{ needs.resolve.outputs.upstream_distance_from_tag }}
         run: |
           {
             echo "## Sedna release"

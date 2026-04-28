@@ -29,9 +29,9 @@ downstream_ref="$(git rev-parse HEAD)"
 python3 scripts/downstream-divergence-audit.py \
   --repo "$PWD" \
   --downstream-ref "${downstream_ref}" \
-  "${mirror_audit_args[@]}" \
   --upstream-remote upstream \
   --upstream-branch main \
+  "${mirror_audit_args[@]}" \
   --expected-mirror-sha "${expected_mirror_sha}" \
   --registry-path docs/divergences/index.yaml \
   --output-dir target/downstream-divergence-audit \

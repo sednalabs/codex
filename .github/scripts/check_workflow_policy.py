@@ -147,7 +147,7 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
             if uses_self_hosted_runner(node.get("runs-on")):
                 violations.append(
                     f"{relative_path}: public workflows must not use self-hosted runners; "
-                    "use private deployment infrastructure for host-local operations."
+                    "use external deployment automation for host-local operations."
                 )
 
             if grants_write_all(node.get("permissions")):

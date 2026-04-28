@@ -20,10 +20,10 @@ UPSTREAM_TAG_RE = re.compile(
     r"^rust-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)$"
 )
 SEDNA_TAG_RE = re.compile(
-    r"^v(?P<track>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)-sedna\.(?P<ordinal>[0-9]+)$"
+    r"^v(?P<track>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)-sedna\.(?P<ordinal>[0-9]+)(?:\+upstream\.(?P<upstream_distance>[0-9]+))?$"
 )
 RELEASE_MARKER_RE = re.compile(r"^Sedna-Release:\s*(?P<channel>[A-Za-z0-9_.-]+)\s*$")
-VERSION_POLICY = "sedna-upstream-track-v1"
+VERSION_POLICY = "sedna-upstream-track-v2"
 
 
 class ReleaseVersionError(RuntimeError):
@@ -252,6 +252,88 @@ def next_sedna_ordinal(existing_tags: Iterable[str], upstream_track: str) -> int
     return max(ordinals, default=0) + 1
 
 
+def max_sedna_ordinal(existing_tags: Iterable[str], upstream_track: str) -> int:
+    return next_sedna_ordinal(existing_tags, upstream_track) - 1
+
+
+def local_release_boundary(
+    repo: Path, existing_tags: Iterable[str], upstream_track: str, target_commit: str
+) -> str | None:
+    candidates: list[tuple[int, datetime, str]] = []
+    for tag in existing_tags:
+        parsed = parse_sedna_tag(tag)
+        if parsed is None or parsed.track != upstream_track:
+            continue
+        commit = resolve_commit(repo, tag)
+        if commit == target_commit:
+            continue
+        if not is_ancestor(repo, commit, target_commit):
+            continue
+        candidates.append((parsed.ordinal, commit_timestamp(repo, commit), commit))
+    if not candidates:
+        return None
+    return max(candidates)[2]
+
+
+def is_ancestor(repo: Path, ancestor: str, descendant_ref: str) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant_ref],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def upstream_track_for_commit(repo: Path, commit: str, upstream_ref: str) -> str:
+    upstream_base_commit = git(repo, "merge-base", commit, upstream_ref).split()[0]
+    upstream_version, _tag, _distance, _exact = select_upstream_tag(
+        repo, upstream_base_commit, upstream_base_commit
+    )
+    return str(upstream_version)
+
+
+def first_parent_release_index(
+    repo: Path,
+    *,
+    target_commit: str,
+    upstream_ref: str,
+    upstream_track: str,
+    boundary_commit: str | None,
+) -> int:
+    rev_range = (
+        target_commit if boundary_commit is None else f"{boundary_commit}..{target_commit}"
+    )
+    commits = git(repo, "rev-list", "--first-parent", "--reverse", rev_range).splitlines()
+    release_commits: list[str] = []
+    for commit in commits:
+        marker = release_marker_channel(commit_message(repo, commit))
+        if marker is None:
+            continue
+        if upstream_track_for_commit(repo, commit, upstream_ref) == upstream_track:
+            release_commits.append(commit)
+
+    try:
+        return release_commits.index(target_commit) + 1
+    except ValueError as exc:
+        raise ReleaseVersionError(
+            "target commit is not a first-parent release marker commit for "
+            f"upstream track {upstream_track}"
+        ) from exc
+
+
+def upstream_position_label(tag: str, distance_from_tag: int, commit_short: str) -> str:
+    tag_position = tag if distance_from_tag == 0 else f"{tag}+{distance_from_tag}"
+    return f"{tag_position}@{commit_short}"
+
+
+def sedna_release_tag(upstream_track: str, ordinal: int, upstream_distance: int) -> str:
+    tag = f"v{upstream_track}-sedna.{ordinal}"
+    if upstream_distance > 0:
+        tag = f"{tag}+upstream.{upstream_distance}"
+    return tag
+
+
 def resolve_release(
     *,
     repo: Path,
@@ -263,6 +345,7 @@ def resolve_release(
     release_tag: str | None,
     current_release_tag: str | None,
     require_marker: bool,
+    missing_marker: str,
     github_releases: str,
 ) -> dict[str, object]:
     target_commit = resolve_commit(repo, target_sha)
@@ -270,6 +353,11 @@ def resolve_release(
 
     marker = release_marker_channel(commit_message(repo, target_commit))
     if require_marker and marker is None:
+        if missing_marker == "error":
+            raise ReleaseVersionError(
+                "target commit does not contain a Sedna-Release marker; "
+                "manual markerless releases must supply release_tag"
+            )
         return {
             "release_requested": False,
             "skip_reason": "missing_sedna_release_marker",
@@ -319,8 +407,24 @@ def resolve_release(
     existing_tags = local_existing_tags | release_existing_tags
     if current_release_tag:
         existing_tags.discard(current_release_tag)
-    ordinal = next_sedna_ordinal(existing_tags, upstream_track)
-    computed_release_tag = f"v{upstream_track}-sedna.{ordinal}"
+    if marker is not None:
+        ordinal = max_sedna_ordinal(existing_tags, upstream_track) + first_parent_release_index(
+            repo,
+            target_commit=target_commit,
+            upstream_ref=upstream_ref,
+            upstream_track=upstream_track,
+            boundary_commit=local_release_boundary(
+                repo,
+                local_existing_tags,
+                upstream_track,
+                target_commit,
+            ),
+        )
+    elif release_tag:
+        ordinal = next_sedna_ordinal(existing_tags, upstream_track)
+    else:
+        ordinal = next_sedna_ordinal(existing_tags, upstream_track)
+    computed_release_tag = sedna_release_tag(upstream_track, ordinal, upstream_distance)
 
     if release_tag:
         parsed = parse_sedna_tag(release_tag)
@@ -336,7 +440,12 @@ def resolve_release(
     release_version = computed_release_tag.removeprefix("v")
     downstream_short = git(repo, "rev-parse", "--short=8", target_commit)
     upstream_short = git(repo, "rev-parse", "--short=8", upstream_base_commit)
-    build_provenance = f"up:{upstream_short} down:{downstream_short}"
+    upstream_position = upstream_position_label(
+        upstream_tag,
+        upstream_distance,
+        upstream_short,
+    )
+    build_provenance = f"up:{upstream_position} down:{downstream_short}"
 
     return {
         "release_requested": True,
@@ -353,6 +462,7 @@ def resolve_release(
         "upstream_base_tag": upstream_tag,
         "upstream_base_tag_exact": upstream_exact,
         "upstream_distance_from_tag": upstream_distance,
+        "upstream_position": upstream_position,
         "downstream_commit": target_commit,
         "downstream_commit_short": downstream_short,
         "target_commit": target_commit,
@@ -377,6 +487,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--current-release-tag", default=None)
     parser.add_argument("--require-marker", action="store_true")
     parser.add_argument(
+        "--missing-marker",
+        choices=("skip", "error"),
+        default="skip",
+    )
+    parser.add_argument(
         "--github-releases",
         choices=("required", "best-effort", "off"),
         default="best-effort",
@@ -398,6 +513,7 @@ def main(argv: list[str]) -> int:
             release_tag=args.release_tag,
             current_release_tag=args.current_release_tag,
             require_marker=args.require_marker,
+            missing_marker=args.missing_marker,
             github_releases=args.github_releases,
         )
     except ReleaseVersionError as exc:
