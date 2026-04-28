@@ -2816,6 +2816,7 @@ dependencies = [
  "cc",
  "clap",
  "codex-core",
+ "codex-process-hardening",
  "codex-protocol",
  "codex-sandboxing",
  "codex-utils-absolute-path",
