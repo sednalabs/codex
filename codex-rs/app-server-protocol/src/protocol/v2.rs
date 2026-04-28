@@ -10305,6 +10305,27 @@ mod tests {
                 plugin_id: "gmail@openai-curated".to_string(),
             },
         );
+
+        assert_eq!(
+            serde_json::to_value(PluginUninstallParams {
+                plugin_id: "plugins~Plugin_gmail".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "pluginId": "plugins~Plugin_gmail",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::from_value::<PluginUninstallParams>(json!({
+                "pluginId": "plugins~Plugin_gmail",
+                "forceRemoteSync": true,
+            }))
+            .unwrap(),
+            PluginUninstallParams {
+                plugin_id: "plugins~Plugin_gmail".to_string(),
+            },
+        );
     }
 
     #[test]

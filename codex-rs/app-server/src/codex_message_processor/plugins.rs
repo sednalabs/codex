@@ -407,11 +407,7 @@ impl CodexMessageProcessor {
                 "remote plugin install is not enabled for marketplace {remote_marketplace_name}"
             )));
         }
-        if plugin_name.is_empty()
-            || !plugin_name
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '~')
-        {
+        if plugin_name.is_empty() || !is_valid_remote_plugin_id(&plugin_name) {
             return Err(invalid_request(
                 "invalid remote plugin id: only ASCII letters, digits, `_`, `-`, and `~` are allowed",
             ));
@@ -579,6 +575,16 @@ impl CodexMessageProcessor {
         params: PluginUninstallParams,
     ) -> Result<PluginUninstallResponse, JSONRPCErrorError> {
         let PluginUninstallParams { plugin_id } = params;
+        if codex_core::plugins::PluginId::parse(&plugin_id).is_err()
+            && !is_valid_remote_uninstall_plugin_id(&plugin_id)
+        {
+            return Err(invalid_request(
+                "invalid plugin id: expected a local plugin id in the form `plugin@marketplace` or a remote plugin id starting with `plugins~`, `app_`, `asdk_app_`, or `connector_`",
+            ));
+        }
+        if is_valid_remote_uninstall_plugin_id(&plugin_id) {
+            return self.remote_plugin_uninstall_response(plugin_id).await;
+        }
         let plugins_manager = self.thread_manager.plugins_manager();
 
         plugins_manager
@@ -648,6 +654,54 @@ impl CodexMessageProcessor {
             MarketplaceError::Io { .. } => internal_error(format!("failed to {action}: {err}")),
         }
     }
+
+    async fn remote_plugin_uninstall_response(
+        &self,
+        plugin_id: String,
+    ) -> Result<PluginUninstallResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        if !config.features.enabled(Feature::Plugins)
+            || !config.features.enabled(Feature::RemotePlugin)
+        {
+            return Err(invalid_request("remote plugin uninstall is not enabled"));
+        }
+        if plugin_id.is_empty() || !is_valid_remote_plugin_id(&plugin_id) {
+            return Err(invalid_request(
+                "invalid remote plugin id: only ASCII letters, digits, `_`, `-`, and `~` are allowed",
+            ));
+        }
+
+        let auth = self.auth_manager.auth().await;
+        let remote_plugin_service_config = RemotePluginServiceConfig {
+            chatgpt_base_url: config.chatgpt_base_url.clone(),
+        };
+        codex_core_plugins::remote::uninstall_remote_plugin(
+            &remote_plugin_service_config,
+            auth.as_ref(),
+            config.codex_home.to_path_buf(),
+            &plugin_id,
+        )
+        .await
+        .map_err(|err| remote_plugin_catalog_error_to_jsonrpc(err, "uninstall remote plugin"))?;
+
+        self.clear_plugin_related_caches();
+        Ok(PluginUninstallResponse {})
+    }
+}
+
+fn is_valid_remote_plugin_id(plugin_name: &str) -> bool {
+    plugin_name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '~')
+}
+
+fn is_valid_remote_uninstall_plugin_id(plugin_name: &str) -> bool {
+    !plugin_name.is_empty()
+        && is_valid_remote_plugin_id(plugin_name)
+        && (plugin_name.starts_with("plugins~")
+            || plugin_name.starts_with("app_")
+            || plugin_name.starts_with("asdk_app_")
+            || plugin_name.starts_with("connector_"))
 }
 
 fn remote_marketplace_to_info(marketplace: RemoteMarketplace) -> PluginMarketplaceEntry {
@@ -734,7 +788,8 @@ fn remote_plugin_catalog_error_to_jsonrpc(
         | RemotePluginCatalogError::UnexpectedStatus { .. }
         | RemotePluginCatalogError::Decode { .. }
         | RemotePluginCatalogError::UnexpectedPluginId { .. }
-        | RemotePluginCatalogError::UnexpectedEnabledState { .. } => JSONRPCErrorError {
+        | RemotePluginCatalogError::UnexpectedEnabledState { .. }
+        | RemotePluginCatalogError::CacheRemove(_) => JSONRPCErrorError {
             code: INTERNAL_ERROR_CODE,
             message: format!("{context}: {err}"),
             data: None,

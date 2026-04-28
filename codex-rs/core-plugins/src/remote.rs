@@ -1,15 +1,22 @@
+use crate::store::PLUGINS_CACHE_DIR;
+use crate::store::PluginStore;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginInterface;
 use codex_app_server_protocol::SkillInterface;
 use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
+use codex_plugin::PluginId;
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
+use tracing::warn;
 
 pub const REMOTE_GLOBAL_MARKETPLACE_NAME: &str = "chatgpt-global";
 pub const REMOTE_WORKSPACE_MARKETPLACE_NAME: &str = "chatgpt-workspace";
@@ -111,18 +118,21 @@ pub enum RemotePluginCatalogError {
     },
 
     #[error(
-        "remote plugin install returned unexpected plugin id: expected `{expected}`, got `{actual}`"
+        "remote plugin mutation returned unexpected plugin id: expected `{expected}`, got `{actual}`"
     )]
     UnexpectedPluginId { expected: String, actual: String },
 
     #[error(
-        "remote plugin install returned unexpected enabled state for `{plugin_id}`: expected {expected_enabled}, got {actual_enabled}"
+        "remote plugin mutation returned unexpected enabled state for `{plugin_id}`: expected {expected_enabled}, got {actual_enabled}"
     )]
     UnexpectedEnabledState {
         plugin_id: String,
         expected_enabled: bool,
         actual_enabled: bool,
     },
+
+    #[error("{0}")]
+    CacheRemove(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -256,7 +266,7 @@ struct RemotePluginInstalledResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RemotePluginInstallResponse {
+struct RemotePluginMutationResponse {
     id: String,
     enabled: bool,
 }
@@ -414,6 +424,46 @@ async fn fetch_remote_plugin_detail_with_download_url_option(
         });
     }
 
+    build_remote_plugin_detail(
+        config,
+        auth,
+        scope,
+        marketplace_name.to_string(),
+        plugin_id,
+        plugin,
+    )
+    .await
+}
+
+async fn fetch_remote_plugin_detail_by_id(
+    config: &RemotePluginServiceConfig,
+    auth: &CodexAuth,
+    plugin_id: &str,
+) -> Result<RemotePluginDetail, RemotePluginCatalogError> {
+    let plugin = fetch_plugin_detail(
+        config, auth, plugin_id, /*include_download_urls*/ false,
+    )
+    .await?;
+    let scope = plugin.scope;
+    build_remote_plugin_detail(
+        config,
+        auth,
+        scope,
+        scope.marketplace_name().to_string(),
+        plugin_id,
+        plugin,
+    )
+    .await
+}
+
+async fn build_remote_plugin_detail(
+    config: &RemotePluginServiceConfig,
+    auth: &CodexAuth,
+    scope: RemotePluginScope,
+    marketplace_name: String,
+    plugin_id: &str,
+    plugin: RemotePluginDirectoryItem,
+) -> Result<RemotePluginDetail, RemotePluginCatalogError> {
     let installed_plugin = fetch_installed_plugins_for_scope(config, auth, scope)
         .await?
         .into_iter()
@@ -445,7 +495,7 @@ async fn fetch_remote_plugin_detail_with_download_url_option(
         .collect();
 
     Ok(RemotePluginDetail {
-        marketplace_name: marketplace_name.to_string(),
+        marketplace_name,
         marketplace_display_name: scope.marketplace_display_name().to_string(),
         summary: build_remote_plugin_summary(&plugin, installed_plugin.as_ref()),
         description: non_empty_string(Some(&plugin.release.description)),
@@ -473,7 +523,7 @@ pub async fn install_remote_plugin(
     let url = format!("{base_url}/ps/plugins/{plugin_id}/install");
     let client = build_reqwest_client();
     let request = authenticated_request(client.post(&url), auth)?;
-    let response: RemotePluginInstallResponse = send_and_decode(request, &url).await?;
+    let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
     if response.id != plugin_id {
         return Err(RemotePluginCatalogError::UnexpectedPluginId {
             expected: plugin_id.to_string(),
@@ -489,6 +539,121 @@ pub async fn install_remote_plugin(
     }
 
     Ok(())
+}
+
+pub async fn uninstall_remote_plugin(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    codex_home: PathBuf,
+    plugin_id: &str,
+) -> Result<(), RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+
+    let base_url = config.chatgpt_base_url.trim_end_matches('/');
+    let url = format!("{base_url}/plugins/{plugin_id}/uninstall");
+    let client = build_reqwest_client();
+    let request = authenticated_request(client.post(&url), auth)?;
+    let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
+    if response.id != plugin_id {
+        return Err(RemotePluginCatalogError::UnexpectedPluginId {
+            expected: plugin_id.to_string(),
+            actual: response.id,
+        });
+    }
+    if response.enabled {
+        return Err(RemotePluginCatalogError::UnexpectedEnabledState {
+            plugin_id: plugin_id.to_string(),
+            expected_enabled: false,
+            actual_enabled: response.enabled,
+        });
+    }
+
+    let remote_detail = match fetch_remote_plugin_detail_by_id(config, auth, plugin_id).await {
+        Ok(remote_detail) => Some(remote_detail),
+        Err(err) => {
+            warn!(
+                plugin_id,
+                "failed to read remote plugin details after uninstall; skipping named cache removal: {err}"
+            );
+            None
+        }
+    };
+    let legacy_plugin_id = plugin_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        remove_remote_plugin_cache(codex_home, remote_detail, legacy_plugin_id)
+    })
+    .await
+    .map_err(|err| {
+        RemotePluginCatalogError::CacheRemove(format!(
+            "failed to join remote plugin cache removal task: {err}"
+        ))
+    })?
+    .map_err(RemotePluginCatalogError::CacheRemove)?;
+
+    Ok(())
+}
+
+fn remove_remote_plugin_cache(
+    codex_home: PathBuf,
+    remote_detail: Option<RemotePluginDetail>,
+    legacy_plugin_id: String,
+) -> Result<(), String> {
+    if let Some(remote_detail) = remote_detail {
+        let marketplace_name = remote_detail.marketplace_name;
+        let plugin_name = remote_detail.summary.name;
+        let store = PluginStore::try_new(codex_home.clone())
+            .map_err(|err| format!("failed to resolve remote plugin cache root: {err}"))?;
+        let plugin_id = PluginId::new(plugin_name.clone(), marketplace_name.clone()).map_err(
+            |err| {
+                format!(
+                    "invalid remote plugin cache id for `{plugin_name}` in `{marketplace_name}`: {err}"
+                )
+            },
+        )?;
+        let plugin_cache_root = store.plugin_base_root(&plugin_id);
+        store.uninstall(&plugin_id).map_err(|err| {
+            format!(
+                "failed to remove remote plugin cache entry {}: {err}",
+                plugin_cache_root.display()
+            )
+        })?;
+
+        let legacy_remote_plugin_cache_root = codex_home
+            .join(PLUGINS_CACHE_DIR)
+            .join(marketplace_name)
+            .join(legacy_plugin_id);
+        if legacy_remote_plugin_cache_root != plugin_cache_root.as_path() {
+            remove_path_if_exists(&legacy_remote_plugin_cache_root)?;
+        }
+        return Ok(());
+    }
+
+    for scope in RemotePluginScope::all() {
+        let legacy_remote_plugin_cache_root = codex_home
+            .join(PLUGINS_CACHE_DIR)
+            .join(scope.marketplace_name())
+            .join(&legacy_plugin_id);
+        remove_path_if_exists(&legacy_remote_plugin_cache_root)?;
+    }
+    Ok(())
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    result.map_err(|err| {
+        format!(
+            "failed to remove remote plugin cache entry {}: {err}",
+            path.display()
+        )
+    })
 }
 
 fn build_remote_plugin_summary(
