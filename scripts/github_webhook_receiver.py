@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -309,16 +310,33 @@ class ReceiverServer(http.server.ThreadingHTTPServer):
     receiver_config: ReceiverConfig
 
 
+def make_shutdown_handler(server: http.server.HTTPServer) -> Any:
+    shutdown_started = threading.Event()
+
+    def stop(_signum: int, _frame: Any) -> None:
+        if shutdown_started.is_set():
+            return
+        shutdown_started.set()
+        threading.Thread(
+            target=server.shutdown,
+            name="github-webhook-receiver-shutdown",
+            daemon=True,
+        ).start()
+
+    return stop
+
+
 def serve(config: ReceiverConfig, host: str, port: int) -> None:
     server = ReceiverServer((host, port), GitHubWebhookHandler)
     server.receiver_config = config
 
-    def stop(_signum: int, _frame: Any) -> None:
-        server.shutdown()
-
+    stop = make_shutdown_handler(server)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

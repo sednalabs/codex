@@ -10,6 +10,8 @@ import importlib.util
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -166,6 +168,35 @@ class GitHubWebhookReceiverTests(unittest.TestCase):
         self.assertEqual(config.secret, b"top-secret")
         self.assertEqual(config.timeout_seconds, 42)
         self.assertEqual(config.lock_path, Path("install.lock"))
+
+    def test_shutdown_signal_handler_returns_while_shutdown_completes(self) -> None:
+        shutdown_started = threading.Event()
+        shutdown_may_finish = threading.Event()
+        shutdown_calls = 0
+        shutdown_calls_lock = threading.Lock()
+
+        class SlowShutdownServer:
+            def shutdown(self) -> None:
+                nonlocal shutdown_calls
+                with shutdown_calls_lock:
+                    shutdown_calls += 1
+                shutdown_started.set()
+                shutdown_may_finish.wait(timeout=1)
+
+        handler = receiver.make_shutdown_handler(SlowShutdownServer())
+
+        started_at = time.monotonic()
+        handler(15, None)
+        elapsed = time.monotonic() - started_at
+
+        self.assertLess(elapsed, 0.1)
+        self.assertTrue(shutdown_started.wait(timeout=1))
+
+        handler(15, None)
+        shutdown_may_finish.set()
+        time.sleep(0.05)
+
+        self.assertEqual(shutdown_calls, 1)
 
 
 if __name__ == "__main__":
