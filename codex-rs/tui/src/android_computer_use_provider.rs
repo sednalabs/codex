@@ -16,6 +16,8 @@ use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MCP_URL_PATH: &str = "/mcp";
+const INSPECT_UI_MAX_ATTEMPTS: usize = 3;
+const INSPECT_UI_RETRY_DELAY: Duration = Duration::from_millis(250);
 const TOOL_ANDROID_OBSERVE: &str = "android_observe";
 const TOOL_ANDROID_STEP: &str = "android_step";
 
@@ -150,7 +152,36 @@ async fn inspect_ui(client: &mut AndroidRuntimeClient, arguments: &Value) -> Res
     copy_if_present(arguments, &mut inspect_args, "timeout_secs");
     copy_if_present(arguments, &mut inspect_args, "screenshot_filename");
     copy_if_present(arguments, &mut inspect_args, "hierarchy_filename");
-    client.call_tool("android.inspect_ui", inspect_args).await
+
+    let mut last_error: Option<String> = None;
+    for attempt in 0..INSPECT_UI_MAX_ATTEMPTS {
+        match client
+            .call_tool("android.inspect_ui", inspect_args.clone())
+            .await
+        {
+            Ok(observation) => return Ok(observation),
+            Err(err)
+                if attempt + 1 < INSPECT_UI_MAX_ATTEMPTS && should_retry_inspect_ui_error(&err) =>
+            {
+                last_error = Some(err);
+                tokio::time::sleep(INSPECT_UI_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(last_error
+        .unwrap_or_else(|| "android.inspect_ui failed without a captured error".to_string()))
+}
+
+fn should_retry_inspect_ui_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("ui hierarchy capture was unavailable")
+        || normalized.contains("retry observation")
+        || normalized.contains("uiautomator")
+        || normalized.contains("window-dump")
+        || normalized.contains("failed to stat remote object")
+        || normalized.contains("no such file or directory")
 }
 
 async fn observation_response(
@@ -996,6 +1027,19 @@ mod tests {
         };
 
         assert!(response_includes_native_image(&response));
+    }
+
+    #[test]
+    fn inspect_ui_retry_filter_accepts_transient_hierarchy_races() {
+        assert!(should_retry_inspect_ui_error(
+            "UI hierarchy capture was unavailable after atomic stream and legacy retry paths; retry observation"
+        ));
+        assert!(should_retry_inspect_ui_error(
+            "adb: error: failed to stat remote object '/sdcard/window-dump.xml': No such file or directory"
+        ));
+        assert!(!should_retry_inspect_ui_error(
+            "Android provider HTTP 403: forbidden"
+        ));
     }
 
     #[test]
