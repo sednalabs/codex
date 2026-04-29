@@ -271,12 +271,11 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
   release-linux:
-    name: Publish Linux release
+    name: Build Linux release artifacts
     needs: resolve
     if: ${{ needs.resolve.outputs.release_requested == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: release
     concurrency:
       group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
       cancel-in-progress: false
@@ -315,27 +314,6 @@ jobs:
         run: |
           set -euo pipefail
           git checkout --detach "${TARGET_COMMIT}"
-
-      - name: Check release publisher app configuration
-        shell: bash
-        env:
-          APP_CLIENT_ID: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-
-          missing=()
-          if [[ -z "${APP_CLIENT_ID}" ]]; then
-            missing+=("SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID")
-          fi
-          if [[ -z "${APP_PRIVATE_KEY}" ]]; then
-            missing+=("SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY")
-          fi
-
-          if ((${#missing[@]} > 0)); then
-            printf 'Missing release publisher GitHub App configuration: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
 
       - name: Install Linux build dependencies
         shell: bash
@@ -595,6 +573,49 @@ jobs:
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
+  publish-release:
+    name: Publish GitHub release
+    needs:
+      - resolve
+      - release-linux
+    if: ${{ needs.resolve.outputs.release_requested == 'true' }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    environment: release
+    concurrency:
+      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: sedna-release-linux
+          path: dist
+
+      - name: Check release publisher app configuration
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          if [[ -z "${APP_CLIENT_ID}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID")
+          fi
+          if [[ -z "${APP_PRIVATE_KEY}" ]]; then
+            missing+=("SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY")
+          fi
+
+          if ((${#missing[@]} > 0)); then
+            printf 'Missing release publisher GitHub App configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Generate release publisher app token
         id: release_publisher_token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
@@ -623,7 +644,7 @@ jobs:
             exit 1
           fi
 
-          assets=("${GITHUB_WORKSPACE}"/dist/*)
+          assets=(dist/*)
           if ((${#assets[@]} == 0)); then
             echo "No release assets found"
             exit 1

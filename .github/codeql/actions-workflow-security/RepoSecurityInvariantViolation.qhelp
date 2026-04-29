@@ -1,0 +1,17 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      This repository keeps a small set of workflow invariants around public
+      release publication and runner safety. Violating those invariants can make
+      release artifacts or workflow logs harder to trust.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Keep official release publication in the approved release job, keep public
+      workflows on GitHub-hosted runners, and use private deployment
+      infrastructure for host-local operations.
+    </p>
+  </recommendation>
+</qhelp>

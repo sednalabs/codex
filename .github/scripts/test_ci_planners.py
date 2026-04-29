@@ -1566,6 +1566,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             prefetch_run,
         )
 
+        actions_config_step = next(
+            step for step in steps if step.get("name") == "Prepare Actions CodeQL query pack config"
+        )
+        self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
+        actions_config_run = actions_config_step.get("run") or ""
+        self.assertIn(".github/codeql/actions-workflow-security", actions_config_run)
+        self.assertIn("github.event.pull_request.base.sha", actions_config_run)
+        self.assertIn("security-and-quality", actions_config_run)
+        self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
+
         init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
         self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
         self.assertEqual(
@@ -1616,6 +1626,68 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "threat-models": "local",
             },
         )
+        actions_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-actions.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            actions_config,
+            {
+                "name": "codex-codeql-actions",
+                "queries": [
+                    {"uses": "security-and-quality"},
+                    {"uses": "./.github/codeql/actions-workflow-security"},
+                ],
+                "threat-models": "local",
+            },
+        )
+        actions_pack = yaml.load(
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/qlpack.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(actions_pack.get("name"), "sednalabs/actions-workflow-security")
+        self.assertEqual(actions_pack.get("extractor"), "actions")
+        self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
+        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-workflow-security.qls")
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-log",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql")
+            .read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-verbose-tool",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToVerboseTool.ql")
+            .read_text(encoding="utf-8"),
+        )
+        for query_id in [
+            "actions/unsafe-release-publishing-path",
+            "actions/release-publisher-with-untrusted-input",
+            "actions/overbroad-workflow-permissions",
+            "actions/write-token-on-untrusted-trigger",
+            "actions/artifact-published-without-provenance",
+            "actions/repo-security-invariant-violation",
+        ]:
+            self.assertTrue(
+                any(
+                    f"@id {query_id}" in path.read_text(encoding="utf-8")
+                    for path in (REPO_ROOT / ".github/codeql/actions-workflow-security").glob("*.ql")
+                ),
+                query_id,
+            )
+        self.assertIn(
+            "getAWriteToGitHubEnv",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/LogExposure.qll").read_text(
+                encoding="utf-8"
+            ),
+        )
+        workflow_security = (
+            REPO_ROOT / ".github/codeql/actions-workflow-security/WorkflowSecurity.qll"
+        ).read_text(encoding="utf-8")
+        self.assertIn("jobHasPublishingSink", workflow_security)
+        self.assertIn("jobEffectiveWritePermission", workflow_security)
+        self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
         pr_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
@@ -1715,7 +1787,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {
                         "language": "actions",
                         "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
+                        "config_file": "./.codeql-runtime/codeql-actions.yml",
                     },
                     {
                         "language": "python",
@@ -1769,7 +1841,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(schedule_plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
@@ -1784,7 +1856,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(router_change_plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
@@ -1813,7 +1885,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for entry in json.loads(plan["matrix"])["include"]
             },
             {
-                "actions": "./.github/codeql/codeql-config.yml",
+                "actions": "./.codeql-runtime/codeql-actions.yml",
                 "c-cpp": "./.github/codeql/codeql-config.yml",
                 "javascript-typescript": "./.github/codeql/codeql-config.yml",
                 "python": "./.github/codeql/codeql-config.yml",
@@ -3319,6 +3391,7 @@ class HelperScriptTests(unittest.TestCase):
         named_steps = {step.get("name"): step for step in router_steps if "name" in step}
         resolve_job = jobs.get("resolve") or {}
         release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
 
         self.assertIn("main release gate", release_payload.get("run-name") or "")
         self.assertNotIn("concurrency", release_payload)
@@ -3350,7 +3423,7 @@ class HelperScriptTests(unittest.TestCase):
             "--missing-marker error",
             resolve_named_steps["Resolve release metadata"].get("run") or "",
         )
-        self.assertEqual(release_job.get("name"), "Publish Linux release")
+        self.assertEqual(release_job.get("name"), "Build Linux release artifacts")
         self.assertEqual(release_job.get("needs"), "resolve")
         self.assertIn(
             "needs.resolve.outputs.release_requested == 'true'",
@@ -3367,12 +3440,36 @@ class HelperScriptTests(unittest.TestCase):
             release_job.get("permissions"),
             {"contents": "read", "id-token": "write"},
         )
+        self.assertNotIn("environment", release_job)
+        self.assertEqual(publish_job.get("name"), "Publish GitHub release")
+        self.assertEqual(publish_job.get("needs"), ["resolve", "release-linux"])
+        self.assertEqual(publish_job.get("environment"), "release")
+        self.assertEqual(
+            publish_job.get("permissions"),
+            {"contents": "write", "id-token": "write"},
+        )
 
     def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
-        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
-        steps = release_job.get("steps") or []
+        jobs = payload.get("jobs") or {}
+        release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
+        release_steps = release_job.get("steps") or []
+        steps = publish_job.get("steps") or []
+        release_named_steps = {
+            step.get("name"): step for step in release_steps if "name" in step
+        }
         named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertIn("Upload workflow artifacts", release_named_steps)
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("uses"),
+            "actions/download-artifact@v8",
+        )
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("with") or {},
+            {"name": "sedna-release-linux", "path": "dist"},
+        )
 
         config_step = named_steps["Check release publisher app configuration"]
         self.assertEqual(
@@ -3708,6 +3805,126 @@ jobs:
                 "runners; use external deployment automation for host-local operations."
             ],
         )
+
+    def test_workflow_policy_rejects_write_all_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: ci
+on: push
+permissions: write-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/ci.yml: permissions must not use write-all; "
+                "use job-scoped least privilege instead."
+            ],
+        )
+
+    def test_workflow_policy_rejects_pull_request_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/pr.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: pr
+on: pull_request_target
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/pr.yml: pull_request_target jobs must not checkout "
+                "repository code; split trusted writes from untrusted PR context."
+            ],
+        )
+
+    def test_workflow_policy_rejects_unscoped_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without the release environment.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without contents: write scoped to the publishing job.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without id-token: write for release signing or provenance.",
+            ],
+        )
+
+    def test_workflow_policy_accepts_guarded_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
 
     def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
