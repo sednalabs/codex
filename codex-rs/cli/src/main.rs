@@ -1947,6 +1947,14 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_macos_rejects_explicit_profile_controls_without_profile() {
+        let err = MultitoolCli::try_parse_from(["codex", "sandbox", "macos", "-C", "/tmp"])
+            .expect_err("parse should fail");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn plugin_marketplace_remove_parses_under_plugin() {
         let cli =
             MultitoolCli::try_parse_from(["codex", "plugin", "marketplace", "remove", "debug"])
