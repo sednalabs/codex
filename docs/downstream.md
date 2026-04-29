@@ -113,9 +113,9 @@ Why:
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling.
 
 User-visible behavior:
-- Bare `android_observe` and `android_step` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
+- Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Namespaced Android-like tools remain normal dynamic tools.
-- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`.
+- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.

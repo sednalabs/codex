@@ -571,13 +571,13 @@
     },
     {
       "id": "codex-native-computer-use-android",
-      "title": "Native computer-use and Android observe/step bridge",
+      "title": "Native computer-use and Android tool bridge",
       "status": "live",
       "category": "core-protocol",
       "surface_type": "agent-facing",
       "surface": [
         "native computer-use protocol events",
-        "Android observe/step function tools",
+        "Android observe/step/install function tools",
         "native Android image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
@@ -607,7 +607,7 @@
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
         "docs/native-computer-use.md"
       ],
-      "behavior": "Bare android_observe and android_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability.",
+      "behavior": "Bare android_observe, android_step, and android_install_build_from_run dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability and provider-side build installation.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,

@@ -18,8 +18,12 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MCP_URL_PATH: &str = "/mcp";
 const INSPECT_UI_MAX_ATTEMPTS: usize = 3;
 const INSPECT_UI_RETRY_DELAY: Duration = Duration::from_millis(250);
+const INSTALL_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const TOOL_ANDROID_OBSERVE: &str = "android_observe";
 const TOOL_ANDROID_STEP: &str = "android_step";
+const TOOL_ANDROID_INSTALL_BUILD_FROM_RUN: &str = "android_install_build_from_run";
+const MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN: &str =
+    "interactive_session.install_build_from_run";
 
 pub(crate) enum AndroidComputerUseOutcome {
     Handled(ComputerUseCallResponse),
@@ -32,7 +36,7 @@ pub(crate) async fn handle_android_computer_use(
     if params.adapter != "android" {
         return AndroidComputerUseOutcome::Unavailable;
     }
-    if params.tool != TOOL_ANDROID_OBSERVE && params.tool != TOOL_ANDROID_STEP {
+    if !is_supported_android_tool(&params.tool) {
         return AndroidComputerUseOutcome::Unavailable;
     }
 
@@ -40,16 +44,30 @@ pub(crate) async fn handle_android_computer_use(
         return AndroidComputerUseOutcome::Unavailable;
     };
 
-    let response = match timeout(DEFAULT_REQUEST_TIMEOUT, handle_with_config(params, config)).await
-    {
+    let request_timeout = request_timeout_for_tool(&params.tool);
+    let response = match timeout(request_timeout, handle_with_config(params, config)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => failed_response(err),
         Err(_) => failed_response(format!(
             "Android computer-use provider timed out after {} seconds.",
-            DEFAULT_REQUEST_TIMEOUT.as_secs()
+            request_timeout.as_secs()
         )),
     };
     AndroidComputerUseOutcome::Handled(response)
+}
+
+fn is_supported_android_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        TOOL_ANDROID_OBSERVE | TOOL_ANDROID_STEP | TOOL_ANDROID_INSTALL_BUILD_FROM_RUN
+    )
+}
+
+fn request_timeout_for_tool(tool: &str) -> Duration {
+    match tool {
+        TOOL_ANDROID_INSTALL_BUILD_FROM_RUN => INSTALL_REQUEST_TIMEOUT,
+        _ => DEFAULT_REQUEST_TIMEOUT,
+    }
 }
 
 async fn handle_with_config(
@@ -62,6 +80,9 @@ async fn handle_with_config(
     let response = match params.tool.as_str() {
         TOOL_ANDROID_OBSERVE => observe(&mut client, &tools, &params.arguments).await,
         TOOL_ANDROID_STEP => step(&mut client, &tools, &params.arguments).await,
+        TOOL_ANDROID_INSTALL_BUILD_FROM_RUN => {
+            install_build_from_run(&mut client, &tools, &params.arguments).await
+        }
         _ => Err(format!(
             "Unsupported Android computer-use tool `{}`.",
             params.tool
@@ -140,6 +161,54 @@ async fn step(
             .collect::<Vec<_>>()
             .join("\n");
         *text = format!("Executed Android actions:\n{action_text}\n\n{text}");
+    }
+    Ok(response)
+}
+
+async fn install_build_from_run(
+    client: &mut AndroidRuntimeClient,
+    tools: &BTreeSet<String>,
+    arguments: &Value,
+) -> Result<ComputerUseCallResponse, String> {
+    if !tools.contains(MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN) {
+        return Err(format!(
+            "Android provider does not expose `{MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN}`."
+        ));
+    }
+
+    let install_result = client
+        .call_tool(
+            MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN,
+            arguments.clone(),
+        )
+        .await?;
+    let install_summary = summarize_install_result(&install_result);
+
+    let mut response = match inspect_ui(client, arguments).await {
+        Ok(observation) => {
+            observation_response(
+                client,
+                tools,
+                observation,
+                "Android post-install observation",
+            )
+            .await?
+        }
+        Err(err) => ComputerUseCallResponse {
+            content_items: vec![ComputerUseCallOutputContentItem::InputText {
+                text: format!(
+                    "{install_summary}\n\nAndroid post-install observation degraded\nUI digest unavailable: {err}"
+                ),
+            }],
+            success: true,
+            error: None,
+        },
+    };
+
+    if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
+        response.content_items.first_mut()
+    {
+        *text = format!("{install_summary}\n\n{text}");
     }
     Ok(response)
 }
@@ -692,6 +761,66 @@ fn summarize_observation(title: &str, observation: &Value) -> String {
     lines.join("\n")
 }
 
+fn summarize_install_result(result: &Value) -> String {
+    let mut lines = vec!["Android build install".to_string()];
+    push_bool_line(&mut lines, result, "ok");
+    push_bool_line(&mut lines, result, "installed");
+    push_bool_line(&mut lines, result, "reused_existing_build");
+    push_bool_line(&mut lines, result, "uninstalled_existing_package");
+    push_string_line(&mut lines, result, "serial");
+
+    if let Some(manifest) = result.get("manifest") {
+        for field in [
+            "repository",
+            "run_id",
+            "artifact_name",
+            "checkout_ref",
+            "commit_sha",
+            "version_name",
+            "package_name",
+            "activity_name",
+            "android_validation_mode",
+            "interactive_debug_profile",
+        ] {
+            push_string_line(&mut lines, manifest, field);
+        }
+    }
+
+    if let Some(satisfied) = result
+        .get("postcondition")
+        .and_then(|postcondition| postcondition.get("satisfied"))
+        .and_then(Value::as_bool)
+    {
+        lines.push(format!("postcondition_satisfied: {satisfied}"));
+    }
+
+    lines.join("\n")
+}
+
+fn push_string_line(lines: &mut Vec<String>, value: &Value, field: &str) {
+    if let Some(text) = value.get(field).and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        lines.push(format!("{field}: {}", compact_summary_text(text)));
+    }
+}
+
+fn push_bool_line(lines: &mut Vec<String>, value: &Value, field: &str) {
+    if let Some(flag) = value.get(field).and_then(Value::as_bool) {
+        lines.push(format!("{field}: {flag}"));
+    }
+}
+
+fn compact_summary_text(text: &str) -> String {
+    const LIMIT: usize = 96;
+    if text.chars().count() <= LIMIT {
+        return text.to_string();
+    }
+    let mut compact = text.chars().take(LIMIT - 3).collect::<String>();
+    compact.push_str("...");
+    compact
+}
+
 fn append_text(items: &mut [ComputerUseCallOutputContentItem], extra: &str) {
     if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
         text.push_str(extra);
@@ -1136,6 +1265,56 @@ mod tests {
         assert!(summary.contains("Mission feed [scrollable]"));
         assert!(summary.contains("Advance [clipped right 50%]"));
         assert!(!summary.contains("Raw Frame"));
+    }
+
+    #[test]
+    fn install_build_from_run_gets_extended_provider_timeout() {
+        assert_eq!(
+            request_timeout_for_tool(TOOL_ANDROID_OBSERVE),
+            DEFAULT_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout_for_tool(TOOL_ANDROID_STEP),
+            DEFAULT_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout_for_tool(TOOL_ANDROID_INSTALL_BUILD_FROM_RUN),
+            INSTALL_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn summarize_install_result_keeps_large_provider_payloads_out_of_transcript() {
+        let summary = summarize_install_result(&json!({
+            "ok": true,
+            "installed": true,
+            "serial": "emulator-5554",
+            "apk_path": "/tmp/local-build-cache/app.apk",
+            "install_stdout": "very noisy adb stdout",
+            "manifest": {
+                "repository": "sednalabs/solar-gravity-lab",
+                "run_id": "25106447821",
+                "artifact_name": "interactive-android-build-stage-first-mirror-on-hosted-debug-lite",
+                "checkout_ref": "feature-branch",
+                "commit_sha": "acedb057b55387fe121fa82ca2e4af67d98741d0",
+                "version_name": "0.1.1-alpha.2",
+                "package_name": "com.sednalabs.solarlab",
+                "activity_name": ".MainActivity",
+                "android_validation_mode": "stage-first-mirror-on",
+                "interactive_debug_profile": "hosted-debug-lite"
+            },
+            "postcondition": {
+                "satisfied": true
+            }
+        }));
+
+        assert!(summary.contains("Android build install"));
+        assert!(summary.contains("installed: true"));
+        assert!(summary.contains("run_id: 25106447821"));
+        assert!(summary.contains("postcondition_satisfied: true"));
+        assert!(!summary.contains("apk_path"));
+        assert!(!summary.contains("install_stdout"));
+        assert!(!summary.contains("/tmp/local-build-cache"));
     }
 
     #[test]
