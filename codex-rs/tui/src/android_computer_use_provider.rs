@@ -765,7 +765,7 @@ fn visible_ui_label_with_state(text: String, node: &Value) -> String {
         tags.push("disabled".to_string());
     }
     if node.get("scrollable").and_then(Value::as_bool) == Some(true)
-        && !lower_text.contains("scrollable")
+        && !lower_text.contains("[scrollable]")
     {
         tags.push("scrollable".to_string());
     }
