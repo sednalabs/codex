@@ -190,10 +190,10 @@ async fn custom_tool_unknown_returns_custom_output_error() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "invoke custom tool",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -408,10 +408,10 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "run the shell command",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -488,9 +488,9 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
     let mock = mount_sse_sequence(&server, responses).await;
 
     fixture
-        .submit_turn_with_policy(
+        .submit_turn_with_permission_profile(
             "run a command that should be denied by the read-only sandbox",
-            SandboxPolicy::new_read_only_policy(),
+            PermissionProfile::read_only(),
         )
         .await?;
 
@@ -675,10 +675,10 @@ async fn collect_tools(use_unified_exec: bool) -> Result<Vec<String>> {
     });
     let test = builder.build(&server).await?;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "list tools",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -746,10 +746,10 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "run a long command",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -791,8 +791,9 @@ async fn shell_timeout_handles_background_grandchild_stdout() -> Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
         config
-            .set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess)
-            .expect("set sandbox policy");
+            .permissions
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("set permission profile");
     });
     let test = builder.build(&server).await?;
 
@@ -837,10 +838,10 @@ time.sleep(60)
 
     let start = Instant::now();
     let output_str = tokio::time::timeout(Duration::from_secs(10), async {
-        test.submit_turn_with_policies(
+        test.submit_turn_with_approval_and_permission_profile(
             "run a command with a detached grandchild",
             AskForApproval::Never,
-            SandboxPolicy::DangerFullAccess,
+            PermissionProfile::Disabled,
         )
         .await?;
         let timeout_item = second_mock.single_request().function_call_output(call_id);
@@ -885,8 +886,9 @@ async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
 
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|cfg| {
-        cfg.set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess)
-            .expect("set sandbox policy");
+        cfg.permissions
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("set permission profile");
     });
     let test = builder.build(&server).await?;
 
@@ -922,10 +924,10 @@ async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "spawn a missing binary",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
