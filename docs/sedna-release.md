@@ -88,6 +88,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 Current workflow characteristics:
 
 - GitHub-hosted Linux `x86_64` release build
+- Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
+  repository token while the small publication job owns the release environment and write-scoped
+  publishing permissions.
 - Cargo home and `sccache` restore/save around the official release build to reduce duplicate
   compilation when prior release smoke runs warmed matching caches
 - Keyless Sigstore signing for Linux binaries

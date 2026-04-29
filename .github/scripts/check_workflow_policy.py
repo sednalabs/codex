@@ -53,6 +53,91 @@ def uses_self_hosted_runner(runs_on: Any) -> bool:
     return False
 
 
+def workflow_has_trigger(payload: Any, trigger_name: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    triggers = payload.get("on")
+    if isinstance(triggers, str):
+        return triggers == trigger_name
+    if isinstance(triggers, list):
+        return trigger_name in triggers
+    if isinstance(triggers, dict):
+        return trigger_name in triggers
+    return False
+
+
+def permission_value(permissions: Any, permission: str) -> str | None:
+    if isinstance(permissions, str):
+        return permissions
+    if isinstance(permissions, dict):
+        value = permissions.get(permission)
+        return value if isinstance(value, str) else None
+    return None
+
+
+def grants_write_all(permissions: Any) -> bool:
+    return permissions == "write-all"
+
+
+def grants_permission(permissions: Any, permission: str, value: str) -> bool:
+    return permission_value(permissions, permission) == value
+
+
+def job_permissions(job: dict[str, Any], payload: Any) -> Any:
+    if "permissions" in job:
+        return job["permissions"]
+    if isinstance(payload, dict):
+        return payload.get("permissions")
+    return None
+
+
+def iter_jobs(payload: Any):
+    if not isinstance(payload, dict):
+        return
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, dict):
+        return
+    for job_id, job in jobs.items():
+        if isinstance(job, dict):
+            yield str(job_id), job
+
+
+def job_steps(job: dict[str, Any]) -> list[Any]:
+    steps = job.get("steps")
+    return steps if isinstance(steps, list) else []
+
+
+def job_uses_checkout(job: dict[str, Any]) -> bool:
+    return any(
+        is_action_ref(step.get("uses"), "actions/checkout")
+        for step in job_steps(job)
+        if isinstance(step, dict)
+    )
+
+
+def command_text(step: dict[str, Any]) -> str:
+    run = step.get("run")
+    return run if isinstance(run, str) else ""
+
+
+def job_has_direct_release_create(job: dict[str, Any]) -> bool:
+    return any(
+        "gh release create" in command_text(step)
+        for step in job_steps(job)
+        if isinstance(step, dict)
+    )
+
+
+def job_environment_name(job: dict[str, Any]) -> str | None:
+    environment = job.get("environment")
+    if isinstance(environment, str):
+        return environment
+    if isinstance(environment, dict):
+        name = environment.get("name")
+        return name if isinstance(name, str) else None
+    return None
+
+
 def collect_violations(root: Path = REPO_ROOT) -> list[str]:
     violations: list[str] = []
     for path in workflow_paths(root):
@@ -63,6 +148,12 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                 violations.append(
                     f"{relative_path}: public workflows must not use self-hosted runners; "
                     "use external deployment automation for host-local operations."
+                )
+
+            if grants_write_all(node.get("permissions")):
+                violations.append(
+                    f"{relative_path}: permissions must not use write-all; "
+                    "use job-scoped least privilege instead."
                 )
 
             uses = node.get("uses")
@@ -85,6 +176,35 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                 violations.append(
                     f"{relative_path}: taiki-e/install-action does not support "
                     f"with.version; use tool: {tool}@{version} instead."
+                )
+
+        if workflow_has_trigger(payload, "pull_request_target"):
+            for _job_id, job in iter_jobs(payload):
+                if job_uses_checkout(job):
+                    violations.append(
+                        f"{relative_path}: pull_request_target jobs must not checkout "
+                        "repository code; split trusted writes from untrusted PR context."
+                    )
+
+        for job_id, job in iter_jobs(payload):
+            if not job_has_direct_release_create(job):
+                continue
+
+            permissions = job_permissions(job, payload)
+            if job_environment_name(job) != "release":
+                violations.append(
+                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                    "the release environment."
+                )
+            if not grants_permission(permissions, "contents", "write"):
+                violations.append(
+                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                    "contents: write scoped to the publishing job."
+                )
+            if not grants_permission(permissions, "id-token", "write"):
+                violations.append(
+                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                    "id-token: write for release signing or provenance."
                 )
     return violations
 

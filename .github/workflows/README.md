@@ -72,8 +72,12 @@ contract today.
   the workflow bootstraps with a full matrix instead of reading planner code
   from the PR head.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings. Add query packs or path filters there instead of duplicating
-  configuration across matrix entries.
+  settings and `.github/codeql/codeql-actions.yml` for Actions-only query
+  additions. The Actions lane prepares a runtime config so pull-request scans
+  can use the trusted-base copy of `.github/codeql/actions-workflow-security` when
+  it is available, while other languages continue to use the shared config.
+  Add Actions workflow policy queries to the Actions pack, and add
+  language-neutral CodeQL settings to the shared config.
 - The CodeQL config deliberately uses the broad `security-and-quality` suite
   and the local threat model. This is noisier than the default or
   `security-extended` suite, but it is the maintained built-in shape that gives
