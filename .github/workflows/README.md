@@ -93,6 +93,10 @@ contract today.
   CodeQL scan from the `main` push; the canceller deliberately leaves protected
   branch push runs alone so the branch-tip result is not hidden by stale PR
   evidence.
+- `codeql.yml` does not cancel in-progress PR runs when the same branch receives
+  a newer commit. This lets CodeQL uploads finish for GitHub code-scanning
+  comparison while the required gate still follows the selective language plan
+  for the current run.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually

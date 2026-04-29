@@ -1454,6 +1454,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(
+            payload.get("concurrency"),
+            {
+                "group": "codeql-advanced-${{ github.ref }}",
+                "cancel-in-progress": "false",
+            },
+        )
         self.assertEqual(plan_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             plan_job.get("permissions") or {},
