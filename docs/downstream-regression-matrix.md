@@ -60,9 +60,11 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.tui-agent-usage-totals-targeted`
 - `codex.tui-weekly-pacing-status-line-targeted`
 - `codex.downstream-docs-check`
-  - Runs whitespace sanity on the downstream divergence docs and the
-    authoritative `scripts/downstream-divergence-audit.py` registry/code audit
-    against the checked-out PR head.
+  - Runs PR-local whitespace, registry JSON syntax, and Markdown-link sanity on
+    downstream divergence docs.
+- `codex.downstream-divergence-audit`
+  - Explicit full-history registry/code audit against the checked-out head and
+    current upstream mirror.
 
 Validation workflow reference:
 
@@ -152,7 +154,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 | Divergence | Guardrail lane | Primary checks |
 | --- | --- | --- |
-| Downstream divergence audit plumbing and registry reconciliation | `codex.downstream-docs-check`; `sedna-sync-upstream` | `scripts/downstream-divergence-audit.py`; `.github/scripts/validation-lanes/downstream-docs-check.sh`; `.github/workflows/sedna-sync-upstream.yml`; `docs/divergences/index.yaml`; `justfile` |
+| Downstream divergence audit plumbing and registry reconciliation | `codex.downstream-docs-check`; `codex.downstream-divergence-audit`; `sedna-sync-upstream` | `scripts/downstream-divergence-audit.py`; `.github/scripts/validation-lanes/downstream-docs-check.sh`; `.github/scripts/validation-lanes/downstream-divergence-audit.sh`; `.github/workflows/sedna-sync-upstream.yml`; `docs/divergences/index.yaml`; `justfile` |
 | Sub-agent override preservation and requested/effective model diagnostics across role reload | `codex.core-subagent-model-pinning-targeted` | `spawn_agent_preserves_exact_model_slug_override_through_role_layering`; `multi_agent_v2_spawn_reports_requested_and_effective_model_metadata`; `test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume`; `spawn_agent_tool_v2_requires_task_name_and_lists_visible_models`; `spawn_agent_tool_v1_exposes_runtime_metadata_fields`; `suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering` |
 | Sub-agent spawns can require explicit user approval without bypassing request-user-input mode rules, and the approval prompt carries enough context to approve or decline safely | `codex.core-subagent-spawn-approval-targeted` | `spawn_agent_requires_user_approval_when_requested`; `multi_agent_v2_spawn_requires_user_approval_when_requested`; `spawn_agent_approval_respects_request_user_input_mode_availability`; `spawn_agent_approval_question_includes_preview_role_and_model_context`; `spawn_agent_tool_v2_requires_task_name_and_lists_visible_models`; `spawn_agent_tool_v1_exposes_runtime_metadata_fields` |
 | Sub-agent surface contract (`spawn_agent`/`list_agents` omit raw `model_reasoning_summary`, live inventory rows expose active-descendant hints, model-visible tool specs include the carried sub-agent inventory surfaces, and built-in `explorer` guidance stays on the cheap-first downstream default without hard-locking unavailable model settings) | `codex.core-subagent-surface-targeted` | `apply_explorer_role_preserves_model_settings_and_adds_session_flags_layer`; `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_list_agents_flags_active_descendants`; `test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume`; `test_gpt_5_defaults`; `test_gpt_5_1_defaults`; `test_codex_5_1_mini_defaults`; `test_gpt_5_1_codex_max_unified_exec_web_search`; `test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search`; `test_gpt_5_1_codex_max_defaults` |

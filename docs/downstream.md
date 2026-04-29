@@ -46,10 +46,12 @@ git remote set-url origin git@github.com:sednalabs/codex.git
 - official releases are published only from the protected Sedna release workflow
 - the authoritative divergence audit lives in `scripts/downstream-divergence-audit.py` and writes artifacts under `target/downstream-divergence-audit/`
 - the intended-divergence registry lives at `docs/divergences/index.yaml`
-- PRs that touch downstream divergence docs, the divergence registry, or the
-  audit plumbing run `codex.downstream-docs-check`, which now executes the same
-  registry/code divergence audit against the checked-out PR head and the live
-  `origin/upstream-main` mirror.
+- PRs that touch downstream divergence docs or the divergence registry run
+  `codex.downstream-docs-check`, a PR-local docs and registry sanity lane.
+- The full registry/code divergence audit is `codex.downstream-divergence-audit`.
+  It is an explicit baseline-maintenance lane because it validates the entire
+  downstream fork against the current upstream mirror, not only the files in a
+  single pull request.
 
 ## Divergence Summary
 
