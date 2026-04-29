@@ -157,18 +157,27 @@ git diff --check
 ```
 
 For changes that touch the divergence registry or current divergence baseline,
-also run the hosted-equivalent downstream docs lane locally when the checkout
-can access the shared git metadata:
+run the PR-local downstream docs sanity lane:
 
 ```bash
 bash .github/scripts/validation-lanes/downstream-docs-check.sh
 ```
 
-That lane runs the registry/code divergence audit against the checked-out head
-and the current upstream mirror snapshot. If it cannot run locally because the
-mirror or shared git configuration is unavailable, use the hosted
-`codex.downstream-docs-check` lane instead of treating the lightweight
-whitespace check as the full proof.
+That lane checks formatting, registry JSON syntax, and relative Markdown links
+without requiring the whole downstream fork to have a complete current
+divergence registry.
+
+When the goal is to refresh or prove the full downstream divergence baseline,
+run the explicit full-history audit instead:
+
+```bash
+bash .github/scripts/validation-lanes/downstream-divergence-audit.sh
+```
+
+The full audit compares the checked-out downstream head with the current
+upstream mirror and enforces registry coverage for all live downstream code
+differences, so it belongs on explicit baseline-maintenance or checkpoint
+validation rather than ordinary docs-only PR validation.
 
 For implementation changes, prefer hosted validation through `validation-lab`.
 The focused lanes are:

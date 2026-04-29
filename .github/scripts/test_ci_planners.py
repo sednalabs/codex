@@ -505,6 +505,7 @@ class RouteSelectionTests(unittest.TestCase):
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
                 ".github/scripts/validation-lanes/downstream-docs-check.sh",
+                ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
                 "scripts/downstream-divergence-audit.py",
             ],
             self.routes,
@@ -527,7 +528,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(lanes, ["codex.downstream-docs-check"])
 
-    def test_downstream_docs_lane_runs_full_history_audit(self) -> None:
+    def test_downstream_docs_lane_is_pr_local_sanity(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
@@ -536,6 +537,21 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             lane["script_path"],
             ".github/scripts/validation-lanes/downstream-docs-check.sh",
+        )
+        self.assertEqual(lane.get("checkout_fetch_depth"), 1)
+        self.assertFalse(lane["needs_just"])
+
+    def test_downstream_divergence_audit_lane_is_explicit_global_audit(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.downstream-divergence-audit"
+        )
+        self.assertTrue(lane["explicit_only"])
+        self.assertTrue(lane["pilot_only"])
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         )
         self.assertEqual(lane.get("checkout_fetch_depth"), 0)
         self.assertFalse(lane["needs_just"])
@@ -2481,6 +2497,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(planned_lane_ids[6:], selected_lane_ids)
         self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertNotIn("codex.downstream-divergence-audit", selected_lane_ids)
         self.assertNotIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertNotIn("codex.nextest-archive-core-carry-pilot", selected_lane_ids)
 
