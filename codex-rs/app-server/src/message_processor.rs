@@ -48,6 +48,7 @@ use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
 use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
 use codex_app_server_protocol::ExternalAgentConfigImportParams;
 use codex_app_server_protocol::ExternalAgentConfigImportResponse;
+use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
 use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCError;
@@ -1172,6 +1173,7 @@ impl MessageProcessor {
         request_id: ConnectionRequestId,
         params: ExternalAgentConfigImportParams,
     ) -> Result<(), JSONRPCErrorError> {
+        let needs_runtime_refresh = migration_items_need_runtime_refresh(&params.migration_items);
         let has_plugin_imports = params.migration_items.iter().any(|item| {
             matches!(
                 item.item_type,
@@ -1182,7 +1184,7 @@ impl MessageProcessor {
             .external_agent_config_api
             .prepare_pending_session_imports(&params)?;
         let pending_plugin_imports = self.external_agent_config_api.import(params).await?;
-        if has_plugin_imports {
+        if needs_runtime_refresh {
             self.handle_config_mutation().await;
         }
         for pending_session_import in pending_session_imports {
@@ -1241,5 +1243,60 @@ impl MessageProcessor {
     }
 }
 
+fn migration_items_need_runtime_refresh(items: &[ExternalAgentConfigMigrationItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item.item_type,
+            ExternalAgentConfigMigrationItemType::Config
+                | ExternalAgentConfigMigrationItemType::Skills
+                | ExternalAgentConfigMigrationItemType::McpServerConfig
+                | ExternalAgentConfigMigrationItemType::Hooks
+                | ExternalAgentConfigMigrationItemType::Commands
+                | ExternalAgentConfigMigrationItemType::Plugins
+        )
+    })
+}
+
 #[cfg(test)]
 mod tracing_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migration_item(
+        item_type: ExternalAgentConfigMigrationItemType,
+    ) -> ExternalAgentConfigMigrationItem {
+        ExternalAgentConfigMigrationItem {
+            item_type,
+            description: String::new(),
+            cwd: None,
+            details: None,
+        }
+    }
+
+    #[test]
+    fn migration_items_that_update_runtime_sources_trigger_refresh() {
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Config,
+        )]));
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Skills,
+        )]));
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::McpServerConfig,
+        )]));
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Hooks,
+        )]));
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Commands,
+        )]));
+        assert!(migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Plugins,
+        )]));
+        assert!(!migration_items_need_runtime_refresh(&[migration_item(
+            ExternalAgentConfigMigrationItemType::Sessions,
+        )]));
+    }
+}
