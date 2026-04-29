@@ -822,7 +822,6 @@
         ".github/workflows/sedna-release-install.yml",
         "pnpm-lock.yaml",
         "pnpm-workspace.yaml",
-        "scripts/github_webhook_receiver.py",
         "scripts/install_sedna_release_asset",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
