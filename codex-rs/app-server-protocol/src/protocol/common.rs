@@ -581,6 +581,11 @@ client_request_definitions! {
         serialization: global("config"),
         response: v2::SkillsListResponse,
     },
+    HooksList => "hooks/list" {
+        params: v2::HooksListParams,
+        serialization: global("config"),
+        response: v2::HooksListResponse,
+    },
     MarketplaceAdd => "marketplace/add" {
         params: v2::MarketplaceAddParams,
         serialization: global("config"),

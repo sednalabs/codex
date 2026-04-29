@@ -373,6 +373,7 @@ pub struct PluginsManager {
 #[derive(Clone)]
 struct CachedPluginLoadOutcome {
     config_version: String,
+    plugin_hooks_enabled: bool,
     outcome: PluginLoadOutcome,
 }
 
@@ -443,9 +444,12 @@ impl PluginsManager {
             return PluginLoadOutcome::default();
         }
 
+        let plugin_hooks_enabled = config.features.enabled(Feature::PluginHooks);
         let config_version = version_for_toml(&config.config_layer_stack.effective_config());
-
-        if !force_reload && let Some(outcome) = self.cached_enabled_outcome(&config_version) {
+        if !force_reload
+            && let Some(outcome) =
+                self.cached_enabled_outcome(&config_version, plugin_hooks_enabled)
+        {
             return outcome;
         }
 
@@ -454,6 +458,7 @@ impl PluginsManager {
             self.remote_installed_plugin_configs(config),
             &self.store,
             self.restriction_product,
+            plugin_hooks_enabled,
         )
         .await;
         log_plugin_load_errors(&outcome);
@@ -463,6 +468,7 @@ impl PluginsManager {
         };
         *cache = Some(CachedPluginLoadOutcome {
             config_version,
+            plugin_hooks_enabled,
             outcome: outcome.clone(),
         });
         outcome
@@ -485,35 +491,61 @@ impl PluginsManager {
         *cached_enabled_outcome = None;
     }
 
-    /// Resolve plugin skill roots for a config layer stack without touching the plugins cache.
-    pub async fn effective_skill_roots_for_layer_stack(
+    /// Load plugins for a config layer stack without touching the plugins cache.
+    pub async fn plugins_for_layer_stack(
         &self,
         config_layer_stack: &ConfigLayerStack,
         config: &Config,
-    ) -> Vec<AbsolutePathBuf> {
+        plugin_hooks_feature_enabled: bool,
+    ) -> PluginLoadOutcome {
         if !config.features.enabled(Feature::Plugins) {
-            return Vec::new();
+            return PluginLoadOutcome::default();
         }
         load_plugins_from_layer_stack(
             config_layer_stack,
             self.remote_installed_plugin_configs(config),
             &self.store,
             self.restriction_product,
+            plugin_hooks_feature_enabled,
+        )
+        .await
+    }
+
+    /// Resolve plugin skill roots for a config layer stack without touching the plugins cache.
+    pub async fn effective_skill_roots_for_layer_stack(
+        &self,
+        config_layer_stack: &ConfigLayerStack,
+        config: &Config,
+    ) -> Vec<AbsolutePathBuf> {
+        self.plugins_for_layer_stack(
+            config_layer_stack,
+            config,
+            config.features.enabled(Feature::PluginHooks),
         )
         .await
         .effective_skill_roots()
     }
 
-    fn cached_enabled_outcome(&self, config_version: &str) -> Option<PluginLoadOutcome> {
+    fn cached_enabled_outcome(
+        &self,
+        config_version: &str,
+        plugin_hooks_enabled: bool,
+    ) -> Option<PluginLoadOutcome> {
         match self.cached_enabled_outcome.read() {
             Ok(cache) => cache
                 .as_ref()
-                .filter(|cached| cached.config_version == config_version)
+                .filter(|cached| {
+                    cached.config_version == config_version
+                        && cached.plugin_hooks_enabled == plugin_hooks_enabled
+                })
                 .map(|cached| cached.outcome.clone()),
             Err(err) => err
                 .into_inner()
                 .as_ref()
-                .filter(|cached| cached.config_version == config_version)
+                .filter(|cached| {
+                    cached.config_version == config_version
+                        && cached.plugin_hooks_enabled == plugin_hooks_enabled
+                })
                 .map(|cached| cached.outcome.clone()),
         }
     }
