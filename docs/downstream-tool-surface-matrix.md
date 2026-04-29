@@ -22,6 +22,7 @@ Review baseline:
 | `write_stdin` | `session_id`, `chars`, `yield_time_ms`, `max_output_tokens` | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`; empty `chars` can be used with `wait_until_terminal`; provider resume is gated until terminal state or the capped wait budget expires | yes | `write_stdin_wait_until_terminal_blocks_until_exit`; `unified_exec_tools_include_wait_until_terminal_contract_fields`; `write_stdin_tool_matches_expected_spec` |
 | Bare `android_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as non-mutating | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Bare `android_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with batched `actions[]` and compatibility single-action fields | yes | `codex.native-computer-use-tool-registry-targeted` |
+| Bare `android_install_build_from_run` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with a longer timeout for provider-side artifact download, install, launch, and post-install observation | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Namespaced Android-like dynamic tools | Normal namespaced dynamic tools | Same as upstream-style dynamic tools; no native promotion for namespaced `android_observe` or `android_step` | no | `namespaced_android_dynamic_tool_names_remain_dynamic_tools` |
 | App-server computer-use bridge | No v2 `item/computerUse/call` native bridge | API v2 projects native computer-use requests into `ThreadItem::ComputerUseCall`, sends `item/computerUse/call` to capable clients, and forwards client responses back to the active turn | yes | `codex.app-server-computer-use-targeted`; `codex.app-server-protocol-test` |
 | Native Android screenshot output | No Codex-owned Android image-output contract | Screenshots should be returned to the model as native `inputImage` content; provider artifact paths are diagnostic/replay breadcrumbs rather than the model-facing visual channel | yes | `codex.tui-native-computer-use-targeted`; `codex.native-computer-use-tool-registry-targeted` |
@@ -52,9 +53,10 @@ Notes:
   compact nested inspection, stale-descendant visibility, and branch-focused
   filtering via `agent_roots`, rather than overloading `list_agents` with
   provenance-heavy output by default.
-- Native Android promotion is intentionally limited to bare `android_observe`
-  and `android_step`. Runtime providers supply Android capability and device
-  execution, while Codex owns the canonical schema, native image-output
+- Native Android promotion is intentionally limited to bare `android_observe`,
+  `android_step`, and `android_install_build_from_run`. Runtime providers
+  supply Android capability, device execution, and provider-side build
+  installation, while Codex owns the canonical schema, native image-output
   expectation, transcript events, app-server bridge, TUI projection, and
   rollout trace semantics. See
   [`native-computer-use.md`](native-computer-use.md).

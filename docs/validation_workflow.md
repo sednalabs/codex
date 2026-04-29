@@ -224,7 +224,7 @@ runtime/product seams. That light route includes the reusable validation-lane
 workflow files and the explicit lane catalog when the diff stays inside those
 CI-only surfaces.
 
-For native computer-use and Android observe/step work, choose validation by
+For native computer-use and Android tool work, choose validation by
 ownership boundary:
 
 - Codex protocol, app-server, TUI, rollout, and tool-registry changes should use

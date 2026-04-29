@@ -20,6 +20,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ToolName;
 use serde_json::Value;
@@ -40,6 +41,7 @@ pub struct ComputerUseOutput {
 
 const ADAPTER_ANDROID: &str = "android";
 const DEFAULT_COMPUTER_USE_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_COMPUTER_USE_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl ToolOutput for ComputerUseOutput {
     fn log_preview(&self) -> String {
@@ -164,13 +166,14 @@ impl ToolHandler for ComputerUseHandler {
 
         let args: Value = parse_arguments(&arguments)?;
         let output_tool_name = tool_name.display();
+        let response_timeout = computer_use_timeout_for_tool(&tool_name.name);
         let response = request_computer_use(
             &session,
             turn.as_ref(),
             call_id,
             tool_name,
             args,
-            DEFAULT_COMPUTER_USE_TIMEOUT,
+            response_timeout,
         )
         .await
         .ok_or_else(|| {
@@ -221,6 +224,14 @@ fn computer_use_command(tool_name: &str, arguments: &str) -> String {
             serde_json::to_string(&arguments).unwrap_or_else(|_| arguments.to_string())
         ),
         Err(_) => format!("{tool_name} {arguments}"),
+    }
+}
+
+fn computer_use_timeout_for_tool(tool_name: &str) -> Duration {
+    if tool_name == ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME {
+        DEFAULT_COMPUTER_USE_INSTALL_TIMEOUT
+    } else {
+        DEFAULT_COMPUTER_USE_TIMEOUT
     }
 }
 
@@ -368,6 +379,7 @@ mod tests {
     use super::ComputerUseHandler;
     use super::computer_use_command;
     use super::computer_use_response_content_for_model;
+    use super::computer_use_timeout_for_tool;
     use super::request_computer_use;
     use super::selected_computer_use_environment_id;
     use super::unavailable_response;
@@ -384,6 +396,7 @@ mod tests {
     use codex_protocol::computer_use::ComputerUseResponse;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
+    use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
     use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
     use codex_tools::ANDROID_STEP_TOOL_NAME;
     use codex_tools::ToolName;
@@ -406,7 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn android_observe_is_non_mutating_but_step_is_mutating() {
+    async fn android_observe_is_non_mutating_but_step_and_install_are_mutating() {
         let (session, turn) = make_session_and_context().await;
         let session = Arc::new(session);
         let turn = Arc::new(turn);
@@ -436,8 +449,8 @@ mod tests {
         assert!(
             handler
                 .is_mutating(&ToolInvocation {
-                    session,
-                    turn,
+                    session: session.clone(),
+                    turn: turn.clone(),
                     cancellation_token: CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-step".to_string(),
@@ -446,6 +459,46 @@ mod tests {
                     payload: step_payload,
                 })
                 .await
+        );
+
+        let install_payload = ToolPayload::Function {
+            arguments: json!({
+                "workflow_run_id": 25106447821_u64,
+                "artifact_name": "interactive-android-build-stage-first-mirror-on-hosted-debug-lite"
+            })
+            .to_string(),
+        };
+        assert!(
+            handler
+                .is_mutating(&ToolInvocation {
+                    session,
+                    turn,
+                    cancellation_token: CancellationToken::new(),
+                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                    call_id: "call-install".to_string(),
+                    tool_name: codex_tools::ToolName::plain(
+                        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
+                    ),
+                    source: ToolCallSource::Direct,
+                    payload: install_payload,
+                })
+                .await
+        );
+    }
+
+    #[test]
+    fn install_build_from_run_uses_longer_computer_use_timeout() {
+        assert_eq!(
+            computer_use_timeout_for_tool(ANDROID_OBSERVE_TOOL_NAME),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            computer_use_timeout_for_tool(ANDROID_STEP_TOOL_NAME),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            computer_use_timeout_for_tool(ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME),
+            Duration::from_secs(300)
         );
     }
 

@@ -24,13 +24,16 @@ runtime to the model.
 
 ## Model-Facing Tools
 
-Codex recognizes two bare Android dynamic tool names as native computer-use
+Codex recognizes three bare Android dynamic tool names as native computer-use
 handlers:
 
 - `android_observe`: captures the current Android screen as model-visible
   image output, optionally paired with a compact UI digest.
 - `android_step`: performs one or more bounded Android actions, then returns a
   fresh post-action observation.
+- `android_install_build_from_run`: installs a GitHub Actions Android build
+  artifact into the active Android session, optionally launches it, then
+  returns a fresh post-install observation when available.
 
 The North Star is that screenshots are delivered to the model as native
 `inputImage` content items in the computer-use response. Provider artifact paths
@@ -42,16 +45,19 @@ an error breadcrumb, not the normal contract.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the
-name is `android_observe` or `android_step`, Codex replaces the provider's
-ad hoc schema with its canonical first-party function schema and registers the
-handler as `ComputerUse`.
+name is `android_observe`, `android_step`, or
+`android_install_build_from_run`, Codex replaces the provider's ad hoc schema
+with its canonical first-party function schema and registers the handler as
+`ComputerUse`.
 
 Namespaced tools are not promoted. For example, `codex_app.android_observe`
 remains a normal dynamic tool. This preserves room for app-specific dynamic
 tools while keeping the bare Android names as the stable native contract.
 
-`android_observe` is treated as non-mutating. `android_step` is treated as
-mutating, including compatibility aliases and batched `actions[]` calls.
+`android_observe` is treated as non-mutating. `android_step` and
+`android_install_build_from_run` are treated as mutating. Install receives a
+longer response timeout than ordinary observe/step calls because it may need to
+download an artifact, install an APK, launch it, and verify foreground state.
 
 ## Provider Capability and Manifest Integration
 
@@ -72,7 +78,8 @@ Android names are selected.
 When capability metadata is present, app-server validates and forwards it as
 part of the dynamic tool contract. That metadata describes runtime capability;
 it does not replace the Codex-owned native schema or transcript behavior for
-bare `android_observe` and `android_step`.
+bare `android_observe`, `android_step`, and
+`android_install_build_from_run`.
 
 Deferred tool search also treats bare Android dynamic tools as native
 computer-use candidates, so deferred discovery loads the canonical Codex tool
@@ -81,7 +88,7 @@ definition rather than the provider's raw dynamic schema.
 ## Runtime Flow
 
 1. A thread is started, resumed, or forked with `dynamicTools` containing bare
-   `android_observe` or `android_step`.
+   `android_observe`, `android_step`, or `android_install_build_from_run`.
 2. The tool registry promotes those names to canonical Codex function tools and
    registers `ToolHandlerKind::ComputerUse`.
 3. When the model calls one of those tools, `codex-core` emits a
@@ -91,10 +98,11 @@ definition rather than the provider's raw dynamic schema.
    sends `item/computerUse/call` to the connected client.
 5. The capable client executes the Android operation and returns
    `ComputerUseCallResponse` with text plus native image content items,
-   `success`, and optional `error`. For `android_observe` and post-action
-   `android_step` observations, screenshots should be returned as `inputImage`
-   data URLs or another Codex-supported image reference, not as model-facing
-   local artifact paths.
+   `success`, and optional `error`. For `android_observe`, post-action
+   `android_step`, and post-install `android_install_build_from_run`
+   observations, screenshots should be returned as `inputImage` data URLs or
+   another Codex-supported image reference, not as model-facing local artifact
+   paths.
 6. Codex submits the response back into the active turn, emits
    `ComputerUseCallResponse`, and passes the resulting content to the model as
    function-call output.
@@ -126,11 +134,12 @@ session has no native computer-use provider for the request.
 
 Transcript visibility depends on the native computer-use event path. Android
 operations are expected to enter Codex as `ComputerUseCallRequest` and
-`ComputerUseCallResponse` events after bare `android_observe` or `android_step`
-tool names are promoted to `ToolHandlerKind::ComputerUse`. Calls injected by an
-outer host environment or compatibility bridge are useful runtime probes, but
-they do not prove TUI or `Ctrl+T` transcript visibility unless they are bridged
-back into those native Codex events.
+`ComputerUseCallResponse` events after bare `android_observe`, `android_step`,
+or `android_install_build_from_run` tool names are promoted to
+`ToolHandlerKind::ComputerUse`. Calls injected by an outer host environment or
+compatibility bridge are useful runtime probes, but they do not prove TUI or
+`Ctrl+T` transcript visibility unless they are bridged back into those native
+Codex events.
 
 ## Rollout and Trace Semantics
 

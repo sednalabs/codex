@@ -42,6 +42,7 @@ pub use agent_tool::create_spawn_agent_tool_v1;
 pub use agent_tool::create_spawn_agent_tool_v2;
 pub use agent_tool::create_wait_agent_tool_v1;
 pub use agent_tool::create_wait_agent_tool_v2;
+pub use android_tool::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 pub use android_tool::ANDROID_OBSERVE_TOOL_NAME;
 pub use android_tool::ANDROID_STEP_TOOL_NAME;
 pub use android_tool::canonical_android_dynamic_tool;

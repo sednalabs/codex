@@ -1789,12 +1789,26 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
         persist_on_resume: false,
         capability: None,
     };
+    let install_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_install_build_from_run".to_string(),
+        description: "custom install description".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "ignored": { "type": "string" }
+            }
+        }),
+        defer_loading: true,
+        persist_on_resume: false,
+        capability: None,
+    };
 
     let (tools, handlers) = build_specs(
         &tools_config,
         /*mcp_tools*/ None,
         /*deferred_mcp_tools*/ None,
-        &[observe_tool, step_tool],
+        &[observe_tool, step_tool, install_tool],
     );
 
     let ToolSpec::Function(observe_spec) = &find_tool(&tools, "android_observe").spec else {
@@ -1856,12 +1870,41 @@ fn android_dynamic_tools_use_canonical_codex_tool_definitions() {
     assert!(view_properties.contains_key("device_height"));
     assert!(view_properties.contains_key("region"));
 
+    let ToolSpec::Function(install_spec) =
+        &find_tool(&tools, "android_install_build_from_run").spec
+    else {
+        panic!("expected android_install_build_from_run function tool");
+    };
+    assert_eq!(
+        install_spec.description,
+        "Install a GitHub Actions Android build artifact into the active Android session, optionally launch it, then return a post-install observation when available."
+    );
+    assert_eq!(install_spec.defer_loading, Some(true));
+    assert_eq!(
+        install_spec.parameters.required.as_deref(),
+        Some(&["workflow_run_id".to_string(), "artifact_name".to_string()][..])
+    );
+    let install_properties = install_spec
+        .parameters
+        .properties
+        .as_ref()
+        .expect("install properties");
+    assert!(install_properties.contains_key("workflow_run_id"));
+    assert!(install_properties.contains_key("artifact_name"));
+    assert!(install_properties.contains_key("launch_after_install"));
+    assert!(install_properties.contains_key("post_observe_scope"));
+    assert!(!install_properties.contains_key("ignored"));
+
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_observe"),
         kind: ToolHandlerKind::ComputerUse,
     }));
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::plain("android_step"),
+        kind: ToolHandlerKind::ComputerUse,
+    }));
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("android_install_build_from_run"),
         kind: ToolHandlerKind::ComputerUse,
     }));
 }
