@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
-use codex_config::Constrained;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::sandboxing::SandboxPermissions;
@@ -21,7 +20,6 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use core_test_support::assert_regex_match;
 use core_test_support::responses::ev_assistant_message;
@@ -547,14 +545,9 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let read_only_policy = SandboxPolicy::new_read_only_policy();
-    let read_only_policy_for_config = read_only_policy.clone();
     let mut builder = test_codex()
         .with_model("gpt-5.4")
         .with_config(move |config| {
-            config
-                .set_legacy_sandbox_policy(read_only_policy_for_config)
-                .expect("set sandbox policy");
             let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
             file_system_sandbox_policy
                 .entries
@@ -564,11 +557,13 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
                     },
                     access: FileSystemAccessMode::None,
                 });
-            config.permissions.permission_profile =
-                Constrained::allow_any(PermissionProfile::from_runtime_permissions(
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::from_runtime_permissions(
                     &file_system_sandbox_policy,
                     NetworkSandboxPolicy::Restricted,
-                ));
+                ))
+                .expect("set permission profile");
         });
     let fixture = builder.build(&server).await?;
 
@@ -608,8 +603,9 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
     ];
     let mock = mount_sse_sequence(&server, responses).await;
 
+    let permission_profile = fixture.session_configured.permission_profile.clone();
     fixture
-        .submit_turn_with_policy("read the fixture files", read_only_policy)
+        .submit_turn_with_permission_profile("read the fixture files", permission_profile)
         .await?;
 
     let output_text = mock
