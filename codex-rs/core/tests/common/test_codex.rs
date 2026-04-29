@@ -203,6 +203,18 @@ pub enum ShellModelOutput {
     // UnifiedExec has its own set of tests
 }
 
+/// Returns the permission fields required by `Op::UserTurn` for tests that
+/// construct the op directly.
+pub fn turn_permission_fields(
+    permission_profile: PermissionProfile,
+    cwd: &Path,
+) -> (SandboxPolicy, Option<PermissionProfile>) {
+    let sandbox_policy = permission_profile
+        .to_legacy_sandbox_policy(cwd)
+        .unwrap_or_else(|_| SandboxPolicy::new_read_only_policy());
+    (sandbox_policy, Some(permission_profile))
+}
+
 pub struct TestCodexBuilder {
     config_mutators: Vec<Box<ConfigMutator>>,
     auth: CodexAuth,
@@ -710,9 +722,8 @@ impl TestCodex {
         service_tier: Option<Option<ServiceTier>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> Result<()> {
-        let sandbox_policy = permission_profile
-            .to_legacy_sandbox_policy(self.config.cwd.as_path())
-            .unwrap_or_else(|_| SandboxPolicy::new_read_only_policy());
+        let (sandbox_policy, permission_profile) =
+            turn_permission_fields(permission_profile, self.config.cwd.as_path());
         let session_model = self.session_configured.model.clone();
         self.codex
             .submit(Op::UserTurn {
@@ -726,7 +737,7 @@ impl TestCodex {
                 approval_policy,
                 approvals_reviewer: None,
                 sandbox_policy,
-                permission_profile: Some(permission_profile),
+                permission_profile,
                 model: session_model,
                 effort: None,
                 summary: None,
