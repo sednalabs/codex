@@ -699,6 +699,12 @@ fn append_text(items: &mut [ComputerUseCallOutputContentItem], extra: &str) {
 }
 
 fn observation_labels(observation: &Value) -> Vec<String> {
+    if let Some(labels) = visible_ui_labels(observation)
+        && !labels.is_empty()
+    {
+        return labels;
+    }
+
     observation
         .get("nodes")
         .and_then(Value::as_array)
@@ -717,6 +723,77 @@ fn observation_labels(observation: &Value) -> Vec<String> {
         })
         .take(24)
         .collect()
+}
+
+fn visible_ui_labels(observation: &Value) -> Option<Vec<String>> {
+    Some(
+        observation
+            .get("visible_ui")?
+            .get("nodes")?
+            .as_array()?
+            .iter()
+            .filter_map(|node| {
+                let text = first_string(
+                    node,
+                    &[
+                        "label",
+                        "text",
+                        "contentDescription",
+                        "resourceId",
+                        "className",
+                    ],
+                )?;
+                let text = visible_ui_label_with_state(text, node);
+                let bounds = node.get("bounds").map(compact_json);
+                Some(match bounds {
+                    Some(bounds) => format!("{text} {bounds}"),
+                    None => text,
+                })
+            })
+            .take(24)
+            .collect(),
+    )
+}
+
+fn visible_ui_label_with_state(text: String, node: &Value) -> String {
+    let lower_text = text.to_ascii_lowercase();
+    let mut tags = Vec::new();
+
+    if node.get("enabled").and_then(Value::as_bool) == Some(false)
+        && !lower_text.contains("[disabled]")
+    {
+        tags.push("disabled".to_string());
+    }
+    if node.get("scrollable").and_then(Value::as_bool) == Some(true)
+        && !lower_text.contains("scrollable")
+    {
+        tags.push("scrollable".to_string());
+    }
+    if node.get("clipped").and_then(Value::as_bool) == Some(true)
+        && !lower_text.contains("[clipped")
+    {
+        let mut clipped = "clipped".to_string();
+        if let Some(edges) = first_string_array(node, &["clip_edges", "clipEdges"])
+            && !edges.is_empty()
+        {
+            clipped.push(' ');
+            clipped.push_str(&edges.join("/"));
+        }
+        if let Some(percent) = first_u64(
+            node,
+            &["visible_fraction_percent", "visibleFractionPercent"],
+        ) && percent < 100
+        {
+            clipped.push_str(&format!(" {percent}%"));
+        }
+        tags.push(clipped);
+    }
+
+    if tags.is_empty() {
+        text
+    } else {
+        format!("{text} [{}]", tags.join("; "))
+    }
 }
 
 fn screenshot_path(value: &Value) -> Option<&str> {
@@ -911,6 +988,26 @@ fn first_string(value: &Value, fields: &[&str]) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn first_string_array(value: &Value, fields: &[&str]) -> Option<Vec<String>> {
+    fields
+        .iter()
+        .find_map(|field| value.get(field).and_then(Value::as_array))
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+}
+
+fn first_u64(value: &Value, fields: &[&str]) -> Option<u64> {
+    fields
+        .iter()
+        .find_map(|field| value.get(field).and_then(Value::as_u64))
+}
+
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string())
 }
@@ -999,6 +1096,46 @@ mod tests {
         assert!(summary.contains("Launch"));
         assert!(!summary.contains("screenshot_artifact"));
         assert!(!summary.contains("/tmp/screen.png"));
+    }
+
+    #[test]
+    fn summarize_observation_prefers_visible_ui_digest_with_state() {
+        let summary = summarize_observation(
+            "Android observation",
+            &json!({
+                "serial": "emulator-5554",
+                "node_count": 4,
+                "nodes": [
+                    {"text": "Raw Frame", "bounds": {"left": 1, "top": 2}},
+                ],
+                "visible_ui": {
+                    "nodes": [
+                        {
+                            "label": "Frame",
+                            "bounds": {"left": 48, "top": 96, "right": 240, "bottom": 180},
+                            "enabled": false
+                        },
+                        {
+                            "label": "Mission feed",
+                            "bounds": {"left": 48, "top": 220, "right": 720, "bottom": 420},
+                            "scrollable": true
+                        },
+                        {
+                            "label": "Advance",
+                            "bounds": {"left": 1040, "top": 300, "right": 1120, "bottom": 360},
+                            "clipped": true,
+                            "clip_edges": ["right"],
+                            "visible_fraction_percent": 50
+                        }
+                    ]
+                }
+            }),
+        );
+
+        assert!(summary.contains("Frame [disabled]"));
+        assert!(summary.contains("Mission feed [scrollable]"));
+        assert!(summary.contains("Advance [clipped right 50%]"));
+        assert!(!summary.contains("Raw Frame"));
     }
 
     #[test]
