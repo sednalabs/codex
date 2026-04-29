@@ -202,17 +202,18 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### Native Computer-Use And Android Observe/Step Bridge
+### Native Computer-Use And Android Tool Bridge
 
-- Downstream promotes bare `android_observe` and `android_step` dynamic tools
-  into first-party native computer-use function tools with Codex-owned schemas.
+- Downstream promotes bare `android_observe`, `android_step`, and
+  `android_install_build_from_run` dynamic tools into first-party native
+  computer-use function tools with Codex-owned schemas.
 - Namespaced Android-like tools remain ordinary dynamic tools so
   app-specific providers can keep their own tool surfaces without taking over
   the native Codex contract.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
-  cleanup, success/error projection, mutating classification, and hook payload
-  formatting.
+  cleanup, success/error projection, mutating classification, install-specific
+  timeout selection, and hook payload formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
@@ -222,9 +223,9 @@ docs-only refresh commit that records this snapshot.
   they are not the normal model-facing visual channel.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
-- Runtime providers own Android sessions, screenshots, UI digests, and input
-  execution. Solar Gravity Lab is a proving and consumer app, not the generic
-  owner of Codex computer-use tooling.
+- Runtime providers own Android sessions, screenshots, UI digests, input
+  execution, and provider-side build installation. Solar Gravity Lab is a
+  proving and consumer app, not the generic owner of Codex computer-use tooling.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
