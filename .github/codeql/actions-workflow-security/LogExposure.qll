@@ -75,7 +75,7 @@ predicate sensitiveVariableInRun(Run run, string name, string sourceKind) {
 }
 
 predicate commandReferencesVariable(string command, string name) {
-  command.regexpMatch("(?is).*\\$\\{?" + name + "\\}?.*")
+  command.regexpMatch("(?is).*\\$(\\{" + name + "\\}|" + name + "\\b).*")
   or
   command.regexpMatch("(?is).*\\$env:" + name + "\\b.*")
   or
@@ -85,7 +85,7 @@ predicate commandReferencesVariable(string command, string name) {
 }
 
 predicate commandMasksVariable(string command, string name) {
-  command.regexpMatch("(?is).*::add-mask::.*\\$\\{?" + name + "\\}?.*")
+  command.regexpMatch("(?is).*::add-mask::.*\\$(\\{" + name + "\\}|" + name + "\\b).*")
   or
   command.regexpMatch("(?is).*::add-mask::.*\\$env:" + name + "\\b.*")
   or
@@ -103,8 +103,8 @@ predicate runMasksVariable(Run run, string name) {
 
 predicate sinkAppearsBeforeMask(Run run, string name) {
   run.getScript().getRawScript().regexpMatch(
-    "(?is).*(echo|printf|cat|tee|env|printenv|set\\s+-x|GITHUB_STEP_SUMMARY).*\\$\\{?" + name +
-      "\\}?.*::add-mask::.*\\$\\{?" + name + "\\}?.*"
+    "(?is).*(echo|printf|cat|tee|env|printenv|set\\s+-x|GITHUB_STEP_SUMMARY).*\\$(\\{" + name +
+      "\\}|" + name + "\\b).*::add-mask::.*\\$(\\{" + name + "\\}|" + name + "\\b).*"
   )
 }
 
@@ -119,7 +119,10 @@ predicate hasPriorMask(Run run, string name) {
 }
 
 predicate environmentDumpCommand(string command, string sinkKind) {
-  command.regexpMatch("(?is)^\\s*(env|printenv|set)\\b.*") and
+  (
+    command.regexpMatch("(?is)^\\s*(env|printenv)\\b.*") or
+    command.regexpMatch("(?is)^\\s*set\\s*$")
+  ) and
   not command.regexpMatch("(?is).*GITHUB_(ENV|OUTPUT|PATH).*") and
   sinkKind = "an environment dump"
 }
@@ -155,10 +158,10 @@ predicate tracingExposesVariable(Run run, string name, string command) {
 }
 
 predicate verboseCredentialCommand(string command, string name, string sinkKind) {
-  command.regexpMatch("(?is).*(--verbose|-v|--debug|ACTIONS_STEP_DEBUG|RUNNER_DEBUG).*") and
+  command.regexpMatch("(?is).*(--verbose|\\s-v(\\s|$)|--debug|ACTIONS_STEP_DEBUG|RUNNER_DEBUG).*") and
   commandReferencesVariable(command, name) and
   sinkKind = "verbose tool output"
   or
-  command.regexpMatch("(?is).*(notarytool|codesign|security|gh\\s+release|gh\\s+auth|npm|twine|sigstore).*(--verbose|-v|--debug).*") and
+  command.regexpMatch("(?is).*(notarytool|codesign|security|gh\\s+release|gh\\s+auth|npm|twine|sigstore).*(--verbose|\\s-v(\\s|$)|--debug).*") and
   sinkKind = "credential-adjacent verbose tool output"
 }

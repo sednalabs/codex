@@ -18,7 +18,7 @@ from Job job, string invariant
 where
   jobHasOfficialReleaseSink(job, _) and
   not repoOfficialReleaseJob(job) and
-  invariant = "only the sedna-release release-linux job may publish official GitHub Releases"
+  invariant = "only the sedna-release publish-release job may publish official GitHub Releases"
   or
   job.getARunsOnLabel() = "self-hosted" and
   invariant = "public workflows must not use self-hosted runners"

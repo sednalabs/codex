@@ -14,7 +14,7 @@ predicate repoReleaseWorkflow(Workflow workflow) {
 
 predicate repoOfficialReleaseJob(Job job) {
   repoReleaseWorkflow(job.getWorkflow()) and
-  job.getId() = "release-linux"
+  job.getId() = "publish-release"
 }
 
 predicate untrustedTrigger(Event event) {

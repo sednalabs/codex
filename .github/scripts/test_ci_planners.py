@@ -3367,6 +3367,7 @@ class HelperScriptTests(unittest.TestCase):
         named_steps = {step.get("name"): step for step in router_steps if "name" in step}
         resolve_job = jobs.get("resolve") or {}
         release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
 
         self.assertIn("main release gate", release_payload.get("run-name") or "")
         self.assertNotIn("concurrency", release_payload)
@@ -3398,7 +3399,7 @@ class HelperScriptTests(unittest.TestCase):
             "--missing-marker error",
             resolve_named_steps["Resolve release metadata"].get("run") or "",
         )
-        self.assertEqual(release_job.get("name"), "Publish Linux release")
+        self.assertEqual(release_job.get("name"), "Build Linux release artifacts")
         self.assertEqual(release_job.get("needs"), "resolve")
         self.assertIn(
             "needs.resolve.outputs.release_requested == 'true'",
@@ -3415,12 +3416,36 @@ class HelperScriptTests(unittest.TestCase):
             release_job.get("permissions"),
             {"contents": "read", "id-token": "write"},
         )
+        self.assertNotIn("environment", release_job)
+        self.assertEqual(publish_job.get("name"), "Publish GitHub release")
+        self.assertEqual(publish_job.get("needs"), ["resolve", "release-linux"])
+        self.assertEqual(publish_job.get("environment"), "release")
+        self.assertEqual(
+            publish_job.get("permissions"),
+            {"contents": "write", "id-token": "write"},
+        )
 
     def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
-        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
-        steps = release_job.get("steps") or []
+        jobs = payload.get("jobs") or {}
+        release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
+        release_steps = release_job.get("steps") or []
+        steps = publish_job.get("steps") or []
+        release_named_steps = {
+            step.get("name"): step for step in release_steps if "name" in step
+        }
         named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertIn("Upload workflow artifacts", release_named_steps)
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("uses"),
+            "actions/download-artifact@v8",
+        )
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("with") or {},
+            {"name": "sedna-release-linux", "path": "dist"},
+        )
 
         config_step = named_steps["Check release publisher app configuration"]
         self.assertEqual(
@@ -3842,11 +3867,11 @@ jobs:
             violations,
             [
                 ".github/workflows/release.yml: job 'publish' creates a GitHub release "
-                "without the release environment.",
+                + "without the release environment.",
                 ".github/workflows/release.yml: job 'publish' creates a GitHub release "
-                "without contents: write scoped to the publishing job.",
+                + "without contents: write scoped to the publishing job.",
                 ".github/workflows/release.yml: job 'publish' creates a GitHub release "
-                "without id-token: write for release signing or provenance.",
+                + "without id-token: write for release signing or provenance.",
             ],
         )
 
