@@ -1566,14 +1566,12 @@ async fn session_configured_reports_permission_profile_for_external_sandbox() ->
     };
     let expected_sandbox_policy = sandbox_policy.clone();
     let mut builder = test_codex().with_config(move |config| {
+        config.permissions.permission_profile = codex_config::Constrained::allow_any(
+            PermissionProfile::from_legacy_sandbox_policy(&sandbox_policy),
+        );
         config
             .set_legacy_sandbox_policy(sandbox_policy)
             .expect("set sandbox policy");
-        config.permissions.permission_profile =
-            codex_config::Constrained::allow_any(PermissionProfile::from_runtime_permissions(
-                &FileSystemSandboxPolicy::external_sandbox(),
-                NetworkSandboxPolicy::Restricted,
-            ));
     });
 
     let test = builder.build(&server).await?;
