@@ -3406,8 +3406,10 @@ pub struct ThreadStartParams {
     pub config: Option<HashMap<String, JsonValue>>,
     #[ts(optional = nullable)]
     pub service_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
@@ -3548,8 +3550,10 @@ pub struct ThreadResumeParams {
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
@@ -3649,8 +3653,10 @@ pub struct ThreadForkParams {
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
     /// Additional tools to install into the forked thread before the next turn.
@@ -10770,6 +10776,21 @@ mod tests {
             params_with_nulls.developer_instructions,
             params_without_overrides.developer_instructions
         );
+    }
+
+    #[test]
+    fn thread_lifecycle_params_omit_missing_instruction_overrides_when_serialized() {
+        let thread_start =
+            serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
+        let thread_resume =
+            serde_json::to_value(ThreadResumeParams::default()).expect("params should serialize");
+        let thread_fork =
+            serde_json::to_value(ThreadForkParams::default()).expect("params should serialize");
+
+        for params in [&thread_start, &thread_resume, &thread_fork] {
+            assert_eq!(params.get("baseInstructions"), None);
+            assert_eq!(params.get("developerInstructions"), None);
+        }
     }
 
     #[test]
