@@ -103,6 +103,11 @@ definition rather than the provider's raw dynamic schema.
    observations, screenshots should be returned as `inputImage` data URLs or
    another Codex-supported image reference, not as model-facing local artifact
    paths.
+   When the Android provider is reached through an MCP-style `tools/call`
+   bridge, Codex treats `structuredContent` and `content[]` as complementary:
+   `structuredContent` supplies state, artifacts, and UI digests, while
+   `content[]` image entries supply the model-visible pixels. A provider must
+   not rely on `structuredContent` alone for visual computer-use output.
 6. Codex submits the response back into the active turn, emits
    `ComputerUseCallResponse`, and passes the resulting content to the model as
    function-call output.
@@ -201,6 +206,13 @@ The focused lanes are:
   cleanup.
 - `codex.app-server-protocol-test`: protocol schema and thread-history
   projection coverage.
+- Hosted CodeQL Rust contract checks cover native-image guard dominance,
+  success-with-error contradictions, advisory text/image match drops, and a
+  regression sentinel for Android MCP tool-result parsing that would directly
+  return `structuredContent` while dropping sibling `content[]` images. The
+  advisory text/image match query also covers app-server protocol conversion
+  surfaces so native image preservation stays guarded across the thread-history
+  boundary.
 
 The local just recipes behind those lanes are:
 
