@@ -22,9 +22,14 @@ predicate cfgTestMeta(Meta meta) {
   meta.toString().regexpMatch("(?s).*\\btest\\b.*")
 }
 
+predicate inlineRustTestModule(Module modItem) {
+  cfgTestMeta(modItem.getAnAttr().getMeta()) or
+  modItem.getName().getText() = "tests"
+}
+
 predicate insideInlineRustTest(AstNode node) {
   exists(Module modItem |
-    cfgTestMeta(modItem.getAnAttr().getMeta()) and
+    inlineRustTestModule(modItem) and
     modItem.getFile() = node.getFile() and
     modItem.getLocation().getStartLine() <= node.getLocation().getStartLine() and
     node.getLocation().getEndLine() <= modItem.getLocation().getEndLine()
