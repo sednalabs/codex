@@ -11,15 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-25`
-- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `a96c652a5becca0c6ed97d31c232d418e115b893`
-- downstream branch `main` (`origin/main`) before merge: `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
-- mirror branch `upstream-main` (`origin/upstream-main`): `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- integration branch vs `upstream/main`: `790` ahead, `0` behind
-- pre-merge `main` vs `upstream/main`: `769` ahead, `57` behind
+- Audited on: `2026-04-28`
+- downstream branch `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- comparison basis: `mirror`
+- mirror branch `upstream-main` (`origin/upstream-main`): `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- downstream branch vs `upstream/main`: `889` downstream ahead, `1` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `694` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `781` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -203,26 +202,30 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### Native Computer-Use And Android Observe/Step Bridge
+### Native Computer-Use And Android Tool Bridge
 
-- Downstream promotes bare `android_observe` and `android_step` dynamic tools
-  into first-party native computer-use function tools with Codex-owned schemas.
+- Downstream promotes bare `android_observe`, `android_step`, and
+  `android_install_build_from_run` dynamic tools into first-party native
+  computer-use function tools with Codex-owned schemas.
 - Namespaced Android-like tools remain ordinary dynamic tools so
   app-specific providers can keep their own tool surfaces without taking over
   the native Codex contract.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
-  cleanup, success/error projection, mutating classification, and hook payload
-  formatting.
+  cleanup, success/error projection, mutating classification, install-specific
+  timeout selection, and hook payload formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
   protocol events and snapshots.
+- Android screenshots are expected to reach the model as native image content
+  items. Provider artifact paths are kept for diagnostics, audit, or replay;
+  they are not the normal model-facing visual channel.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
-- Runtime providers own Android sessions, screenshots, UI digests, and input
-  execution. Solar Gravity Lab is a proving and consumer app, not the generic
-  owner of Codex computer-use tooling.
+- Runtime providers own Android sessions, screenshots, UI digests, input
+  execution, and provider-side build installation. Solar Gravity Lab is a
+  proving and consumer app, not the generic owner of Codex computer-use tooling.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -235,6 +238,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`

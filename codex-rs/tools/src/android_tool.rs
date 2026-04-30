@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 pub const ANDROID_OBSERVE_TOOL_NAME: &str = "android_observe";
 pub const ANDROID_STEP_TOOL_NAME: &str = "android_step";
+pub const ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME: &str = "android_install_build_from_run";
 
 const OBSERVE_SCOPE_SCREEN: &str = "screen";
 const OBSERVE_SCOPE_SCREEN_AND_UI: &str = "screen_and_ui";
@@ -37,6 +38,9 @@ pub fn canonical_android_dynamic_tool(tool: &DynamicToolSpec) -> Option<Response
     match tool.name.as_str() {
         ANDROID_OBSERVE_TOOL_NAME => Some(create_android_observe_tool(tool.defer_loading)),
         ANDROID_STEP_TOOL_NAME => Some(create_android_step_tool(tool.defer_loading)),
+        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME => Some(
+            create_android_install_build_from_run_tool(tool.defer_loading),
+        ),
         _ => None,
     }
 }
@@ -120,6 +124,75 @@ fn create_android_step_tool(defer_loading: bool) -> ResponsesApiTool {
         parameters: JsonSchema::object(
             properties,
             /*required*/ None,
+            Some(false.into()),
+        ),
+        output_schema: None,
+    }
+}
+
+fn create_android_install_build_from_run_tool(defer_loading: bool) -> ResponsesApiTool {
+    let properties = BTreeMap::from([
+        (
+            "workflow_run_id".to_string(),
+            JsonSchema::integer(Some(
+                "GitHub Actions workflow run id that produced the Android build artifact."
+                    .to_string(),
+            )),
+        ),
+        (
+            "artifact_name".to_string(),
+            JsonSchema::string(Some(
+                "Name of the workflow artifact containing the Android build bundle.".to_string(),
+            )),
+        ),
+        (
+            "repository".to_string(),
+            JsonSchema::string(Some(
+                "Optional owner/repo override. The provider default is used when omitted."
+                    .to_string(),
+            )),
+        ),
+        (
+            "serial".to_string(),
+            JsonSchema::string(Some(
+                "Optional Android device serial to target.".to_string(),
+            )),
+        ),
+        (
+            "launch_after_install".to_string(),
+            JsonSchema::boolean(Some(
+                "Whether to launch the installed build after install. Defaults to true."
+                    .to_string(),
+            )),
+        ),
+        (
+            "timeout_secs".to_string(),
+            JsonSchema::integer(Some(
+                "Optional provider-side timeout in seconds for install, launch, and postcondition checks."
+                    .to_string(),
+            )),
+        ),
+        (
+            "post_observe_scope".to_string(),
+            string_enum(
+                &[OBSERVE_SCOPE_SCREEN, OBSERVE_SCOPE_SCREEN_AND_UI],
+                "Whether the post-install observation should include a compact UI digest.",
+            ),
+        ),
+    ]);
+
+    ResponsesApiTool {
+        name: ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME.to_string(),
+        description:
+            "Install a GitHub Actions Android build artifact into the active Android session, optionally launch it, then return a post-install observation when available.".to_string(),
+        strict: false,
+        defer_loading: defer_loading.then_some(true),
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec![
+                "workflow_run_id".to_string(),
+                "artifact_name".to_string(),
+            ]),
             Some(false.into()),
         ),
         output_schema: None,

@@ -12,10 +12,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: codeql-advanced-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -31,14 +27,19 @@ jobs:
         include:
           - language: actions
             build-mode: none
+            config_file: ./.codeql-runtime/codeql-actions.yml
           - language: c-cpp
             build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
           - language: javascript-typescript
             build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
           - language: python
             build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
           - language: rust
             build-mode: none
+            config_file: ./.github/codeql/codeql-rust.yml
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -62,12 +63,9 @@ jobs:
                   data = tomllib.loads(text)
                   toolchain = data["toolchain"]
                   channel = toolchain["channel"]
-                  components = set(toolchain.get("components", []))
               else:
                   channel = text
-                  components = set()
-              components.add("rust-src")
-              toolchains.setdefault(channel, set()).update(components)
+              toolchains.setdefault(channel, set()).add("rust-src")
 
           for channel, components in sorted(toolchains.items()):
               command = [
@@ -97,6 +95,17 @@ jobs:
           restore-keys: |
             codeql-rust-cargo-home-v1-${{ runner.os }}-
 
+      - name: Record Rust cache telemetry for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### CodeQL Rust cache telemetry"
+            echo "- Cargo cache hit: ${{ steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit || 'false' }}"
+            echo "- Cargo cache key: \`codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prefetch Rust dependencies for CodeQL
         if: ${{ matrix.language == 'rust' }}
         continue-on-error: true
@@ -106,12 +115,47 @@ jobs:
           cargo fetch --locked --manifest-path codex-rs/Cargo.toml
           cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml
 
+      - name: Prepare Actions CodeQL query pack config
+        if: ${{ matrix.language == 'actions' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .codeql-runtime
+          pack_path="./.github/codeql/actions-workflow-security"
+
+          if [[ '${{ github.event_name }}' == 'pull_request' &&
+            '${{ github.event.pull_request.head.repo.full_name }}' != '${{ github.repository }}' ]]; then
+            trusted_root="${GITHUB_WORKSPACE}/.codeql-runtime/trusted-base"
+            trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
+            mkdir -p "${trusted_root}"
+
+            if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
+              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
+                tar -x -C "${trusted_root}"; then
+              pack_path="${trusted_pack}"
+            else
+              echo "::warning title=CodeQL Actions query pack bootstrap::Trusted base query pack was unavailable; using the checked-out pack for this run."
+            fi
+          fi
+
+          {
+            echo "name: codex-codeql-actions-runtime"
+            echo
+            echo "queries:"
+            echo "  - uses: security-and-quality"
+            echo "  - uses: ${pack_path}"
+            echo
+            echo "threat-models: local"
+          } > .codeql-runtime/codeql-actions.yml
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          config-file: ./.github/codeql/codeql-config.yml
+          config-file: ${{ matrix.config_file }}
+          dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
@@ -128,3 +172,38 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}
+
+  results:
+    name: CodeQL required gate
+    needs:
+      - analyze
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    steps:
+      - name: Report CodeQL timing
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "### CodeQL timing" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '.jobs[]
+              | select(.name | test("^(Analyze \\(|CodeQL required gate)"))
+              | "- \(.name): \(.status)/\(.conclusion // "") started=\(.started_at) completed=\(.completed_at // "")"' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "analyze : ${{ needs.analyze.result }}"
+
+          if [[ '${{ needs.analyze.result }}' != 'success' ]]; then
+            echo 'CodeQL analysis failed.'
+            exit 1
+          fi

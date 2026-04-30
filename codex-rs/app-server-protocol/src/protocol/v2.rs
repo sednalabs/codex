@@ -3406,22 +3406,12 @@ pub struct ThreadStartParams {
     pub config: Option<HashMap<String, JsonValue>>,
     #[ts(optional = nullable)]
     pub service_name: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<Option<String>>,
+    pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     #[ts(optional = nullable)]
@@ -3560,22 +3550,12 @@ pub struct ThreadResumeParams {
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<Option<String>>,
+    pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
     /// Additional tools to install into the resumed thread before the next
@@ -3673,22 +3653,12 @@ pub struct ThreadForkParams {
     pub permission_profile: Option<PermissionProfile>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub base_instructions: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "super::serde_helpers::deserialize_double_option",
-        serialize_with = "super::serde_helpers::serialize_double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub developer_instructions: Option<Option<String>>,
+    pub developer_instructions: Option<String>,
     /// Additional tools to install into the forked thread before the next turn.
     /// Bare Android tool names are promoted to native computer-use handlers by
     /// core.
@@ -10787,32 +10757,40 @@ mod tests {
     }
 
     #[test]
-    fn thread_start_params_preserve_explicit_null_instructions() {
-        let params: ThreadStartParams = serde_json::from_value(json!({
+    fn thread_start_params_match_upstream_null_instruction_semantics() {
+        let params_with_nulls: ThreadStartParams = serde_json::from_value(json!({
             "baseInstructions": null,
             "developerInstructions": null,
         }))
         .expect("params should deserialize");
-        assert_eq!(params.base_instructions, Some(None));
-        assert_eq!(params.developer_instructions, Some(None));
+        let params_without_overrides = serde_json::from_value::<ThreadStartParams>(json!({}))
+            .expect("params should deserialize");
 
-        let serialized = serde_json::to_value(&params).expect("params should serialize");
+        assert_eq!(params_with_nulls.base_instructions, None);
+        assert_eq!(params_with_nulls.developer_instructions, None);
         assert_eq!(
-            serialized.get("baseInstructions"),
-            Some(&serde_json::Value::Null)
+            params_with_nulls.base_instructions,
+            params_without_overrides.base_instructions
         );
         assert_eq!(
-            serialized.get("developerInstructions"),
-            Some(&serde_json::Value::Null)
+            params_with_nulls.developer_instructions,
+            params_without_overrides.developer_instructions
         );
+    }
 
-        let serialized_without_override =
+    #[test]
+    fn thread_lifecycle_params_omit_missing_instruction_overrides_when_serialized() {
+        let thread_start =
             serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
-        assert_eq!(serialized_without_override.get("baseInstructions"), None);
-        assert_eq!(
-            serialized_without_override.get("developerInstructions"),
-            None
-        );
+        let thread_resume =
+            serde_json::to_value(ThreadResumeParams::default()).expect("params should serialize");
+        let thread_fork =
+            serde_json::to_value(ThreadForkParams::default()).expect("params should serialize");
+
+        for params in [&thread_start, &thread_resume, &thread_fork] {
+            assert_eq!(params.get("baseInstructions"), None);
+            assert_eq!(params.get("developerInstructions"), None);
+        }
     }
 
     #[test]

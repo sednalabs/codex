@@ -233,6 +233,10 @@
       },
       "guardrail_lane": "codex.blocking-waits-targeted",
       "tests": [
+        "exec_command_wait_until_terminal_defers_provider_resume_until_exit",
+        "exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum",
+        "wait_until_terminal_uses_two_hour_default_cap",
+        "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
         "multi_agent_v2_wait_agent_honors_return_when_all",
@@ -503,9 +507,11 @@
       ],
       "files": [
         ".github/actions/",
+        ".github/codeql/",
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
+        "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
         "scripts/start-codex-exec.sh"
@@ -537,7 +543,13 @@
       "files": [
         "codex-rs/app-server/",
         "codex-rs/app-server-protocol/",
-        "codex-rs/app-server-client/"
+        "codex-rs/app-server-client/",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/examples/06_thread_lifecycle_and_controls/async.py",
+        "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/codex_app_server/generated/v2_all.py",
+        "sdk/python/tests/test_contract_generation.py"
       ],
       "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
@@ -551,20 +563,22 @@
         "get_conversation_summary_by_*",
         "thread_list_*",
         "thread_read_returns_summary_without_turns",
-        "thread_resume_returns_rollout_history"
+        "thread_resume_returns_rollout_history",
+        "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
       "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
     },
     {
       "id": "codex-native-computer-use-android",
-      "title": "Native computer-use and Android observe/step bridge",
+      "title": "Native computer-use and Android tool bridge",
       "status": "live",
       "category": "core-protocol",
       "surface_type": "agent-facing",
       "surface": [
         "native computer-use protocol events",
-        "Android observe/step function tools",
+        "Android observe/step/install function tools",
+        "native Android image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
       ],
@@ -581,6 +595,7 @@
         "codex-rs/app-server-protocol/src/protocol/common.rs",
         "codex-rs/app-server-protocol/src/protocol/v2.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/tui/src/android_computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
@@ -592,7 +607,7 @@
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
         "docs/native-computer-use.md"
       ],
-      "behavior": "Bare android_observe and android_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability.",
+      "behavior": "Bare android_observe, android_step, and android_install_build_from_run dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability and provider-side build installation.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -604,6 +619,7 @@
         "thread_resume_injects_native_android_tools_into_model_requests",
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
         "thread_fork_injects_native_android_tools_into_model_requests",
+        "native_android_computer_use_events_render_in_transcript_and_overlay",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "android_dynamic_tools_use_canonical_codex_tool_definitions",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",
@@ -614,7 +630,7 @@
         "computer_use_call_response_is_tool_runtime_end"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
+      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Android screenshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
     },
     {
       "id": "codex-tui-session-surfaces",
@@ -655,6 +671,7 @@
         "analytics, CLI, cloud, code-mode, config, and MCP extensions"
       ],
       "files": [
+        "codex-rs/agent-identity/",
         "codex-rs/analytics/",
         "codex-rs/backend-client/",
         "codex-rs/chatgpt/",
@@ -797,11 +814,15 @@
       ],
       "files": [
         ".bazelrc",
+        ".github/codeql/codeql-config.yml",
         "MODULE.bazel",
         "MODULE.bazel.lock",
         ".gitignore",
+        ".github/actionlint.yaml",
+        ".github/workflows/sedna-release-install.yml",
         "pnpm-lock.yaml",
         "pnpm-workspace.yaml",
+        "scripts/install_sedna_release_asset",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
         "scripts/stage_npm_packages.py",

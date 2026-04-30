@@ -1,5 +1,6 @@
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_tools::LoadableToolSpec;
@@ -66,7 +67,9 @@ fn is_native_computer_use_dynamic_tool(tool: &DynamicToolSpec) -> bool {
     tool.namespace.is_none()
         && matches!(
             tool.name.as_str(),
-            ANDROID_OBSERVE_TOOL_NAME | ANDROID_STEP_TOOL_NAME
+            ANDROID_OBSERVE_TOOL_NAME
+                | ANDROID_STEP_TOOL_NAME
+                | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
         )
 }
 

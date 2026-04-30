@@ -19,6 +19,38 @@ artifacts.
   - trigger: pushes and PRs that touch `README.md`, `docs/**`, or its own checker wiring
   - purpose: cheap markdown-link proof whenever documentation moves, without widening into validation-lab
   - retention: ordinary workflow logs only
+- `cancel-pr-runs`
+  - trigger: closed pull requests
+  - purpose: cancel stale PR-scoped workflow runs after a PR is merged or
+    closed so long-running checks such as Rust CodeQL do not keep spending
+    minutes after their pre-merge decision point has passed
+  - protected branch handoff: the cleanup leaves `main` and `upstream-main`
+    push runs alone; after a merge, the `main` push run is the authoritative
+    branch-tip proof and surfaces CodeQL findings through repository code
+    scanning rather than as live PR feedback
+  - retention: ordinary workflow logs only
+- `codeql`
+  - trigger: PRs, protected branch pushes, schedule, and manual dispatch
+  - purpose: authoritative CodeQL code scanning through the checked-in advanced
+    setup
+  - PR routing: the language router keeps the workflow-level check alive while
+    selecting only the CodeQL languages touched by the diff; docs-only or
+    unrelated PRs report success through the required gate without starting
+    analysis jobs; PR planning uses the base checkout plus GitHub PR file
+    metadata instead of fetching contributor-controlled head repositories
+  - full-scan fallback: protected branch pushes, schedules, manual dispatch,
+    unavailable PR metadata, and edits to CodeQL workflow/config/router
+    fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
+    Rust matrix; if the base checkout does not yet contain the router script,
+    the workflow emits that full matrix directly
+  - cache policy: use CodeQL native dependency caching in restore-only mode for
+    PRs and restore/store mode for protected branch or scheduled runs; keep
+    manual Rust caches limited to Cargo registry/git data and do not cache
+    toolchain executables in the security scanning workflow
+  - not covered: GitHub Code Quality's public-preview dynamic workflow is a
+    separate repository setting and may still consume Actions minutes unless it
+    is disabled or narrowed in GitHub's Code quality settings
+  - retention: ordinary workflow logs plus code-scanning results
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question
@@ -66,7 +98,8 @@ artifacts.
   - release visibility: the only lane that may publish a GitHub Release
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
-  - purpose: fast-forward `upstream-main` from `upstream/main` and run the authoritative downstream divergence audit from the exact synced SHA
+  - purpose: fast-forward `upstream-main` from `upstream/main` and run the
+    authoritative downstream divergence audit from the exact synced SHA
   - credential boundary: keep the divergence audit in its own read-only job
     unless a future change deliberately trades that boundary for lower wall
     clock time
@@ -90,7 +123,9 @@ artifacts.
 6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
-   guarded seam.
+   guarded seam (a pre-mapped, narrow change boundary the planner can verify
+   safely in isolation, such as docs-only, workflow/planner-only, or one
+   component seam).
    - PR changed-file routing uses GitHub's PR metadata as a fast path so the
      always-on detector does not need a full repository checkout just to learn
      the diff. Unsafe or incomplete metadata falls back to the git-diff path;
@@ -140,8 +175,9 @@ artifacts.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
    - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
-     argument-comment check as a selectable hosted lane, so comment-lint
-     failures can be proven without broad local Rust validation.
+     argument-comment check (it verifies required explanatory comments for
+     command arguments) as a selectable hosted lane, so comment-lint failures
+     can be proven without broad local Rust validation.
    - Reason: best signal per runner-minute without polluting PR surfaces, and
      lower unnecessary compute, carbon, and wait time once the blocker is
      already known.
@@ -231,6 +267,11 @@ snapshot rerun stays as small and cheap as possible.
 The target ref still needs to carry the current explicit lane schema and the
 lane helper scripts referenced by it. The lab planner no longer backfills the
 old implicit `run_command` contract for historical refs.
+
+In earlier revisions, the planner could infer a default command when lane
+metadata was missing; that compatibility path has been removed. If you're
+replaying an older ref, migrate it to the explicit lane schema used on `main`
+(including the referenced lane helper scripts) before dispatching.
 
 ## Workflow replacement matrix
 
@@ -334,9 +375,9 @@ over passing credentials into target scripts. Slower hosted validation is a
 better tradeoff than making scratch or PR code secret-bearing.
 
 The upstream mirror sync is the exception that proves the rule: only
-`sedna-sync-upstream` should receive the upstream mirror write credential, and
-validation lanes should audit against read-only refs or read-only fallback
-state.
+`sedna-sync-upstream` should receive the upstream mirror write credential,
+as defined in `.github/workflows/sedna-sync-upstream.yml`; validation
+lanes should audit against read-only refs or read-only fallback state.
 
 ## Summary artifact
 

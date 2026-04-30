@@ -32,7 +32,8 @@ fn default_enabled_features_are_stable() {
     for spec in crate::FEATURES {
         if spec.default_enabled {
             assert!(
-                matches!(spec.stage, Stage::Stable | Stage::Removed),
+                matches!(spec.stage, Stage::Stable | Stage::Removed)
+                    || spec.id == Feature::TerminalResizeReflow,
                 "feature `{}` is enabled by default but is not stable/removed ({:?})",
                 spec.key,
                 spec.stage
@@ -110,6 +111,19 @@ fn request_permissions_tool_is_under_development() {
         Stage::UnderDevelopment
     );
     assert_eq!(Feature::RequestPermissionsTool.default_enabled(), false);
+}
+
+#[test]
+fn terminal_resize_reflow_is_experimental_and_enabled_by_default() {
+    assert_eq!(
+        feature_for_key("terminal_resize_reflow"),
+        Some(Feature::TerminalResizeReflow)
+    );
+    assert!(matches!(
+        Feature::TerminalResizeReflow.stage(),
+        Stage::Experimental { .. }
+    ));
+    assert_eq!(Feature::TerminalResizeReflow.default_enabled(), true);
 }
 
 #[test]
@@ -388,6 +402,7 @@ fn multi_agent_v2_feature_config_deserializes_table() {
         r#"
 [multi_agent_v2]
 enabled = true
+max_concurrent_threads_per_session = 4
 usage_hint_enabled = false
 usage_hint_text = "Custom delegation guidance."
 hide_spawn_agent_metadata = true
@@ -403,6 +418,7 @@ hide_spawn_agent_metadata = true
         features.multi_agent_v2,
         Some(crate::FeatureToml::Config(crate::MultiAgentV2ConfigToml {
             enabled: Some(true),
+            max_concurrent_threads_per_session: Some(4),
             usage_hint_enabled: Some(false),
             usage_hint_text: Some("Custom delegation guidance.".to_string()),
             hide_spawn_agent_metadata: Some(true),
@@ -434,6 +450,7 @@ usage_hint_enabled = false
         features_toml.multi_agent_v2,
         Some(crate::FeatureToml::Config(crate::MultiAgentV2ConfigToml {
             enabled: None,
+            max_concurrent_threads_per_session: None,
             usage_hint_enabled: Some(false),
             usage_hint_text: None,
             hide_spawn_agent_metadata: None,

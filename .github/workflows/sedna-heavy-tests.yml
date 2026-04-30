@@ -43,6 +43,7 @@ on:
           - codex.spawn-agent-description-model-surface-targeted
           - codex.tui-agent-picker-tree-targeted
           - codex.tui-agent-usage-totals-targeted
+          - codex.tui-weekly-pacing-status-line-targeted
           - codex.core-multi-agent-orchestration-targeted
           - codex.blocking-waits-targeted
           - codex.custom-prompts-targeted
@@ -56,6 +57,7 @@ on:
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
           - codex.app-server-computer-use-targeted
+          - codex.tui-native-computer-use-targeted
           - codex.native-computer-use-tool-registry-targeted
           - codex.app-server-thread-cwd-targeted
           - codex.agent-workflow-sanity
@@ -64,6 +66,7 @@ on:
           - codex.workflow-ci-sanity
           - codex.argument-comment-lint
           - codex.downstream-docs-check
+          - codex.downstream-divergence-audit
           - sedna.release-linux-smoke
           - downstream-ledger-seam
         default: all

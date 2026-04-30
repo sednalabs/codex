@@ -176,6 +176,7 @@ mod tests {
     use crate::tools::tool_search_entry::build_tool_search_entries;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
+    use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
     use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
     use codex_tools::ANDROID_STEP_TOOL_NAME;
     use codex_tools::ResponsesApiNamespace;
@@ -318,6 +319,22 @@ mod tests {
             },
             DynamicToolSpec {
                 namespace: None,
+                name: ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME.to_string(),
+                description: "Install an Android build artifact.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "workflow_run_id": { "type": "integer" },
+                        "artifact_name": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
+            },
+            DynamicToolSpec {
+                namespace: None,
                 name: "weather_lookup".to_string(),
                 description: "Look up weather.".to_string(),
                 input_schema: serde_json::json!({
@@ -359,6 +376,7 @@ mod tests {
             vec![
                 "android_observe android observe Capture the Android screen. scope",
                 "android_step android step Perform Android actions. action",
+                "android_install_build_from_run android install build from run Install an Android build artifact. artifact_name workflow_run_id",
                 "weather_lookup weather lookup Look up weather. city",
                 "android_observe android observe Custom namespaced Android observer. codex_app scope",
             ]
@@ -381,6 +399,17 @@ mod tests {
         };
         assert_eq!(step_spec.name, ANDROID_STEP_TOOL_NAME);
         assert!(step_spec.description.contains("bounded Android actions"));
+
+        let third_tool = handler.entries[2].output.clone();
+        let LoadableToolSpec::Function(install_spec) = third_tool else {
+            panic!("expected native android_install_build_from_run function search result");
+        };
+        assert_eq!(install_spec.name, ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME);
+        assert!(
+            install_spec
+                .description
+                .contains("GitHub Actions Android build artifact")
+        );
     }
 
     #[test]
