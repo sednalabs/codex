@@ -472,6 +472,7 @@ v2_enum_from_core!(
         Mdm,
         SessionFlags,
         Plugin,
+        CloudRequirements,
         LegacyManagedConfigFile,
         LegacyManagedConfigMdm,
         Unknown,
@@ -4716,6 +4717,7 @@ pub struct HooksListEntry {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct HookMetadata {
+    pub key: String,
     pub event_name: HookEventName,
     pub handler_type: HookHandlerType,
     pub matcher: Option<String>,
@@ -4726,6 +4728,8 @@ pub struct HookMetadata {
     pub source: HookSource,
     pub plugin_id: Option<String>,
     pub display_order: i64,
+    pub enabled: bool,
+    pub is_managed: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

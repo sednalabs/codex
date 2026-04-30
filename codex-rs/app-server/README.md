@@ -1456,7 +1456,7 @@ To enable or disable a skill by name:
 }
 ```
 
-Use `hooks/list` to fetch the discovered hooks for one or more `cwds`.
+Use `hooks/list` to fetch the discovered hooks for one or more `cwds`. Each entry is evaluated using that `cwd`'s effective config, so feature gating and discovered config layers can differ across entries in the same request. Disabled hooks are still returned with `"enabled": false` so clients can render and re-enable them. Hook state is stored under `hooks.state`; clients should treat hooks from managed sources as non-configurable, and user config entries for those keys are ignored during loading. Hook keys combine the source identity with a trailing event/group/handler selector that is currently positional.
 
 ```json
 {
@@ -1475,8 +1475,10 @@ Use `hooks/list` to fetch the discovered hooks for one or more `cwds`.
     "data": [{
       "cwd": "/Users/me/project",
       "hooks": [{
+        "key": "/Users/me/.codex/config.toml:pre_tool_use:0:0",
         "eventName": "pre_tool_use",
         "handlerType": "command",
+        "isManaged": false,
         "matcher": "Bash",
         "command": "python3 /Users/me/hook.py",
         "timeoutSec": 5,
@@ -1484,7 +1486,8 @@ Use `hooks/list` to fetch the discovered hooks for one or more `cwds`.
         "sourcePath": "/Users/me/.codex/config.toml",
         "source": "user",
         "pluginId": null,
-        "displayOrder": 0
+        "displayOrder": 0,
+        "enabled": true
       }],
       "warnings": [],
       "errors": []
@@ -1493,6 +1496,28 @@ Use `hooks/list` to fetch the discovered hooks for one or more `cwds`.
 }
 ```
 
+To disable a non-managed hook, upsert a state entry at `hooks.state` with `config/batchWrite`:
+
+```json
+{
+  "method": "config/batchWrite",
+  "id": 29,
+  "params": {
+    "edits": [{
+      "keyPath": "hooks.state",
+      "value": {
+        "/Users/me/.codex/config.toml:pre_tool_use:0:0": {
+          "enabled": false
+        }
+      },
+      "mergeStrategy": "upsert"
+    }],
+    "reloadUserConfig": true
+  }
+}
+```
+
+To re-enable it, upsert the same hook key with `"enabled": true`.
 ## Apps
 
 Use `app/list` to fetch available apps (connectors). Each entry includes metadata like the app `id`, display `name`, `installUrl`, `branding`, `appMetadata`, `labels`, whether it is currently accessible, and whether it is enabled in config.

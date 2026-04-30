@@ -9698,11 +9698,20 @@
             "format": "int64",
             "type": "integer"
           },
+          "enabled": {
+            "type": "boolean"
+          },
           "eventName": {
             "$ref": "#/definitions/v2/HookEventName"
           },
           "handlerType": {
             "$ref": "#/definitions/v2/HookHandlerType"
+          },
+          "isManaged": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
           },
           "matcher": {
             "type": [
@@ -9736,8 +9745,11 @@
         },
         "required": [
           "displayOrder",
+          "enabled",
           "eventName",
           "handlerType",
+          "isManaged",
+          "key",
           "source",
           "sourcePath",
           "timeoutSec"
@@ -9900,6 +9912,7 @@
           "mdm",
           "sessionFlags",
           "plugin",
+          "cloudRequirements",
           "legacyManagedConfigFile",
           "legacyManagedConfigMdm",
           "unknown"

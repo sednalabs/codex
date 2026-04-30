@@ -1559,6 +1559,15 @@ fn hook_run_metadata_maps_sources_and_statuses() {
         },
     ))
     .expect("serialize project hook");
+    let cloud_requirements = serde_json::to_value(codex_hook_run_metadata(
+        &tracking,
+        HookRunFact {
+            event_name: HookEventName::Stop,
+            hook_source: HookSource::CloudRequirements,
+            status: HookRunStatus::Blocked,
+        },
+    ))
+    .expect("serialize cloud requirements hook");
     let unknown = serde_json::to_value(codex_hook_run_metadata(
         &tracking,
         HookRunFact {
@@ -1573,6 +1582,8 @@ fn hook_run_metadata_maps_sources_and_statuses() {
     assert_eq!(system["status"], "completed");
     assert_eq!(project["hook_source"], "project");
     assert_eq!(project["status"], "blocked");
+    assert_eq!(cloud_requirements["hook_source"], "cloud_requirements");
+    assert_eq!(cloud_requirements["status"], "blocked");
     assert_eq!(unknown["hook_source"], "unknown");
     assert_eq!(unknown["status"], "failed");
 }
