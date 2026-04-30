@@ -327,6 +327,7 @@ mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod session_header;
 use self::session_header::SessionHeader;
+mod hooks;
 mod skills;
 mod slash_dispatch;
 use self::skills::collect_tool_mentions;
