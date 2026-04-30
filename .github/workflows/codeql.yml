@@ -12,10 +12,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: codeql-advanced-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   plan:
     name: CodeQL language router
@@ -257,7 +253,8 @@ jobs:
           mkdir -p .codeql-runtime
           pack_path="./.github/codeql/actions-workflow-security"
 
-          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+          if [[ '${{ github.event_name }}' == 'pull_request' &&
+            '${{ github.event.pull_request.head.repo.full_name }}' != '${{ github.repository }}' ]]; then
             trusted_root="${GITHUB_WORKSPACE}/.codeql-runtime/trusted-base"
             trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
             mkdir -p "${trusted_root}"

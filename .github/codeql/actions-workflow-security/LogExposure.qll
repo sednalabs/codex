@@ -5,6 +5,7 @@ import actions
  * credentials that should not reach log-visible workflow output.
  */
 
+bindingset[name]
 predicate credentialName(string name) {
   name.regexpMatch(
     "(?i).*(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|API_?KEY|CLIENT_?SECRET|CREDENTIAL|CERTIFICATE|CODESIGN|SIGNING|NOTARIZATION|NOTARY|P8|P12|PEM).*"
@@ -33,6 +34,7 @@ predicate sensitiveExpression(Expression expr, string sourceKind) {
   sourceKind = "sensitive environment value"
 }
 
+bindingset[data]
 predicate sensitiveShellData(string data, string sourceKind) {
   data.regexpMatch("(?is).*(gh\\s+auth\\s+token|openssl\\s+rand|uuidgen).*") and
   sourceKind = "generated token"
@@ -48,9 +50,9 @@ predicate sensitiveShellData(string data, string sourceKind) {
 }
 
 predicate sensitiveVariableInRun(Run run, string name, string sourceKind) {
-  credentialName(name) and
   exists(Expression expr |
     expr = run.getInScopeEnvVarExpr(name) and
+    credentialName(name) and
     sensitiveExpression(expr, sourceKind)
   )
   or
@@ -74,6 +76,7 @@ predicate sensitiveVariableInRun(Run run, string name, string sourceKind) {
   )
 }
 
+bindingset[command, name]
 predicate commandReferencesVariable(string command, string name) {
   command.regexpMatch("(?is).*\\$(\\{" + name + "\\}|" + name + "\\b).*")
   or
@@ -84,6 +87,7 @@ predicate commandReferencesVariable(string command, string name) {
   command.regexpMatch("(?is).*\\$\\{\\{\\s*env\\." + name + "\\s*\\}\\}.*")
 }
 
+bindingset[command, name]
 predicate commandMasksVariable(string command, string name) {
   command.regexpMatch("(?is).*::add-mask::.*\\$(\\{" + name + "\\}|" + name + "\\b).*")
   or
@@ -94,6 +98,7 @@ predicate commandMasksVariable(string command, string name) {
   command.regexpMatch("(?is).*::add-mask::.*\\$\\{\\{\\s*env\\." + name + "\\s*\\}\\}.*")
 }
 
+bindingset[run, name]
 predicate runMasksVariable(Run run, string name) {
   exists(string command |
     command = run.getScript().getACommand() and
@@ -101,6 +106,7 @@ predicate runMasksVariable(Run run, string name) {
   )
 }
 
+bindingset[run, name]
 predicate sinkAppearsBeforeMask(Run run, string name) {
   run.getScript().getRawScript().regexpMatch(
     "(?is).*(echo|printf|cat|tee|env|printenv|set\\s+-x|GITHUB_STEP_SUMMARY).*\\$(\\{" + name +
@@ -108,6 +114,7 @@ predicate sinkAppearsBeforeMask(Run run, string name) {
   )
 }
 
+bindingset[run, name]
 predicate hasPriorMask(Run run, string name) {
   exists(Run maskRun |
     maskRun.getAFollowingStep() = run and
@@ -118,6 +125,7 @@ predicate hasPriorMask(Run run, string name) {
   not sinkAppearsBeforeMask(run, name)
 }
 
+bindingset[command]
 predicate environmentDumpCommand(string command, string sinkKind) {
   (
     command.regexpMatch("(?is)^\\s*(env|printenv)\\b.*") or
@@ -127,6 +135,7 @@ predicate environmentDumpCommand(string command, string sinkKind) {
   sinkKind = "an environment dump"
 }
 
+bindingset[command, name]
 predicate logVisibleCommand(string command, string name, string sinkKind) {
   command.regexpMatch("(?is)^\\s*(echo|printf)\\b.*") and
   commandReferencesVariable(command, name) and
@@ -147,16 +156,19 @@ predicate logVisibleCommand(string command, string name, string sinkKind) {
   environmentDumpCommand(command, sinkKind)
 }
 
+bindingset[command]
 predicate setXCommand(string command) {
   command.regexpMatch("(?is)^\\s*(set\\s+-x|set\\s+-[^\\n]*x|bash\\s+-x|sh\\s+-x)\\b.*")
 }
 
+bindingset[run, name]
 predicate tracingExposesVariable(Run run, string name, string command) {
   command = run.getScript().getACommand() and
   setXCommand(command) and
   commandReferencesVariable(run.getScript().getRawScript(), name)
 }
 
+bindingset[command, name]
 predicate verboseCredentialCommand(string command, string name, string sinkKind) {
   command.regexpMatch("(?is).*(--verbose|\\s-v(\\s|$)|--debug|ACTIONS_STEP_DEBUG|RUNNER_DEBUG).*") and
   commandReferencesVariable(command, name) and

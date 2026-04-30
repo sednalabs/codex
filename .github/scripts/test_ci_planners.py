@@ -1454,13 +1454,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
-        self.assertEqual(
-            payload.get("concurrency"),
-            {
-                "group": "codeql-advanced-${{ github.ref }}",
-                "cancel-in-progress": "false",
-            },
-        )
+        self.assertNotIn("concurrency", payload)
         self.assertEqual(plan_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             plan_job.get("permissions") or {},
@@ -1572,7 +1566,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
         actions_config_run = actions_config_step.get("run") or ""
         self.assertIn(".github/codeql/actions-workflow-security", actions_config_run)
+        self.assertIn("github.event.pull_request.head.repo.full_name", actions_config_run)
+        self.assertIn("github.repository", actions_config_run)
         self.assertIn("github.event.pull_request.base.sha", actions_config_run)
+        self.assertIn(".codeql-runtime/trusted-base", actions_config_run)
         self.assertIn("security-and-quality", actions_config_run)
         self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
 
@@ -1983,6 +1980,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
                 )
                 self.assertNotIn("version", install_step.get("with") or {})
+                configure_step = next(
+                    step
+                    for step in job.get("steps") or []
+                    if step.get("name") == "Configure sccache backend"
+                )
+                self.assertIn(
+                    "${{ github.workspace }}/.github/scripts/configure_sccache_backend.sh",
+                    configure_step.get("run") or "",
+                )
+
+                for step_name in [
+                    "Summarize clippy failure",
+                    "Summarize nextest failures",
+                ]:
+                    matching_steps = [
+                        step for step in job.get("steps") or [] if step.get("name") == step_name
+                    ]
+                    for step in matching_steps:
+                        self.assertIn(
+                            "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py",
+                            step.get("run") or "",
+                        )
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -2116,7 +2135,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         aggregate_step = next(
             step for step in steps if step.get("name") == "Build structured summary"
         )
-        self.assertIn("summarize_rust_ci_full.py aggregate", aggregate_step.get("run") or "")
+        self.assertIn(
+            "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py\" aggregate",
+            aggregate_step.get("run") or "",
+        )
         verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
         verify_run = verify_step.get("run") or ""
         self.assertIn("needs.schedule_gate.outputs.should_skip", verify_run)

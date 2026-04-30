@@ -42,6 +42,7 @@ predicate jobUsesAction(Job job, string callee) {
   )
 }
 
+bindingset[pattern]
 predicate jobUsesActionMatching(Job job, string pattern, string callee) {
   jobUsesAction(job, callee) and
   callee.regexpMatch(pattern)
@@ -74,6 +75,7 @@ predicate jobChecksOutInputRef(Job job) {
   )
 }
 
+bindingset[command]
 predicate releasePublishingCommand(string command, string sinkKind) {
   command.regexpMatch("(?is).*\\bgh\\s+release\\s+(create|upload|edit)\\b.*") and
   sinkKind = "GitHub Release publication"
@@ -94,6 +96,7 @@ predicate releasePublishingCommand(string command, string sinkKind) {
   sinkKind = "container image publication"
 }
 
+bindingset[callee]
 predicate releasePublishingAction(string callee, string sinkKind) {
   callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
   sinkKind = "GitHub Release publication"
