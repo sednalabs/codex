@@ -73,11 +73,12 @@ contract today.
   from the PR head.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings and `.github/codeql/codeql-actions.yml` for Actions-only query
-  additions. The Actions lane prepares a runtime config so pull-request scans
-  can use the trusted-base copy of `.github/codeql/actions-workflow-security` when
-  it is available, while other languages continue to use the shared config.
-  Add Actions workflow policy queries to the Actions pack, and add
-  language-neutral CodeQL settings to the shared config.
+  additions. The Actions lane prepares a runtime config so same-repository pull
+  requests can validate checked-out query-pack changes, while fork pull requests
+  use the trusted-base copy of `.github/codeql/actions-workflow-security` when
+  it is available. Other languages continue to use the shared config. Add
+  Actions workflow policy queries to the Actions pack, and add language-neutral
+  CodeQL settings to the shared config.
 - The CodeQL config deliberately uses the broad `security-and-quality` suite
   and the local threat model. This is noisier than the default or
   `security-extended` suite, but it is the maintained built-in shape that gives
@@ -97,10 +98,10 @@ contract today.
   CodeQL scan from the `main` push; the canceller deliberately leaves protected
   branch push runs alone so the branch-tip result is not hidden by stale PR
   evidence.
-- `codeql.yml` does not cancel in-progress PR runs when the same branch receives
-  a newer commit. This lets CodeQL uploads finish for GitHub code-scanning
-  comparison while the required gate still follows the selective language plan
-  for the current run.
+- `codeql.yml` intentionally avoids workflow-level concurrency. Rapid PR
+  updates and protected-branch pushes can start their own CodeQL runs instead of
+  waiting behind an older same-ref run. Closed PR cleanup remains owned by
+  `cancel-pr-runs.yml`.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually
