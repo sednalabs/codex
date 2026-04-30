@@ -57,6 +57,43 @@ predicate isGuardNode(Function function, CfgNode node) {
   )
 }
 
+predicate variableAccessExpr(Expr expr, Variable variable) {
+  exists(VariableAccess access |
+    expr = access and
+    access.getVariable() = variable
+  )
+}
+
+predicate responseVariableExpr(Expr expr, Variable variable) {
+  variableAccessExpr(expr, variable)
+  or
+  exists(RefExpr ref |
+    expr = ref and
+    variableAccessExpr(ref.getExpr(), variable)
+  )
+}
+
+predicate guardCallUsesResponseVariable(Call call, Variable variable) {
+  isNativeImageGuardCall(call) and
+  responseVariableExpr(call.getPositionalArgument(0), variable)
+}
+
+predicate isGuardNodeForResponseVariable(Function function, Variable variable, CfgNode node) {
+  exists(CallCfgNode callNode |
+    node = callNode and
+    callNode.getCall().getEnclosingCallable() = function and
+    guardCallUsesResponseVariable(callNode.getCall(), variable)
+  )
+}
+
+predicate successfulExitReturnsResponseVariable(Expr exitExpr, Variable variable) {
+  exists(TupleVariantExpr ok |
+    ok = exitExpr and
+    ok.getVariant().getName().getText() = "Ok" and
+    responseVariableExpr(ok.getArgList().getArg(0), variable)
+  )
+}
+
 predicate cfgNodeForExpr(Expr expr, CfgNode node) {
   node.getAstNode() = expr
 }
@@ -71,7 +108,17 @@ predicate blockNodeOrder(BasicBlock block, CfgNode earlier, CfgNode later) {
 
 predicate guardDominatesSuccessfulExit(Function function, Expr exitExpr) {
   exists(CfgNode guardNode, CfgNode exitNode, BasicBlock guardBlock, BasicBlock exitBlock |
-    isGuardNode(function, guardNode) and
+    (
+      exists(Variable returnedVariable |
+        successfulExitReturnsResponseVariable(exitExpr, returnedVariable) and
+        isGuardNodeForResponseVariable(function, returnedVariable, guardNode)
+      )
+      or
+      not exists(Variable returnedVariable |
+        successfulExitReturnsResponseVariable(exitExpr, returnedVariable)
+      ) and
+      isGuardNode(function, guardNode)
+    ) and
     cfgNodeForExpr(exitExpr, exitNode) and
     guardBlock.getANode() = guardNode and
     exitBlock.getANode() = exitNode and
@@ -83,8 +130,9 @@ predicate guardDominatesSuccessfulExit(Function function, Expr exitExpr) {
   )
 }
 
-// TODO: Upgrade this to data-flow identity checking so the exact response object
-// returned from Ok(...) must be the object passed through the native-image guard.
+// This covers the provider's common local-variable `Ok(response)` shape. A future
+// data-flow version can extend the same identity check through aliases and helper
+// return values rather than only direct local-variable accesses.
 from Function function, Expr exitExpr
 where
   androidVisualToolHandler(function) and
