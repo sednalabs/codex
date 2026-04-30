@@ -172,7 +172,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
+async fn turn_start_treats_explicit_null_thread_instructions_as_missing() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -214,7 +214,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
                 "baseInstructions": null,
                 "developerInstructions": null,
             }),
-            /*expect_instructions*/ false,
+            /*expect_instructions*/ true,
         ),
     ];
 
@@ -251,7 +251,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    for (request, expect_instructions) in requests.into_iter().zip([true, false]) {
+    for (request, expect_instructions) in requests.into_iter().zip([true, true]) {
         let payload = request.body_json();
         assert_eq!(
             payload.get("instructions").is_some(),
