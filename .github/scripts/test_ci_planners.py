@@ -1445,8 +1445,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
         trigger = payload.get("on") or {}
         jobs = payload.get("jobs") or {}
-        analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
-        results_job = ((payload.get("jobs") or {}).get("results") or {})
+        analyze_job = jobs.get("analyze") or {}
+        results_job = jobs.get("results") or {}
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
