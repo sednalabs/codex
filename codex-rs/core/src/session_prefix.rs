@@ -43,7 +43,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: format_subagent_notification_message("agent-123", &status),
             }],
-            end_turn: None,
             phase: None,
         };
 

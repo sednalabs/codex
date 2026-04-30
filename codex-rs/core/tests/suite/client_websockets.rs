@@ -1703,7 +1703,6 @@ fn message_item(text: &str) -> ResponseItem {
         id: None,
         role: "user".into(),
         content: vec![ContentItem::InputText { text: text.into() }],
-        end_turn: None,
         phase: None,
     }
 }
@@ -1713,7 +1712,6 @@ fn assistant_message_item(id: &str, text: &str) -> ResponseItem {
         id: Some(id.to_string()),
         role: "assistant".into(),
         content: vec![ContentItem::OutputText { text: text.into() }],
-        end_turn: None,
         phase: None,
     }
 }

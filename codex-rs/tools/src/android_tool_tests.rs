@@ -1,3 +1,4 @@
+use super::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 use super::ANDROID_OBSERVE_TOOL_NAME;
 use super::ANDROID_STEP_TOOL_NAME;
 use super::canonical_android_dynamic_tool;
@@ -99,6 +100,47 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
         assert!(
             view_properties.contains_key(property),
             "missing view property {property}"
+        );
+    }
+
+    let install = canonical_android_dynamic_tool(&DynamicToolSpec {
+        namespace: None,
+        name: ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME.to_string(),
+        description: "custom install description".to_string(),
+        input_schema: json!({ "type": "object" }),
+        defer_loading: true,
+        persist_on_resume: false,
+        capability: None,
+    })
+    .expect("canonical install tool");
+
+    assert_eq!(install.name, ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME);
+    assert!(
+        install
+            .description
+            .contains("GitHub Actions Android build artifact")
+    );
+    assert_eq!(install.defer_loading, Some(true));
+    assert_eq!(
+        install.parameters.required.as_deref(),
+        Some(&["workflow_run_id".to_string(), "artifact_name".to_string()][..])
+    );
+    let install_properties = install
+        .parameters
+        .properties
+        .expect("install properties should be present");
+    for property in [
+        "workflow_run_id",
+        "artifact_name",
+        "repository",
+        "serial",
+        "launch_after_install",
+        "timeout_secs",
+        "post_observe_scope",
+    ] {
+        assert!(
+            install_properties.contains_key(property),
+            "missing install property {property}"
         );
     }
 }

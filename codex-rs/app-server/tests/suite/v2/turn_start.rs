@@ -172,7 +172,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
+async fn turn_start_treats_explicit_null_thread_instructions_as_missing() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -214,7 +214,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
                 "baseInstructions": null,
                 "developerInstructions": null,
             }),
-            /*expect_instructions*/ false,
+            /*expect_instructions*/ true,
         ),
     ];
 
@@ -251,7 +251,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    for (request, expect_instructions) in requests.into_iter().zip([true, false]) {
+    for (request, expect_instructions) in requests.into_iter().zip([true, true]) {
         let payload = request.body_json();
         assert_eq!(
             payload.get("instructions").is_some(),
@@ -482,14 +482,12 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            // TODO(aibrahim): Replace empty string instruction overrides with explicit tri-state
-            // app-server semantics: omitted, explicitly none, or explicit value.
             config: Some(HashMap::from([(
                 "include_permissions_instructions".to_string(),
                 json!(false),
             )])),
-            base_instructions: Some(Some(String::new())),
-            developer_instructions: Some(Some(String::new())),
+            base_instructions: Some(String::new()),
+            developer_instructions: Some(String::new()),
             ..Default::default()
         })
         .await?;
@@ -846,12 +844,16 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
 #[tokio::test]
 async fn turn_start_rejects_invalid_permission_profile_before_starting_turn() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let unsupported_write_root = TempDir::new()?;
+    let disallowed_write_root = TempDir::new()?;
     create_config_toml(
         codex_home.path(),
         "http://localhost/unused",
         "never",
         &BTreeMap::from([(Feature::Personality, true)]),
+    )?;
+    std::fs::write(
+        codex_home.path().join("managed_config.toml"),
+        "sandbox_mode = \"read-only\"\n",
     )?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
@@ -869,7 +871,7 @@ async fn turn_start_rejects_invalid_permission_profile_before_starting_turn() ->
     )
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
-    let unsupported_write_root = AbsolutePathBuf::from_absolute_path(unsupported_write_root.path())
+    let disallowed_write_root = AbsolutePathBuf::from_absolute_path(disallowed_write_root.path())
         .expect("tempdir path should be absolute");
 
     let turn_req = mcp
@@ -884,7 +886,7 @@ async fn turn_start_rejects_invalid_permission_profile_before_starting_turn() ->
                 file_system: PermissionProfileFileSystemPermissions::Restricted {
                     entries: vec![FileSystemSandboxEntry {
                         path: FileSystemPath::Path {
-                            path: unsupported_write_root,
+                            path: disallowed_write_root,
                         },
                         access: FileSystemAccessMode::Write,
                     }],
@@ -903,9 +905,9 @@ async fn turn_start_rejects_invalid_permission_profile_before_starting_turn() ->
     assert_eq!(err.error.code, INVALID_REQUEST_ERROR_CODE);
     assert!(err.error.message.contains("invalid turn context override"));
     assert!(
-        err.error
-            .message
-            .contains("filesystem writes outside the workspace root")
+        err.error.message.contains("allowed set [ReadOnly]"),
+        "unexpected error message: {}",
+        err.error.message
     );
     let turn_started = tokio::time::timeout(
         std::time::Duration::from_millis(250),

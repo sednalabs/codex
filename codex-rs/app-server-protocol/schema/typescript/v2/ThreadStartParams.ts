@@ -18,7 +18,7 @@ approvalsReviewer?: ApprovalsReviewer | null, sandbox?: SandboxMode | null, /**
  * Full permissions override for this thread. Cannot be combined with
  * `sandbox`.
  */
-permissionProfile?: PermissionProfile | null, config?: { [key in string]?: JsonValue } | null, serviceName?: string | null, baseInstructions?: string | null | null, developerInstructions?: string | null | null, personality?: Personality | null, ephemeral?: boolean | null, sessionStartSource?: ThreadStartSource | null, /**
+permissionProfile?: PermissionProfile | null, config?: { [key in string]?: JsonValue } | null, serviceName?: string | null, baseInstructions?: string | null, developerInstructions?: string | null, personality?: Personality | null, ephemeral?: boolean | null, sessionStartSource?: ThreadStartSource | null, /**
  * If true, opt into emitting raw Responses API items on the event stream.
  * This is for internal use only (e.g. Codex Cloud).
  */

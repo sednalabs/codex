@@ -24,6 +24,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_utils_output_truncation::approx_token_count;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
@@ -262,6 +263,24 @@ fn write_stdin_args_parse_execution_fields() -> anyhow::Result<()> {
 }
 
 #[test]
+fn wait_until_terminal_uses_two_hour_default_cap() {
+    assert_eq!(
+        resolve_wait_budget(/*max_wait_ms*/ None),
+        Duration::from_millis(MAX_TERMINAL_WAIT_MS),
+        "wait_until_terminal should be provider-gated for the full two-hour ceiling by default"
+    );
+}
+
+#[test]
+fn wait_until_terminal_caps_requested_budget_at_two_hours() {
+    assert_eq!(
+        resolve_wait_budget(/*max_wait_ms*/ Some(MAX_TERMINAL_WAIT_MS + 1_000)),
+        Duration::from_millis(MAX_TERMINAL_WAIT_MS),
+        "wait_until_terminal must not expose an uncapped provider-blocking wait"
+    );
+}
+
+#[test]
 fn exec_command_args_reject_invalid_wait_until_terminal_type() {
     let json = r#"{
         "cmd": "echo hello",
@@ -473,6 +492,103 @@ async fn exec_command_wait_until_terminal_respects_max_wait_timeout() -> anyhow:
         output.process_id.is_some(),
         "timed-out wait should keep a resumable session alive"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum()
+-> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let started = Instant::now();
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "sleep 10 && echo WAIT_UNTIL_TERMINAL_BACKGROUND_MINIMUM_TOO_LATE",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 750,
+            "heartbeat_interval_ms": 100
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(650),
+        "terminal wait should honor the requested wait budget; got {elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "terminal wait heartbeat should not inherit the 5s empty-poll minimum; got {elapsed:?}",
+    );
+    assert!(
+        !output
+            .truncated_output()
+            .contains("WAIT_UNTIL_TERMINAL_BACKGROUND_MINIMUM_TOO_LATE"),
+        "timed-out wait should not include output emitted after the wait window"
+    );
+    assert!(
+        output.process_id.is_some(),
+        "timed-out wait should keep a resumable session alive"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_reports_aggregated_original_token_count()
+-> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    if cfg!(windows) {
+        return Ok(());
+    }
+
+    let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let output = run_unified_exec(
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        "exec_command",
+        serde_json::json!({
+            "cmd": "printf 'alpha beta gamma delta epsilon\\n'; sleep 1; printf 'zeta eta theta iota kappa lambda\\n'",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 5_000,
+            "heartbeat_interval_ms": 100,
+            "max_output_tokens": 4
+        }),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("exec_command call failed: {err}"))?;
+
+    let raw_output = String::from_utf8_lossy(&output.raw_output);
+    assert_eq!(
+        raw_output,
+        "alpha beta gamma delta epsilon\nzeta eta theta iota kappa lambda\n"
+    );
+    assert_eq!(output.exit_code, Some(0));
+    assert!(
+        output.process_id.is_none(),
+        "terminal wait should finish the process"
+    );
+    assert_eq!(
+        output.original_token_count,
+        Some(approx_token_count(&raw_output)),
+        "terminal wait metadata should describe the final aggregated output"
+    );
+
     Ok(())
 }
 

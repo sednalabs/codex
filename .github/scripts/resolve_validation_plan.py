@@ -108,11 +108,7 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("checkout_fetch_depth", 1)
         lane.setdefault("frontier_default", False)
         lane.setdefault("needs_bazel", False)
-        lane.setdefault(
-            "smoke_gate_only",
-            bool(lane.get("smoke_gate_kinds"))
-            and str(lane.get("lane_id") or "").endswith("-smoke"),
-        )
+        lane.setdefault("smoke_gate_only", False)
         if "frontier_lane_sets" not in lane:
             if lane.get("status_class") == "active" and not lane.get("explicit_only"):
                 lane["frontier_lane_sets"] = (
@@ -325,10 +321,7 @@ def select_for_lane_set(
 
 
 def is_smoke_gate_lane(spec: dict) -> bool:
-    return bool(spec.get("smoke_gate_only")) or (
-        bool(spec.get("smoke_gate_kinds"))
-        and str(spec.get("lane_id") or "").endswith("-smoke")
-    )
+    return bool(spec.get("smoke_gate_only"))
 
 
 def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:

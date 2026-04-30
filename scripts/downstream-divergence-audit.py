@@ -107,8 +107,10 @@ def main() -> int:
     downstream_counts = rev_list_counts(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
     cherry_counts = cherry_counts_between(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
     merge_base = merge_base_sha(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
+    downstream_carry_items = diff_items_between(repo, merge_base, snapshot_1["downstream"].sha)
+    downstream_carry_code_items = [item for item in downstream_carry_items if item.is_code]
 
-    registry_state = reconcile_registry(registry, code_items)
+    registry_state = reconcile_registry(registry, downstream_carry_code_items)
     annotated_all_items = annotate_diff_items(
         diff_items,
         registry_state["path_registry_ids"],
@@ -180,6 +182,10 @@ def main() -> int:
             "merge_base": merge_base,
             "patch_equivalent_downstream_commits": cherry_counts["patch_equivalent_downstream_commits"],
             "unique_downstream_commits": cherry_counts["unique_downstream_commits"],
+            "registry_enforcement_basis": "merge-base...downstream",
+            "downstream_carry_code_path_count": len(
+                {path for item in downstream_carry_code_items for path in item.paths}
+            ),
             "all_paths": annotated_all_items,
             "code_paths": annotated_code_items,
             "non_code_paths": annotated_non_code_items,
@@ -659,6 +665,10 @@ def render_markdown(audit: dict[str, Any]) -> str:
     lines.append(
         f"- Patch-equivalent downstream commits: `{audit['tree_diff']['patch_equivalent_downstream_commits']}`"
         f" | Unique downstream commits: `{audit['tree_diff']['unique_downstream_commits']}`"
+    )
+    lines.append(
+        f"- Registry enforcement basis: `{audit['tree_diff']['registry_enforcement_basis']}`"
+        f" | Downstream carry code paths: `{audit['tree_diff']['downstream_carry_code_path_count']}`"
     )
     lines.append("")
     lines.append("### Code paths")

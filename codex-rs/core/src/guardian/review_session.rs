@@ -9,6 +9,7 @@ use codex_analytics::GuardianReviewAnalyticsResult;
 use codex_analytics::GuardianReviewSessionKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -833,7 +834,6 @@ pub(crate) fn build_guardian_review_session_config(
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> anyhow::Result<Config> {
     let mut guardian_config = parent_config.clone();
-    let guardian_sandbox_policy = SandboxPolicy::new_read_only_policy();
     guardian_config.model = Some(active_model.to_string());
     guardian_config.model_reasoning_effort = reasoning_effort;
     guardian_config.include_skill_instructions = false;
@@ -846,15 +846,16 @@ pub(crate) fn build_guardian_review_session_config(
     );
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
-    guardian_config.permissions.sandbox_policy =
-        Constrained::allow_only(guardian_sandbox_policy.clone());
-    guardian_config.permissions.file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-            &guardian_sandbox_policy,
-            &guardian_config.cwd,
-        );
-    guardian_config.permissions.network_sandbox_policy =
-        NetworkSandboxPolicy::from(&guardian_sandbox_policy);
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    guardian_config.permissions.permission_profile = Constrained::allow_only(
+        PermissionProfile::from_legacy_sandbox_policy(&sandbox_policy),
+    );
+    guardian_config
+        .permissions
+        .set_legacy_sandbox_policy(sandbox_policy, guardian_config.cwd.as_path())
+        .map_err(|err| {
+            anyhow::anyhow!("guardian review session could not set sandbox policy: {err}")
+        })?;
     guardian_config.include_apps_instructions = false;
     guardian_config
         .mcp_servers
@@ -874,7 +875,7 @@ pub(crate) fn build_guardian_review_session_config(
         guardian_config.permissions.network = Some(NetworkProxySpec::from_config_and_constraints(
             live_network_config,
             network_constraints,
-            &guardian_sandbox_policy,
+            guardian_config.permissions.permission_profile.get(),
         )?);
     }
     for feature in [
@@ -1022,18 +1023,20 @@ mod tests {
         let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();
 
         assert_eq!(
-            guardian_config.permissions.sandbox_policy.get().clone(),
+            guardian_config
+                .permissions
+                .legacy_sandbox_policy(guardian_config.cwd.as_path()),
             expected_sandbox_policy
         );
         assert_eq!(
-            guardian_config.permissions.file_system_sandbox_policy,
+            guardian_config.permissions.file_system_sandbox_policy(),
             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                 &expected_sandbox_policy,
                 &guardian_config.cwd,
             )
         );
         assert_eq!(
-            guardian_config.permissions.network_sandbox_policy,
+            guardian_config.permissions.network_sandbox_policy(),
             NetworkSandboxPolicy::from(&expected_sandbox_policy)
         );
     }

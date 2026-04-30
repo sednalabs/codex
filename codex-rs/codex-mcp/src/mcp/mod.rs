@@ -1,5 +1,3 @@
-pub(crate) mod auth;
-mod skill_dependencies;
 pub use auth::McpAuthStatusEntry;
 pub use auth::McpOAuthLoginConfig;
 pub use auth::McpOAuthLoginSupport;
@@ -10,8 +8,8 @@ pub use auth::discover_supported_scopes;
 pub use auth::oauth_login_support;
 pub use auth::resolve_oauth_scopes;
 pub use auth::should_retry_without_scopes;
-pub use skill_dependencies::canonical_mcp_server_key;
-pub use skill_dependencies::collect_missing_mcp_dependencies;
+
+pub(crate) mod auth;
 
 use std::collections::HashMap;
 use std::env;
@@ -28,22 +26,21 @@ use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceTemplate;
 use codex_protocol::mcp::Tool;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_protocol::protocol::McpListToolsResponseEvent;
-use codex_protocol::protocol::SandboxPolicy;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use serde_json::Value;
 
-use crate::mcp_connection_manager::McpConnectionManager;
-use crate::mcp_connection_manager::McpRuntimeEnvironment;
-use crate::mcp_connection_manager::codex_apps_tools_cache_key;
-pub type McpManager = McpConnectionManager;
+use crate::codex_apps::codex_apps_tools_cache_key;
+use crate::connection_manager::McpConnectionManager;
+use crate::runtime::McpRuntimeEnvironment;
 
+pub const CODEX_APPS_MCP_SERVER_NAME: &str = "codex_apps";
 const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
-pub const CODEX_APPS_MCP_SERVER_NAME: &str = "codex_apps";
 const CODEX_CONNECTORS_TOKEN_ENV_VAR: &str = "CODEX_CONNECTORS_TOKEN";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,13 +86,18 @@ pub fn qualified_mcp_tool_name_prefix(server_name: &str) -> String {
 /// of being shown to the user.
 pub fn mcp_permission_prompt_is_auto_approved(
     approval_policy: AskForApproval,
-    sandbox_policy: &SandboxPolicy,
+    permission_profile: &PermissionProfile,
 ) -> bool {
-    approval_policy == AskForApproval::Never
-        && matches!(
-            sandbox_policy,
-            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
-        )
+    if approval_policy != AskForApproval::Never {
+        return false;
+    }
+
+    match permission_profile {
+        PermissionProfile::Disabled | PermissionProfile::External { .. } => true,
+        PermissionProfile::Managed { file_system, .. } => {
+            file_system.to_sandbox_policy().has_full_disk_write_access()
+        }
+    }
 }
 
 /// MCP runtime settings derived from `codex_core::config::Config`.
@@ -105,7 +107,7 @@ pub fn mcp_permission_prompt_is_auto_approved(
 /// approval/sandbox policy, locate OAuth state, and merge plugin-provided MCP
 /// servers. Request-scoped or auth-scoped state should not be stored here;
 /// thread those values explicitly into runtime entry points such as
-/// [`with_codex_apps_mcp`] and [`collect_mcp_snapshot`] so config objects do
+/// [`with_codex_apps_mcp`] and snapshot collection helpers so config objects do
 /// not go stale when auth changes.
 #[derive(Debug, Clone)]
 pub struct McpConfig {
@@ -317,7 +319,7 @@ pub async fn read_mcp_resource(
         &config.approval_policy,
         String::new(),
         tx_event,
-        SandboxPolicy::new_read_only_policy(),
+        PermissionProfile::default(),
         runtime_environment,
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
@@ -339,100 +341,12 @@ pub async fn read_mcp_resource(
     result
 }
 
-pub async fn collect_mcp_snapshot(
-    config: &McpConfig,
-    auth: Option<&CodexAuth>,
-    submit_id: String,
-    runtime_environment: McpRuntimeEnvironment,
-) -> McpListToolsResponseEvent {
-    collect_mcp_snapshot_with_detail(
-        config,
-        auth,
-        submit_id,
-        runtime_environment,
-        McpSnapshotDetail::Full,
-    )
-    .await
-}
-
-pub async fn collect_mcp_snapshot_with_detail(
-    config: &McpConfig,
-    auth: Option<&CodexAuth>,
-    submit_id: String,
-    runtime_environment: McpRuntimeEnvironment,
-    detail: McpSnapshotDetail,
-) -> McpListToolsResponseEvent {
-    let mcp_servers = effective_mcp_servers(config, auth);
-    let tool_plugin_provenance = tool_plugin_provenance(config);
-    if mcp_servers.is_empty() {
-        return McpListToolsResponseEvent {
-            tools: HashMap::new(),
-            resources: HashMap::new(),
-            resource_templates: HashMap::new(),
-            auth_statuses: HashMap::new(),
-        };
-    }
-
-    let auth_status_entries = compute_auth_statuses(
-        mcp_servers.iter(),
-        config.mcp_oauth_credentials_store_mode,
-        auth,
-    )
-    .await;
-
-    let (tx_event, rx_event) = unbounded();
-    drop(rx_event);
-
-    let (mcp_connection_manager, cancel_token) = McpConnectionManager::new(
-        &mcp_servers,
-        config.mcp_oauth_credentials_store_mode,
-        auth_status_entries.clone(),
-        &config.approval_policy,
-        submit_id,
-        tx_event,
-        SandboxPolicy::new_read_only_policy(),
-        runtime_environment,
-        config.codex_home.clone(),
-        codex_apps_tools_cache_key(auth),
-        tool_plugin_provenance,
-        auth,
-    )
-    .await;
-
-    let snapshot = collect_mcp_snapshot_from_manager_with_detail(
-        &mcp_connection_manager,
-        auth_status_entries,
-        detail,
-    )
-    .await;
-
-    cancel_token.cancel();
-
-    snapshot
-}
-
 #[derive(Debug, Clone)]
 pub struct McpServerStatusSnapshot {
     pub tools_by_server: HashMap<String, HashMap<String, Tool>>,
     pub resources: HashMap<String, Vec<Resource>>,
     pub resource_templates: HashMap<String, Vec<ResourceTemplate>>,
     pub auth_statuses: HashMap<String, McpAuthStatus>,
-}
-
-pub async fn collect_mcp_server_status_snapshot(
-    config: &McpConfig,
-    auth: Option<&CodexAuth>,
-    submit_id: String,
-    runtime_environment: McpRuntimeEnvironment,
-) -> McpServerStatusSnapshot {
-    collect_mcp_server_status_snapshot_with_detail(
-        config,
-        auth,
-        submit_id,
-        runtime_environment,
-        McpSnapshotDetail::Full,
-    )
-    .await
 }
 
 pub async fn collect_mcp_server_status_snapshot_with_detail(
@@ -470,7 +384,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         &config.approval_policy,
         submit_id,
         tx_event,
-        SandboxPolicy::new_read_only_policy(),
+        PermissionProfile::default(),
         runtime_environment,
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
@@ -491,33 +405,16 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
     snapshot
 }
 
-pub fn split_qualified_tool_name(qualified_name: &str) -> Option<(String, String)> {
-    let mut parts = qualified_name.split(MCP_TOOL_NAME_DELIMITER);
-    let prefix = parts.next()?;
-    if prefix != MCP_TOOL_NAME_PREFIX {
-        return None;
-    }
-    let server_name = parts.next()?;
-    let tool_name: String = parts.collect::<Vec<_>>().join(MCP_TOOL_NAME_DELIMITER);
-    if tool_name.is_empty() {
-        return None;
-    }
-    Some((server_name.to_string(), tool_name))
-}
-
-pub fn group_tools_by_server(
-    tools: &HashMap<String, Tool>,
-) -> HashMap<String, HashMap<String, Tool>> {
-    let mut grouped = HashMap::new();
-    for (qualified_name, tool) in tools {
-        if let Some((server_name, tool_name)) = split_qualified_tool_name(qualified_name) {
-            grouped
-                .entry(server_name)
-                .or_insert_with(HashMap::new)
-                .insert(tool_name, tool.clone());
-        }
-    }
-    grouped
+pub async fn collect_mcp_snapshot_from_manager(
+    mcp_connection_manager: &McpConnectionManager,
+    auth_status_entries: HashMap<String, McpAuthStatusEntry>,
+) -> McpListToolsResponseEvent {
+    collect_mcp_snapshot_from_manager_with_detail(
+        mcp_connection_manager,
+        auth_status_entries,
+        McpSnapshotDetail::Full,
+    )
+    .await
 }
 
 fn protocol_tool_from_rmcp_tool(name: &str, tool: &rmcp::model::Tool) -> Option<Tool> {
@@ -668,19 +565,7 @@ async fn collect_mcp_server_status_snapshot_from_manager(
     }
 }
 
-pub async fn collect_mcp_snapshot_from_manager(
-    mcp_connection_manager: &McpConnectionManager,
-    auth_status_entries: HashMap<String, McpAuthStatusEntry>,
-) -> McpListToolsResponseEvent {
-    collect_mcp_snapshot_from_manager_with_detail(
-        mcp_connection_manager,
-        auth_status_entries,
-        McpSnapshotDetail::Full,
-    )
-    .await
-}
-
-pub async fn collect_mcp_snapshot_from_manager_with_detail(
+async fn collect_mcp_snapshot_from_manager_with_detail(
     mcp_connection_manager: &McpConnectionManager,
     auth_status_entries: HashMap<String, McpAuthStatusEntry>,
     detail: McpSnapshotDetail,

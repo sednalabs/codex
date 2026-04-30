@@ -7,23 +7,25 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-04-25`
+Last reviewed: `2026-04-28`
 
 Review baseline:
 
-- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`):
-  `a96c652a5becca0c6ed97d31c232d418e115b893`
-- `main` (`origin/main`) before merge: `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
+- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- mirror branch `upstream-main` (`origin/upstream-main`):
+  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
 
 | Surface | `upstream/main` | `main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |
-| `exec_command` | PTY execution plus `cmd`, `workdir`, `shell`, `tty`, `yield_time_ms`, `max_output_tokens`, `login`, and approval parameters | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms` | yes | `exec_command_reports_chunk_and_exit_metadata`; `exec_command_tool_matches_expected_spec` |
-| `write_stdin` | `session_id`, `chars`, `yield_time_ms`, `max_output_tokens` | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`; empty `chars` can be used with `wait_until_terminal` | yes | `write_stdin_tool_matches_expected_spec` |
+| `exec_command` | PTY execution plus `cmd`, `workdir`, `shell`, `tty`, `yield_time_ms`, `max_output_tokens`, `login`, and approval parameters | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`; provider resume is gated until terminal state or the capped wait budget expires | yes | `exec_command_wait_until_terminal_defers_provider_resume_until_exit`; `exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum`; `unified_exec_tools_include_wait_until_terminal_contract_fields`; `exec_command_reports_chunk_and_exit_metadata`; `exec_command_tool_matches_expected_spec` |
+| `write_stdin` | `session_id`, `chars`, `yield_time_ms`, `max_output_tokens` | Upstream fields plus `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`; empty `chars` can be used with `wait_until_terminal`; provider resume is gated until terminal state or the capped wait budget expires | yes | `write_stdin_wait_until_terminal_blocks_until_exit`; `unified_exec_tools_include_wait_until_terminal_contract_fields`; `write_stdin_tool_matches_expected_spec` |
 | Bare `android_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as non-mutating | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Bare `android_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with batched `actions[]` and compatibility single-action fields | yes | `codex.native-computer-use-tool-registry-targeted` |
+| Bare `android_install_build_from_run` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with a longer timeout for provider-side artifact download, install, launch, and post-install observation | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Namespaced Android-like dynamic tools | Normal namespaced dynamic tools | Same as upstream-style dynamic tools; no native promotion for namespaced `android_observe` or `android_step` | no | `namespaced_android_dynamic_tool_names_remain_dynamic_tools` |
 | App-server computer-use bridge | No v2 `item/computerUse/call` native bridge | API v2 projects native computer-use requests into `ThreadItem::ComputerUseCall`, sends `item/computerUse/call` to capable clients, and forwards client responses back to the active turn | yes | `codex.app-server-computer-use-targeted`; `codex.app-server-protocol-test` |
+| Native Android screenshot output | No Codex-owned Android image-output contract | Screenshots should be returned to the model as native `inputImage` content; provider artifact paths are diagnostic/replay breadcrumbs rather than the model-facing visual channel | yes | `codex.tui-native-computer-use-targeted`; `codex.native-computer-use-tool-registry-targeted` |
 | `spawn_agent` request semantics | Explicit `model` and `reasoning_effort` overrides are supported | Same base support, plus documented role-lock precedence for `model`, `model_provider`, `model_reasoning_effort`, `model_verbosity`, and `model_reasoning_summary`, with explicit guidance that active-profile/role overrides retain priority when they provide these fields. | yes | `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
 | `spawn_agent` response schema | `agent_id`, `nickname` | Full inventory item: `agent_id`, `nickname`, `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, `effective_model_provider_id` | yes | `codex.core-subagent-surface-targeted` |
 | `list_agents` | `MultiAgentV2` live inventory tool when the feature is enabled; path-scoped rows include `agent_name`, `agent_status`, and `last_task_message` | Always available on the downstream collab surface, using the upstream live handler shape for the cheap in-memory view in both v1 and v2, plus `has_active_subagents` and `active_subagent_count` so callers can notice when a row still owns active nested work | yes | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_list_agents_filters_by_relative_path_prefix`; `multi_agent_v2_list_agents_omits_closed_agents`; `multi_agent_v2_list_agents_flags_active_descendants`; `test_build_specs_collab_tools_enabled` |
@@ -51,10 +53,12 @@ Notes:
   compact nested inspection, stale-descendant visibility, and branch-focused
   filtering via `agent_roots`, rather than overloading `list_agents` with
   provenance-heavy output by default.
-- Native Android promotion is intentionally limited to bare `android_observe`
-  and `android_step`. Runtime providers supply Android capability and device
-  execution, while Codex owns the canonical schema, transcript events,
-  app-server bridge, TUI projection, and rollout trace semantics. See
+- Native Android promotion is intentionally limited to bare `android_observe`,
+  `android_step`, and `android_install_build_from_run`. Runtime providers
+  supply Android capability, device execution, and provider-side build
+  installation, while Codex owns the canonical schema, native image-output
+  expectation, transcript events, app-server bridge, TUI projection, and
+  rollout trace semantics. See
   [`native-computer-use.md`](native-computer-use.md).
 - `apply_patch` and `js_repl` are included as control rows so future audits do
   not misclassify them as carry-only behavior.

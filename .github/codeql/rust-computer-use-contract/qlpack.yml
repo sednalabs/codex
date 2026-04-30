@@ -1,0 +1,10 @@
+name: sednalabs/rust-computer-use-contract
+version: 0.0.0
+groups:
+  - rust
+  - queries
+extractor: rust
+dependencies:
+  codeql/rust-all: "*"
+defaultSuiteFile: suites/rust-computer-use-contract.qls
+warnOnImplicitThis: true
