@@ -23,11 +23,11 @@ predicate cfgTestMeta(Meta meta) {
 }
 
 predicate insideInlineRustTest(AstNode node) {
-  exists(Module module |
-    cfgTestMeta(module.getAnAttr().getMeta()) and
-    module.getFile() = node.getFile() and
-    module.getLocation().getStartLine() <= node.getLocation().getStartLine() and
-    node.getLocation().getEndLine() <= module.getLocation().getEndLine()
+  exists(Module modItem |
+    cfgTestMeta(modItem.getAnAttr().getMeta()) and
+    modItem.getFile() = node.getFile() and
+    modItem.getLocation().getStartLine() <= node.getLocation().getStartLine() and
+    node.getLocation().getEndLine() <= modItem.getLocation().getEndLine()
   )
 }
 
