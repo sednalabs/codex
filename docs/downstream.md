@@ -119,6 +119,7 @@ User-visible behavior:
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
+- For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never pre-empt the screenshot pixels.
 - Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
 

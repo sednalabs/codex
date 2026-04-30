@@ -191,7 +191,7 @@ async fn install_build_from_run(
             arguments.clone(),
         )
         .await?;
-    let install_summary = summarize_install_result(&install_result);
+    let install_summary = summarize_install_result(install_result.structured_content());
 
     let mut response = match inspect_ui(client, arguments).await {
         Ok(observation) => {
@@ -234,7 +234,10 @@ async fn install_build_from_run(
     Ok(response)
 }
 
-async fn inspect_ui(client: &mut AndroidRuntimeClient, arguments: &Value) -> Result<Value, String> {
+async fn inspect_ui(
+    client: &mut AndroidRuntimeClient,
+    arguments: &Value,
+) -> Result<AndroidToolResult, String> {
     let mut inspect_args = json!({
         "include_screenshot": true,
     });
@@ -274,20 +277,24 @@ fn should_retry_inspect_ui_error(error: &str) -> bool {
 async fn observation_response(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
-    observation: Value,
+    observation: AndroidToolResult,
     title: &str,
 ) -> Result<ComputerUseCallResponse, String> {
+    let structured_observation = observation.structured_content();
     let mut items = vec![ComputerUseCallOutputContentItem::InputText {
-        text: summarize_observation(title, &observation),
+        text: summarize_observation(title, structured_observation),
     }];
 
+    append_mcp_image_content(&mut items, &observation.content);
+
     if tools.contains("android.read_artifact")
-        && let Some(path) = screenshot_path(&observation)
+        && !items_include_native_image(&items)
+        && let Some(path) = screenshot_path(structured_observation)
     {
         match client
             .call_tool("android.read_artifact", json!({ "path": path }))
             .await
-            .and_then(|value| artifact_bytes(&value))
+            .and_then(|value| artifact_bytes(value.structured_content()))
         {
             Ok(bytes) => {
                 append_text(&mut items, "\nscreenshot: included as native image output");
@@ -336,15 +343,21 @@ async fn screenshot_fallback_response(
         let mut args = json!({});
         copy_if_present(arguments, &mut args, "serial");
         copy_inspect_screenshot_filename_for_capture(arguments, &mut args);
+        let mut mcp_content = Vec::new();
         match client.call_tool("android.capture_screenshot", args).await {
             Ok(capture) => {
-                if let Some(serial) = capture.get("serial").and_then(Value::as_str) {
+                if let Some(serial) = capture
+                    .structured_content()
+                    .get("serial")
+                    .and_then(Value::as_str)
+                {
                     observation["serial"] = Value::String(serial.to_string());
                 }
-                if let Some(path) = screenshot_path(&capture) {
+                if let Some(path) = screenshot_path(capture.structured_content()) {
                     observation["artifacts"] = json!({ "screenshot_path": path });
                     lines.push("native screenshot fallback captured".to_string());
                 }
+                mcp_content = capture.content;
             }
             Err(err) => {
                 lines.push(format!("native screenshot fallback failed: {err}"));
@@ -354,7 +367,13 @@ async fn screenshot_fallback_response(
         lines.push("native screenshot fallback unavailable from provider".to_string());
     }
 
-    let mut response = observation_response(client, tools, observation, &lines.join("\n")).await?;
+    let mut response = observation_response(
+        client,
+        tools,
+        AndroidToolResult::new(observation, mcp_content),
+        &lines.join("\n"),
+    )
+    .await?;
     response.success = action_already_executed || response_includes_native_image(&response);
     if !response.success {
         response.error = Some(observe_error.to_string());
@@ -588,6 +607,25 @@ struct AndroidRuntimeClient {
     next_id: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct AndroidToolResult {
+    structured: Value,
+    content: Vec<Value>,
+}
+
+impl AndroidToolResult {
+    fn new(structured: Value, content: Vec<Value>) -> Self {
+        Self {
+            structured,
+            content,
+        }
+    }
+
+    fn structured_content(&self) -> &Value {
+        &self.structured
+    }
+}
+
 impl AndroidRuntimeClient {
     async fn connect(config: AndroidRuntimeConfig) -> Result<Self, String> {
         let mut headers = HeaderMap::new();
@@ -654,7 +692,11 @@ impl AndroidRuntimeClient {
             .collect())
     }
 
-    async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
+    async fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<AndroidToolResult, String> {
         let value = self
             .request(
                 "tools/call",
@@ -664,7 +706,7 @@ impl AndroidRuntimeClient {
         if value.get("isError").and_then(Value::as_bool) == Some(true) {
             return Err(tool_text(&value).unwrap_or_else(|| format!("tool `{name}` failed")));
         }
-        Ok(tool_structured_or_text(value))
+        Ok(tool_result(value))
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -966,21 +1008,75 @@ fn artifact_bytes(value: &Value) -> Result<Vec<u8>, String> {
         .map_err(|err| format!("invalid artifact base64: {err}"))
 }
 
-fn tool_structured_or_text(value: Value) -> Value {
+fn tool_result(value: Value) -> AndroidToolResult {
+    let content = value
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
     if let Some(structured) = value.get("structuredContent") {
-        return structured.clone();
+        return AndroidToolResult::new(structured.clone(), content);
     }
-    let Some(content) = value.get("content").and_then(Value::as_array) else {
-        return value;
-    };
-    for item in content {
+
+    for item in &content {
         if let Some(text) = item.get("text").and_then(Value::as_str)
             && let Ok(parsed) = serde_json::from_str(text)
         {
-            return parsed;
+            return AndroidToolResult::new(parsed, content);
         }
     }
-    value
+    AndroidToolResult::new(value, content)
+}
+
+fn append_mcp_image_content(items: &mut Vec<ComputerUseCallOutputContentItem>, content: &[Value]) {
+    for item in content {
+        if let Some(image_item) = mcp_image_content_item(item) {
+            items.push(image_item);
+        }
+    }
+}
+
+fn mcp_image_content_item(value: &Value) -> Option<ComputerUseCallOutputContentItem> {
+    if value.get("type").and_then(Value::as_str)? != "image" {
+        return None;
+    }
+    let data = value.get("data").and_then(Value::as_str)?;
+    if data.trim().is_empty() {
+        return None;
+    }
+    let image_url = if data.starts_with("data:") {
+        data.to_string()
+    } else {
+        let mime_type = value
+            .get("mimeType")
+            .or_else(|| value.get("mime_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("application/octet-stream");
+        format!("data:{mime_type};base64,{data}")
+    };
+    Some(ComputerUseCallOutputContentItem::InputImage {
+        image_url,
+        detail: mcp_image_detail(value).or_else(|| Some("high".to_string())),
+    })
+}
+
+fn mcp_image_detail(value: &Value) -> Option<String> {
+    let detail = value
+        .get("_meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("codex/imageDetail"))
+        .and_then(Value::as_str)?;
+    match detail {
+        "auto" | "low" | "high" | "original" => Some(detail.to_string()),
+        _ => None,
+    }
+}
+
+fn items_include_native_image(items: &[ComputerUseCallOutputContentItem]) -> bool {
+    items
+        .iter()
+        .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
 }
 
 fn tool_text(value: &Value) -> Option<String> {
@@ -994,10 +1090,15 @@ fn tool_text(value: &Value) -> Option<String> {
 }
 
 fn parse_event_stream_json(text: &str) -> Result<Value, String> {
+    let mut json_rpc_response = None;
     let mut final_json = None;
     let mut event_data = Vec::new();
 
-    fn finish_event(event_data: &mut Vec<String>, final_json: &mut Option<Value>) {
+    fn finish_event(
+        event_data: &mut Vec<String>,
+        json_rpc_response: &mut Option<Value>,
+        final_json: &mut Option<Value>,
+    ) {
         if event_data.is_empty() {
             return;
         }
@@ -1011,13 +1112,18 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
         }
 
         if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            if value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+                && (value.get("result").is_some() || value.get("error").is_some())
+            {
+                *json_rpc_response = Some(value.clone());
+            }
             *final_json = Some(value);
         }
     }
 
     for line in text.lines() {
         if line.trim().is_empty() {
-            finish_event(&mut event_data, &mut final_json);
+            finish_event(&mut event_data, &mut json_rpc_response, &mut final_json);
             continue;
         }
         if let Some(rest) = line.strip_prefix("data:") {
@@ -1025,9 +1131,9 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
         }
     }
 
-    finish_event(&mut event_data, &mut final_json);
+    finish_event(&mut event_data, &mut json_rpc_response, &mut final_json);
 
-    let Some(value) = final_json else {
+    let Some(value) = json_rpc_response.or(final_json) else {
         return Err("Android provider event stream omitted data payload".to_string());
     };
     Ok(value)
@@ -1240,6 +1346,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_stream_json_prefers_json_rpc_response_over_later_done_event() {
+        let parsed = parse_event_stream_json(
+            "event: progress\ndata: {\"progress\":0.5}\n\n\
+             event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}\n\n\
+             event: done\ndata: {\"done\":true}\n\n",
+        )
+        .expect("event stream should retain final JSON-RPC response");
+        assert_eq!(parsed["result"]["ok"], true);
+        assert_eq!(parsed.get("done"), None);
+    }
+
+    #[test]
     fn parse_event_stream_json_joins_multiline_data_event() {
         let parsed = parse_event_stream_json(
             "event: message\n\
@@ -1365,6 +1483,57 @@ mod tests {
     fn artifact_bytes_decodes_known_shapes() {
         let bytes = artifact_bytes(&json!({"base64": "aGVsbG8="})).expect("decode base64");
         assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn tool_result_preserves_images_when_structured_content_exists() {
+        let result = tool_result(json!({
+            "structuredContent": {
+                "ok": true,
+                "artifacts": {"screenshot_path": "/tmp/screen.png"}
+            },
+            "content": [
+                {"type": "text", "text": "summary"},
+                {
+                    "type": "image",
+                    "data": "UE5H",
+                    "mimeType": "image/png",
+                    "_meta": {"codex/imageDetail": "original"}
+                }
+            ]
+        }));
+
+        assert_eq!(result.structured_content()["ok"], true);
+        let mut items = Vec::new();
+        append_mcp_image_content(&mut items, &result.content);
+        assert_eq!(
+            items,
+            vec![ComputerUseCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,UE5H".to_string(),
+                detail: Some("original".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn tool_result_parses_json_text_without_dropping_mcp_image_content() {
+        let result = tool_result(json!({
+            "content": [
+                {"type": "text", "text": "{\"ok\":true}"},
+                {"type": "image", "data": "data:image/png;base64,UE5H"}
+            ]
+        }));
+
+        assert_eq!(result.structured_content()["ok"], true);
+        let mut items = Vec::new();
+        append_mcp_image_content(&mut items, &result.content);
+        assert_eq!(
+            items,
+            vec![ComputerUseCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,UE5H".to_string(),
+                detail: Some("high".to_string()),
+            }]
+        );
     }
 
     #[test]
