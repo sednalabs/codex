@@ -116,7 +116,7 @@ jobs:
               --changed-files-json "${CHANGED_FILES_JSON}")"
           else
             actions_config="./.codeql-runtime/codeql-actions.yml"
-            rust_config="./.github/codeql/codeql-config.yml"
+            rust_config="./.github/codeql/codeql-rust.yml"
             if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
               rust_config="./.github/codeql/codeql-rust-pr.yml"
             fi

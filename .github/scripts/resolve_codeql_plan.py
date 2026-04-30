@@ -12,6 +12,7 @@ from pathlib import Path
 
 ADVANCED_CONFIG_FILE = "./.github/codeql/codeql-config.yml"
 ACTION_RUNTIME_CONFIG_FILE = "./.codeql-runtime/codeql-actions.yml"
+RUST_CONFIG_FILE = "./.github/codeql/codeql-rust.yml"
 RUST_PR_CONFIG_FILE = "./.github/codeql/codeql-rust-pr.yml"
 
 LANGUAGES = [
@@ -143,8 +144,10 @@ def diff_files(repo_root: Path, base: str, head: str) -> list[str] | None:
 def config_file_for(language: str, event_name: str) -> str:
     if language == "actions":
         return ACTION_RUNTIME_CONFIG_FILE
-    if language == "rust" and event_name == "pull_request":
-        return RUST_PR_CONFIG_FILE
+    if language == "rust":
+        if event_name == "pull_request":
+            return RUST_PR_CONFIG_FILE
+        return RUST_CONFIG_FILE
     return ADVANCED_CONFIG_FILE
 
 
