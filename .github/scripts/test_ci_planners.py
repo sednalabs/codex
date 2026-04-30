@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-mock = unittest.mock
+import unittest.mock as mock
 from pathlib import Path
 
 import yaml
