@@ -280,16 +280,19 @@ async fn observation_response(
     observation: AndroidToolResult,
     title: &str,
 ) -> Result<ComputerUseCallResponse, String> {
-    let structured_observation = observation.structured_content();
+    let AndroidToolResult {
+        structured: structured_observation,
+        content,
+    } = observation;
     let mut items = vec![ComputerUseCallOutputContentItem::InputText {
-        text: summarize_observation(title, structured_observation),
+        text: summarize_observation(title, &structured_observation),
     }];
 
-    append_mcp_image_content(&mut items, &observation.content);
+    append_mcp_image_content(&mut items, content);
 
     if tools.contains("android.read_artifact")
         && !items_include_native_image(&items)
-        && let Some(path) = screenshot_path(structured_observation)
+        && let Some(path) = screenshot_path(&structured_observation)
     {
         match client
             .call_tool("android.read_artifact", json!({ "path": path }))
@@ -1008,15 +1011,18 @@ fn artifact_bytes(value: &Value) -> Result<Vec<u8>, String> {
         .map_err(|err| format!("invalid artifact base64: {err}"))
 }
 
-fn tool_result(value: Value) -> AndroidToolResult {
+fn tool_result(mut value: Value) -> AndroidToolResult {
     let content = value
-        .get("content")
-        .and_then(Value::as_array)
-        .cloned()
+        .get_mut("content")
+        .map(Value::take)
+        .and_then(|value| match value {
+            Value::Array(content) => Some(content),
+            _ => None,
+        })
         .unwrap_or_default();
 
-    if let Some(structured) = value.get("structuredContent") {
-        return AndroidToolResult::new(structured.clone(), content);
+    if let Some(structured) = value.get_mut("structuredContent") {
+        return AndroidToolResult::new(structured.take(), content);
     }
 
     for item in &content {
@@ -1029,7 +1035,10 @@ fn tool_result(value: Value) -> AndroidToolResult {
     AndroidToolResult::new(value, content)
 }
 
-fn append_mcp_image_content(items: &mut Vec<ComputerUseCallOutputContentItem>, content: &[Value]) {
+fn append_mcp_image_content(
+    items: &mut Vec<ComputerUseCallOutputContentItem>,
+    content: Vec<Value>,
+) {
     for item in content {
         if let Some(image_item) = mcp_image_content_item(item) {
             items.push(image_item);
@@ -1037,16 +1046,21 @@ fn append_mcp_image_content(items: &mut Vec<ComputerUseCallOutputContentItem>, c
     }
 }
 
-fn mcp_image_content_item(value: &Value) -> Option<ComputerUseCallOutputContentItem> {
+fn mcp_image_content_item(mut value: Value) -> Option<ComputerUseCallOutputContentItem> {
     if value.get("type").and_then(Value::as_str)? != "image" {
         return None;
     }
-    let data = value.get("data").and_then(Value::as_str)?;
+    let detail = mcp_image_detail(&value).or_else(|| Some("high".to_string()));
+    let data = value.get_mut("data")?.take();
+    let data = match data {
+        Value::String(data) => data,
+        _ => return None,
+    };
     if data.trim().is_empty() {
         return None;
     }
     let image_url = if data.starts_with("data:") {
-        data.to_string()
+        data
     } else {
         let mime_type = value
             .get("mimeType")
@@ -1055,10 +1069,7 @@ fn mcp_image_content_item(value: &Value) -> Option<ComputerUseCallOutputContentI
             .unwrap_or("application/octet-stream");
         format!("data:{mime_type};base64,{data}")
     };
-    Some(ComputerUseCallOutputContentItem::InputImage {
-        image_url,
-        detail: mcp_image_detail(value).or_else(|| Some("high".to_string())),
-    })
+    Some(ComputerUseCallOutputContentItem::InputImage { image_url, detail })
 }
 
 fn mcp_image_detail(value: &Value) -> Option<String> {
@@ -1505,7 +1516,7 @@ mod tests {
 
         assert_eq!(result.structured_content()["ok"], true);
         let mut items = Vec::new();
-        append_mcp_image_content(&mut items, &result.content);
+        append_mcp_image_content(&mut items, result.content);
         assert_eq!(
             items,
             vec![ComputerUseCallOutputContentItem::InputImage {
@@ -1526,7 +1537,7 @@ mod tests {
 
         assert_eq!(result.structured_content()["ok"], true);
         let mut items = Vec::new();
-        append_mcp_image_content(&mut items, &result.content);
+        append_mcp_image_content(&mut items, result.content);
         assert_eq!(
             items,
             vec![ComputerUseCallOutputContentItem::InputImage {
