@@ -338,12 +338,12 @@ async fn screenshot_fallback_response(
         "node_count": 0_u64,
         "nodes": [],
     });
+    let mut mcp_content = Vec::new();
 
     if tools.contains("android.capture_screenshot") {
         let mut args = json!({});
         copy_if_present(arguments, &mut args, "serial");
         copy_inspect_screenshot_filename_for_capture(arguments, &mut args);
-        let mut mcp_content = Vec::new();
         match client.call_tool("android.capture_screenshot", args).await {
             Ok(capture) => {
                 if let Some(serial) = capture
