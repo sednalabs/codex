@@ -49,14 +49,6 @@ predicate isSuccessfulResultExitExpr(Function function, Expr exitExpr) {
   )
 }
 
-predicate isGuardNode(Function function, CfgNode node) {
-  exists(CallCfgNode callNode |
-    node = callNode and
-    callNode.getCall().getEnclosingCallable() = function and
-    isNativeImageGuardCall(callNode.getCall())
-  )
-}
-
 predicate variableAccessExpr(Expr expr, Variable variable) {
   exists(VariableAccess access |
     expr = access and
