@@ -25,19 +25,20 @@ jobs:
           persist-credentials: false
 
       - name: Set up CodeQL
+        id: setup-codeql
         uses: github/codeql-action/setup-codeql@v4
 
       - name: Install Rust computer-use query pack dependencies
         shell: bash
         run: |
           set -euo pipefail
-          codeql pack install .github/codeql/rust-computer-use-contract
+          "${{ steps.setup-codeql.outputs.codeql-path }}" pack install .github/codeql/rust-computer-use-contract
 
       - name: Compile Rust computer-use contract queries
         shell: bash
         run: |
           set -euo pipefail
-          codeql query compile \
+          "${{ steps.setup-codeql.outputs.codeql-path }}" query compile \
             --search-path .github/codeql \
             .github/codeql/rust-computer-use-contract/queries/*.ql
 
@@ -45,6 +46,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          codeql test run \
+          "${{ steps.setup-codeql.outputs.codeql-path }}" test run \
             --search-path .github/codeql \
             .github/codeql/rust-computer-use-contract/test
