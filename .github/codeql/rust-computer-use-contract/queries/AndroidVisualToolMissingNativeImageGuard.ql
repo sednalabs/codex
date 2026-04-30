@@ -1,6 +1,6 @@
 /**
- * @name Android visual computer-use tool missing native-image guard
- * @description Android observe/step handlers must require native image output before a visual response can be treated as successful.
+ * @name Android visual computer-use handler missing native-image guard
+ * @description Android visual computer-use handlers must require native image output before a visual response can be treated as successful.
  * @kind problem
  * @problem.severity error
  * @precision high
@@ -95,7 +95,7 @@ predicate successfulExitReturnsResponseVariable(Expr exitExpr, Variable variable
 }
 
 predicate cfgNodeForExpr(Expr expr, CfgNode node) {
-  node.getAstNode() = expr
+  node = expr.getACfgNode()
 }
 
 predicate blockNodeOrder(BasicBlock block, CfgNode earlier, CfgNode later) {
@@ -108,16 +108,9 @@ predicate blockNodeOrder(BasicBlock block, CfgNode earlier, CfgNode later) {
 
 predicate guardDominatesSuccessfulExit(Function function, Expr exitExpr) {
   exists(CfgNode guardNode, CfgNode exitNode, BasicBlock guardBlock, BasicBlock exitBlock |
-    (
-      exists(Variable returnedVariable |
-        successfulExitReturnsResponseVariable(exitExpr, returnedVariable) and
-        isGuardNodeForResponseVariable(function, returnedVariable, guardNode)
-      )
-      or
-      not exists(Variable returnedVariable |
-        successfulExitReturnsResponseVariable(exitExpr, returnedVariable)
-      ) and
-      isGuardNode(function, guardNode)
+    exists(Variable returnedVariable |
+      successfulExitReturnsResponseVariable(exitExpr, returnedVariable) and
+      isGuardNodeForResponseVariable(function, returnedVariable, guardNode)
     ) and
     cfgNodeForExpr(exitExpr, exitNode) and
     guardBlock.getANode() = guardNode and
@@ -130,9 +123,11 @@ predicate guardDominatesSuccessfulExit(Function function, Expr exitExpr) {
   )
 }
 
-// This covers the provider's common local-variable `Ok(response)` shape. A future
-// data-flow version can extend the same identity check through aliases and helper
-// return values rather than only direct local-variable accesses.
+// This intentionally only accepts the provider's common local-variable
+// `Ok(response)` shape. Non-variable success exits are reported because the query
+// cannot prove the returned response is the one that passed through the guard.
+// A future data-flow version can extend the same identity check through aliases
+// and helper return values rather than only direct local-variable accesses.
 from Function function, Expr exitExpr
 where
   androidVisualToolHandler(function) and
