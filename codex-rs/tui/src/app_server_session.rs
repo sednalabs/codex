@@ -1226,8 +1226,8 @@ fn thread_fork_params_from_config(
         sandbox,
         permission_profile,
         config: config_request_overrides_from_config(&config),
-        base_instructions: config.base_instructions.clone().map(Some),
-        developer_instructions: config.developer_instructions.clone().map(Some),
+        base_instructions: config.base_instructions.clone(),
+        developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         persist_extended_history: true,
         ..ThreadForkParams::default()
@@ -1688,18 +1688,9 @@ mod tests {
             /*remote_cwd_override*/ None,
         );
 
+        assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
         assert_eq!(
-            params
-                .base_instructions
-                .as_ref()
-                .and_then(|value| value.as_deref()),
-            Some("Base override.")
-        );
-        assert_eq!(
-            params
-                .developer_instructions
-                .as_ref()
-                .and_then(|value| value.as_deref()),
+            params.developer_instructions.as_deref(),
             Some("Developer override.")
         );
     }

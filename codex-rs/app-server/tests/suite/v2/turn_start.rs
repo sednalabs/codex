@@ -482,14 +482,12 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            // TODO(aibrahim): Replace empty string instruction overrides with explicit tri-state
-            // app-server semantics: omitted, explicitly none, or explicit value.
             config: Some(HashMap::from([(
                 "include_permissions_instructions".to_string(),
                 json!(false),
             )])),
-            base_instructions: Some(Some(String::new())),
-            developer_instructions: Some(Some(String::new())),
+            base_instructions: Some(String::new()),
+            developer_instructions: Some(String::new()),
             ..Default::default()
         })
         .await?;
