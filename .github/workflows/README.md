@@ -78,10 +78,13 @@ contract today.
   Actions lane prepares a runtime config so same-repository pull requests can
   validate checked-out query-pack changes, while fork pull requests use the
   trusted-base copy of `.github/codeql/actions-workflow-security` when it is
-  available. Rust lanes add `.github/codeql/rust-computer-use-contract` to
-  catch native computer-use image-content regressions. Add Actions workflow
-  policy queries to the Actions pack, Rust semantic contract queries to the
-  Rust pack, and language-neutral CodeQL settings to the shared config.
+  available. Rust lanes add `.github/codeql/rust-computer-use-contract`
+  to catch native computer-use image-content regressions. The
+  `codeql-query-tests.yml` workflow compiles that Rust contract pack and runs
+  its fixtures when the pack changes; code-scanning still provides the
+  repository-wide analysis surface. Add Actions workflow policy queries to the
+  Actions pack, Rust semantic contract queries to the Rust pack, and
+  language-neutral CodeQL settings to the shared config.
 - The CodeQL config deliberately uses the broad `security-and-quality` suite
   and the local threat model. This is noisier than the default or
   `security-extended` suite, but it is the maintained built-in shape that gives
