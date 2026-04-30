@@ -66,6 +66,7 @@ on:
           - codex.workflow-ci-sanity
           - codex.argument-comment-lint
           - codex.downstream-docs-check
+          - codex.downstream-divergence-audit
           - sedna.release-linux-smoke
           - downstream-ledger-seam
         default: all

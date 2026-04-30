@@ -27,10 +27,12 @@ codex-arg0 = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-cloud-requirements = { workspace = true }
+codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-feedback = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-login = { workspace = true }
+codex-model-provider-info = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }

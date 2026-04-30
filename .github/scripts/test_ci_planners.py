@@ -7,8 +7,10 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -23,6 +25,7 @@ def load_module(name: str, path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load module from {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -54,6 +57,14 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
+RESOLVE_SEDNA_RELEASE_VERSION = load_module(
+    "resolve_sedna_release_version_module",
+    SCRIPTS_DIR / "resolve_sedna_release_version.py",
+)
+DOWNSTREAM_DIVERGENCE_AUDIT = load_module(
+    "downstream_divergence_audit_module",
+    REPO_ROOT / "scripts" / "downstream-divergence-audit.py",
+)
 
 
 def run_script(script: Path, *args: str) -> dict:
@@ -83,6 +94,77 @@ def parse_pull_request_types(workflow_path: Path) -> list[str]:
 def load_workflow_payload(workflow_path: Path) -> dict:
     payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     return payload if isinstance(payload, dict) else {}
+
+
+def parse_github_output_file(output_path: Path) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if not line:
+            continue
+        if "<<" in line:
+            key, delimiter = line.split("<<", 1)
+            if not key or not delimiter:
+                continue
+            value_lines: list[str] = []
+            while index < len(lines) and lines[index] != delimiter:
+                value_lines.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            outputs[key] = "\n".join(value_lines)
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key:
+            outputs[key] = value
+    return outputs
+
+
+def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) -> dict:
+    payload = load_workflow_payload(workflow_path)
+    steps = (((payload.get("jobs") or {}).get(job_name) or {}).get("steps") or [])
+    for step in steps:
+        if step.get("name") == step_name:
+            return step
+    raise AssertionError(f"missing step {step_name!r} in {workflow_path}")
+
+
+def run_workflow_step_script(
+    script: str, event: dict, *, event_name: str = "push"
+) -> tuple[subprocess.CompletedProcess, dict]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        event_path = root / "event.json"
+        output_path = root / "github-output.txt"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        output_path.write_text("", encoding="utf-8")
+        env = {
+            **os.environ,
+            "EVENT_AFTER": str(event.get("after") or ""),
+            "GITHUB_EVENT_NAME": event_name,
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_OUTPUT": str(output_path),
+            "GITHUB_SHA": str(event.get("after") or "abc123"),
+            "EVENT_NAME": event_name,
+            "EVENT_REF": str(event.get("ref") or ""),
+            "EVENT_SHA": str(event.get("after") or "abc123"),
+            "HEAD_MESSAGE": str((event.get("head_commit") or {}).get("message") or "")
+            if isinstance(event.get("head_commit"), dict)
+            else "",
+        }
+        proc = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail\n{script}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return proc, parse_github_output_file(output_path)
 
 
 def just_recipe_names(header: str) -> list[str]:
@@ -123,6 +205,8 @@ class TempGitRepo:
         self._git("init", "--initial-branch=main")
         self._git("config", "user.name", "CI Planner Tests")
         self._git("config", "user.email", "ci-planner-tests@example.invalid")
+        self._git("config", "commit.gpgSign", "false")
+        self._git("config", "tag.gpgSign", "false")
 
     def cleanup(self) -> None:
         self._tmpdir.cleanup()
@@ -142,20 +226,33 @@ class TempGitRepo:
     def rev_parse(self, ref: str) -> str:
         return self._git("rev-parse", ref)
 
-    def _git(self, *args: str) -> str:
+    def _git(self, *args: str, env: dict[str, str] | None = None) -> str:
+        git_env = os.environ.copy()
+        if env is not None:
+            git_env.update(env)
         proc = subprocess.run(
-            ["git", "-C", str(self.root), *args],
+            [
+                "git",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-C",
+                str(self.root),
+                *args,
+            ],
             check=True,
             capture_output=True,
+            env=git_env,
             text=True,
         )
         return proc.stdout.strip()
 
 
 class SyncUpstreamMirrorTests(unittest.TestCase):
-    def test_read_only_fallback_uses_live_upstream_when_mirror_is_stale(self) -> None:
+    def test_read_only_fallback_uses_stale_mirror_for_pr_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo, _origin_bare, upstream_bare, _old_sha, new_sha = self.create_fixture(
+            repo, _origin_bare, upstream_bare, old_sha, _new_sha = self.create_fixture(
                 Path(tmpdir), mirror_state="stale"
             )
 
@@ -174,9 +271,18 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
                 "wrote_mirror": result["wrote_mirror"],
             },
             {
-                "audit_baseline": "upstream-ref",
-                "expected_mirror_sha": new_sha,
-                "mirror_audit_args": ["--mirror-ref", "refs/remotes/upstream/main"],
+                "audit_baseline": "origin-mirror",
+                "expected_mirror_sha": old_sha,
+                "mirror_audit_args": [
+                    "--upstream-remote",
+                    "origin",
+                    "--upstream-branch",
+                    "upstream-main",
+                    "--mirror-remote",
+                    "origin",
+                    "--mirror-branch",
+                    "upstream-main",
+                ],
                 "mirror_state": "stale_ff_only",
                 "wrote_mirror": False,
             },
@@ -396,6 +502,7 @@ class RouteSelectionTests(unittest.TestCase):
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
                 ".github/scripts/validation-lanes/downstream-docs-check.sh",
+                ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
                 "scripts/downstream-divergence-audit.py",
             ],
             self.routes,
@@ -418,7 +525,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(lanes, ["codex.downstream-docs-check"])
 
-    def test_downstream_docs_lane_runs_full_history_audit(self) -> None:
+    def test_downstream_docs_lane_is_pr_local_sanity(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
@@ -427,6 +534,21 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             lane["script_path"],
             ".github/scripts/validation-lanes/downstream-docs-check.sh",
+        )
+        self.assertEqual(lane.get("checkout_fetch_depth"), 1)
+        self.assertFalse(lane["needs_just"])
+
+    def test_downstream_divergence_audit_lane_is_explicit_global_audit(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.downstream-divergence-audit"
+        )
+        self.assertTrue(lane["explicit_only"])
+        self.assertTrue(lane["pilot_only"])
+        self.assertEqual(
+            lane["script_path"],
+            ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         )
         self.assertEqual(lane.get("checkout_fetch_depth"), 0)
         self.assertFalse(lane["needs_just"])
@@ -514,6 +636,82 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertFalse(lane["needs_sccache"])
 
 
+class DownstreamDivergenceAuditTests(unittest.TestCase):
+    def run_git(self, repo: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def commit_all(self, repo: Path, message: str) -> str:
+        self.run_git(repo, "add", ".")
+        self.run_git(repo, "commit", "-m", message)
+        return self.run_git(repo, "rev-parse", "HEAD")
+
+    def test_registry_gate_uses_downstream_carry_not_upstream_ahead_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "shared.py").write_text("print('base')\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "upstream_only.py").write_text("print('upstream')\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "downstream_only.py").write_text("print('downstream')\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream")
+
+            all_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            all_code_items = [item for item in all_items if item.is_code]
+            all_paths = sorted({path for item in all_code_items for path in item.paths})
+            self.assertEqual(all_paths, ["downstream_only.py", "upstream_only.py"])
+
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo,
+                upstream_sha,
+                downstream_sha,
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                merge_base,
+                downstream_sha,
+            )
+            carry_code_items = [item for item in carry_items if item.is_code]
+            registry = {
+                "_path": "docs/divergences/index.yaml",
+                "divergences": [
+                    {
+                        "id": "downstream-only",
+                        "status": "live",
+                        "files": ["downstream_only.py"],
+                    }
+                ],
+            }
+
+            registry_state = DOWNSTREAM_DIVERGENCE_AUDIT.reconcile_registry(
+                registry,
+                carry_code_items,
+            )
+
+            self.assertEqual(registry_state["uncovered_code_paths"], [])
+            self.assertEqual(
+                registry_state["path_registry_ids"],
+                {"downstream_only.py": ["downstream-only"]},
+            )
+
+
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None
 
@@ -533,7 +731,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 14)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
@@ -656,11 +854,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 2)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 5)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 6)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 5)
-        self.assertEqual(payload["selected_release_lane_count"], 1)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["smoke_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "8")
         self.assertEqual(payload["node_max_parallel"], "4")
         self.assertEqual(payload["rust_minimal_max_parallel"], "6")
@@ -1245,11 +1444,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
         trigger = payload.get("on") or {}
-        analyze_job = ((payload.get("jobs") or {}).get("analyze") or {})
+        jobs = payload.get("jobs") or {}
+        analyze_job = jobs.get("analyze") or {}
+        results_job = jobs.get("results") or {}
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertNotIn("concurrency", payload)
+        self.assertNotIn("plan", jobs)
+        self.assertNotIn("needs", analyze_job)
+        self.assertNotIn("if", analyze_job)
         self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             analyze_job.get("permissions") or {},
@@ -1261,19 +1466,45 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            (((analyze_job.get("strategy") or {}).get("matrix") or {}).get("include") or []),
-            [
-                {"language": "actions", "build-mode": "none"},
-                {"language": "c-cpp", "build-mode": "none"},
-                {"language": "javascript-typescript", "build-mode": "none"},
-                {"language": "python", "build-mode": "none"},
-                {"language": "rust", "build-mode": "none"},
-            ],
+            ((analyze_job.get("strategy") or {}).get("matrix")),
+            {
+                "include": [
+                    {
+                        "language": "actions",
+                        "build-mode": "none",
+                        "config_file": "./.codeql-runtime/codeql-actions.yml",
+                    },
+                    {
+                        "language": "c-cpp",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-config.yml",
+                    },
+                    {
+                        "language": "javascript-typescript",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-config.yml",
+                    },
+                    {
+                        "language": "python",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-config.yml",
+                    },
+                    {
+                        "language": "rust",
+                        "build-mode": "none",
+                        "config_file": "./.github/codeql/codeql-rust.yml",
+                    },
+                ]
+            },
         )
 
         workflow_json = json.dumps(payload, sort_keys=True)
         self.assertNotIn("autobuild", workflow_json)
         self.assertNotIn("manual", workflow_json)
+        self.assertNotIn("resolve_codeql_plan", workflow_json)
+        self.assertNotIn("has_codeql_relevant_changes", workflow_json)
+        self.assertNotIn("run_all_languages", workflow_json)
+        self.assertNotIn("fromJSON(needs.plan.outputs.matrix)", workflow_json)
 
         checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
         self.assertEqual(checkout_step.get("uses"), "actions/checkout@v6")
@@ -1287,6 +1518,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("rust-toolchain*", install_rust_run)
         self.assertIn('"--component"', install_rust_run)
         self.assertIn('"rust-src"', install_rust_run)
+        self.assertNotIn("toolchain.get(\"components\"", install_rust_run)
+        self.assertNotIn('"clippy"', install_rust_run)
+        self.assertNotIn('"rustfmt"', install_rust_run)
+        self.assertNotIn('"rustc-dev"', install_rust_run)
+        self.assertNotIn('"llvm-tools-preview"', install_rust_run)
         self.assertIn("subprocess.run(command, check=True)", install_rust_run)
 
         restore_rust_cache_step = next(
@@ -1298,6 +1534,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
         self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("~/.rustup/toolchains", workflow_json)
+
+        telemetry_step = next(
+            step for step in steps if step.get("name") == "Record Rust cache telemetry for CodeQL"
+        )
+        self.assertEqual(telemetry_step.get("if"), "${{ matrix.language == 'rust' }}")
+        telemetry_run = telemetry_step.get("run") or ""
+        self.assertIn("CodeQL Rust cache telemetry", telemetry_run)
+        self.assertIn("cache_codeql_rust_cargo_home_restore.outputs.cache-hit", telemetry_run)
 
         prefetch_rust_step = next(
             step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
@@ -1311,6 +1557,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
             prefetch_run,
         )
 
+        actions_config_step = next(
+            step for step in steps if step.get("name") == "Prepare Actions CodeQL query pack config"
+        )
+        self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
+        actions_config_run = actions_config_step.get("run") or ""
+        self.assertIn(".github/codeql/actions-workflow-security", actions_config_run)
+        self.assertIn("github.event.pull_request.head.repo.full_name", actions_config_run)
+        self.assertIn("github.repository", actions_config_run)
+        self.assertIn("github.event.pull_request.base.sha", actions_config_run)
+        self.assertIn(".codeql-runtime/trusted-base", actions_config_run)
+        self.assertIn("security-and-quality", actions_config_run)
+        self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
+
         init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
         self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
         self.assertEqual(
@@ -1318,7 +1577,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 "languages": "${{ matrix.language }}",
                 "build-mode": "${{ matrix.build-mode }}",
-                "config-file": "./.github/codeql/codeql-config.yml",
+                "config-file": "${{ matrix.config_file }}",
+                "dependency-caching": "${{ github.event_name == 'pull_request' && 'restore' || 'full' }}",
             },
         )
 
@@ -1333,6 +1593,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("refs/heads/upstream-main", save_rust_cache_step.get("if") or "")
         self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
 
+        self.assertEqual(results_job.get("name"), "CodeQL required gate")
+        self.assertEqual(results_job.get("needs"), ["analyze"])
+        self.assertEqual(results_job.get("if"), "always()")
+        self.assertEqual(results_job.get("permissions") or {}, {"actions": "read"})
+        timing_step = next(
+            step for step in results_job.get("steps") or [] if step.get("name") == "Report CodeQL timing"
+        )
+        timing_run = timing_step.get("run") or ""
+        self.assertIn("CodeQL timing", timing_run)
+        self.assertIn("actions/runs/${{ github.run_id }}/jobs", timing_run)
+        self.assertIn("Analyze \\\\(", timing_run)
+        results_run = "\n".join(step.get("run") or "" for step in results_job.get("steps") or [])
+        self.assertIn("CodeQL analysis failed", results_run)
+
         config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
@@ -1345,6 +1619,140 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "threat-models": "local",
             },
         )
+        actions_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-actions.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            actions_config,
+            {
+                "name": "codex-codeql-actions",
+                "queries": [
+                    {"uses": "security-and-quality"},
+                    {"uses": "./.github/codeql/actions-workflow-security"},
+                ],
+                "threat-models": "local",
+            },
+        )
+        actions_pack = yaml.load(
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/qlpack.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(actions_pack.get("name"), "sednalabs/actions-workflow-security")
+        self.assertEqual(actions_pack.get("extractor"), "actions")
+        self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
+        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-workflow-security.qls")
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-log",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql")
+            .read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "@id actions/sensitive-workflow-value-to-verbose-tool",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToVerboseTool.ql")
+            .read_text(encoding="utf-8"),
+        )
+        for query_id in [
+            "actions/unsafe-release-publishing-path",
+            "actions/release-publisher-with-untrusted-input",
+            "actions/overbroad-workflow-permissions",
+            "actions/write-token-on-untrusted-trigger",
+            "actions/artifact-published-without-provenance",
+            "actions/repo-security-invariant-violation",
+        ]:
+            self.assertTrue(
+                any(
+                    f"@id {query_id}" in path.read_text(encoding="utf-8")
+                    for path in (REPO_ROOT / ".github/codeql/actions-workflow-security").glob("*.ql")
+                ),
+                query_id,
+            )
+        self.assertIn(
+            "getAWriteToGitHubEnv",
+            (REPO_ROOT / ".github/codeql/actions-workflow-security/LogExposure.qll").read_text(
+                encoding="utf-8"
+            ),
+        )
+        workflow_security = (
+            REPO_ROOT / ".github/codeql/actions-workflow-security/WorkflowSecurity.qll"
+        ).read_text(encoding="utf-8")
+        self.assertIn("jobHasPublishingSink", workflow_security)
+        self.assertIn("jobEffectiveWritePermission", workflow_security)
+        self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
+        self.assertFalse((REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").exists())
+        rust_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-rust.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            rust_config,
+            {
+                "name": "codex-codeql-rust",
+                "queries": [
+                    {"uses": "security-and-quality"},
+                    {"uses": "./.github/codeql/rust-computer-use-contract"},
+                ],
+                "threat-models": "local",
+            },
+        )
+        rust_contract_pack = yaml.load(
+            (REPO_ROOT / ".github/codeql/rust-computer-use-contract/qlpack.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(rust_contract_pack.get("name"), "sednalabs/rust-computer-use-contract")
+        self.assertEqual(rust_contract_pack.get("extractor"), "rust")
+        self.assertEqual(rust_contract_pack.get("dependencies"), {"codeql/rust-all": "*"})
+        for query_id in [
+            "rust/computer-use-match-drops-native-image",
+            "rust/android-visual-tool-missing-native-image-guard",
+            "rust/computer-use-response-success-with-error",
+        ]:
+            self.assertTrue(
+                any(
+                    f"@id {query_id}" in path.read_text(encoding="utf-8")
+                    for path in (REPO_ROOT / ".github/codeql/rust-computer-use-contract/queries").glob("*.ql")
+                ),
+                query_id,
+            )
+
+    def test_closed_pr_run_canceller_preserves_post_merge_branch_runs(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/cancel-pr-runs.yml")
+        trigger = payload.get("on") or {}
+        job = ((payload.get("jobs") or {}).get("cancel") or {})
+        steps = job.get("steps") or []
+
+        self.assertEqual(
+            ((trigger.get("pull_request_target") or {}).get("types") or []),
+            ["closed"],
+        )
+        self.assertEqual(payload.get("permissions"), {"actions": "write", "contents": "read"})
+        self.assertEqual(job.get("permissions") or {}, {})
+        self.assertEqual(job.get("runs-on"), "ubuntu-latest")
+
+        workflow_json = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("actions/checkout", workflow_json)
+        self.assertNotIn("github.event.pull_request.head.repo.clone_url", workflow_json)
+
+        cancel_step = next(
+            step for step in steps if step.get("name") == "Cancel stale runs for the closed PR"
+        )
+        self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9")
+        script = (cancel_step.get("with") or {}).get("script") or ""
+
+        self.assertIn("github.rest.actions.listWorkflowRunsForRepo", script)
+        self.assertIn("event: 'pull_request'", script)
+        self.assertIn("run.pull_requests.some((pr) => pr.number === prNumber)", script)
+        self.assertIn("github.rest.actions.cancelWorkflowRun", script)
+        self.assertIn("headRepo === currentRepo", script)
+        self.assertIn("!protectedBranches.has(headBranch)", script)
+        self.assertIn("'main'", script)
+        self.assertIn("'upstream-main'", script)
+        self.assertIn("mayCancelHeadPushRuns &&", script)
+        self.assertIn("Post-merge push runs on ${baseBranch}", script)
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
@@ -1432,6 +1840,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
                 )
                 self.assertNotIn("version", install_step.get("with") or {})
+                configure_step = next(
+                    step
+                    for step in job.get("steps") or []
+                    if step.get("name") == "Configure sccache backend"
+                )
+                self.assertIn(
+                    "${{ github.workspace }}/.github/scripts/configure_sccache_backend.sh",
+                    configure_step.get("run") or "",
+                )
+
+                for step_name in [
+                    "Summarize clippy failure",
+                    "Summarize nextest failures",
+                ]:
+                    matching_steps = [
+                        step for step in job.get("steps") or [] if step.get("name") == step_name
+                    ]
+                    for step in matching_steps:
+                        self.assertIn(
+                            "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py",
+                            step.get("run") or "",
+                        )
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -1565,7 +1995,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         aggregate_step = next(
             step for step in steps if step.get("name") == "Build structured summary"
         )
-        self.assertIn("summarize_rust_ci_full.py aggregate", aggregate_step.get("run") or "")
+        self.assertIn(
+            "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py\" aggregate",
+            aggregate_step.get("run") or "",
+        )
         verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
         verify_run = verify_step.get("run") or ""
         self.assertIn("needs.schedule_gate.outputs.should_skip", verify_run)
@@ -1858,12 +2291,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 18)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 15)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "17")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "18")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -1889,10 +2322,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 19)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 20)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
@@ -2006,24 +2439,27 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["workflow_max_parallel"], "5")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
         planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
-            planned_lane_ids[:5],
+            planned_lane_ids[:6],
             [
                 "core-compile-smoke",
                 "core-carry-core-smoke",
                 "core-carry-ui-smoke",
                 "core-ledger-smoke",
                 "core-runtime-surface-smoke",
+                "sedna.release-linux-smoke",
             ],
         )
-        self.assertEqual(planned_lane_ids[5:], selected_lane_ids)
+        self.assertEqual(planned_lane_ids[6:], selected_lane_ids)
         self.assertIn("codex.core-startup-sync-targeted", selected_lane_ids)
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
+        self.assertNotIn("codex.downstream-divergence-audit", selected_lane_ids)
+        self.assertNotIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertNotIn("codex.nextest-archive-core-carry-pilot", selected_lane_ids)
 
     def test_heavy_plan_ci_heavy_pr_uses_frontier_harvest_policy(self) -> None:
@@ -2055,10 +2491,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["eager_release_lanes"], "true")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
+        self.assertEqual(payload["smoke_release_lane_count"], 1)
+        self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertNotIn(
             "codex.nextest-archive-core-carry-pilot",
             payload["selected_lane_ids"],
         )
+        self.assertNotIn("sedna.release-linux-smoke", payload["selected_lane_ids"])
 
     def test_nextest_archive_pilot_is_explicit_only(self) -> None:
         payload = run_script(
@@ -2760,10 +3199,7 @@ class HelperScriptTests(unittest.TestCase):
             )
 
             payload = json.loads(proc.stdout)
-            output_lines = dict(
-                line.split("=", 1)
-                for line in output.read_text(encoding="utf-8").splitlines()
-            )
+            output_lines = parse_github_output_file(output)
 
         self.assertEqual(payload["should_skip"], "false")
         self.assertEqual(payload["should_run"], "true")
@@ -2772,8 +3208,395 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(output_lines["should_run"], "true")
         self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
 
+    def test_github_output_parser_tolerates_malformed_and_multiline_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "github-output.txt"
+            output.write_text(
+                "\n".join(
+                    [
+                        "plain=value",
+                        "malformed",
+                        "empty_key_is_ignored",
+                        "=missing-key",
+                        "multi<<EOF",
+                        "line one",
+                        "line two",
+                        "EOF",
+                        "later=still parsed",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                parse_github_output_file(output),
+                {
+                    "plain": "value",
+                    "multi": "line one\nline two",
+                    "later": "still parsed",
+                },
+            )
+
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
+
+    def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        channel_input = (
+            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
+            .get("channel")
+            or {}
+        )
+
+        self.assertEqual(
+            {
+                "default": channel_input.get("default"),
+                "options": channel_input.get("options"),
+            },
+            {
+                "default": "auto",
+                "options": ["auto", "stable", "prerelease"],
+            },
+        )
+
+    def test_sedna_release_main_pushes_are_routed_before_publisher(self) -> None:
+        release_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
+        release_push = ((release_payload.get("on") or {}).get("push") or {})
+        jobs = release_payload.get("jobs") or {}
+        route_job = jobs.get("route") or {}
+        router_steps = (
+            (route_job.get("steps") or [])
+        )
+        named_steps = {step.get("name"): step for step in router_steps if "name" in step}
+        resolve_job = jobs.get("resolve") or {}
+        release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
+
+        self.assertIn("main release gate", release_payload.get("run-name") or "")
+        self.assertNotIn("concurrency", release_payload)
+        self.assertEqual(route_job.get("name"), "Release request gate")
+        self.assertEqual(route_job.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(release_push.get("branches"), ["main"])
+        self.assertEqual(release_push.get("tags"), ["v*-sedna.*"])
+        self.assertEqual(release_payload.get("permissions"), {})
+        self.assertEqual(route_job.get("permissions"), {})
+        self.assertFalse(any("uses" in step for step in router_steps))
+        self.assertIn("HEAD_MESSAGE", named_steps["Resolve release request"].get("env") or {})
+        self.assertIn("^Sedna-Release:", named_steps["Resolve release request"].get("run") or "")
+        self.assertIn(
+            "Publisher job: ${publisher_job}",
+            named_steps["Summarize release gate"].get("run") or "",
+        )
+        self.assertEqual(resolve_job.get("name"), "Resolve release metadata")
+        self.assertEqual(resolve_job.get("needs"), "route")
+        self.assertIn(
+            "needs.route.outputs.release_requested == 'true'",
+            resolve_job.get("if") or "",
+        )
+        self.assertIn("release_tag", resolve_job.get("outputs") or {})
+        resolve_steps = resolve_job.get("steps") or []
+        resolve_named_steps = {
+            step.get("name"): step for step in resolve_steps if "name" in step
+        }
+        self.assertIn(
+            "--missing-marker error",
+            resolve_named_steps["Resolve release metadata"].get("run") or "",
+        )
+        self.assertEqual(release_job.get("name"), "Build Linux release artifacts")
+        self.assertEqual(release_job.get("needs"), "resolve")
+        self.assertIn(
+            "needs.resolve.outputs.release_requested == 'true'",
+            release_job.get("if") or "",
+        )
+        self.assertEqual(
+            release_job.get("concurrency"),
+            {
+                "group": "${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}",
+                "cancel-in-progress": "false",
+            },
+        )
+        self.assertEqual(
+            release_job.get("permissions"),
+            {"contents": "read", "id-token": "write"},
+        )
+        self.assertNotIn("environment", release_job)
+        self.assertEqual(publish_job.get("name"), "Publish GitHub release")
+        self.assertEqual(publish_job.get("needs"), ["resolve", "release-linux"])
+        self.assertEqual(publish_job.get("environment"), "release")
+        self.assertEqual(
+            publish_job.get("permissions"),
+            {"contents": "write", "id-token": "write"},
+        )
+
+    def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        jobs = payload.get("jobs") or {}
+        release_job = jobs.get("release-linux") or {}
+        publish_job = jobs.get("publish-release") or {}
+        release_steps = release_job.get("steps") or []
+        steps = publish_job.get("steps") or []
+        release_named_steps = {
+            step.get("name"): step for step in release_steps if "name" in step
+        }
+        named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertIn("Upload workflow artifacts", release_named_steps)
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("uses"),
+            "actions/download-artifact@v8",
+        )
+        self.assertEqual(
+            named_steps["Download Linux release artifacts"].get("with") or {},
+            {"name": "sedna-release-linux", "path": "dist"},
+        )
+
+        config_step = named_steps["Check release publisher app configuration"]
+        self.assertEqual(
+            {
+                "APP_CLIENT_ID": (
+                    (config_step.get("env") or {}).get("APP_CLIENT_ID")
+                ),
+                "APP_PRIVATE_KEY": (
+                    (config_step.get("env") or {}).get("APP_PRIVATE_KEY")
+                ),
+            },
+            {
+                "APP_CLIENT_ID": "${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}",
+                "APP_PRIVATE_KEY": "${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}",
+            },
+        )
+        self.assertIn(
+            "Missing release publisher GitHub App configuration",
+            config_step.get("run") or "",
+        )
+
+        token_step = named_steps["Generate release publisher app token"]
+        self.assertEqual(token_step.get("id"), "release_publisher_token")
+        self.assertEqual(
+            token_step.get("uses"),
+            "actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3",
+        )
+        self.assertEqual(
+            token_step.get("with") or {},
+            {
+                "client-id": "${{ vars.SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID }}",
+                "private-key": "${{ secrets.SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY }}",
+                "permission-actions": "write",
+                "permission-contents": "write",
+            },
+        )
+
+        for step_name in ("Create GitHub release", "Dispatch release asset verifier"):
+            self.assertEqual(
+                (named_steps[step_name].get("env") or {}).get("GH_TOKEN"),
+                "${{ steps.release_publisher_token.outputs.token }}",
+            )
+
+    def test_sedna_release_verifier_checks_staged_binary_version_in_dry_run(self) -> None:
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        dry_run_index = installer.index('if [[ "$dry_run" == "true" ]]')
+        version_check_index = installer.index(
+            'staged_version_output="$("$staged/codex" --version 2>&1)"'
+        )
+
+        self.assertLess(version_check_index, dry_run_index)
+        self.assertIn(
+            'staged codex --version did not report ${release_version@Q}',
+            installer,
+        )
+        self.assertIn('echo "$staged_version_output"', installer)
+
+    def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
+        install_workflow = (
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        ).read_text(encoding="utf-8")
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        shared_tail = (
+            r"(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+"
+            r"(\+upstream\.[0-9]+)?"
+        )
+
+        self.assertIn(shared_tail, install_workflow)
+        self.assertIn(shared_tail, installer)
+        self.assertNotIn("([-.][0-9A-Za-z.]+)*-sedna", install_workflow)
+        self.assertNotIn("([-.][0-9A-Za-z]+)*-sedna", installer)
+
+    def test_sedna_release_router_detects_release_marker(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "release commit\n\nSedna-Release: prerelease\n",
+            },
+        }
+
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            outputs,
+            {
+                "release_requested": "true",
+                "reason": "release_marker",
+                "target_sha": "abc123",
+                "channel": "prerelease",
+            },
+        )
+
+    def test_sedna_release_router_skips_unmarked_main_pushes(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "ordinary maintenance commit",
+            },
+        }
+
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            outputs,
+            {
+                "release_requested": "false",
+                "reason": "missing_sedna_release_marker",
+                "target_sha": "abc123",
+                "channel": "",
+            },
+        )
+
+    def test_sedna_release_router_rejects_invalid_release_marker(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
+        event = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "head_commit": {
+                "message": "release commit\n\nSedna-Release: beta\n",
+            },
+        }
+
+        proc, outputs = run_workflow_step_script(script, event)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(outputs, {})
+        self.assertIn(
+            "Sedna-Release marker must be either 'stable' or 'prerelease'",
+            proc.stderr,
+        )
+
+    def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "+refs/heads/upstream-main:refs/remotes/origin/upstream-main",
+            workflow,
+        )
+        self.assertIn("--upstream-ref refs/remotes/origin/upstream-main", workflow)
+        self.assertNotIn("--upstream-ref refs/remotes/upstream/main", workflow)
+
+    def test_sedna_release_dispatches_public_asset_verification_only(self) -> None:
+        release_workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+        install_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        )
+        install_job = ((install_payload.get("jobs") or {}).get("install") or {})
+
+        self.assertIn("Dispatch release asset verifier", release_workflow)
+        self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertNotIn('-f "dry_run=false"', release_workflow)
+        self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
+        workflow_json = json.dumps(install_payload, sort_keys=True)
+        self.assertNotIn("self-hosted", workflow_json)
+        self.assertIn("public workflow requires true", workflow_json)
+        self.assertIn("--dry-run", workflow_json)
+        self.assertIn("external deployment path", workflow_json)
+
+    def test_sedna_release_reuses_caches_without_reusing_smoke_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
+        steps = release_job.get("steps") or []
+        named_steps = {step.get("name"): step for step in steps if "name" in step}
+
+        self.assertEqual(
+            {
+                "cargo_home_restore": named_steps["Restore cargo home cache"].get("uses"),
+                "sccache_install": named_steps["Install sccache"].get("uses"),
+                "sccache_configure_run": named_steps["Configure sccache backend"].get("run"),
+                "sccache_restore": named_steps["Restore sccache cache (fallback)"].get("uses"),
+                "cargo_home_save": named_steps["Save cargo home cache"].get("uses"),
+                "sccache_save": named_steps["Save sccache cache (fallback)"].get("uses"),
+            },
+            {
+                "cargo_home_restore": "actions/cache/restore@v5",
+                "sccache_install": "taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1",
+                "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
+                "sccache_restore": "actions/cache/restore@v5",
+                "cargo_home_save": "actions/cache/save@v5",
+                "sccache_save": "actions/cache/save@v5",
+            },
+        )
+
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save cargo home cache"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.build_release.outcome == 'success'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "steps.sccache_backend.outputs.policy == 'write-fallback'",
+            named_steps["Save sccache cache (fallback)"].get("if") or "",
+        )
+        self.assertIn(
+            "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}",
+            named_steps["Enable sccache wrapper and reset stats"].get("run") or "",
+        )
+        self.assertEqual(
+            (
+                (named_steps["Build release binaries"].get("env") or {}).get(
+                    "CODEX_UPSTREAM_DISTANCE_FROM_TAG"
+                )
+            ),
+            "${{ needs.resolve.outputs.upstream_distance_from_tag }}",
+        )
+        self.assertIn(
+            "upstream_position=${UPSTREAM_POSITION}",
+            named_steps["Stage release assets"].get("run") or "",
+        )
+        self.assertIn(
+            '"upstream_position": os.environ["UPSTREAM_POSITION"]',
+            named_steps["Stage release assets"].get("run") or "",
+        )
+        self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
+        self.assertFalse(
+            any(step.get("uses", "").startswith("actions/download-artifact") for step in steps)
+        )
 
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2836,6 +3659,154 @@ jobs:
                 "with.version; use tool: nextest@0.9.103 instead."
             ],
         )
+
+    def test_workflow_policy_rejects_self_hosted_runners_in_public_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/deploy.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: deploy
+on: workflow_dispatch
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, example-runner]
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/deploy.yml: public workflows must not use self-hosted "
+                "runners; use external deployment automation for host-local operations."
+            ],
+        )
+
+    def test_workflow_policy_rejects_write_all_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: ci
+on: push
+permissions: write-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/ci.yml: permissions must not use write-all; "
+                "use job-scoped least privilege instead."
+            ],
+        )
+
+    def test_workflow_policy_rejects_pull_request_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/pr.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: pr
+on: pull_request_target
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/pr.yml: pull_request_target jobs must not checkout "
+                "repository code; split trusted writes from untrusted PR context."
+            ],
+        )
+
+    def test_workflow_policy_rejects_unscoped_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without the release environment.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without contents: write scoped to the publishing job.",
+                ".github/workflows/release.yml: job 'publish' creates a GitHub release "
+                + "without id-token: write for release signing or provenance.",
+            ],
+        )
+
+    def test_workflow_policy_accepts_guarded_direct_release_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - run: gh release create "$TAG" dist/*
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
 
     def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2939,6 +3910,421 @@ jobs:
                 CHECK_MARKDOWN_LINKS.ROOT = original_root
 
         self.assertEqual(resolved, readme.resolve())
+
+
+class SednaReleaseVersionResolverTests(unittest.TestCase):
+    def create_fixture(
+        self,
+        marker: str | None = "Sedna-Release: prerelease",
+    ) -> tuple[TempGitRepo, str, str]:
+        repo = TempGitRepo()
+        old_upstream = repo.commit("upstream stable", {"upstream.txt": "stable\n"})
+        repo._git("tag", "rust-v0.124.0", old_upstream)
+        repo._git("tag", "rust-vv9.999.0", old_upstream)
+        upstream = repo.commit("upstream alpha", {"upstream.txt": "alpha\n"})
+        repo._git("tag", "rust-v0.126.0-alpha.3", upstream)
+        repo._git("update-ref", "refs/remotes/origin/upstream-main", upstream)
+
+        message = "downstream release"
+        if marker is not None:
+            message = f"{message}\n\n{marker}"
+        downstream = repo.commit(message, {"downstream.txt": "release\n"})
+        repo._git("update-ref", "refs/remotes/origin/main", downstream)
+        return repo, upstream, downstream
+
+    def resolve(
+        self,
+        repo: TempGitRepo,
+        target: str,
+        *,
+        channel: str = "prerelease",
+        release_tag: str | None = None,
+        current_release_tag: str | None = None,
+        require_marker: bool = False,
+        missing_marker: str = "skip",
+    ) -> dict:
+        return RESOLVE_SEDNA_RELEASE_VERSION.resolve_release(
+            repo=repo.root,
+            target_sha=target,
+            main_ref="refs/remotes/origin/main",
+            upstream_ref="refs/remotes/origin/upstream-main",
+            repository="",
+            channel=channel,
+            release_tag=release_tag,
+            current_release_tag=current_release_tag,
+            require_marker=require_marker,
+            missing_marker=missing_marker,
+            github_releases="off",
+        )
+
+    def test_prerelease_marker_computes_next_sedna_ordinal(self) -> None:
+        repo, upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_requested": result["release_requested"],
+                "release_channel": result["release_channel"],
+                "release_tag": result["release_tag"],
+                "release_version": result["release_version"],
+                "github_prerelease": result["github_prerelease"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_tag": result["upstream_base_tag"],
+                "upstream_position": result["upstream_position"],
+                "build_provenance": result["build_provenance"],
+            },
+            {
+                "release_requested": True,
+                "release_channel": "prerelease",
+                "release_tag": "v0.126.0-alpha.3-sedna.2",
+                "release_version": "0.126.0-alpha.3-sedna.2",
+                "github_prerelease": True,
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+                "upstream_position": f"rust-v0.126.0-alpha.3@{upstream[:8]}",
+                "build_provenance": f"up:rust-v0.126.0-alpha.3@{upstream[:8]} down:{downstream[:8]}",
+            },
+        )
+
+    def test_upstream_position_marks_commits_after_upstream_tag(self) -> None:
+        repo = TempGitRepo()
+        tagged_upstream = repo.commit("upstream alpha tag", {"upstream.txt": "alpha\n"})
+        repo._git("tag", "rust-v0.126.0-alpha.3", tagged_upstream)
+        upstream_plus_one = repo.commit(
+            "upstream alpha follow-up",
+            {"upstream.txt": "alpha\nfollow-up\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/upstream-main", upstream_plus_one)
+        downstream = repo.commit(
+            "downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", downstream)
+        try:
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["upstream_distance_from_tag"], 1)
+        self.assertEqual(result["upstream_base_tag_exact"], False)
+        self.assertEqual(
+            result["upstream_position"],
+            f"rust-v0.126.0-alpha.3+1@{upstream_plus_one[:8]}",
+        )
+        self.assertEqual(
+            result["release_tag"],
+            "v0.126.0-alpha.3-sedna.1+upstream.1",
+        )
+        self.assertEqual(
+            result["version_display"],
+            "0.126.0-alpha.3-sedna.1+upstream.1 "
+            f"(up:rust-v0.126.0-alpha.3+1@{upstream_plus_one[:8]} down:{downstream[:8]})",
+        )
+
+    def test_consecutive_release_markers_get_deterministic_ordinals(self) -> None:
+        repo, _upstream, first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            first_result = self.resolve(
+                repo,
+                first_release,
+                channel="auto",
+                require_marker=True,
+            )
+            second_result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                require_marker=True,
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "first": first_result["release_tag"],
+                "second": second_result["release_tag"],
+            },
+            {
+                "first": "v0.126.0-alpha.3-sedna.1",
+                "second": "v0.126.0-alpha.3-sedna.2",
+            },
+        )
+
+    def test_release_marker_after_existing_tag_uses_next_ordinal(self) -> None:
+        repo, _upstream, first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("tag", "v0.126.0-alpha.3-sedna.1", first_release)
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                require_marker=True,
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.2")
+
+    def test_supplied_tag_can_assert_second_pending_release_marker(self) -> None:
+        repo, _upstream, _first_release = self.create_fixture()
+        second_release = repo.commit(
+            "second downstream release\n\nSedna-Release: prerelease",
+            {"downstream.txt": "second release\n"},
+        )
+        repo._git("update-ref", "refs/remotes/origin/main", second_release)
+        try:
+            result = self.resolve(
+                repo,
+                second_release,
+                channel="auto",
+                release_tag="v0.126.0-alpha.3-sedna.2",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.2")
+
+    def test_manual_markerless_release_without_tag_can_error(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "manual markerless releases must supply release_tag",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="auto",
+                    require_marker=True,
+                    missing_marker="error",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_manual_auto_channel_infers_prerelease_from_upstream_track(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            result = self.resolve(repo, downstream, channel="auto")
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "does not match computed tag v0.126.0-alpha.3-sedna.1",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.4-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_channel": result["release_channel"],
+                "release_tag": result["release_tag"],
+                "github_prerelease": result["github_prerelease"],
+            },
+            {
+                "release_channel": "prerelease",
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
+                "github_prerelease": True,
+            },
+        )
+
+    def test_future_upstream_tag_is_not_used_for_older_synced_upstream_base(self) -> None:
+        repo, upstream, downstream = self.create_fixture(marker=None)
+        try:
+            repo._git(
+                "tag",
+                "-a",
+                "rust-v0.127.0-alpha.1",
+                upstream,
+                "-m",
+                "Release 0.127.0-alpha.1",
+                env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+00:00"},
+            )
+            result = self.resolve(repo, downstream, channel="auto")
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_tag": result["release_tag"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_upstream_mirror_ahead_of_target_does_not_advance_release_track(self) -> None:
+        repo, upstream, downstream = self.create_fixture(marker=None)
+        try:
+            repo._git("checkout", "-B", "upstream-main-fixture", upstream)
+            future_upstream = repo.commit(
+                "upstream newer alpha",
+                {"upstream.txt": "newer alpha\n"},
+            )
+            repo._git(
+                "tag",
+                "-a",
+                "rust-v0.126.0-alpha.4",
+                future_upstream,
+                "-m",
+                "Release 0.126.0-alpha.4",
+                env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+00:00"},
+            )
+            repo._git("update-ref", "refs/remotes/origin/upstream-main", future_upstream)
+            repo._git("checkout", "main")
+
+            result = self.resolve(repo, downstream, channel="auto")
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            {
+                "release_tag": result["release_tag"],
+                "upstream_track": result["upstream_track"],
+                "upstream_base_commit": result["upstream_base_commit"],
+                "upstream_base_tag": result["upstream_base_tag"],
+            },
+            {
+                "release_tag": "v0.126.0-alpha.3-sedna.1",
+                "upstream_track": "0.126.0-alpha.3",
+                "upstream_base_commit": upstream,
+                "upstream_base_tag": "rust-v0.126.0-alpha.3",
+            },
+        )
+
+    def test_stable_channel_rejects_upstream_prerelease_track(self) -> None:
+        repo, _upstream, downstream = self.create_fixture("Sedna-Release: stable")
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "stable Sedna releases cannot use prerelease upstream track",
+            ):
+                self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+    def test_missing_release_marker_is_clean_noop_for_main_pushes(self) -> None:
+        repo, _upstream, downstream = self.create_fixture(marker=None)
+        try:
+            result = self.resolve(repo, downstream, channel="auto", require_marker=True)
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(
+            result,
+            {
+                "release_requested": False,
+                "skip_reason": "missing_sedna_release_marker",
+                "target_commit": downstream,
+                "version_policy": "sedna-upstream-track-v2",
+            },
+        )
+
+    def test_supplied_tag_must_match_computed_tag(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "does not match computed tag v0.126.0-alpha.3-sedna.1",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.2",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_current_tag_is_ignored_for_tag_push_validation(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="auto",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+                current_release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
+
+    def test_existing_supplied_tag_for_target_can_be_released(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", downstream)
+            result = self.resolve(
+                repo,
+                downstream,
+                channel="prerelease",
+                release_tag="v0.126.0-alpha.3-sedna.1",
+            )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
+
+    def test_existing_supplied_tag_must_point_at_target(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            other = repo.commit("other downstream", {"downstream.txt": "other\n"})
+            repo._git("tag", "v0.126.0-alpha.3-sedna.1", other)
+            with self.assertRaisesRegex(
+                RESOLVE_SEDNA_RELEASE_VERSION.ReleaseVersionError,
+                "not target commit",
+            ):
+                self.resolve(
+                    repo,
+                    downstream,
+                    channel="prerelease",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+    def test_current_release_tag_is_ignored_after_remote_release_union(self) -> None:
+        repo, _upstream, downstream = self.create_fixture()
+        try:
+            with mock.patch.object(
+                RESOLVE_SEDNA_RELEASE_VERSION,
+                "github_release_tags",
+                return_value={"v0.126.0-alpha.3-sedna.1"},
+            ):
+                result = self.resolve(
+                    repo,
+                    downstream,
+                    channel="auto",
+                    release_tag="v0.126.0-alpha.3-sedna.1",
+                    current_release_tag="v0.126.0-alpha.3-sedna.1",
+                )
+        finally:
+            repo.cleanup()
+
+        self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
 
 
 if __name__ == "__main__":

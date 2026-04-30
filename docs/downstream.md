@@ -46,10 +46,12 @@ git remote set-url origin git@github.com:sednalabs/codex.git
 - official releases are published only from the protected Sedna release workflow
 - the authoritative divergence audit lives in `scripts/downstream-divergence-audit.py` and writes artifacts under `target/downstream-divergence-audit/`
 - the intended-divergence registry lives at `docs/divergences/index.yaml`
-- PRs that touch downstream divergence docs, the divergence registry, or the
-  audit plumbing run `codex.downstream-docs-check`, which now executes the same
-  registry/code divergence audit against the checked-out PR head and the live
-  `origin/upstream-main` mirror.
+- PRs that touch downstream divergence docs or the divergence registry run
+  `codex.downstream-docs-check`, a PR-local docs and registry sanity lane.
+- The full registry/code divergence audit is `codex.downstream-divergence-audit`.
+  It is an explicit baseline-maintenance lane because it validates the entire
+  downstream fork against the current upstream mirror, not only the files in a
+  single pull request.
 
 ## Divergence Summary
 
@@ -59,18 +61,16 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current integration code baseline (validated on `2026-04-25`):
-- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- downstream integration branch `origin/integration/upstream-main-sync-20260424-164627`:
-  `a96c652a5becca0c6ed97d31c232d418e115b893`
-- downstream branch `main` (`origin/main`) before merge:
-  `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
+Current downstream audit baseline (validated on `2026-04-28`):
+- downstream branch `main` (`origin/main`):
+  `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- integration divergence counts (`upstream/main...origin/integration/upstream-main-sync-20260424-164627`):
-  `0` upstream ahead, `790` downstream ahead
-- pre-merge `main` divergence counts (`upstream/main...origin/main`):
-  `57` upstream ahead, `769` downstream ahead
+  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `upstream/main`:
+  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- downstream divergence counts (`upstream/main...origin/main`):
+  `1` upstream ahead, `889` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -93,6 +93,7 @@ Why:
 
 User-visible behavior:
 - `exec_command` and `write_stdin` support blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
+- `wait_until_terminal` gates provider resume until the process reaches a terminal state or the wait budget expires. The default and maximum wait budget is two hours.
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
 - Tool-spec guardrails cover the full blocking-wait contract, including the
@@ -112,11 +113,12 @@ Why:
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling.
 
 User-visible behavior:
-- Bare `android_observe` and `android_step` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
+- Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Namespaced Android-like tools remain normal dynamic tools.
-- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`.
+- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
+- Android screenshots are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
 

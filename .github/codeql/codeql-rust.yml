@@ -1,0 +1,8 @@
+name: codex-codeql-rust
+
+queries:
+  - uses: security-and-quality
+  - uses: ./.github/codeql/rust-computer-use-contract
+
+# Note: retained for planner/config consistency. Rust contract queries do not currently rely on threat-models.
+threat-models: local

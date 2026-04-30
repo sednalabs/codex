@@ -261,8 +261,8 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_list:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
@@ -374,12 +374,14 @@ downstream-ledger-seam:
 [no-cd]
 downstream-docs-check:
     git diff --check -- docs/downstream.md docs/native-computer-use.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+    cd "{{justfile_directory()}}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
+    cd "{{justfile_directory()}}" && python3 .github/scripts/check_markdown_links.py
 
 [no-cd]
 workflow-ci-sanity:
-    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py
+    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py scripts/downstream-divergence-audit.py
     cd "{{justfile_directory()}}" && python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
-    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
+    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/codeql.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/sedna-release.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
 
 [no-cd]
 downstream-divergence-audit:

@@ -5,10 +5,11 @@ tracking.
 
 Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
 runner plus the checked-in `docs/divergences/index.yaml` registry. The
-`codex.downstream-docs-check` validation lane runs that audit against PR heads,
-while `sedna-sync-upstream` runs it after mirror refreshes on `main`. The later
-generation phases below remain the forward path for ledger and regression
-projection.
+`codex.downstream-docs-check` validation lane runs PR-local docs and registry
+sanity, while the explicit `codex.downstream-divergence-audit` lane and
+`sedna-sync-upstream` run the full audit after mirror refreshes or deliberate
+baseline checkpoints. The later generation phases below remain the forward path
+for ledger and regression projection.
 
 ## Why This Exists
 
@@ -167,9 +168,16 @@ mirror ref, including contents write and workflows write. During migration the
 workflow may fall back to the legacy `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret,
 but that PAT path should be retired after the GitHub App proof run succeeds.
 
-Pull request validation is read-only. The `codex.downstream-docs-check` lane
-fetches live `upstream/main`; when the public mirror is stale it audits against
-that exact fetched snapshot and leaves mirror updates to `sedna-sync-upstream`.
+Pull request validation is read-only. The `codex.downstream-docs-check` lane is
+PR-local and does not require mirror writes. The explicit
+`codex.downstream-divergence-audit` lane fetches live `upstream/main`; when the
+public mirror is stale it audits against that exact fetched snapshot and leaves
+mirror updates to `sedna-sync-upstream`.
+The rendered tree diff still shows both upstream-ahead and downstream-ahead
+paths, but registry enforcement is scoped to the downstream carry diff from the
+merge base to the audited downstream ref. That keeps upstream-only files visible
+without requiring the downstream registry to document upstream work before a
+sync lands.
 
 ## Phased Adoption
 
