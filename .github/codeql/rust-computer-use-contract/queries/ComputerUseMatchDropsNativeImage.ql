@@ -32,16 +32,16 @@ predicate insideInlineRustTest(AstNode node) {
 }
 
 predicate inputTextContentItemPattern(MatchArm arm) {
-  arm.hasPat() and
-  arm.getPat().toString().regexpMatch(
-    "(?s).*(ComputerUse(Output|CallOutput)ContentItem|FunctionCallOutputContentItem|DynamicToolCallOutputContentItem)::InputText\\b.*"
+  exists(PathAstNode pat |
+    pat = arm.getPat() and
+    pat.getPath().getSegment().getIdentifier().getText() = "InputText"
   )
 }
 
 predicate inputImageContentItemPattern(MatchArm arm) {
-  arm.hasPat() and
-  arm.getPat().toString().regexpMatch(
-    "(?s).*(ComputerUse(Output|CallOutput)ContentItem|FunctionCallOutputContentItem|DynamicToolCallOutputContentItem)::InputImage\\b.*"
+  exists(PathAstNode pat |
+    pat = arm.getPat() and
+    pat.getPath().getSegment().getIdentifier().getText() = "InputImage"
   )
 }
 
