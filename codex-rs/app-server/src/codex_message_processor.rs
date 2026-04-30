@@ -2590,7 +2590,7 @@ impl CodexMessageProcessor {
                 initial_history: InitialHistory::Forked(rollout_items),
                 session_source: None,
                 dynamic_tools: Vec::new(),
-                persist_extended_history: true,
+                persist_extended_history: false,
                 metrics_service_name: None,
                 parent_trace: None,
                 environments,
