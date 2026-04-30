@@ -19,7 +19,7 @@ predicate androidComputerUseProviderFile(File file) {
 predicate referencesStructuredContent(Function function) {
   exists(StringLiteralExpr literal |
     literal.getEnclosingCallable() = function and
-    literal.getValue() = "structuredContent"
+    literal.toString() = "\"structuredContent\""
   )
 }
 
