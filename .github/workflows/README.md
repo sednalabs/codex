@@ -72,13 +72,16 @@ contract today.
   the workflow bootstraps with a full matrix instead of reading planner code
   from the PR head.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings and `.github/codeql/codeql-actions.yml` for Actions-only query
-  additions. The Actions lane prepares a runtime config so same-repository pull
-  requests can validate checked-out query-pack changes, while fork pull requests
-  use the trusted-base copy of `.github/codeql/actions-workflow-security` when
-  it is available. Other languages continue to use the shared config. Add
-  Actions workflow policy queries to the Actions pack, and add language-neutral
-  CodeQL settings to the shared config.
+  settings, `.github/codeql/codeql-actions.yml` for Actions-only query
+  additions, and `.github/codeql/codeql-rust.yml` /
+  `.github/codeql/codeql-rust-pr.yml` for Rust-specific contract checks. The
+  Actions lane prepares a runtime config so same-repository pull requests can
+  validate checked-out query-pack changes, while fork pull requests use the
+  trusted-base copy of `.github/codeql/actions-workflow-security` when it is
+  available. Rust lanes add `.github/codeql/rust-computer-use-contract` to
+  catch native computer-use image-content regressions. Add Actions workflow
+  policy queries to the Actions pack, Rust semantic contract queries to the
+  Rust pack, and language-neutral CodeQL settings to the shared config.
 - The CodeQL config deliberately uses the broad `security-and-quality` suite
   and the local threat model. This is noisier than the default or
   `security-extended` suite, but it is the maintained built-in shape that gives
