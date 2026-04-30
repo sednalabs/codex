@@ -12,7 +12,7 @@
 
 import rust
 
-predicate computerUsePipelineFile(SourceFile file) {
+predicate computerUsePipelineFile(File file) {
   file.getRelativePath().regexpMatch("codex-rs/(protocol|core|app-server|tui)/src/.*\\.rs") and
   not file.getRelativePath().regexpMatch("(?s).*(/tests?/.*|.*_tests\\.rs|test\\.rs|tests\\.rs)$")
 }
