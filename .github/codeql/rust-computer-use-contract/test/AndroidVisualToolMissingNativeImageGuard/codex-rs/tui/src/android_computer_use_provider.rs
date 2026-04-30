@@ -40,8 +40,8 @@ fn step() -> ProviderResult {
     let _ = fallible()?;
     require_native_image_for_visual_response(&mut response_a, "must include image");
 
-    // Known future data-flow target: the dominance guard sees a protected path,
-    // but does not yet prove the returned response object is response_a.
+    // The query tracks direct local-variable identity: guarding response_a must
+    // not satisfy a successful exit that returns response_b.
     Ok(response_b)
 }
 
@@ -50,4 +50,17 @@ fn install_build_from_run() -> ProviderResult {
     let _ = fallible()?;
     require_native_image_for_visual_response(&mut response, "must include image");
     Ok(response)
+}
+
+mod non_variable_success_exit {
+    use super::*;
+
+    fn observe() -> ProviderResult {
+        let mut response = build_response();
+        require_native_image_for_visual_response(&mut response, "must include image");
+
+        // Non-variable success exits are reported because the query cannot prove
+        // this fresh response is the same guarded response.
+        Ok(build_response())
+    }
 }

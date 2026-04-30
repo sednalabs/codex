@@ -204,7 +204,7 @@ async fn install_build_from_run(
             .await?
         }
         Err(err) => {
-            screenshot_fallback_response(
+            match screenshot_fallback_response(
                 client,
                 tools,
                 arguments,
@@ -212,7 +212,13 @@ async fn install_build_from_run(
                 &err,
                 /*action_already_executed*/ true,
             )
-            .await?
+            .await
+            {
+                Ok(response) => response,
+                Err(fallback_err) => failed_response(format!(
+                    "Android post-install observation degraded after install/build action completed.\n\nandroid.inspect_ui failed: {err}\nScreenshot fallback failed: {fallback_err}\n\nRecover with a fresh android_observe before making visual claims, and do not repeat the install solely because the screenshot was missing."
+                )),
+            }
         }
     };
 
