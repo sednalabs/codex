@@ -277,7 +277,6 @@ pub fn build_hook_prompt_message(fragments: &[HookPromptFragment]) -> Option<Res
         id: Some(uuid::Uuid::new_v4().to_string()),
         role: "user".to_string(),
         content,
-        end_turn: None,
         phase: None,
     })
 }
@@ -516,7 +515,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
             }],
-            end_turn: None,
             phase: None,
         };
 
@@ -542,7 +540,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: format!("<subagent_notification>{payload}</subagent_notification>"),
             }],
-            end_turn: None,
             phase: None,
         };
 
@@ -563,7 +560,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "hello world".to_string(),
             }],
-            end_turn: None,
             phase: None,
         };
 

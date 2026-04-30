@@ -149,8 +149,7 @@ fn exec_command_tool_matches_expected_spec() {
         (
             "wait_until_terminal".to_string(),
             JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses."
-                    .to_string(),
+                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
             )),
         ),
         (
@@ -227,7 +226,7 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "wait_until_terminal".to_string(),
             JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses.".to_string(),
+                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
             )),
         ),
         (

@@ -11,41 +11,108 @@ from upstream OpenAI releases.
 
 ### Release identity
 
-- Release tags use `v<upstream-track>-sedna.<n>`
+- Release tags use `v<upstream-track>-sedna.<n>` when the upstream merge-base is exactly on the
+  selected upstream tag
+- Release tags use `v<upstream-track>-sedna.<n>+upstream.<distance>` when the upstream merge-base
+  is ahead of the selected upstream tag
 - Example: `v0.119.0-sedna.2`
+- Offset example: `v0.126.0-alpha.5-sedna.1+upstream.1`
+- `scripts/resolve_sedna_release_version` is the authoritative version resolver for official
+  releases. Humans mark release intent; the resolver chooses and validates the tag.
 - Sedna public tags stay human-readable and monotonic. Exact upstream provenance is recorded in
   release metadata instead of being overloaded into the public tag.
 - Artifact names include `sedna` so they are not confused with upstream binaries
 - Release builds embed `CODEX_RELEASE_VERSION` as the canonical SemVer and add a compact
   provenance label to `codex --version`
 - Release artifacts include both `RELEASE-METADATA.txt` and `RELEASE-METADATA.json` with:
-  `upstream_track`, `upstream_base_commit`, `upstream_base_tag` when exact, `downstream_commit`,
-  and the compact `build_provenance` / `version_display` strings
+  `version_policy`, `release_channel`, `release_marker`, `upstream_track`,
+  `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
+  `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
+  the compact `build_provenance` / `version_display` strings
 - Linux `x86_64` is the only supported Sedna release target today. Other upstream platform
   packaging remains parked in the repository and may be revived later, but it is not part of the
   current downstream release contract.
 
-The upstream track is the release line this fork is closest to. It does not need to be numerically
-greater than upstream, and it does not claim that Sedna is synced to the latest upstream prerelease
-tag on that line.
+The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
+That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
+has advanced by the time the release runs. The resolver chooses the newest well-formed
+`rust-v<semver>` upstream tag whose tag timestamp is at or before that merge-base commit, and
+malformed double-prefixed upstream tags are ignored. If the merge-base is ahead of the selected
+upstream tag, the release metadata records the commit distance instead of pretending the base was
+an exact upstream tag.
+
+Offset releases also include the distance in the public release version as SemVer build metadata.
+The public tag remains anchored to the upstream track and Sedna ordinal, while the `+upstream.N`
+suffix makes it visible that the upstream base is N commits above the upstream tag.
+
+`version_display` and `build_provenance` include that same upstream position. Exact upstream-tag
+builds use `rust-v<semver>@<upstream-sha>`, while builds whose upstream merge-base is above the
+tag use `rust-v<semver>+<distance>@<upstream-sha>`, for example
+`0.126.0-alpha.5-sedna.1+upstream.1 (up:rust-v0.126.0-alpha.5+1@4f1d5f00 down:82fafe27)`.
 
 ### GitHub Actions
 
 Use the `sedna-release` workflow for fork-owned GitHub releases.
 
-- Push a tag like `v0.119.0-sedna.2` to publish immediately
-- Or run `sedna-release` manually with a `release_tag` input to build from the selected ref and let
-  GitHub create the tag/release for that commit
-- If you want a GitHub prerelease, use the workflow-dispatch `prerelease=true` input. The public
-  Sedna tag itself stays on the plain downstream release line.
+- Push to `main` with an exact commit trailer to request an automatic official release:
+  - `Sedna-Release: stable`
+  - `Sedna-Release: prerelease`
+- `main` pushes first run a lightweight route job inside `sedna-release`; ordinary `main` pushes
+  without a trailer skip before release metadata resolution or heavyweight publication.
+- Release requests then resolve the exact tag, version, upstream position, channel, and target
+  commit in a separate metadata job before any release build starts.
+- Release publisher concurrency is keyed by the resolved release tag, not by `main`. Two different
+  resolved release tags may build in parallel, while duplicate attempts for the same tag serialize
+  and re-check that the GitHub Release still does not exist before spending build minutes.
+- `Sedna-Release: stable` refuses upstream prerelease tracks such as `0.126.0-alpha.3`,
+  publishes a full GitHub Release, and dispatches public asset verification for that exact tag.
+- `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
+  a prerelease. The release workflow dispatches asset verification with an explicit
+  prerelease allowance for that exact tag.
+- Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
+  matches the resolver's computed version for the target commit before publishing.
+- Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
+  `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
+  the source of truth.
+- Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
+  `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
+- A supplied `release_tag` must match the upstream track computed from the target commit's
+  merge-base. Supplying a tag from a newer upstream track fails instead of moving the release onto
+  that newer track.
+- Automatic trailer releases allocate Sedna ordinals from the first-parent `main` release-marker
+  ledger for the resolved upstream track. This keeps back-to-back release commits deterministic
+  even when their workflow runs resolve before either GitHub Release has been published.
+- Existing release tags are immutable in normal release flow. Rerolls use the next trailing
+  `sedna.<n>` value rather than clobbering published assets.
 
 Current workflow characteristics:
 
 - GitHub-hosted Linux `x86_64` release build
+- Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
+  repository token while the small publication job owns the release environment and write-scoped
+  publishing permissions.
+- Cargo home and `sccache` restore/save around the official release build to reduce duplicate
+  compilation when prior release smoke runs warmed matching caches
 - Keyless Sigstore signing for Linux binaries
+- GitHub Release publication through a dedicated GitHub App installation token instead of the
+  default workflow integration token
 - GitHub Release assets named with the Sedna release identity
 - Exact upstream/downstream provenance recorded in release metadata assets
 - No dependency on upstream runner groups or upstream release tags
+
+Release publication requires a dedicated GitHub App installed on this repository only. Configure
+the app with repository permissions for `Contents: Read and write` and `Actions: Read and write`,
+then store:
+
+- repository or organization variable `SEDNA_RELEASE_PUBLISHER_APP_CLIENT_ID`
+- repository or organization secret `SEDNA_RELEASE_PUBLISHER_APP_PRIVATE_KEY`
+
+The workflow checks that these are configured before starting the release build, then mints the
+short-lived installation token only after the assets are staged so the publication token is fresh
+for GitHub Release creation and verifier dispatch.
+
+The resolver writes `version_policy=sedna-upstream-track-v2` into release metadata so future policy
+changes can be detected explicitly instead of inferred from tag shape alone.
 
 ### Branch artifacts and heavy validation
 
@@ -55,9 +122,14 @@ Current workflow characteristics:
 - `validation-lab` `profile=targeted` with `lane_set=release` is the preferred early Linux
   release-build smoke path when the question is dependency or lockfile drift under
   `cargo build --locked`
-- the concrete preflight lane is `sedna.release-linux-smoke`; keep that path separate from
-  official release publication so operators can prove a ref is releasable without mutating
-  GitHub Releases
+- the concrete preflight lane is `sedna.release-linux-smoke`; it also runs as a runtime smoke gate
+  for core-heavy PR validation so release-mode compile breaks are caught before an official
+  release dispatch is the first full release build
+- keep that path separate from official release publication so operators can prove a ref is
+  releasable without mutating GitHub Releases
+- release smoke runs may warm dependency and compiler caches for the official publisher, but
+  `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
+  publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
   build factory
@@ -81,7 +153,23 @@ Current workflow characteristics:
 - GitHub-hosted branch builds remain useful when the actual question is preview artifact
   buildability
 - GitHub-hosted release builds are the authoritative public release artifacts
-- GitHub prereleases are intentionally opt-in and are not the updater's default candidate path
+- GitHub prereleases are intentionally opt-in through the `Sedna-Release: prerelease` marker or
+  manual prerelease channel and are not the updater's default candidate path
 - Local non-release builds may still show the workspace placeholder version when
   `CODEX_RELEASE_VERSION` is not set; published releases should come from CI so the embedded release
   metadata is consistent
+
+### Release install verification workflow
+
+`sedna-release-install` verifies already published Sedna release assets on a GitHub-hosted
+runner. It intentionally does not perform host-local installation from the public Actions surface.
+
+- Official release verification is explicitly dispatched by `sedna-release` after publishing a
+  non-draft GitHub Release. This avoids relying on implicit follow-on workflow events from the
+  release publisher token.
+- Manual `workflow_dispatch` runs require `dry_run=true`
+- Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
+- The verifier checks the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
+- Host-local installs should be performed by external deployment automation outside the public
+  Actions log surface
+- Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

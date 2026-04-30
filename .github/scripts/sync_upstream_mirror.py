@@ -112,15 +112,36 @@ def sync_upstream_mirror(
             )
             wrote_mirror = True
         else:
-            print(
-                (
-                    f"{mirror_remote}/{mirror_branch} is {mirror_state}; "
-                    f"auditing against read-only {upstream_ref}"
-                ),
-                file=sys.stderr,
-            )
-            audit_baseline = "upstream-ref"
-            mirror_audit_args = ["--mirror-ref", upstream_ref]
+            if mirror_state == "stale_ff_only" and mirror_sha is not None:
+                print(
+                    (
+                        f"{mirror_remote}/{mirror_branch} is {mirror_state}; "
+                        "auditing against the read-only mirror baseline"
+                    ),
+                    file=sys.stderr,
+                )
+                audit_baseline = "origin-mirror"
+                mirror_audit_args = [
+                    "--upstream-remote",
+                    mirror_remote,
+                    "--upstream-branch",
+                    mirror_branch,
+                    "--mirror-remote",
+                    mirror_remote,
+                    "--mirror-branch",
+                    mirror_branch,
+                ]
+                upstream_sha = mirror_sha
+            else:
+                print(
+                    (
+                        f"{mirror_remote}/{mirror_branch} is {mirror_state}; "
+                        f"auditing against read-only {upstream_ref}"
+                    ),
+                    file=sys.stderr,
+                )
+                audit_baseline = "upstream-ref"
+                mirror_audit_args = ["--mirror-ref", upstream_ref]
 
     if mirror_state not in {"exact", "missing", "stale_ff_only"}:
         raise MirrorSyncError(

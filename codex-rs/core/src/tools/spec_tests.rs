@@ -12,9 +12,9 @@ use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info::with_config_overrides;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_tools::AdditionalProperties;
 use codex_tools::ConfiguredToolSpec;
@@ -241,7 +241,7 @@ async fn multi_agent_v2_tools_config() -> ToolsConfig {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     })
     .with_max_concurrent_threads_per_session(Some(4))
@@ -320,7 +320,7 @@ async fn model_provided_unified_exec_is_blocked_for_windows_sandboxed_policies()
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::new_workspace_write_policy(),
+        permission_profile: &PermissionProfile::workspace_write(),
         windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
     });
 
@@ -346,7 +346,7 @@ async fn get_memory_requires_feature_flag() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let (tools, _) = build_specs(
@@ -378,7 +378,7 @@ async fn assert_model_tools(
         image_generation_tool_auth_allowed: true,
         web_search_mode,
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let router = ToolRouter::from_config(
@@ -670,7 +670,7 @@ async fn test_build_specs_default_shell_present() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Live),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let (tools, _) = build_specs(
@@ -692,76 +692,100 @@ async fn test_build_specs_default_shell_present() {
 #[tokio::test]
 async fn unified_exec_tools_include_wait_until_terminal_contract_fields() {
     let config = test_config().await;
-    let model_info = construct_model_info_offline("o3", &config);
+    let response = bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+    let mut model_infos = vec![construct_model_info_offline("o3", &config)];
+    for slug in ["gpt-5.4", "gpt-5.5"] {
+        if let Some(model) = response
+            .models
+            .iter()
+            .find(|candidate| candidate.slug == slug)
+            .cloned()
+        {
+            model_infos.push(with_config_overrides(
+                model,
+                &config.to_models_manager_config(),
+            ));
+        }
+    }
+    assert!(
+        model_infos.len() >= 2,
+        "expected at least one bundled GPT-5 model to verify the unified exec contract"
+    );
+
     let mut features = Features::with_defaults();
     features.enable(Feature::UnifiedExec);
+    let available_models = Vec::new();
 
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &Vec::new(),
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    )
-    .build();
+    for model_info in model_infos {
+        let model_slug = model_info.slug.clone();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            available_models: &available_models,
+            features: &features,
+            image_generation_tool_auth_allowed: true,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+            permission_profile: &PermissionProfile::Disabled,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        });
+        let (tools, _) = build_specs(
+            &tools_config,
+            /*mcp_tools*/ None,
+            /*deferred_mcp_tools*/ None,
+            &[],
+        )
+        .build();
 
-    for tool_name in ["exec_command", "write_stdin"] {
-        let function = find_function_tool(&tools, tool_name);
-        let Some(properties) = function.parameters.properties.as_ref() else {
-            panic!("{tool_name} should expose object properties");
-        };
-        let expected_fields = [
-            (
-                "wait_until_terminal",
-                JsonSchema::boolean(Some(
-                    "When true, block until the process exits or max_wait_ms elapses.".to_string(),
-                )),
-            ),
-            (
-                "max_wait_ms",
-                JsonSchema::number(Some(
-                    "Maximum total wait window for wait_until_terminal, in milliseconds."
-                        .to_string(),
-                )),
-            ),
-            (
-                "heartbeat_interval_ms",
-                JsonSchema::number(Some(
-                    "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                        .to_string(),
-                )),
-            ),
-        ];
+        for tool_name in ["exec_command", "write_stdin"] {
+            let function = find_function_tool(&tools, tool_name);
+            let Some(properties) = function.parameters.properties.as_ref() else {
+                panic!("{model_slug}.{tool_name} should expose object properties");
+            };
+            let expected_fields = [
+                (
+                    "wait_until_terminal",
+                    JsonSchema::boolean(Some(
+                        "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+                    )),
+                ),
+                (
+                    "max_wait_ms",
+                    JsonSchema::number(Some(
+                        "Maximum total wait window for wait_until_terminal, in milliseconds."
+                            .to_string(),
+                    )),
+                ),
+                (
+                    "heartbeat_interval_ms",
+                    JsonSchema::number(Some(
+                        "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                            .to_string(),
+                    )),
+                ),
+            ];
 
-        for (field, expected_schema) in &expected_fields {
-            assert!(
-                properties.contains_key(*field),
-                "{tool_name} is missing required wait contract field `{field}`"
-            );
-            assert_eq!(
-                properties
-                    .get(*field)
-                    .unwrap_or_else(|| panic!("{tool_name} missing `{field}`")),
-                expected_schema,
-                "{tool_name}.{field} schema drifted from the published wait contract"
-            );
-        }
-
-        if let Some(required_fields) = function.parameters.required.as_ref() {
-            for (field, _) in &expected_fields {
+            for (field, expected_schema) in &expected_fields {
                 assert!(
-                    !required_fields.iter().any(|required| required == field),
-                    "{tool_name}.{field} should stay optional"
+                    properties.contains_key(*field),
+                    "{model_slug}.{tool_name} is missing required wait contract field `{field}`"
                 );
+                assert_eq!(
+                    properties
+                        .get(*field)
+                        .unwrap_or_else(|| panic!("{model_slug}.{tool_name} missing `{field}`")),
+                    expected_schema,
+                    "{model_slug}.{tool_name}.{field} schema drifted from the published wait contract"
+                );
+            }
+
+            if let Some(required_fields) = function.parameters.required.as_ref() {
+                for (field, _) in &expected_fields {
+                    assert!(
+                        !required_fields.iter().any(|required| required == field),
+                        "{model_slug}.{tool_name}.{field} should stay optional"
+                    );
+                }
             }
         }
     }
@@ -783,7 +807,7 @@ async fn shell_zsh_fork_prefers_shell_command_over_unified_exec() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Live),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let user_shell = Shell {
@@ -907,7 +931,7 @@ async fn tool_suggest_requires_apps_and_plugins_features() {
             image_generation_tool_auth_allowed: true,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-            sandbox_policy: &SandboxPolicy::DangerFullAccess,
+            permission_profile: &PermissionProfile::Disabled,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
         });
         let (tools, _) = build_specs_with_discoverable_tools(
@@ -943,7 +967,7 @@ async fn search_tool_description_handles_no_enabled_mcp_tools() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -977,7 +1001,7 @@ async fn search_tool_description_falls_back_to_connector_name_without_descriptio
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1028,7 +1052,7 @@ async fn search_tool_registers_namespaced_mcp_tool_aliases() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1113,7 +1137,7 @@ async fn direct_mcp_tools_register_namespaced_handlers() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1150,7 +1174,7 @@ async fn unavailable_mcp_tools_are_exposed_as_dummy_function_tools() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1199,7 +1223,7 @@ async fn test_mcp_tool_property_missing_type_defaults_to_string() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1262,7 +1286,7 @@ async fn test_mcp_tool_preserves_integer_schema() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1324,7 +1348,7 @@ async fn test_mcp_tool_array_without_items_gets_default_string_items() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1388,7 +1412,7 @@ async fn test_mcp_tool_anyof_defaults_to_string() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
@@ -1457,7 +1481,7 @@ async fn test_get_openai_tools_mcp_tools_with_additional_properties_schema() {
         image_generation_tool_auth_allowed: true,
         web_search_mode: Some(WebSearchMode::Cached),
         session_source: SessionSource::Cli,
-        sandbox_policy: &SandboxPolicy::DangerFullAccess,
+        permission_profile: &PermissionProfile::Disabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
     let (tools, _) = build_specs(

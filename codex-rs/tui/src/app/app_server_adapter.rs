@@ -12,6 +12,7 @@ should shrink and eventually disappear.
 */
 
 use super::App;
+use crate::android_computer_use_provider::AndroidComputerUseOutcome;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
@@ -21,7 +22,6 @@ use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::exec_command::split_command_string;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
-use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
@@ -288,7 +288,42 @@ impl App {
         if let ServerRequest::ComputerUseCall { request_id, params } = request {
             let show_message =
                 should_show_computer_use_fallback_message(self.primary_thread_id, thread_id);
-            self.note_unavailable_computer_use_call(request_id, params, show_message);
+            match crate::android_computer_use_provider::handle_android_computer_use(&params).await {
+                AndroidComputerUseOutcome::Handled(response) => {
+                    let result = serde_json::to_value(response)
+                        .map_err(|err| format!("failed to serialize computer-use response: {err}"));
+                    match result {
+                        Ok(result) => {
+                            let request_id_for_log = request_id.clone();
+                            if let Err(err) = app_server_client
+                                .resolve_server_request(request_id, result)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %err,
+                                    request_id = ?request_id_for_log,
+                                    "failed to resolve native computer-use app-server request"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                request_id = ?request_id,
+                                "failed to prepare native computer-use response: {err}"
+                            );
+                            if let Err(reject_err) = self
+                                .reject_app_server_request(app_server_client, request_id, err)
+                                .await
+                            {
+                                tracing::warn!("{reject_err}");
+                            }
+                        }
+                    }
+                }
+                AndroidComputerUseOutcome::Unavailable => {
+                    self.note_unavailable_computer_use_call(request_id, params, show_message);
+                }
+            }
             return;
         }
 
