@@ -15,19 +15,19 @@ import codeql.rust.controlflow.BasicBlocks
 import codeql.rust.controlflow.CfgNodes
 import codeql.rust.controlflow.ControlFlowGraph
 
-predicate androidComputerUseProviderFile(SourceFile file) {
+predicate androidComputerUseProviderFile(File file) {
   file.getRelativePath() = "codex-rs/tui/src/android_computer_use_provider.rs"
 }
 
 predicate androidVisualToolHandler(Function function) {
   androidComputerUseProviderFile(function.getFile()) and
-  (function.getName() = "observe" or function.getName() = "step")
+  (function.getName().getText() = "observe" or function.getName().getText() = "step")
 }
 
 predicate isNativeImageGuardCall(Call call) {
   exists(Function target |
     target = call.getStaticTarget() and
-    target.getName() = "require_native_image_for_visual_response" and
+    target.getName().getText() = "require_native_image_for_visual_response" and
     androidComputerUseProviderFile(target.getFile())
   )
 }
@@ -36,7 +36,7 @@ predicate isSuccessfulResultExitExpr(Function function, Expr exitExpr) {
   exitExpr.getEnclosingCallable() = function and
   exists(TupleVariantExpr ok |
     ok = exitExpr and
-    ok.getVariant().getName() = "Ok"
+    ok.getVariant().getName().getText() = "Ok"
   ) and
   (
     exists(ReturnExpr returnExpr | returnExpr.getExpr() = exitExpr)
