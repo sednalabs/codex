@@ -203,15 +203,17 @@ async fn install_build_from_run(
             )
             .await?
         }
-        Err(err) => ComputerUseCallResponse {
-            content_items: vec![ComputerUseCallOutputContentItem::InputText {
-                text: format!(
-                    "{install_summary}\n\nAndroid post-install observation degraded\nUI digest unavailable: {err}"
-                ),
-            }],
-            success: true,
-            error: None,
-        },
+        Err(err) => {
+            screenshot_fallback_response(
+                client,
+                tools,
+                arguments,
+                "Android post-install observation",
+                &err,
+                /*action_already_executed*/ true,
+            )
+            .await?
+        }
     };
 
     if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
@@ -219,6 +221,10 @@ async fn install_build_from_run(
     {
         *text = format!("{install_summary}\n\n{text}");
     }
+    require_native_image_for_visual_response(
+        &mut response,
+        "Android post-install observation missing native image output. The install/build action may already have completed; recover with a fresh android_observe before making visual claims, and do not repeat the install solely because the screenshot was missing.",
+    );
     Ok(response)
 }
 

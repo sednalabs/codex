@@ -21,7 +21,11 @@ predicate androidComputerUseProviderFile(File file) {
 
 predicate androidVisualToolHandler(Function function) {
   androidComputerUseProviderFile(function.getFile()) and
-  (function.getName().getText() = "observe" or function.getName().getText() = "step")
+  (
+    function.getName().getText() = "observe" or
+    function.getName().getText() = "step" or
+    function.getName().getText() = "install_build_from_run"
+  )
 }
 
 predicate isNativeImageGuardCall(Call call) {
