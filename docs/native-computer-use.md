@@ -208,8 +208,11 @@ The focused lanes are:
   projection coverage.
 - Hosted CodeQL Rust contract checks cover native-image guard dominance,
   success-with-error contradictions, advisory text/image match drops, and a
-  regression sentinel for Android MCP tool-result parsing that would drop
-  `content[]` images when `structuredContent` is present.
+  regression sentinel for Android MCP tool-result parsing that would directly
+  return `structuredContent` while dropping sibling `content[]` images. The
+  advisory text/image match query also covers app-server protocol conversion
+  surfaces so native image preservation stays guarded across the thread-history
+  boundary.
 
 The local just recipes behind those lanes are:
 
