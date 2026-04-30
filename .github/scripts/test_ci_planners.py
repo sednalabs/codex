@@ -1724,6 +1724,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         for query_id in [
             "rust/computer-use-match-drops-native-image",
             "rust/android-visual-tool-missing-native-image-guard",
+            "rust/computer-use-response-success-with-error",
         ]:
             self.assertTrue(
                 any(
