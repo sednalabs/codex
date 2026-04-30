@@ -97,7 +97,7 @@ async fn observe(
     tools: &BTreeSet<String>,
     arguments: &Value,
 ) -> Result<ComputerUseCallResponse, String> {
-    match inspect_ui(client, arguments).await {
+    let mut response = match inspect_ui(client, arguments).await {
         Ok(observation) => {
             observation_response(client, tools, observation, "Android observation").await
         }
@@ -112,7 +112,12 @@ async fn observe(
             )
             .await
         }
-    }
+    }?;
+    require_native_image_for_visual_response(
+        &mut response,
+        "Android observation missing native image output. Text and visible_ui summaries are not sufficient for native computer use.",
+    );
+    Ok(response)
 }
 
 async fn step(
@@ -162,6 +167,10 @@ async fn step(
             .join("\n");
         *text = format!("Executed Android actions:\n{action_text}\n\n{text}");
     }
+    require_native_image_for_visual_response(
+        &mut response,
+        "Android post-action observation missing native image output. The actions above may already have executed; recover with a fresh android_observe before making visual claims, and do not repeat mutating actions solely because the screenshot was missing.",
+    );
     Ok(response)
 }
 
@@ -194,15 +203,23 @@ async fn install_build_from_run(
             )
             .await?
         }
-        Err(err) => ComputerUseCallResponse {
-            content_items: vec![ComputerUseCallOutputContentItem::InputText {
-                text: format!(
-                    "{install_summary}\n\nAndroid post-install observation degraded\nUI digest unavailable: {err}"
-                ),
-            }],
-            success: true,
-            error: None,
-        },
+        Err(err) => {
+            match screenshot_fallback_response(
+                client,
+                tools,
+                arguments,
+                "Android post-install observation",
+                &err,
+                /*action_already_executed*/ true,
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(fallback_err) => failed_response(format!(
+                    "Android post-install observation degraded after install/build action completed.\n\nandroid.inspect_ui failed: {err}\nScreenshot fallback failed: {fallback_err}\n\nRecover with a fresh android_observe before making visual claims, and do not repeat the install solely because the screenshot was missing."
+                )),
+            }
+        }
     };
 
     if let Some(ComputerUseCallOutputContentItem::InputText { text }) =
@@ -210,6 +227,10 @@ async fn install_build_from_run(
     {
         *text = format!("{install_summary}\n\n{text}");
     }
+    require_native_image_for_visual_response(
+        &mut response,
+        "Android post-install observation missing native image output. The install/build action may already have completed; recover with a fresh android_observe before making visual claims, and do not repeat the install solely because the screenshot was missing.",
+    );
     Ok(response)
 }
 
@@ -1105,6 +1126,29 @@ fn response_includes_native_image(response: &ComputerUseCallResponse) -> bool {
         .any(|item| matches!(item, ComputerUseCallOutputContentItem::InputImage { .. }))
 }
 
+fn require_native_image_for_visual_response(
+    response: &mut ComputerUseCallResponse,
+    missing_image_message: &str,
+) {
+    if response_includes_native_image(response) {
+        return;
+    }
+
+    append_text(
+        &mut response.content_items,
+        &format!(
+            "\n\n{missing_image_message} The provider must return screenshots as native image content items rather than text-only summaries or artifact paths."
+        ),
+    );
+    response.success = false;
+    response.error = Some(match response.error.take() {
+        Some(existing_error) if !existing_error.trim().is_empty() => {
+            format!("{missing_image_message} Previous provider error: {existing_error}")
+        }
+        _ => missing_image_message.to_string(),
+    });
+}
+
 fn has_xy(value: &Value) -> bool {
     value.get("x").is_some() && value.get("y").is_some()
 }
@@ -1340,6 +1384,61 @@ mod tests {
         };
 
         assert!(response_includes_native_image(&response));
+    }
+
+    #[test]
+    fn visual_response_without_native_image_is_failed_loudly() {
+        let mut response = ComputerUseCallResponse {
+            content_items: vec![ComputerUseCallOutputContentItem::InputText {
+                text: "Android observation\nvisible_ui: text only".to_string(),
+            }],
+            success: true,
+            error: Some("android.inspect_ui failed".to_string()),
+        };
+
+        require_native_image_for_visual_response(
+            &mut response,
+            "Android observation missing native image output.",
+        );
+
+        assert!(!response.success);
+        assert_eq!(
+            response.error.as_deref(),
+            Some(
+                "Android observation missing native image output. Previous provider error: android.inspect_ui failed"
+            )
+        );
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("expected text summary");
+        };
+        assert!(text.contains("visible_ui: text only"));
+        assert!(text.contains("must return screenshots as native image content items"));
+    }
+
+    #[test]
+    fn visual_response_with_native_image_remains_successful() {
+        let mut response = ComputerUseCallResponse {
+            content_items: vec![
+                ComputerUseCallOutputContentItem::InputText {
+                    text: "Android observation".to_string(),
+                },
+                ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ],
+            success: true,
+            error: None,
+        };
+
+        require_native_image_for_visual_response(
+            &mut response,
+            "Android observation missing native image output.",
+        );
+
+        assert!(response.success);
+        assert_eq!(response.error, None);
     }
 
     #[test]

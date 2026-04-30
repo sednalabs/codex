@@ -533,6 +533,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_image_response_reaches_model_content_items() {
+        assert_eq!(
+            computer_use_response_content_for_model(ComputerUseResponse {
+                content_items: vec![
+                    ComputerUseOutputContentItem::InputText {
+                        text: "Android observation".to_string(),
+                    },
+                    ComputerUseOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAAA".to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ],
+                success: true,
+                error: None,
+            }),
+            (
+                vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: "Android observation".to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAAA".to_string(),
+                        detail: Some(codex_protocol::models::ImageDetail::High),
+                    },
+                ],
+                true,
+            )
+        );
+    }
+
     #[tokio::test]
     async fn selected_computer_use_environment_uses_primary_environment() {
         let (_session, turn_context, _rx) = make_session_and_context_with_rx().await;

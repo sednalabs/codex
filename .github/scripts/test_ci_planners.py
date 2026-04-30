@@ -1492,7 +1492,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {
                         "language": "rust",
                         "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
+                        "config_file": "./.github/codeql/codeql-rust.yml",
                     },
                 ]
             },
@@ -1682,6 +1682,42 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("jobEffectiveWritePermission", workflow_security)
         self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
         self.assertFalse((REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").exists())
+        rust_config = yaml.load(
+            (REPO_ROOT / ".github/codeql/codeql-rust.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(
+            rust_config,
+            {
+                "name": "codex-codeql-rust",
+                "queries": [
+                    {"uses": "security-and-quality"},
+                    {"uses": "./.github/codeql/rust-computer-use-contract"},
+                ],
+                "threat-models": "local",
+            },
+        )
+        rust_contract_pack = yaml.load(
+            (REPO_ROOT / ".github/codeql/rust-computer-use-contract/qlpack.yml").read_text(
+                encoding="utf-8"
+            ),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(rust_contract_pack.get("name"), "sednalabs/rust-computer-use-contract")
+        self.assertEqual(rust_contract_pack.get("extractor"), "rust")
+        self.assertEqual(rust_contract_pack.get("dependencies"), {"codeql/rust-all": "*"})
+        for query_id in [
+            "rust/computer-use-match-drops-native-image",
+            "rust/android-visual-tool-missing-native-image-guard",
+            "rust/computer-use-response-success-with-error",
+        ]:
+            self.assertTrue(
+                any(
+                    f"@id {query_id}" in path.read_text(encoding="utf-8")
+                    for path in (REPO_ROOT / ".github/codeql/rust-computer-use-contract/queries").glob("*.ql")
+                ),
+                query_id,
+            )
 
     def test_closed_pr_run_canceller_preserves_post_merge_branch_runs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/cancel-pr-runs.yml")
