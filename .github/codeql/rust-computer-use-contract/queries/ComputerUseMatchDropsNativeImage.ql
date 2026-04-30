@@ -32,6 +32,8 @@ predicate insideInlineRustTest(AstNode node) {
 }
 
 predicate inputTextContentItemPattern(MatchArm arm) {
+  // Use Rust path nodes rather than whole-pattern strings so imported variants
+  // like `InputText { .. }` still participate in the advisory check.
   exists(PathAstNode pat |
     pat = arm.getPat() and
     pat.getPath().getSegment().getIdentifier().getText() = "InputText"
@@ -39,6 +41,8 @@ predicate inputTextContentItemPattern(MatchArm arm) {
 }
 
 predicate inputImageContentItemPattern(MatchArm arm) {
+  // Keep this symmetric with InputText matching; this query is a smell detector,
+  // not a full data-flow proof that the image object is preserved.
   exists(PathAstNode pat |
     pat = arm.getPat() and
     pat.getPath().getSegment().getIdentifier().getText() = "InputImage"
