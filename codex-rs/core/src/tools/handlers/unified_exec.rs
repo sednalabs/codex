@@ -19,8 +19,8 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::ExecCommandRequest;
+use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
@@ -43,6 +43,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tokio::time::Instant;
+
+const MAX_TERMINAL_WAIT_MS: u64 = 2 * 60 * 60 * 1_000;
 
 pub struct UnifiedExecHandler;
 
@@ -108,11 +110,15 @@ fn default_tty() -> bool {
 }
 
 fn default_wait_budget_ms() -> u64 {
-    DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS
+    MAX_TERMINAL_WAIT_MS
 }
 
 fn resolve_wait_budget(max_wait_ms: Option<u64>) -> Duration {
-    Duration::from_millis(max_wait_ms.unwrap_or_else(default_wait_budget_ms))
+    Duration::from_millis(
+        max_wait_ms
+            .unwrap_or_else(default_wait_budget_ms)
+            .min(MAX_TERMINAL_WAIT_MS),
+    )
 }
 
 fn resolve_heartbeat_ms(heartbeat_interval_ms: Option<u64>, fallback_ms: u64) -> u64 {
@@ -156,6 +162,7 @@ async fn complete_terminal_wait(
                 process_id,
                 input: "",
                 yield_time_ms,
+                empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens,
             })
             .await?;
@@ -165,6 +172,8 @@ async fn complete_terminal_wait(
 
     response.wall_time = wall_time;
     response.raw_output = raw_output;
+    let output_text = String::from_utf8_lossy(&response.raw_output);
+    response.original_token_count = Some(approx_token_count(&output_text));
     Ok(response)
 }
 
@@ -492,6 +501,11 @@ impl ToolHandler for UnifiedExecHandler {
                         process_id: args.session_id,
                         input: &args.chars,
                         yield_time_ms: args.yield_time_ms,
+                        empty_input_min_yield_time_ms: if args.wait_until_terminal {
+                            MIN_YIELD_TIME_MS
+                        } else {
+                            MIN_EMPTY_YIELD_TIME_MS
+                        },
                         max_output_tokens: Some(max_output_tokens),
                     })
                     .await

@@ -319,7 +319,7 @@ class GeminiWatcherTests(unittest.TestCase):
                 newer_run_view,
             ],
         ) as view_mock, patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
-            snapshot1 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
+            MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
             snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
 
         self.assertEqual(list_mock.call_count, 2)

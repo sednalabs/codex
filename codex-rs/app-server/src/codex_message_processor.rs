@@ -232,6 +232,9 @@ use codex_backend_client::AddCreditsNudgeCreditType as BackendAddCreditsNudgeCre
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_chatgpt::workspace_settings;
+use codex_config::CloudRequirementsLoadError;
+use codex_config::CloudRequirementsLoadErrorCode;
+use codex_config::loader::project_trust_key;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
@@ -252,10 +255,6 @@ use codex_core::config::NetworkProxyAuditMetadata;
 use codex_core::config::ThreadStoreConfig;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
-use codex_core::config_loader::CloudRequirementsLoadError;
-use codex_core::config_loader::CloudRequirementsLoadErrorCode;
-use codex_core::config_loader::CloudRequirementsLoader;
-use codex_core::config_loader::project_trust_key;
 use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecParams;
@@ -2237,7 +2236,7 @@ impl CodexMessageProcessor {
         let started_network_proxy = match self.config.permissions.network.as_ref() {
             Some(spec) => match spec
                 .start_proxy(
-                    self.config.permissions.sandbox_policy.get(),
+                    self.config.permissions.permission_profile.get(),
                     /*policy_decider*/ None,
                     /*blocked_request_observer*/ None,
                     managed_network_requirements_enabled,
@@ -2301,44 +2300,30 @@ impl CodexMessageProcessor {
             arg0: None,
         };
 
-        let (
-            effective_policy,
-            effective_file_system_sandbox_policy,
-            effective_network_sandbox_policy,
-        ) = if let Some(permission_profile) = permission_profile {
+        let effective_permission_profile = if let Some(permission_profile) = permission_profile {
             let permission_profile =
                 codex_protocol::models::PermissionProfile::from(permission_profile);
-            let sandbox_policy = match permission_profile.to_legacy_sandbox_policy(&sandbox_cwd) {
-                Ok(sandbox_policy) => sandbox_policy,
-                Err(err) => {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: format!("invalid permission profile: {err}"),
-                        data: None,
-                    };
-                    self.outgoing.send_error(request, error).await;
-                    return;
-                }
-            };
+            let (mut file_system_sandbox_policy, network_sandbox_policy) =
+                permission_profile.to_runtime_permissions();
+            let configured_file_system_sandbox_policy =
+                self.config.permissions.file_system_sandbox_policy();
+            Self::preserve_configured_deny_read_restrictions(
+                &mut file_system_sandbox_policy,
+                &configured_file_system_sandbox_policy,
+            );
+            let effective_permission_profile =
+                codex_protocol::models::PermissionProfile::from_runtime_permissions_with_enforcement(
+                    permission_profile.enforcement(),
+                    &file_system_sandbox_policy,
+                    network_sandbox_policy,
+                );
             match self
                 .config
                 .permissions
-                .sandbox_policy
-                .can_set(&sandbox_policy)
+                .permission_profile
+                .can_set(&effective_permission_profile)
             {
-                Ok(()) => {
-                    let (mut file_system_sandbox_policy, network_sandbox_policy) =
-                        permission_profile.to_runtime_permissions();
-                    Self::preserve_configured_deny_read_restrictions(
-                        &mut file_system_sandbox_policy,
-                        &self.config.permissions.file_system_sandbox_policy,
-                    );
-                    (
-                        sandbox_policy,
-                        file_system_sandbox_policy,
-                        network_sandbox_policy,
-                    )
-                }
+                Ok(()) => effective_permission_profile,
                 Err(err) => {
                     let error = JSONRPCErrorError {
                         code: INVALID_REQUEST_ERROR_CODE,
@@ -2350,13 +2335,39 @@ impl CodexMessageProcessor {
                 }
             }
         } else if let Some(policy) = sandbox_policy.map(|policy| policy.to_core()) {
-            match self.config.permissions.sandbox_policy.can_set(&policy) {
+            match self
+                .config
+                .permissions
+                .can_set_legacy_sandbox_policy(&policy, &sandbox_cwd)
+            {
                 Ok(()) => {
                     let file_system_sandbox_policy =
                         codex_protocol::permissions::FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&policy, &sandbox_cwd);
                     let network_sandbox_policy =
                         codex_protocol::permissions::NetworkSandboxPolicy::from(&policy);
-                    (policy, file_system_sandbox_policy, network_sandbox_policy)
+                    let permission_profile =
+                        codex_protocol::models::PermissionProfile::from_runtime_permissions_with_enforcement(
+                        codex_protocol::models::SandboxEnforcement::from_legacy_sandbox_policy(
+                            &policy,
+                        ),
+                        &file_system_sandbox_policy,
+                        network_sandbox_policy,
+                    );
+                    if let Err(err) = self
+                        .config
+                        .permissions
+                        .permission_profile
+                        .can_set(&permission_profile)
+                    {
+                        let error = JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("invalid sandbox policy: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request, error).await;
+                        return;
+                    }
+                    permission_profile
                 }
                 Err(err) => {
                     let error = JSONRPCErrorError {
@@ -2369,11 +2380,7 @@ impl CodexMessageProcessor {
                 }
             }
         } else {
-            (
-                self.config.permissions.sandbox_policy.get().clone(),
-                self.config.permissions.file_system_sandbox_policy.clone(),
-                self.config.permissions.network_sandbox_policy,
-            )
+            self.config.permissions.permission_profile()
         };
 
         let codex_linux_sandbox_exe = self.arg0_paths.codex_linux_sandbox_exe.clone();
@@ -2392,9 +2399,7 @@ impl CodexMessageProcessor {
 
         match codex_core::exec::build_exec_request(
             exec_params,
-            &effective_policy,
-            &effective_file_system_sandbox_policy,
-            effective_network_sandbox_policy,
+            &effective_permission_profile,
             &sandbox_cwd,
             &codex_linux_sandbox_exe,
             use_legacy_landlock,
@@ -2511,11 +2516,6 @@ impl CodexMessageProcessor {
             environments,
             persist_extended_history,
         } = params;
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         if sandbox.is_some() && permission_profile.is_some() {
             self.send_invalid_request_error(
                 request_id,
@@ -2680,16 +2680,14 @@ impl CodexMessageProcessor {
         // should still be considered "trusted" in this case.
         let requested_permissions_trust_project =
             requested_permissions_trust_project(&typesafe_overrides, config.cwd.as_path());
+        let effective_permissions_trust_project = permission_profile_trusts_project(
+            &config.permissions.permission_profile(),
+            config.cwd.as_path(),
+        );
 
         if requested_cwd.is_some()
             && config.active_project.trust_level.is_none()
-            && (requested_permissions_trust_project
-                || matches!(
-                    config.permissions.sandbox_policy.get(),
-                    codex_protocol::protocol::SandboxPolicy::WorkspaceWrite { .. }
-                        | codex_protocol::protocol::SandboxPolicy::DangerFullAccess
-                        | codex_protocol::protocol::SandboxPolicy::ExternalSandbox { .. }
-                ))
+            && (requested_permissions_trust_project || effective_permissions_trust_project)
         {
             let trust_target = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &config.cwd)
                 .await
@@ -2942,8 +2940,8 @@ impl CodexMessageProcessor {
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         sandbox: Option<SandboxMode>,
         permission_profile: Option<ApiPermissionProfile>,
-        base_instructions: Option<Option<String>>,
-        developer_instructions: Option<Option<String>>,
+        base_instructions: Option<String>,
+        developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
         ConfigOverrides {
@@ -2959,12 +2957,8 @@ impl CodexMessageProcessor {
             permission_profile: permission_profile.map(Into::into),
             codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
-            base_instructions: match base_instructions {
-                Some(Some(instructions)) => Some(instructions),
-                Some(None) => Some(String::new()),
-                None => None,
-            },
-            developer_instructions: developer_instructions.flatten(),
+            base_instructions,
+            developer_instructions,
             personality,
             ..Default::default()
         }
@@ -4602,11 +4596,6 @@ impl CodexMessageProcessor {
         };
 
         let history_cwd = thread_history.session_cwd();
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -5399,11 +5388,6 @@ impl CodexMessageProcessor {
         } else {
             Some(cli_overrides)
         };
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -8806,7 +8790,9 @@ impl CodexMessageProcessor {
                 Ok(config) => {
                     let setup_request = WindowsSandboxSetupRequest {
                         mode,
-                        policy: config.permissions.sandbox_policy.get().clone(),
+                        policy: config
+                            .permissions
+                            .legacy_sandbox_policy(config.cwd.as_path()),
                         policy_cwd: config.cwd.to_path_buf(),
                         command_cwd,
                         env_map: std::env::vars().collect(),
@@ -9339,48 +9325,13 @@ fn merge_persisted_resume_metadata(
     }
 
     typesafe_overrides.model = persisted_metadata.model.clone();
+    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
 
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
         );
-    }
-}
-
-fn preserve_explicit_instruction_null_overrides(
-    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
-    base_instructions: &Option<Option<String>>,
-    developer_instructions: &Option<Option<String>>,
-) {
-    if matches!(base_instructions, Some(None)) {
-        request_overrides
-            .get_or_insert_with(HashMap::new)
-            .insert("base_instructions".to_string(), serde_json::Value::Null);
-    }
-    if matches!(developer_instructions, Some(None)) {
-        request_overrides.get_or_insert_with(HashMap::new).insert(
-            "developer_instructions".to_string(),
-            serde_json::Value::Null,
-        );
-    }
-}
-
-fn apply_explicit_instruction_null_overrides_to_config(
-    config: &mut Config,
-    request_overrides: &HashMap<String, serde_json::Value>,
-) {
-    if request_overrides
-        .get("base_instructions")
-        .is_some_and(serde_json::Value::is_null)
-    {
-        config.base_instructions = Some(String::new());
-    }
-    if request_overrides
-        .get("developer_instructions")
-        .is_some_and(serde_json::Value::is_null)
-    {
-        config.developer_instructions = None;
     }
 }
 
@@ -10328,18 +10279,20 @@ fn requested_permissions_trust_project(overrides: &ConfigOverrides, cwd: &Path) 
     overrides
         .permission_profile
         .as_ref()
-        .is_some_and(|profile| {
-            profile
-                .to_legacy_sandbox_policy(cwd)
-                .is_ok_and(|sandbox_policy| {
-                    matches!(
-                        sandbox_policy,
-                        codex_protocol::protocol::SandboxPolicy::WorkspaceWrite { .. }
-                            | codex_protocol::protocol::SandboxPolicy::DangerFullAccess
-                            | codex_protocol::protocol::SandboxPolicy::ExternalSandbox { .. }
-                    )
-                })
-        })
+        .is_some_and(|profile| permission_profile_trusts_project(profile, cwd))
+}
+
+fn permission_profile_trusts_project(
+    profile: &codex_protocol::models::PermissionProfile,
+    cwd: &Path,
+) -> bool {
+    match profile {
+        codex_protocol::models::PermissionProfile::Disabled
+        | codex_protocol::models::PermissionProfile::External { .. } => true,
+        codex_protocol::models::PermissionProfile::Managed { .. } => profile
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(cwd, cwd),
+    }
 }
 
 fn parse_datetime(timestamp: Option<&str>) -> Option<DateTime<Utc>> {
@@ -10653,11 +10606,11 @@ mod tests {
     use chrono::Utc;
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ToolRequestUserInputParams;
+    use codex_config::CloudRequirementsLoader;
+    use codex_config::LoaderOverrides;
     use codex_config::SessionThreadConfig;
     use codex_config::StaticThreadConfigLoader;
     use codex_config::ThreadConfigSource;
-    use codex_core::config_loader::CloudRequirementsLoader;
-    use codex_core::config_loader::LoaderOverrides;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
     use codex_protocol::ThreadId;
@@ -10665,6 +10618,7 @@ mod tests {
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
@@ -10962,16 +10916,10 @@ mod tests {
 
     #[test]
     fn thread_response_permission_profile_preserves_enforcement() {
-        let full_access_profile =
-            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                &SandboxPolicy::DangerFullAccess,
-            );
-        let external_profile =
-            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                &SandboxPolicy::ExternalSandbox {
-                    network_access: codex_protocol::protocol::NetworkAccess::Restricted,
-                },
-            );
+        let full_access_profile = codex_protocol::models::PermissionProfile::Disabled;
+        let external_profile = codex_protocol::models::PermissionProfile::External {
+            network: codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
+        };
 
         assert_eq!(
             thread_response_permission_profile(external_profile.clone()),
@@ -10986,17 +10934,24 @@ mod tests {
     #[test]
     fn requested_permissions_trust_project_uses_permission_profile_intent() {
         let cwd = test_path_buf("/tmp/project").abs();
-        let full_access_profile =
-            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                &SandboxPolicy::DangerFullAccess,
-            );
-        let workspace_write_profile =
-            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                &SandboxPolicy::new_workspace_write_policy(),
-            );
-        let read_only_profile =
-            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
+        let full_access_profile = codex_protocol::models::PermissionProfile::Disabled;
+        let workspace_write_profile = codex_protocol::models::PermissionProfile::workspace_write();
+        let read_only_profile = codex_protocol::models::PermissionProfile::read_only();
+        let split_write_profile =
+            codex_protocol::models::PermissionProfile::from_runtime_permissions(
+                &FileSystemSandboxPolicy::restricted(vec![
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Path { path: cwd.clone() },
+                        access: FileSystemAccessMode::Write,
+                    },
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::GlobPattern {
+                            pattern: "/tmp/project/**/*.env".to_string(),
+                        },
+                        access: FileSystemAccessMode::None,
+                    },
+                ]),
+                NetworkSandboxPolicy::Restricted,
             );
 
         assert!(requested_permissions_trust_project(
@@ -11009,6 +10964,13 @@ mod tests {
         assert!(requested_permissions_trust_project(
             &ConfigOverrides {
                 permission_profile: Some(workspace_write_profile),
+                ..Default::default()
+            },
+            cwd.as_path()
+        ));
+        assert!(requested_permissions_trust_project(
+            &ConfigOverrides {
+                permission_profile: Some(split_write_profile),
                 ..Default::default()
             },
             cwd.as_path()
@@ -11206,10 +11168,7 @@ mod tests {
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
-            permission_profile:
-                codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-                    &codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
-                ),
+            permission_profile: codex_protocol::models::PermissionProfile::Disabled,
             cwd,
             ephemeral: false,
             reasoning_effort: None,
@@ -11276,6 +11235,10 @@ mod tests {
             Some("gpt-5.1-codex-max".to_string())
         );
         assert_eq!(
+            typesafe_overrides.model_provider,
+            Some("mock_provider".to_string())
+        );
+        assert_eq!(
             request_overrides,
             Some(HashMap::from([(
                 "model_reasoning_effort".to_string(),
@@ -11305,6 +11268,7 @@ mod tests {
         );
 
         assert_eq!(typesafe_overrides.model, Some("gpt-5.2-codex".to_string()));
+        assert_eq!(typesafe_overrides.model_provider, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -11333,6 +11297,7 @@ mod tests {
         );
 
         assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(typesafe_overrides.model_provider, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -11384,6 +11349,7 @@ mod tests {
         );
 
         assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(typesafe_overrides.model_provider, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -11408,56 +11374,12 @@ mod tests {
         );
 
         assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(
+            typesafe_overrides.model_provider,
+            Some("mock_provider".to_string())
+        );
         assert_eq!(request_overrides, None);
         Ok(())
-    }
-
-    #[test]
-    fn preserve_explicit_instruction_null_overrides_inserts_null_entries() {
-        let mut request_overrides = None;
-
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &Some(None),
-            &Some(None),
-        );
-
-        assert_eq!(
-            request_overrides,
-            Some(HashMap::from([
-                ("base_instructions".to_string(), serde_json::Value::Null),
-                (
-                    "developer_instructions".to_string(),
-                    serde_json::Value::Null,
-                ),
-            ]))
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
-        let codex_home = tempfile::TempDir::new().expect("create temp codex home");
-        let mut config = Config::load_default_with_cli_overrides_for_codex_home(
-            codex_home.path().to_path_buf(),
-            Vec::new(),
-        )
-        .await
-        .expect("load default config");
-        config.base_instructions = Some("keep base".to_string());
-        config.developer_instructions = Some("keep developer".to_string());
-
-        let request_overrides = HashMap::from([
-            ("base_instructions".to_string(), serde_json::Value::Null),
-            (
-                "developer_instructions".to_string(),
-                serde_json::Value::Null,
-            ),
-        ]);
-
-        apply_explicit_instruction_null_overrides_to_config(&mut config, &request_overrides);
-
-        assert_eq!(config.base_instructions.as_deref(), Some(""));
-        assert_eq!(config.developer_instructions, None);
     }
 
     #[test]

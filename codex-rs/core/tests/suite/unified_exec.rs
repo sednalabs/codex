@@ -1159,6 +1159,107 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_wait_until_terminal_defers_provider_resume_until_exit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_remote_aware(&server).await?;
+
+    let call_id = "uexec-provider-gate";
+    let args = json!({
+        "cmd": "sleep 1; printf 'WAIT_UNTIL_TERMINAL_DONE\\n'",
+        "yield_time_ms": 100,
+        "wait_until_terminal": true,
+        "max_wait_ms": 5_000,
+        "heartbeat_interval_ms": 100,
+    });
+
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    let started = std::time::Instant::now();
+    submit_unified_exec_turn(
+        &test,
+        "run provider-gated terminal wait test",
+        SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
+
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::ExecCommandBegin(event) => event.call_id == call_id,
+        _ => false,
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        request_log.requests().len(),
+        1,
+        "wait_until_terminal must not resume the provider while the process is still running"
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(900),
+        "provider resume should be gated until the command reaches terminal state; got {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "terminal wait test took unexpectedly long: {elapsed:?}"
+    );
+
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected exactly initial request and post-terminal provider resume"
+    );
+    let bodies = requests
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+
+    let outputs = collect_tool_outputs(&bodies)?;
+    let terminal = outputs
+        .get(call_id)
+        .expect("missing terminal wait tool output");
+    assert_eq!(terminal.exit_code, Some(0));
+    assert!(
+        terminal.process_id.is_none(),
+        "terminal wait should not leave a resumable process after successful completion"
+    );
+    assert!(
+        terminal.output.contains("WAIT_UNTIL_TERMINAL_DONE"),
+        "expected terminal output to be included in provider resume payload"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -2532,10 +2633,12 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
     use codex_config::Constrained;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
 
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -2548,7 +2651,9 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             .features
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
-        config.permissions.sandbox_policy = Constrained::allow_any(read_only_policy_for_config);
+        config
+            .set_legacy_sandbox_policy(read_only_policy_for_config)
+            .expect("set sandbox policy");
         let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
         file_system_sandbox_policy
             .entries
@@ -2558,7 +2663,11 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
                 },
                 access: FileSystemAccessMode::None,
             });
-        config.permissions.file_system_sandbox_policy = file_system_sandbox_policy;
+        config.permissions.permission_profile =
+            Constrained::allow_any(PermissionProfile::from_runtime_permissions(
+                &file_system_sandbox_policy,
+                NetworkSandboxPolicy::Restricted,
+            ));
     });
     let TestCodex {
         codex,
