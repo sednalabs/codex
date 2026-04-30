@@ -31,11 +31,17 @@ predicate insideInlineRustTest(AstNode node) {
   )
 }
 
-predicate contentItemPattern(MatchArm arm, string variant) {
+predicate inputTextContentItemPattern(MatchArm arm) {
   arm.hasPat() and
   arm.getPat().toString().regexpMatch(
-    "(?s).*(ComputerUse(Output|CallOutput)ContentItem|FunctionCallOutputContentItem|DynamicToolCallOutputContentItem)::" +
-      variant + "\\b.*"
+    "(?s).*(ComputerUse(Output|CallOutput)ContentItem|FunctionCallOutputContentItem|DynamicToolCallOutputContentItem)::InputText\\b.*"
+  )
+}
+
+predicate inputImageContentItemPattern(MatchArm arm) {
+  arm.hasPat() and
+  arm.getPat().toString().regexpMatch(
+    "(?s).*(ComputerUse(Output|CallOutput)ContentItem|FunctionCallOutputContentItem|DynamicToolCallOutputContentItem)::InputImage\\b.*"
   )
 }
 
@@ -43,7 +49,7 @@ from MatchExpr matchExpr
 where
   computerUsePipelineFile(matchExpr.getFile()) and
   not insideInlineRustTest(matchExpr) and
-  exists(MatchArm arm | arm = matchExpr.getAnArm() and contentItemPattern(arm, "InputText")) and
-  not exists(MatchArm arm | arm = matchExpr.getAnArm() and contentItemPattern(arm, "InputImage"))
+  exists(MatchArm arm | arm = matchExpr.getAnArm() and inputTextContentItemPattern(arm)) and
+  not exists(MatchArm arm | arm = matchExpr.getAnArm() and inputImageContentItemPattern(arm))
 select matchExpr,
   "This match handles text but may drop or fail to preserve native image content. Verify that InputImage is deliberately handled or delegated."
