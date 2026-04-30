@@ -1660,7 +1660,7 @@ enabled = true
     session
         .services
         .plugins_manager
-        .plugins_for_config(&initial_config)
+        .plugins_for_config(&initial_config.plugins_config_input())
         .await;
     std::fs::write(
         codex_home.join(CONFIG_TOML_FILE),
