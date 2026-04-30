@@ -10,6 +10,8 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
 use serde_json::json;
+
+const ANDROID_MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -629,7 +631,7 @@ impl AndroidRuntimeClient {
             .request(
                 "initialize",
                 json!({
-                    "protocolVersion": "2025-06-18",
+                    "protocolVersion": ANDROID_MCP_PROTOCOL_VERSION,
                     "capabilities": {},
                     "clientInfo": {
                         "name": "codex-tui-native-android",
