@@ -13,153 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  plan:
-    name: CodeQL language router
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      languages: ${{ steps.plan.outputs.languages }}
-      has_codeql_relevant_changes: ${{ steps.plan.outputs.has_codeql_relevant_changes }}
-      run_all_languages: ${{ steps.plan.outputs.run_all_languages }}
-      reason: ${{ steps.plan.outputs.reason }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Resolve comparison SHAs
-        id: shas
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          base_sha=""
-          head_sha='${{ github.sha }}'
-
-          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
-            base_sha='${{ github.event.pull_request.base.sha }}'
-            head_sha='${{ github.event.pull_request.head.sha }}'
-          fi
-
-          {
-            echo "base_sha=${base_sha}"
-            echo "head_sha=${head_sha}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Resolve PR changed files via API
-        id: pr_diff
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            function normalizePathList(files) {
-              const paths = [];
-              for (const file of files) {
-                if (file.previous_filename) {
-                  paths.push(file.previous_filename);
-                }
-                if (file.filename) {
-                  paths.push(file.filename);
-                }
-              }
-              return [...new Set(paths)];
-            }
-
-            function setJsonOutput(name, value) {
-              core.setOutput(name, JSON.stringify(value));
-            }
-
-            try {
-              const pullNumber = context.payload.pull_request.number;
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pullNumber,
-                per_page: 100,
-              });
-              const expectedChangedFiles = context.payload.pull_request.changed_files;
-              if (Number.isFinite(expectedChangedFiles) && files.length !== expectedChangedFiles) {
-                core.setOutput(
-                  "metadata_reason",
-                  `pulls.listFiles returned ${files.length} of ${expectedChangedFiles} files`,
-                );
-                return;
-              }
-
-              setJsonOutput("changed_files_json", normalizePathList(files));
-              core.setOutput("metadata_reason", "");
-            } catch (error) {
-              core.warning(`failed to resolve PR diff via GitHub API: ${error.message}`);
-              core.setOutput("metadata_reason", error.message);
-            }
-
-      - name: Compute CodeQL language plan
-        id: plan
-        shell: bash
-        env:
-          CHANGED_FILES_JSON: ${{ steps.pr_diff.outputs.changed_files_json || '' }}
-        run: |
-          set -euo pipefail
-
-          if [[ -f .github/scripts/resolve_codeql_plan.py ]]; then
-            plan="$(python3 .github/scripts/resolve_codeql_plan.py \
-              --repo-root "${GITHUB_WORKSPACE}" \
-              --event-name '${{ github.event_name }}' \
-              --base-sha '${{ steps.shas.outputs.base_sha }}' \
-              --head-sha '${{ steps.shas.outputs.head_sha }}' \
-              --changed-files-json "${CHANGED_FILES_JSON}")"
-          else
-            actions_config="./.codeql-runtime/codeql-actions.yml"
-            rust_config="./.github/codeql/codeql-config.yml"
-            if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
-              rust_config="./.github/codeql/codeql-rust-pr.yml"
-            fi
-            plan="$(ACTIONS_CONFIG="${actions_config}" RUST_CONFIG="${rust_config}" python3 - <<'PY'
-          import json
-          import os
-
-          actions_config = os.environ["ACTIONS_CONFIG"]
-          advanced_config = "./.github/codeql/codeql-config.yml"
-          rust_config = os.environ["RUST_CONFIG"]
-          matrix = {
-              "include": [
-                  {"language": "actions", "build-mode": "none", "config_file": actions_config},
-                  {"language": "c-cpp", "build-mode": "none", "config_file": advanced_config},
-                  {"language": "javascript-typescript", "build-mode": "none", "config_file": advanced_config},
-                  {"language": "python", "build-mode": "none", "config_file": advanced_config},
-                  {"language": "rust", "build-mode": "none", "config_file": rust_config},
-              ],
-          }
-          print(json.dumps({
-              "matrix": json.dumps(matrix, separators=(",", ":")),
-              "languages": "actions,c-cpp,javascript-typescript,python,rust",
-              "has_codeql_relevant_changes": "true",
-              "run_all_languages": "true",
-              "reason": "trusted base checkout does not include CodeQL planner",
-          }, separators=(",", ":")))
-          PY
-          )"
-          fi
-
-          PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          import os
-
-          plan = json.loads(os.environ["PLAN_JSON"])
-          for key, value in plan.items():
-              print(f"{key}={value}")
-          PY
-
   analyze:
     name: Analyze (${{ matrix.language }})
-    needs: plan
-    if: ${{ needs.plan.outputs.has_codeql_relevant_changes == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -168,7 +23,23 @@ jobs:
       security-events: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+            config_file: ./.codeql-runtime/codeql-actions.yml
+          - language: c-cpp
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: javascript-typescript
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: python
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: rust
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -305,7 +176,6 @@ jobs:
   results:
     name: CodeQL required gate
     needs:
-      - plan
       - analyze
     if: always()
     runs-on: ubuntu-24.04
@@ -322,7 +192,7 @@ jobs:
           echo "### CodeQL timing" >> "$GITHUB_STEP_SUMMARY"
           gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
             --jq '.jobs[]
-              | select(.name | test("^(CodeQL language router|Analyze \\(|CodeQL required gate)"))
+              | select(.name | test("^(Analyze \\(|CodeQL required gate)"))
               | "- \(.name): \(.status)/\(.conclusion // "") started=\(.started_at) completed=\(.completed_at // "")"' \
             >> "$GITHUB_STEP_SUMMARY"
 
@@ -331,20 +201,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "languages: ${{ needs.plan.outputs.languages }}"
-          echo "full    : ${{ needs.plan.outputs.run_all_languages }}"
-          echo "reason  : ${{ needs.plan.outputs.reason }}"
           echo "analyze : ${{ needs.analyze.result }}"
-
-          if [[ '${{ needs.plan.result }}' != 'success' ]]; then
-            echo 'CodeQL language router failed.'
-            exit 1
-          fi
-
-          if [[ '${{ needs.plan.outputs.has_codeql_relevant_changes }}' != 'true' ]]; then
-            echo 'No CodeQL-relevant changes -> analysis not required.'
-            exit 0
-          fi
 
           if [[ '${{ needs.analyze.result }}' != 'success' ]]; then
             echo 'CodeQL analysis failed.'

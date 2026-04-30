@@ -55,22 +55,15 @@ contract today.
   Keep the checked-in workflow authoritative so language coverage, query
   selection, permissions, and scheduling remain reviewable with the rest of the
   workflow catalog.
-- Protected branch pushes, scheduled runs, and manual dispatch analyze Actions,
-  C/C++, JavaScript/TypeScript, Python, and Rust with `build-mode: none`. This
-  keeps coverage over the vendored C sandbox code and Rust sources without
-  relying on CodeQL autobuild, which has no useful build system to discover in
-  this repository.
-- Pull requests route the language matrix through
-  `.github/scripts/resolve_codeql_plan.py`. The planner checkout uses the base
-  commit and the PR diff comes from GitHub's pull-request files API, so the
-  privileged planning job does not fetch a contributor-controlled head
-  repository. The workflow still starts and ends in a required gate, but
-  docs-only or unrelated changes can skip analysis, and language-local changes
-  analyze only the relevant CodeQL languages. Unavailable PR metadata and edits
-  to the CodeQL workflow, config, router, or planner fixtures fall back to the
-  full matrix. If the trusted base checkout does not yet contain the planner,
-  the workflow bootstraps with a full matrix instead of reading planner code
-  from the PR head.
+- Protected branch pushes, pull requests, scheduled runs, and manual dispatch
+  analyze Actions, C/C++, JavaScript/TypeScript, Python, and Rust with
+  `build-mode: none`. This keeps coverage over the vendored C sandbox code and
+  Rust sources without relying on CodeQL autobuild, which has no useful build
+  system to discover in this repository.
+- Pull requests intentionally use the same static language matrix as protected
+  branch scans. Keep the workflow free of file-diff language routers so GitHub
+  code scanning receives the full configured category set for PR alert
+  comparison.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
   settings and `.github/codeql/codeql-actions.yml` for Actions-only query
   additions. The Actions lane prepares a runtime config so same-repository pull
