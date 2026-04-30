@@ -44,3 +44,10 @@ fn step() -> ProviderResult {
     // but does not yet prove the returned response object is response_a.
     Ok(response_b)
 }
+
+fn install_build_from_run() -> ProviderResult {
+    let mut response = build_response();
+    let _ = fallible()?;
+    require_native_image_for_visual_response(&mut response, "must include image");
+    Ok(response)
+}
