@@ -2516,11 +2516,6 @@ impl CodexMessageProcessor {
             environments,
             persist_extended_history,
         } = params;
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         if sandbox.is_some() && permission_profile.is_some() {
             self.send_invalid_request_error(
                 request_id,
@@ -2945,8 +2940,8 @@ impl CodexMessageProcessor {
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         sandbox: Option<SandboxMode>,
         permission_profile: Option<ApiPermissionProfile>,
-        base_instructions: Option<Option<String>>,
-        developer_instructions: Option<Option<String>>,
+        base_instructions: Option<String>,
+        developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
         ConfigOverrides {
@@ -2962,12 +2957,8 @@ impl CodexMessageProcessor {
             permission_profile: permission_profile.map(Into::into),
             codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
-            base_instructions: match base_instructions {
-                Some(Some(instructions)) => Some(instructions),
-                Some(None) => Some(String::new()),
-                None => None,
-            },
-            developer_instructions: developer_instructions.flatten(),
+            base_instructions,
+            developer_instructions,
             personality,
             ..Default::default()
         }
@@ -4605,11 +4596,6 @@ impl CodexMessageProcessor {
         };
 
         let history_cwd = thread_history.session_cwd();
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -5402,11 +5388,6 @@ impl CodexMessageProcessor {
         } else {
             Some(cli_overrides)
         };
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &base_instructions,
-            &developer_instructions,
-        );
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -9354,42 +9335,6 @@ fn merge_persisted_resume_metadata(
     }
 }
 
-fn preserve_explicit_instruction_null_overrides(
-    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
-    base_instructions: &Option<Option<String>>,
-    developer_instructions: &Option<Option<String>>,
-) {
-    if matches!(base_instructions, Some(None)) {
-        request_overrides
-            .get_or_insert_with(HashMap::new)
-            .insert("base_instructions".to_string(), serde_json::Value::Null);
-    }
-    if matches!(developer_instructions, Some(None)) {
-        request_overrides.get_or_insert_with(HashMap::new).insert(
-            "developer_instructions".to_string(),
-            serde_json::Value::Null,
-        );
-    }
-}
-
-fn apply_explicit_instruction_null_overrides_to_config(
-    config: &mut Config,
-    request_overrides: &HashMap<String, serde_json::Value>,
-) {
-    if request_overrides
-        .get("base_instructions")
-        .is_some_and(serde_json::Value::is_null)
-    {
-        config.base_instructions = Some(String::new());
-    }
-    if request_overrides
-        .get("developer_instructions")
-        .is_some_and(serde_json::Value::is_null)
-    {
-        config.developer_instructions = None;
-    }
-}
-
 fn has_model_resume_override(
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
     typesafe_overrides: &ConfigOverrides,
@@ -11435,54 +11380,6 @@ mod tests {
         );
         assert_eq!(request_overrides, None);
         Ok(())
-    }
-
-    #[test]
-    fn preserve_explicit_instruction_null_overrides_inserts_null_entries() {
-        let mut request_overrides = None;
-
-        preserve_explicit_instruction_null_overrides(
-            &mut request_overrides,
-            &Some(None),
-            &Some(None),
-        );
-
-        assert_eq!(
-            request_overrides,
-            Some(HashMap::from([
-                ("base_instructions".to_string(), serde_json::Value::Null),
-                (
-                    "developer_instructions".to_string(),
-                    serde_json::Value::Null,
-                ),
-            ]))
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_explicit_instruction_null_overrides_to_config_clears_inherited_instructions() {
-        let codex_home = tempfile::TempDir::new().expect("create temp codex home");
-        let mut config = Config::load_default_with_cli_overrides_for_codex_home(
-            codex_home.path().to_path_buf(),
-            Vec::new(),
-        )
-        .await
-        .expect("load default config");
-        config.base_instructions = Some("keep base".to_string());
-        config.developer_instructions = Some("keep developer".to_string());
-
-        let request_overrides = HashMap::from([
-            ("base_instructions".to_string(), serde_json::Value::Null),
-            (
-                "developer_instructions".to_string(),
-                serde_json::Value::Null,
-            ),
-        ]);
-
-        apply_explicit_instruction_null_overrides_to_config(&mut config, &request_overrides);
-
-        assert_eq!(config.base_instructions.as_deref(), Some(""));
-        assert_eq!(config.developer_instructions, None);
     }
 
     #[test]

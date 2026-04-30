@@ -427,7 +427,7 @@ async fn thread_fork_tracks_thread_initialized_analytics() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_fork_honors_explicit_null_thread_instructions() -> Result<()> {
+async fn thread_fork_treats_explicit_null_thread_instructions_as_missing() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -479,7 +479,7 @@ async fn thread_fork_honors_explicit_null_thread_instructions() -> Result<()> {
                 "baseInstructions": null,
                 "developerInstructions": null,
             }),
-            /*expect_instructions*/ false,
+            /*expect_instructions*/ true,
         ),
     ];
 
@@ -556,7 +556,7 @@ async fn thread_fork_honors_explicit_null_thread_instructions() -> Result<()> {
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
-    for (request, expect_instructions) in requests.into_iter().zip([true, false, false]) {
+    for (request, expect_instructions) in requests.into_iter().zip([true, true, true]) {
         let payload = request.body_json();
         assert_eq!(
             payload.get("instructions").is_some(),

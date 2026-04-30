@@ -172,7 +172,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
+async fn turn_start_treats_explicit_null_thread_instructions_as_missing() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -214,7 +214,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
                 "baseInstructions": null,
                 "developerInstructions": null,
             }),
-            /*expect_instructions*/ false,
+            /*expect_instructions*/ true,
         ),
     ];
 
@@ -251,7 +251,7 @@ async fn turn_start_honors_explicit_null_thread_instructions() -> Result<()> {
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    for (request, expect_instructions) in requests.into_iter().zip([true, false]) {
+    for (request, expect_instructions) in requests.into_iter().zip([true, true]) {
         let payload = request.body_json();
         assert_eq!(
             payload.get("instructions").is_some(),
@@ -482,14 +482,12 @@ async fn thread_start_omits_empty_instruction_overrides_from_model_request() -> 
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            // TODO(aibrahim): Replace empty string instruction overrides with explicit tri-state
-            // app-server semantics: omitted, explicitly none, or explicit value.
             config: Some(HashMap::from([(
                 "include_permissions_instructions".to_string(),
                 json!(false),
             )])),
-            base_instructions: Some(Some(String::new())),
-            developer_instructions: Some(Some(String::new())),
+            base_instructions: Some(String::new()),
+            developer_instructions: Some(String::new()),
             ..Default::default()
         })
         .await?;

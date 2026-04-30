@@ -261,8 +261,8 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_list:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,

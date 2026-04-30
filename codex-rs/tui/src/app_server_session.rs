@@ -1226,8 +1226,8 @@ fn thread_fork_params_from_config(
         sandbox,
         permission_profile,
         config: config_request_overrides_from_config(&config),
-        base_instructions: Some(config.base_instructions.clone()),
-        developer_instructions: Some(config.developer_instructions.clone()),
+        base_instructions: config.base_instructions.clone(),
+        developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         persist_extended_history: true,
         ..ThreadForkParams::default()
@@ -1688,20 +1688,28 @@ mod tests {
             /*remote_cwd_override*/ None,
         );
 
+        assert_eq!(params.base_instructions.as_deref(), Some("Base override."));
         assert_eq!(
-            params
-                .base_instructions
-                .as_ref()
-                .and_then(|value| value.as_deref()),
-            Some("Base override.")
-        );
-        assert_eq!(
-            params
-                .developer_instructions
-                .as_ref()
-                .and_then(|value| value.as_deref()),
+            params.developer_instructions.as_deref(),
             Some("Developer override.")
         );
+    }
+
+    #[tokio::test]
+    async fn thread_fork_params_omit_missing_instruction_overrides() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+
+        let params = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+
+        assert_eq!(params.base_instructions, None);
+        assert_eq!(params.developer_instructions, None);
     }
 
     #[tokio::test]
