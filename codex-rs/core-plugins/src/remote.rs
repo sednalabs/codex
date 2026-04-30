@@ -16,8 +16,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod remote_installed_plugin_sync;
 mod share;
 
+pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncError;
+pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncOutcome;
+pub use remote_installed_plugin_sync::RemotePluginCacheMutationGuard;
+pub use remote_installed_plugin_sync::mark_remote_plugin_cache_mutation_in_flight;
+pub use remote_installed_plugin_sync::maybe_start_remote_installed_plugin_bundle_sync;
+pub use remote_installed_plugin_sync::sync_remote_installed_plugin_bundles_once;
 pub use share::RemotePluginShareSaveResult;
 pub use share::delete_remote_plugin_share;
 pub use share::list_remote_plugin_shares;
@@ -784,11 +791,29 @@ async fn fetch_installed_plugins_for_scope(
     auth: &CodexAuth,
     scope: RemotePluginScope,
 ) -> Result<Vec<RemotePluginInstalledItem>, RemotePluginCatalogError> {
+    fetch_installed_plugins_for_scope_with_download_url(
+        config, auth, scope, /*include_download_urls*/ false,
+    )
+    .await
+}
+
+async fn fetch_installed_plugins_for_scope_with_download_url(
+    config: &RemotePluginServiceConfig,
+    auth: &CodexAuth,
+    scope: RemotePluginScope,
+    include_download_urls: bool,
+) -> Result<Vec<RemotePluginInstalledItem>, RemotePluginCatalogError> {
     let mut plugins = Vec::new();
     let mut page_token = None;
     loop {
-        let response =
-            get_remote_plugin_installed_page(config, auth, scope, page_token.as_deref()).await?;
+        let response = get_remote_plugin_installed_page(
+            config,
+            auth,
+            scope,
+            page_token.as_deref(),
+            include_download_urls,
+        )
+        .await?;
         plugins.extend(response.plugins);
         let Some(next_page_token) = response.pagination.next_page_token else {
             break;
@@ -821,12 +846,16 @@ async fn get_remote_plugin_installed_page(
     auth: &CodexAuth,
     scope: RemotePluginScope,
     page_token: Option<&str>,
+    include_download_urls: bool,
 ) -> Result<RemotePluginInstalledResponse, RemotePluginCatalogError> {
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let url = format!("{base_url}/ps/plugins/installed");
     let client = build_reqwest_client();
     let mut request = authenticated_request(client.get(&url), auth)?;
     request = request.query(&[("scope", scope.api_value())]);
+    if include_download_urls {
+        request = request.query(&[("includeDownloadUrls", true)]);
+    }
     if let Some(page_token) = page_token {
         request = request.query(&[("pageToken", page_token)]);
     }
