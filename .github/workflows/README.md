@@ -79,7 +79,9 @@ contract today.
   validate checked-out query-pack changes, while fork pull requests use the
   trusted-base copy of `.github/codeql/actions-workflow-security` when it is
   available. Rust lanes add `.github/codeql/rust-computer-use-contract`
-  to catch native computer-use image-content regressions. The
+  to catch native computer-use image-content regressions, including missing
+  native-image guards, advisory text-vs-image match handling smells, and
+  contradictory success-with-error response construction. The
   `codeql-query-tests.yml` workflow compiles that Rust contract pack and runs
   its fixtures when the pack changes; code-scanning still provides the
   repository-wide analysis surface. Add Actions workflow policy queries to the
