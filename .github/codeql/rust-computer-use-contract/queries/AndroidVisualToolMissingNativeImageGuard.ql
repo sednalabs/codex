@@ -11,6 +11,9 @@
  */
 
 import rust
+import codeql.rust.controlflow.BasicBlocks
+import codeql.rust.controlflow.CfgNodes
+import codeql.rust.controlflow.ControlFlowGraph
 
 predicate androidComputerUseProviderFile(SourceFile file) {
   file.getRelativePath() = "codex-rs/tui/src/android_computer_use_provider.rs"
@@ -21,14 +24,67 @@ predicate androidVisualToolHandler(Function function) {
   (function.getName() = "observe" or function.getName() = "step")
 }
 
-predicate callsNativeImageGuard(Function function) {
-  exists(InvocationExpr call |
-    call.getEnclosingCallable() = function and
-    call.toString().regexpMatch("(?s).*require_native_image_for_visual_response\\s*\\(.*")
+predicate isNativeImageGuardCall(Call call) {
+  exists(Function target |
+    target = call.getStaticTarget() and
+    target.getName() = "require_native_image_for_visual_response" and
+    androidComputerUseProviderFile(target.getFile())
   )
 }
 
-from Function function
-where androidVisualToolHandler(function) and not callsNativeImageGuard(function)
-select function,
-  "This Android visual computer-use handler can return without enforcing native image output. Call require_native_image_for_visual_response before returning to the model."
+predicate isSuccessfulResultExitExpr(Function function, Expr exitExpr) {
+  exitExpr.getEnclosingCallable() = function and
+  exists(TupleVariantExpr ok |
+    ok = exitExpr and
+    ok.getVariant().getName() = "Ok"
+  ) and
+  (
+    exists(ReturnExpr returnExpr | returnExpr.getExpr() = exitExpr)
+    or
+    function.getBody().getStmtList().getTailExpr() = exitExpr
+  )
+}
+
+predicate isGuardNode(Function function, CfgNode node) {
+  exists(CallCfgNode callNode |
+    node = callNode and
+    callNode.getCall().getEnclosingCallable() = function and
+    isNativeImageGuardCall(callNode.getCall())
+  )
+}
+
+predicate cfgNodeForExpr(Expr expr, CfgNode node) {
+  node.getAstNode() = expr
+}
+
+predicate blockNodeOrder(BasicBlock block, CfgNode earlier, CfgNode later) {
+  exists(int earlierIndex, int laterIndex |
+    block.getNode(earlierIndex) = earlier and
+    block.getNode(laterIndex) = later and
+    earlierIndex <= laterIndex
+  )
+}
+
+predicate guardDominatesSuccessfulExit(Function function, Expr exitExpr) {
+  exists(CfgNode guardNode, CfgNode exitNode, BasicBlock guardBlock, BasicBlock exitBlock |
+    isGuardNode(function, guardNode) and
+    cfgNodeForExpr(exitExpr, exitNode) and
+    guardBlock.getANode() = guardNode and
+    exitBlock.getANode() = exitNode and
+    (
+      guardBlock.strictlyDominates(exitBlock)
+      or
+      guardBlock = exitBlock and blockNodeOrder(guardBlock, guardNode, exitNode)
+    )
+  )
+}
+
+// TODO: Upgrade this to data-flow identity checking so the exact response object
+// returned from Ok(...) must be the object passed through the native-image guard.
+from Function function, Expr exitExpr
+where
+  androidVisualToolHandler(function) and
+  isSuccessfulResultExitExpr(function, exitExpr) and
+  not guardDominatesSuccessfulExit(function, exitExpr)
+select exitExpr,
+  "This successful Android visual computer-use response can exit without first requiring native image output. Call require_native_image_for_visual_response on the response before returning Ok(...)."

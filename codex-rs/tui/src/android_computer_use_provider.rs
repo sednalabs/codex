@@ -210,7 +210,7 @@ async fn install_build_from_run(
                 ),
             }],
             success: true,
-            error: Some("android.inspect_ui failed".to_string()),
+            error: None,
         },
     };
 
