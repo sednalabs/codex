@@ -39,7 +39,7 @@ jobs:
             config_file: ./.github/codeql/codeql-config.yml
           - language: rust
             build-mode: none
-            config_file: ./.github/codeql/codeql-config.yml
+            config_file: ./.github/codeql/codeql-rust.yml
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

@@ -98,11 +98,22 @@ predicate releasePublishingCommand(string command, string sinkKind) {
 
 bindingset[callee]
 predicate releasePublishingAction(string callee, string sinkKind) {
-  callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
-  sinkKind = "GitHub Release publication"
+  (
+    callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
+    sinkKind = "GitHub Release publication"
+  )
   or
-  callee.regexpMatch("(?i)^docker/build-push-action@.*") and
-  sinkKind = "container image publication"
+  (
+    callee.regexpMatch("(?i)^docker/build-push-action@.*") and
+    sinkKind = "container image publication"
+  )
+}
+
+predicate jobUsesReleasePublishingAction(Job job, string sinkKind) {
+  exists(string callee |
+    jobUsesAction(job, callee) and
+    releasePublishingAction(callee, sinkKind)
+  )
 }
 
 predicate jobHasPublishingSink(Job job, string sinkKind) {
@@ -111,10 +122,7 @@ predicate jobHasPublishingSink(Job job, string sinkKind) {
     releasePublishingCommand(command, sinkKind)
   )
   or
-  exists(string callee |
-    jobUsesAction(job, callee) and
-    releasePublishingAction(callee, sinkKind)
-  )
+  jobUsesReleasePublishingAction(job, sinkKind)
 }
 
 predicate jobHasOfficialReleaseSink(Job job, string sinkKind) {
