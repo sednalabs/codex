@@ -372,7 +372,7 @@ jobs:
         id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
-        run: bash .github/scripts/configure_sccache_backend.sh "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
+        run: bash "${{ github.workspace }}/.github/scripts/configure_sccache_backend.sh" "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
 
       - name: Enable sccache wrapper
         if: ${{ env.USE_SCCACHE == 'true' }}
@@ -522,7 +522,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python3 .github/scripts/summarize_rust_ci_full.py extract-clippy \
+          python3 "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py" extract-clippy \
             --log "${RUNNER_TEMP}/clippy.log" \
             --suite "clippy-${{ matrix.target }}-${{ matrix.profile }}" \
             --output "${RUNNER_TEMP}/rust-ci-full-clippy-summary.json"
@@ -672,7 +672,7 @@ jobs:
         id: sccache_backend
         if: ${{ env.USE_SCCACHE == 'true' }}
         shell: bash
-        run: bash .github/scripts/configure_sccache_backend.sh "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
+        run: bash "${{ github.workspace }}/.github/scripts/configure_sccache_backend.sh" "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
 
       - name: Enable sccache wrapper
         if: ${{ env.USE_SCCACHE == 'true' }}
@@ -824,7 +824,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python3 .github/scripts/summarize_rust_ci_full.py extract-nextest \
+          python3 "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py" extract-nextest \
             --log "${RUNNER_TEMP}/nextest-normal.log" \
             --suite "nextest-${{ matrix.target }}-${{ matrix.profile }}" \
             --output "${RUNNER_TEMP}/rust-ci-full-nextest-summary.json"
@@ -935,7 +935,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python3 .github/scripts/summarize_rust_ci_full.py extract-nextest \
+          python3 "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py" extract-nextest \
             --log "${RUNNER_TEMP}/nextest-remote.log" \
             --suite "remote-nextest-${{ matrix.target }}-${{ matrix.profile }}" \
             --output "${RUNNER_TEMP}/rust-ci-full-remote-nextest-summary.json"
@@ -1008,7 +1008,7 @@ jobs:
           ${{ toJson(needs) }}
           JSON
 
-          python3 .github/scripts/summarize_rust_ci_full.py aggregate \
+          python3 "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py" aggregate \
             --needs-json "$(cat "${needs_json_file}")" \
             --summary-dir "${RUNNER_TEMP}/rust-ci-full-summaries" \
             --checkout-ref "${RUST_CI_FULL_CHECKOUT_REF}" \
