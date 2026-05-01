@@ -34,6 +34,10 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 use toml::Value as TomlValue;
 
+#[cfg(windows)]
+#[path = "exec_policy_windows_tests.rs"]
+mod windows_tests;
+
 fn config_stack_for_dot_codex_folder(dot_codex_folder: &Path) -> ConfigLayerStack {
     let dot_codex_folder =
         AbsolutePathBuf::from_absolute_path(dot_codex_folder).expect("absolute dot_codex_folder");
@@ -660,7 +664,14 @@ async fn evaluates_bash_lc_inner_commands() {
 fn commands_for_exec_policy_falls_back_for_empty_shell_script() {
     let command = vec!["bash".to_string(), "-lc".to_string(), "".to_string()];
 
-    assert_eq!(commands_for_exec_policy(&command), (vec![command], false));
+    assert_eq!(
+        commands_for_exec_policy(&command),
+        ExecPolicyCommands {
+            commands: vec![command],
+            used_complex_parsing: false,
+            command_origin: ExecPolicyCommandOrigin::Generic,
+        }
+    );
 }
 
 #[test]
@@ -671,7 +682,14 @@ fn commands_for_exec_policy_falls_back_for_whitespace_shell_script() {
         "  \n\t  ".to_string(),
     ];
 
-    assert_eq!(commands_for_exec_policy(&command), (vec![command], false));
+    assert_eq!(
+        commands_for_exec_policy(&command),
+        ExecPolicyCommands {
+            commands: vec![command],
+            used_complex_parsing: false,
+            command_origin: ExecPolicyCommandOrigin::Generic,
+        }
+    );
 }
 
 #[tokio::test]
@@ -961,19 +979,24 @@ fn unmatched_granular_policy_still_prompts_for_restricted_sandbox_escalation() {
     assert_eq!(
         Decision::Prompt,
         render_decision_for_unmatched_command(
-            AskForApproval::Granular(GranularApprovalConfig {
-                sandbox_approval: true,
-                rules: true,
-                skill_approval: true,
-                request_permissions: true,
-                mcp_elicitations: true,
-            }),
-            &permission_profile_from_sandbox_policy(&SandboxPolicy::new_read_only_policy()),
-            &read_only_file_system_sandbox_policy(),
-            Path::new("/tmp"),
             &command,
-            SandboxPermissions::RequireEscalated,
-            /*used_complex_parsing*/ false,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::Granular(GranularApprovalConfig {
+                    sandbox_approval: true,
+                    rules: true,
+                    skill_approval: true,
+                    request_permissions: true,
+                    mcp_elicitations: true,
+                }),
+                permission_profile: &permission_profile_from_sandbox_policy(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
+                file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+                sandbox_cwd: Path::new("/tmp"),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
         )
     );
 }
@@ -986,13 +1009,16 @@ fn unmatched_on_request_uses_split_filesystem_policy_for_escalation_prompts() {
     assert_eq!(
         Decision::Prompt,
         render_decision_for_unmatched_command(
-            AskForApproval::OnRequest,
-            &PermissionProfile::Disabled,
-            &restricted_file_system_policy,
-            Path::new("/tmp"),
             &command,
-            SandboxPermissions::RequireEscalated,
-            /*used_complex_parsing*/ false,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::OnRequest,
+                permission_profile: &PermissionProfile::Disabled,
+                file_system_sandbox_policy: &restricted_file_system_policy,
+                sandbox_cwd: Path::new("/tmp"),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
         )
     );
 }
@@ -1976,10 +2002,20 @@ struct ExecApprovalRequirementScenario {
     prefix_rule: Option<Vec<String>>,
 }
 
-async fn assert_exec_approval_requirement_for_command(
+fn policy_from_src(policy_src: Option<&str>) -> Arc<Policy> {
+    match policy_src {
+        Some(src) => {
+            let mut parser = PolicyParser::new();
+            parser.parse("test.rules", src).expect("parse policy");
+            Arc::new(parser.build())
+        }
+        None => Arc::new(Policy::empty()),
+    }
+}
+
+async fn exec_approval_requirement_for_command(
     test: ExecApprovalRequirementScenario,
-    expected_requirement: ExecApprovalRequirement,
-) {
+) -> ExecApprovalRequirement {
     let ExecApprovalRequirementScenario {
         policy_src,
         command,
@@ -1990,19 +2026,10 @@ async fn assert_exec_approval_requirement_for_command(
         prefix_rule,
     } = test;
 
-    let policy = match policy_src {
-        Some(src) => {
-            let mut parser = PolicyParser::new();
-            parser
-                .parse("test.rules", src.as_str())
-                .expect("parse policy");
-            Arc::new(parser.build())
-        }
-        None => Arc::new(Policy::empty()),
-    };
+    let policy = policy_from_src(policy_src.as_deref());
 
     let permission_profile = permission_profile_from_sandbox_policy(&sandbox_policy);
-    let requirement = ExecPolicyManager::new(policy)
+    ExecPolicyManager::new(policy)
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy,
@@ -2012,8 +2039,14 @@ async fn assert_exec_approval_requirement_for_command(
             sandbox_permissions,
             prefix_rule,
         })
-        .await;
+        .await
+}
 
+async fn assert_exec_approval_requirement_for_command(
+    test: ExecApprovalRequirementScenario,
+    expected_requirement: ExecApprovalRequirement,
+) {
+    let requirement = exec_approval_requirement_for_command(test).await;
     assert_eq!(requirement, expected_requirement);
 }
 
