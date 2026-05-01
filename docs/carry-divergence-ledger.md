@@ -221,16 +221,28 @@ docs-only refresh commit that records this snapshot.
 - Android screenshots are expected to reach the model as native image content
   items. Provider artifact paths are kept for diagnostics, audit, or replay;
   they are not the normal model-facing visual channel.
+- `codex-computer-use-runtime` owns the Codex-side provider bridge: runtime
+  config, provider session initialization, JSON-RPC/event-stream parsing,
+  provider tool calls, image preservation, and normalized
+  `ComputerUseCallResponse` values.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
 - Runtime providers own Android sessions, screenshots, UI digests, input
   execution, and provider-side build installation. Solar Gravity Lab is a
   proving and consumer app, not the generic owner of Codex computer-use tooling.
+- Fresh interactive Codex sessions reacquire the bare native Android tools from
+  a shared `codex-tools` runtime-config loader, and resumed legacy bare Android
+  tools are denied unless the current runtime is revalidated or explicitly
+  supplied again.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/computer-use-runtime/src/lib.rs`
+  - `codex-rs/tools/src/android_runtime_config.rs`
   - `codex-rs/tools/src/android_tool.rs`
   - `codex-rs/tools/src/tool_registry_plan.rs`
+  - `codex-rs/core/src/native_android_computer_use.rs`
+  - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
   - `codex-rs/core/src/tools/tool_search_entry.rs`
   - `codex-rs/app-server/src/computer_use.rs`
@@ -238,13 +250,13 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
-  - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
   - `codex-rs/tui/src/history_cell.rs`
   - `codex-rs/rollout/src/policy.rs`
   - `codex-rs/rollout-trace/src/protocol_event.rs`
+  - `codex-rs/core/src/session/tests.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
   - `codex-rs/tools/src/android_tool_tests.rs`
   - `codex-rs/tools/src/tool_registry_plan_tests.rs`

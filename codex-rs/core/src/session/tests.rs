@@ -290,6 +290,24 @@ fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
         persist_on_resume: false,
         capability: None,
     };
+    let legacy_bare_android_tool = DynamicToolSpec {
+        namespace: None,
+        name: "android_observe".to_string(),
+        description: "legacy bare android observe".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
+    let namespaced_android_tool = DynamicToolSpec {
+        namespace: Some("provider".to_string()),
+        name: "android_observe".to_string(),
+        description: "provider namespaced observe".to_string(),
+        input_schema: json!({"type":"object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
 
     assert_eq!(
         should_restore_dynamic_tool_on_resume(&environment_tool),
@@ -299,6 +317,14 @@ fn environment_scoped_dynamic_tools_do_not_restore_without_revalidation() {
     assert_eq!(
         should_restore_dynamic_tool_on_resume(&non_persistent_tool),
         false
+    );
+    assert_eq!(
+        should_restore_dynamic_tool_on_resume(&legacy_bare_android_tool),
+        false
+    );
+    assert_eq!(
+        should_restore_dynamic_tool_on_resume(&namespaced_android_tool),
+        true
     );
 }
 

@@ -136,6 +136,9 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadEventPersistenceMode;
 use codex_thread_store::ThreadStore;
+use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
+use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
+use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -273,6 +276,7 @@ use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
 use crate::memories;
+use crate::native_android_computer_use::augment_with_acquired_native_android_tools;
 use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::plugins::PluginsManager;
 use crate::rollout::map_session_init_error;
@@ -578,6 +582,11 @@ impl Codex {
         } else {
             dynamic_tools
         };
+        let dynamic_tools = augment_with_acquired_native_android_tools(
+            dynamic_tools,
+            config.codex_home.as_path(),
+            &session_source,
+        );
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {
@@ -786,11 +795,24 @@ fn should_restore_dynamic_tool_on_resume(
     tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
 ) -> bool {
     tool.persist_on_resume
+        && !is_bare_native_android_dynamic_tool(tool)
         && !matches!(
             tool.capability
                 .as_ref()
                 .and_then(|capability| capability.capability_scope.as_deref()),
             Some("environment")
+        )
+}
+
+fn is_bare_native_android_dynamic_tool(
+    tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
+) -> bool {
+    tool.namespace.is_none()
+        && matches!(
+            tool.name.as_str(),
+            ANDROID_OBSERVE_TOOL_NAME
+                | ANDROID_STEP_TOOL_NAME
+                | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
         )
 }
 
