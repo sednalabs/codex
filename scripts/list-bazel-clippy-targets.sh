@@ -14,6 +14,9 @@ manual_rust_test_targets="$(
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
+if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
+  manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
+fi
 
 printf '%s\n' \
   "//codex-rs/..." \
