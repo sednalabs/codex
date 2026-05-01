@@ -181,10 +181,12 @@ jobs:
       draft: ${{ steps.meta.outputs.draft }}
       github_prerelease: ${{ steps.meta.outputs.github_prerelease }}
       release_channel: ${{ steps.meta.outputs.release_channel }}
+      release_build_required: ${{ steps.meta.outputs.release_build_required }}
       release_marker: ${{ steps.meta.outputs.release_marker }}
       release_requested: ${{ steps.meta.outputs.release_requested }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
+      release_work_skip_reason: ${{ steps.meta.outputs.release_work_skip_reason }}
       skip_reason: ${{ steps.meta.outputs.skip_reason }}
       target_commit: ${{ steps.meta.outputs.target_commit }}
       upstream_base_commit: ${{ steps.meta.outputs.upstream_base_commit }}
@@ -270,10 +272,51 @@ jobs:
           python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
 
+          release_build_required="true"
+          release_work_skip_reason=""
+          release_tag="$(jq -r '.release_tag // empty' "${meta_json}")"
+          target_commit="$(jq -r '.target_commit // empty' "${meta_json}")"
+
+          normalize_commit() {
+            git rev-parse --verify "$1^{commit}" 2>/dev/null || printf '%s\n' "$1"
+          }
+
+          if [[ "${REF_TYPE}" == "tag" && -n "${release_tag}" ]]; then
+            existing_target="$(
+              gh release view "${release_tag}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json targetCommitish \
+                --jq '.targetCommitish' 2>/dev/null || true
+            )"
+            if [[ -n "${existing_target}" ]]; then
+              existing_target_commit="$(normalize_commit "${existing_target}")"
+              target_commit_normalized="$(normalize_commit "${target_commit}")"
+              if [[ "${existing_target_commit}" != "${target_commit_normalized}" ]]; then
+                echo "Release ${release_tag} already exists for ${existing_target_commit}, not ${target_commit_normalized}." >&2
+                exit 1
+              fi
+
+              release_build_required="false"
+              release_work_skip_reason="existing_release_same_target"
+              {
+                echo "### Sedna release duplicate tag"
+                echo
+                echo "- Release: \`${release_tag}\`"
+                echo "- Existing target: \`${existing_target_commit}\`"
+                echo "- Decision: skip duplicate tag-triggered build/publish"
+              } >> "${GITHUB_STEP_SUMMARY}"
+            fi
+          fi
+
+          {
+            echo "release_build_required=${release_build_required}"
+            echo "release_work_skip_reason=${release_work_skip_reason}"
+          } >> "${GITHUB_OUTPUT}"
+
   release-linux:
     name: Build Linux release artifacts
     needs: resolve
-    if: ${{ needs.resolve.outputs.release_requested == 'true' }}
+    if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     concurrency:
@@ -578,7 +621,7 @@ jobs:
     needs:
       - resolve
       - release-linux
-    if: ${{ needs.resolve.outputs.release_requested == 'true' }}
+    if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
     runs-on: ubuntu-slim
     timeout-minutes: 10
     environment: release
