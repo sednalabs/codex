@@ -251,17 +251,24 @@ jobs:
             --build_metadata=TAG_job=clippy
           )
           bazel_wrapper_args=()
+          bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # Keep this aligned with the Windows Bazel test job. With the
-            # default `//:local_windows` host platform, Windows `rust_test`
-            # targets such as `//codex-rs/core:core-all-test` can be skipped
-            # by `--skip_incompatible_explicit_targets`, which hides clippy
-            # diagnostics from integration-test modules.
-            bazel_wrapper_args+=(--windows-msvc-host-platform)
-            bazel_clippy_args+=(--skip_incompatible_explicit_targets)
+            # Keep this aligned with the fast Windows Bazel test job: use
+            # Linux RBE for clippy build actions while targeting Windows
+            # gnullvm. Fork/community PRs without the BuildBuddy secret fall
+            # back inside `run-bazel-ci.sh` to the previous local Windows MSVC
+            # host-platform shape.
+            bazel_wrapper_args+=(--windows-cross-compile)
+            bazel_target_list_args+=(--windows-cross-compile)
+            if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+              # The fork fallback can see incompatible explicit Windows-cross
+              # internal test binaries in the generated target list. Preserve
+              # the old local-fallback behavior there.
+              bazel_clippy_args+=(--skip_incompatible_explicit_targets)
+            fi
           fi
 
-          bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh)"
+          bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
           bazel_targets=()
           while IFS= read -r target; do
             bazel_targets+=("${target}")
@@ -333,7 +340,12 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            bazel_wrapper_args+=(--windows-msvc-host-platform)
+            # This is build-only signal, so use the same Linux-RBE
+            # cross-compile path as the fast Windows test and clippy jobs.
+            # Fork/community PRs without the BuildBuddy secret fall back
+            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
+            # host-platform shape.
+            bazel_wrapper_args+=(--windows-cross-compile)
           fi
 
           bazel_build_args=(
