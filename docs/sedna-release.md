@@ -71,6 +71,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   prerelease allowance for that exact tag.
 - Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
   matches the resolver's computed version for the target commit before publishing.
+- If a tag push triggers a duplicate run for a tag that has already been published for the same target
+  commit, the workflow treats it as an idempotent skip instead of rebuilding. If the tag exists but
+  points to a different commit, the workflow still fails to prevent accidental tag reuse.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
