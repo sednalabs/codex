@@ -99,7 +99,7 @@ async fn token_usage_update_uses_runtime_context_window() {
     );
 
     assert_eq!(
-        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextWindowSize),
         Some("950K window".to_string())
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
