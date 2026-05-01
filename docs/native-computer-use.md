@@ -238,11 +238,13 @@ not the generic Codex computer-use contract.
 - `codex-rs/core/src/tools/tool_search_entry.rs`
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
-- `codex-rs/app-server-protocol/src/protocol/common.rs`\n- `codex-rs/app-server-protocol/src/protocol/v2.rs`
+- `codex-rs/app-server-protocol/src/protocol/common.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
 - `codex-rs/tui/src/app/app_server_adapter.rs`
-- `codex-rs/tui/src/chatwidget.rs`\n- `codex-rs/tui/src/chatwidget/interrupts.rs`
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/chatwidget/interrupts.rs`
 - `codex-rs/tui/src/history_cell.rs`
 - `codex-rs/rollout/src/policy.rs`
 - `codex-rs/rollout-trace/src/protocol_event.rs`
