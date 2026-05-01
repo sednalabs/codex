@@ -14,6 +14,7 @@ from typing import Any
 
 EXIT_OK = 0
 EXIT_UNSTABLE_SNAPSHOT = 2
+EXIT_INVALID_REGISTRY = 6
 EXIT_INVALID_MIRROR = 3
 EXIT_UNCOVERED_LIVE_CODE = 4
 EXIT_STALE_REGISTRY = 5
@@ -758,9 +759,12 @@ if __name__ == "__main__":
     except SnapshotChanged as exc:
         print(f"snapshot changed: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_UNSTABLE_SNAPSHOT)
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"registry error: {exc}", file=sys.stderr)
-        raise SystemExit(EXIT_STALE_REGISTRY)
+    except FileNotFoundError as exc:
+        print(f"registry file not found: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_INVALID_REGISTRY)
+    except ValueError as exc:
+        print(f"registry parse/validation error: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_INVALID_REGISTRY)
     except RuntimeError as exc:
         print(f"audit command error: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_INVALID_MIRROR)
