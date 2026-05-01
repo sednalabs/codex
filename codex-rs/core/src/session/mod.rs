@@ -273,6 +273,7 @@ use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
 use crate::memories;
+use crate::native_android_computer_use::augment_with_acquired_native_android_tools;
 use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::plugins::PluginsManager;
 use crate::rollout::map_session_init_error;
@@ -578,6 +579,11 @@ impl Codex {
         } else {
             dynamic_tools
         };
+        let dynamic_tools = augment_with_acquired_native_android_tools(
+            dynamic_tools,
+            config.codex_home.as_path(),
+            &session_source,
+        );
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {
