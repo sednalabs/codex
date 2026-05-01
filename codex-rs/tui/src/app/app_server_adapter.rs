@@ -12,7 +12,6 @@ should shrink and eventually disappear.
 */
 
 use super::App;
-use crate::android_computer_use_provider::AndroidComputerUseOutcome;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
@@ -34,6 +33,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
 #[cfg(test)]
 use codex_app_server_protocol::TurnStatus;
+use codex_computer_use_runtime::AndroidComputerUseOutcome;
 use codex_protocol::ThreadId;
 #[cfg(test)]
 use codex_protocol::config_types::ModeKind;
@@ -288,7 +288,12 @@ impl App {
         if let ServerRequest::ComputerUseCall { request_id, params } = request {
             let show_message =
                 should_show_computer_use_fallback_message(self.primary_thread_id, thread_id);
-            match crate::android_computer_use_provider::handle_android_computer_use(&params).await {
+            match codex_computer_use_runtime::handle_android_computer_use(
+                self.config.codex_home.as_path(),
+                &params,
+            )
+            .await
+            {
                 AndroidComputerUseOutcome::Handled(response) => {
                     let result = serde_json::to_value(response)
                         .map_err(|err| format!("failed to serialize computer-use response: {err}"));

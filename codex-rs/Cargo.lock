@@ -2283,6 +2283,18 @@ name = "codex-collaboration-mode-templates"
 version = "0.0.0"
 
 [[package]]
+name = "codex-computer-use-runtime"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "codex-app-server-protocol",
+ "codex-tools",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "codex-config"
 version = "0.0.0"
 dependencies = [
@@ -3429,6 +3441,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 
@@ -3449,6 +3462,7 @@ dependencies = [
  "codex-chatgpt",
  "codex-cli",
  "codex-cloud-requirements",
+ "codex-computer-use-runtime",
  "codex-config",
  "codex-connectors",
  "codex-core-plugins",
