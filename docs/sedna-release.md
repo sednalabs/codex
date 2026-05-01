@@ -134,8 +134,7 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
-- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
-  build factory
+- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
 - The initial Sedna release lane publishes direct GitHub release binaries. The legacy npm-style
