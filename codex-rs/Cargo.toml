@@ -24,6 +24,7 @@ members = [
     "cloud-tasks-mock-client",
     "cli",
     "collaboration-mode-templates",
+    "computer-use-runtime",
     "connectors",
     "config",
     "device-key",
@@ -134,6 +135,7 @@ codex-cloud-requirements = { path = "cloud-requirements" }
 codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
+codex-computer-use-runtime = { path = "computer-use-runtime" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-core = { path = "core" }

@@ -1710,6 +1710,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "rust/computer-use-match-drops-native-image",
             "rust/android-visual-tool-missing-native-image-guard",
             "rust/computer-use-response-success-with-error",
+            "rust/android-mcp-tool-result-drops-native-image-content",
+            "rust/android-native-tool-acquisition-missing",
+            "rust/android-runtime-config-source-bypasses-shared-loader",
+            "rust/android-tool-promotion-missing-computer-use-handler",
         ]:
             self.assertTrue(
                 any(

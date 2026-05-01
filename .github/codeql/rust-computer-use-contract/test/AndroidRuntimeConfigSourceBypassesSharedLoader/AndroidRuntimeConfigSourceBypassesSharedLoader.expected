@@ -1,0 +1,1 @@
+| codex-rs/core/src/native_android_computer_use.rs:2:5:2:28 | "CODEX_ANDROID_MCP_URL" | Android runtime config source names should be read through codex_tools::load_android_runtime_config instead of being duplicated in core or TUI code. |
