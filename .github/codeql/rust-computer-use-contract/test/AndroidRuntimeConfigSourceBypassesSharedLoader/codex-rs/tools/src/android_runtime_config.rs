@@ -1,0 +1,1 @@
+pub const ANDROID_MCP_URL_ENV_VARS: [&str; 1] = ["CODEX_ANDROID_MCP_URL"];

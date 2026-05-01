@@ -50,6 +50,7 @@ mod mcp_openai_file;
 mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
+mod native_android_computer_use;
 mod network_policy_decision;
 pub(crate) mod network_proxy_loader;
 mod original_image_detail;

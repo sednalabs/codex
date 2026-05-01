@@ -278,6 +278,9 @@ tui-native-computer-use-targeted:
 # Focused native Android tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
+    cargo test --locked -p codex-computer-use-runtime --lib -- --test-threads=1
+    cargo test --locked -p codex-tools android_runtime_config --lib -- --test-threads=1
+    cargo test --locked -p codex-core native_android_computer_use --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools android_dynamic_tools_use_canonical_codex_tool_definitions --lib -- --exact --test-threads=1
     cargo test --locked -p codex-tools duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --exact --test-threads=1

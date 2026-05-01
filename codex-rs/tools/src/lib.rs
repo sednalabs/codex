@@ -3,6 +3,7 @@
 
 mod agent_job_tool;
 mod agent_tool;
+mod android_runtime_config;
 mod android_tool;
 mod apply_patch_tool;
 mod code_mode;
@@ -42,6 +43,14 @@ pub use agent_tool::create_spawn_agent_tool_v1;
 pub use agent_tool::create_spawn_agent_tool_v2;
 pub use agent_tool::create_wait_agent_tool_v1;
 pub use agent_tool::create_wait_agent_tool_v2;
+pub use android_runtime_config::ANDROID_MCP_CF_ACCESS_CLIENT_ID_ENV_VARS;
+pub use android_runtime_config::ANDROID_MCP_CF_ACCESS_CLIENT_SECRET_ENV_VARS;
+pub use android_runtime_config::ANDROID_MCP_HOSTNAME_ENV_VARS;
+pub use android_runtime_config::ANDROID_MCP_URL_ENV_VARS;
+pub use android_runtime_config::ANDROID_RUNTIME_CONFIG_FILES;
+pub use android_runtime_config::AndroidRuntimeConfig;
+pub use android_runtime_config::load_android_runtime_config;
+pub use android_runtime_config::load_android_runtime_config_with_env;
 pub use android_tool::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 pub use android_tool::ANDROID_OBSERVE_TOOL_NAME;
 pub use android_tool::ANDROID_STEP_TOOL_NAME;
