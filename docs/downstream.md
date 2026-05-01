@@ -203,6 +203,8 @@ Why:
 
 User-visible behavior:
 - Running-turn interrupt defaults to `Esc Esc` confirmation.
+- This confirmation applies while follow-up drafts are queued.
+- This confirmation also applies when queued steer text is waiting to submit after the interrupt.
 - First `Esc` shows a confirmation hint (`Esc again to interrupt`) instead of interrupting immediately.
 - Bare `Esc` release events and `Esc`-prefixed Alt sequences do not trigger unintended interrupts.
 - `[tui].double_esc_interrupt` controls this behavior, with `CODEX_TUI_DOUBLE_ESC_INTERRUPT=0` as an override.

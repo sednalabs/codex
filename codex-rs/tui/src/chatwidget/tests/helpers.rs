@@ -369,6 +369,17 @@ pub(super) fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiv
     }
 }
 
+pub(super) fn assert_no_submit_or_interrupt_op(
+    op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
+    while let Ok(op) = op_rx.try_recv() {
+        assert!(
+            !matches!(op, Op::UserTurn { .. } | Op::Interrupt),
+            "unexpected submit/interrupt op: {op:?}"
+        );
+    }
+}
+
 pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
     chat.has_chatgpt_account = true;
     chat.model_catalog = test_model_catalog(&chat.config);

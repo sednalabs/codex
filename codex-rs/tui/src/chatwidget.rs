@@ -51,6 +51,8 @@ use crate::app_server_approval_conversions::network_approval_context_to_core;
 use crate::app_server_session::ThreadSessionState;
 #[cfg(not(target_os = "linux"))]
 use crate::audio_device::list_realtime_audio_device_names;
+use crate::bottom_pane::EscInterruptContext;
+use crate::bottom_pane::EscInterruptDecision;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::StatusLineSetupView;
 use crate::bottom_pane::StatusSurfacePreviewData;
@@ -5947,14 +5949,24 @@ impl ChatWidget {
         }
 
         if matches!(key_event.code, KeyCode::Esc)
-            && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && key_event.kind == KeyEventKind::Press
+            && key_event.modifiers.is_empty()
             && !self.pending_steers.is_empty()
             && self.bottom_pane.is_task_running()
             && self.bottom_pane.no_modal_or_popup_active()
         {
-            self.submit_pending_steers_after_interrupt = true;
-            if !self.submit_op(AppCommand::interrupt()) {
-                self.submit_pending_steers_after_interrupt = false;
+            match self.bottom_pane.handle_esc_interrupt_for_running_task(
+                key_event,
+                EscInterruptContext::PendingSteers,
+            ) {
+                EscInterruptDecision::Interrupt => {
+                    self.submit_pending_steers_after_interrupt = true;
+                    if !self.submit_op(AppCommand::interrupt()) {
+                        self.submit_pending_steers_after_interrupt = false;
+                    }
+                }
+                EscInterruptDecision::AwaitingConfirmation => {}
+                EscInterruptDecision::NotHandled => {}
             }
             return;
         }
