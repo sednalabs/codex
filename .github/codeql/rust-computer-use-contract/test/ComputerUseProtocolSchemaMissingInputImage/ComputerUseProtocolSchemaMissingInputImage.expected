@@ -1,0 +1,1 @@
+| codex-rs/app-server-protocol/src/protocol/v2.rs:8:1:15:1 | fn from | The computer-use app-server protocol conversion no longer includes InputImage. Keep inputImage in the schema and bridge so clients can return native visual evidence. |

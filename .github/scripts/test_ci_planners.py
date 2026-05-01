@@ -1714,6 +1714,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "rust/android-native-tool-acquisition-missing",
             "rust/android-runtime-config-source-bypasses-shared-loader",
             "rust/android-tool-promotion-missing-computer-use-handler",
+            "rust/android-native-image-ingress-missing",
+            "rust/android-inspect-ui-screenshot-request-missing",
+            "rust/android-screenshot-fallback-missing",
+            "rust/computer-use-bridge-drops-input-image-variant",
+            "rust/core-computer-use-model-output-text-only",
+            "rust/thread-history-computer-use-image-replay-missing",
+            "rust/android-missing-image-recovery-guidance-missing",
+            "rust/computer-use-protocol-schema-missing-input-image",
         ]:
             self.assertTrue(
                 any(
