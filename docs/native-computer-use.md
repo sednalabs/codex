@@ -253,6 +253,12 @@ The focused lanes are:
   `ComputerUse` handler. The advisory text/image match query also covers
   app-server protocol conversion surfaces so native image preservation stays
   guarded across the thread-history boundary.
+- Additional CodeQL native-image corridor checks guard the Android ingress,
+  `inspect_ui` screenshot request, degraded screenshot fallback, app-server
+  protocol conversion, core model-output bridge, thread-history replay, and
+  missing-image recovery guidance. These checks cannot prove pixel correctness,
+  but they make text-only summaries, artifact breadcrumbs, or UI digests
+  insufficient for a successful visual Android computer-use response.
 
 The local just recipes behind those lanes are:
 

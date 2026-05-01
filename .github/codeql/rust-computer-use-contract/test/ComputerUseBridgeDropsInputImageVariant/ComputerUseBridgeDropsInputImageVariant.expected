@@ -1,0 +1,1 @@
+| codex-rs/app-server-protocol/src/protocol/v2.rs:11:5:18:6 | match item { ... } | This computer-use protocol bridge handles InputText but not InputImage. Preserve native image items across app-server/protocol conversions. |
