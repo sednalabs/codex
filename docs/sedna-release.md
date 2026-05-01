@@ -71,6 +71,9 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   prerelease allowance for that exact tag.
 - Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
   matches the resolver's computed version for the target commit before publishing.
+- If a tag push triggers a duplicate run for a tag that has already been published for the same target
+  commit, the workflow treats it as an idempotent skip instead of rebuilding. If the tag exists but
+  points to a different commit, the workflow still fails to prevent accidental tag reuse.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
@@ -131,8 +134,7 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
-- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
-  build factory
+- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
 - The initial Sedna release lane publishes direct GitHub release binaries. The legacy npm-style
