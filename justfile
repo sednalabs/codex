@@ -137,8 +137,8 @@ spawn-agent-description-model-surface-targeted:
 # intentionally avoids compiling codex-tui while app-server drift contaminates
 # small mapped picker-model runs.
 tui-agent-picker-model-surface-targeted:
-    just --justfile ../justfile spawn-agent-tool-model-surface-targeted
-    just --justfile ../justfile spawn-agent-description-model-surface-targeted
+    just --justfile "{{ justfile_directory() }}/justfile" spawn-agent-tool-model-surface-targeted
+    just --justfile "{{ justfile_directory() }}/justfile" spawn-agent-description-model-surface-targeted
 
 # Focused /agent picker hierarchy visibility slice.
 tui-agent-picker-tree-targeted:
@@ -433,7 +433,7 @@ bazel-clippy:
 
 [no-cd]
 bazel-argument-comment-lint:
-    bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
+    bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
 
 bazel-remote-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
@@ -464,11 +464,15 @@ _run-bazel-argument-comment-lint:
 
 [no-cd]
 argument-comment-lint *args:
-    if [ "$#" -eq 0 ]; then \
-      bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh); \
-    else \
-      {{ justfile_directory() }}/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
-    fi
+    if [ "$#" -eq 0 ]; then just argument-comment-lint-default; else just argument-comment-lint-with-args "$@"; fi
+
+[no-cd]
+argument-comment-lint-default:
+    bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
+
+[no-cd]
+argument-comment-lint-with-args *args:
+    {{ justfile_directory() }}/tools/argument-comment-lint/run-prebuilt-linter.py "$@"
 
 [no-cd]
 argument-comment-lint-from-source *args:
@@ -476,4 +480,8 @@ argument-comment-lint-from-source *args:
 
 # Tail logs from the state SQLite database
 log *args:
-    if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-state --bin logs_client -- "$@"
+    # Allow `just log -- <logs_client args>` by dropping just's argument delimiter.
+    if [ "${1:-}" = "--" ]; then
+      shift
+    fi
+    cargo run -p codex-state --bin logs_client -- "$@"
