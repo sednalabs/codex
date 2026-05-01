@@ -762,6 +762,39 @@ impl CodexMessageProcessor {
         self.thread_manager.skills_manager().clear_cache();
     }
 
+    async fn maybe_refresh_remote_installed_plugins_cache_for_current_config(
+        config_manager: &ConfigManager,
+        thread_manager: &Arc<ThreadManager>,
+        auth: Option<CodexAuth>,
+    ) {
+        match config_manager
+            .load_latest_config(/*fallback_cwd*/ None)
+            .await
+        {
+            Ok(config) => {
+                let refresh_thread_manager = Arc::clone(thread_manager);
+                let refresh_config = config.clone();
+                thread_manager
+                    .plugins_manager()
+                    .maybe_start_remote_installed_plugins_cache_refresh(
+                        &config.plugins_config_input(),
+                        auth,
+                        Some(Arc::new(move || {
+                            Self::spawn_effective_plugins_changed_task(
+                                Arc::clone(&refresh_thread_manager),
+                                refresh_config.clone(),
+                            );
+                        })),
+                    );
+            }
+            Err(err) => {
+                warn!(
+                    "failed to reload config after account changed, skipping remote installed plugins cache refresh: {err}"
+                );
+            }
+        }
+    }
+
     fn current_account_updated_notification(&self) -> AccountUpdatedNotification {
         let auth = self.auth_manager.auth_cached();
         AccountUpdatedNotification {
@@ -1553,10 +1586,10 @@ impl CodexMessageProcessor {
         }
 
         let outgoing_clone = self.outgoing.clone();
-        let active_login = self.active_login.clone();
-        let auth_manager = self.auth_manager.clone();
         let config_manager = self.config_manager.clone();
+        let thread_manager = Arc::clone(&self.thread_manager);
         let chatgpt_base_url = self.config.chatgpt_base_url.clone();
+        let active_login = self.active_login.clone();
         let auth_url = server.auth_url.clone();
         tokio::spawn(async move {
             let (success, error_msg) = match tokio::time::timeout(
@@ -1575,8 +1608,8 @@ impl CodexMessageProcessor {
 
             Self::send_chatgpt_login_completion_notifications(
                 &outgoing_clone,
-                auth_manager,
                 config_manager,
+                thread_manager,
                 chatgpt_base_url,
                 login_id,
                 success,
@@ -1629,10 +1662,10 @@ impl CodexMessageProcessor {
         let user_code = device_code.user_code.clone();
 
         let outgoing_clone = self.outgoing.clone();
-        let active_login = self.active_login.clone();
-        let auth_manager = self.auth_manager.clone();
         let config_manager = self.config_manager.clone();
+        let thread_manager = Arc::clone(&self.thread_manager);
         let chatgpt_base_url = self.config.chatgpt_base_url.clone();
+        let active_login = self.active_login.clone();
         tokio::spawn(async move {
             let (success, error_msg) = tokio::select! {
                 _ = cancel.cancelled() => {
@@ -1648,8 +1681,8 @@ impl CodexMessageProcessor {
 
             Self::send_chatgpt_login_completion_notifications(
                 &outgoing_clone,
-                auth_manager,
                 config_manager,
+                thread_manager,
                 chatgpt_base_url,
                 login_id,
                 success,
@@ -1778,6 +1811,13 @@ impl CodexMessageProcessor {
     }
 
     async fn send_login_success_notifications(&self, login_id: Option<Uuid>) {
+        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+            &self.config_manager,
+            &self.thread_manager,
+            self.auth_manager.auth_cached(),
+        )
+        .await;
+
         let payload_login_completed = AccountLoginCompletedNotification {
             login_id: login_id.map(|id| id.to_string()),
             success: true,
@@ -1798,8 +1838,8 @@ impl CodexMessageProcessor {
 
     async fn send_chatgpt_login_completion_notifications(
         outgoing: &OutgoingMessageSender,
-        auth_manager: Arc<AuthManager>,
         config_manager: ConfigManager,
+        thread_manager: Arc<ThreadManager>,
         chatgpt_base_url: String,
         login_id: Uuid,
         success: bool,
@@ -1815,6 +1855,7 @@ impl CodexMessageProcessor {
             .await;
 
         if success {
+            let auth_manager = thread_manager.auth_manager();
             auth_manager.reload().await;
             config_manager
                 .replace_cloud_requirements_loader(auth_manager.clone(), chatgpt_base_url);
@@ -1823,6 +1864,12 @@ impl CodexMessageProcessor {
                 .await;
 
             let auth = auth_manager.auth_cached();
+            Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+                &config_manager,
+                &thread_manager,
+                auth.clone(),
+            )
+            .await;
             let payload_v2 = AccountUpdatedNotification {
                 auth_mode: auth.as_ref().map(CodexAuth::api_auth_mode),
                 plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
@@ -1852,6 +1899,13 @@ impl CodexMessageProcessor {
                 });
             }
         }
+
+        Self::maybe_refresh_remote_installed_plugins_cache_for_current_config(
+            &self.config_manager,
+            &self.thread_manager,
+            self.auth_manager.auth_cached(),
+        )
+        .await;
 
         // Reflect the current auth method after logout (likely None).
         Ok(self
