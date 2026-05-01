@@ -44,11 +44,18 @@ include a concise diagnostic that names the provider artifact involved; that is
 an error breadcrumb, not the normal contract.
 
 These tools are installed from dynamic thread tools supplied through app-server
-thread start, resume, or fork requests. When the tool has no namespace and the
-name is `android_observe`, `android_step`, or
-`android_install_build_from_run`, Codex replaces the provider's ad hoc schema
-with its canonical first-party function schema and registers the handler as
-`ComputerUse`.
+thread start, resume, or fork requests. Fresh interactive Codex threads can also
+reacquire the same native surface from local Android runtime configuration:
+when `$CODEX_HOME/android-computer-use.json`,
+`$CODEX_HOME/android-dynamic-tools.json`, or
+`$CODEX_HOME/solarlab-android-dynamic-tools.json` contains a non-empty
+`mcp_url`, Codex synthesizes the canonical bare Android tool declarations
+before model-visible tool specs are built.
+
+When the tool has no namespace and the name is `android_observe`,
+`android_step`, or `android_install_build_from_run`, Codex replaces the
+provider's ad hoc schema with its canonical first-party function schema and
+registers the handler as `ComputerUse`.
 
 Namespaced tools are not promoted. For example, `codex_app.android_observe`
 remains a normal dynamic tool. This preserves room for app-specific dynamic
@@ -81,6 +88,11 @@ it does not replace the Codex-owned native schema or transcript behavior for
 bare `android_observe`, `android_step`, and
 `android_install_build_from_run`.
 
+Acquired Android tools are marked `family=android`,
+`capabilityScope=environment`, and `persistOnResume=false`. This prevents
+stale device/session handles from being blindly restored; resumed and forked
+threads must validate or reacquire the current environment.
+
 Deferred tool search also treats bare Android dynamic tools as native
 computer-use candidates, so deferred discovery loads the canonical Codex tool
 definition rather than the provider's raw dynamic schema.
@@ -88,7 +100,9 @@ definition rather than the provider's raw dynamic schema.
 ## Runtime Flow
 
 1. A thread is started, resumed, or forked with `dynamicTools` containing bare
-   `android_observe`, `android_step`, or `android_install_build_from_run`.
+   `android_observe`, `android_step`, or `android_install_build_from_run`, or
+   a fresh interactive thread reacquires those tools from local Android runtime
+   configuration.
 2. The tool registry promotes those names to canonical Codex function tools and
    registers `ToolHandlerKind::ComputerUse`.
 3. When the model calls one of those tools, `codex-core` emits a
