@@ -1,6 +1,7 @@
 use crate::store::PLUGINS_CACHE_DIR;
 use crate::store::PluginStore;
 use codex_app_server_protocol::PluginAuthPolicy;
+use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginInterface;
 use codex_app_server_protocol::SkillInterface;
@@ -67,6 +68,7 @@ pub struct RemotePluginSummary {
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub auth_policy: PluginAuthPolicy,
+    pub availability: PluginAvailability,
     pub interface: Option<PluginInterface>,
 }
 
@@ -265,6 +267,8 @@ struct RemotePluginDirectoryItem {
     scope: RemotePluginScope,
     installation_policy: PluginInstallPolicy,
     authentication_policy: PluginAuthPolicy,
+    #[serde(rename = "status", default)]
+    availability: PluginAvailability,
     release: RemotePluginReleaseResponse,
 }
 
@@ -661,6 +665,7 @@ fn build_remote_plugin_summary(
         enabled: installed_plugin.is_some_and(|plugin| plugin.enabled),
         install_policy: plugin.installation_policy,
         auth_policy: plugin.authentication_policy,
+        availability: plugin.availability,
         interface: remote_plugin_interface_to_info(plugin),
     }
 }

@@ -4827,6 +4827,21 @@ pub enum PluginAuthPolicy {
     OnUse,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema, TS)]
+#[ts(export_to = "v2/")]
+pub enum PluginAvailability {
+    /// Plugin-service currently sends `"ENABLED"` for available remote plugins.
+    /// Codex app-server exposes `"AVAILABLE"` in its API; the alias keeps
+    /// decoding compatible with that upstream response.
+    #[serde(rename = "AVAILABLE", alias = "ENABLED")]
+    #[ts(rename = "AVAILABLE")]
+    #[default]
+    Available,
+    #[serde(rename = "DISABLED_BY_ADMIN")]
+    #[ts(rename = "DISABLED_BY_ADMIN")]
+    DisabledByAdmin,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -4838,6 +4853,9 @@ pub struct PluginSummary {
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub auth_policy: PluginAuthPolicy,
+    /// Availability state for installing and using the plugin.
+    #[serde(default)]
+    pub availability: PluginAvailability,
     pub interface: Option<PluginInterface>,
 }
 
@@ -10725,6 +10743,7 @@ mod tests {
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
                     auth_policy: PluginAuthPolicy::OnUse,
+                    availability: PluginAvailability::Available,
                     interface: None,
                 }],
             })
@@ -10738,9 +10757,38 @@ mod tests {
                     "enabled": false,
                     "installPolicy": "AVAILABLE",
                     "authPolicy": "ON_USE",
+                    "availability": "AVAILABLE",
                     "interface": null,
                 }],
             }),
+        );
+    }
+
+    #[test]
+    fn plugin_summary_defaults_missing_availability_to_available() {
+        let summary: PluginSummary = serde_json::from_value(json!({
+            "id": "plugins~Plugin_00000000000000000000000000000000",
+            "name": "gmail",
+            "source": { "type": "remote" },
+            "installed": false,
+            "enabled": false,
+            "installPolicy": "AVAILABLE",
+            "authPolicy": "ON_USE",
+            "interface": null,
+        }))
+        .unwrap();
+
+        assert_eq!(summary.availability, PluginAvailability::Available);
+    }
+
+    #[test]
+    fn plugin_availability_deserializes_enabled_alias() {
+        let availability: PluginAvailability = serde_json::from_value(json!("ENABLED")).unwrap();
+
+        assert_eq!(availability, PluginAvailability::Available);
+        assert_eq!(
+            serde_json::to_value(availability).unwrap(),
+            json!("AVAILABLE")
         );
     }
 

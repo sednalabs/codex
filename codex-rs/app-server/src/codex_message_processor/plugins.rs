@@ -1,6 +1,7 @@
 use super::*;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 
 impl CodexMessageProcessor {
@@ -77,6 +78,7 @@ impl CodexMessageProcessor {
                                 source: marketplace_plugin_source_to_info(plugin.source),
                                 install_policy: plugin.policy.installation.into(),
                                 auth_policy: plugin.policy.authentication.into(),
+                                availability: PluginAvailability::Available,
                                 interface: plugin.interface.map(local_plugin_interface_to_info),
                             })
                             .collect(),
@@ -243,6 +245,7 @@ impl CodexMessageProcessor {
                         enabled: outcome.plugin.enabled,
                         install_policy: outcome.plugin.policy.installation.into(),
                         auth_policy: outcome.plugin.policy.authentication.into(),
+                        availability: PluginAvailability::Available,
                         interface: outcome.plugin.interface.map(local_plugin_interface_to_info),
                     },
                     description: outcome.plugin.description,
@@ -537,6 +540,12 @@ impl CodexMessageProcessor {
                     "read remote plugin details before install",
                 )
             })?;
+        if remote_detail.summary.availability == PluginAvailability::DisabledByAdmin {
+            let remote_plugin_id = &remote_detail.summary.id;
+            return Err(invalid_request(format!(
+                "remote plugin {remote_plugin_id} is disabled by admin"
+            )));
+        }
         if remote_detail.summary.install_policy == PluginInstallPolicy::NotAvailable {
             return Err(invalid_request(format!(
                 "remote plugin {remote_plugin_id} is not available for install"
@@ -859,6 +868,7 @@ fn remote_plugin_summary_to_info(summary: RemoteCatalogPluginSummary) -> PluginS
         enabled: summary.enabled,
         install_policy: summary.install_policy,
         auth_policy: summary.auth_policy,
+        availability: summary.availability,
         interface: summary.interface,
     }
 }
