@@ -43,6 +43,8 @@ pub async fn handle_android_computer_use(
         return AndroidComputerUseOutcome::Unavailable;
     }
 
+    // Resolve per request so Android sessions and access credentials can appear
+    // or rotate while the Codex UI process remains alive.
     let Some(config) = load_android_runtime_config(codex_home) else {
         return AndroidComputerUseOutcome::Unavailable;
     };

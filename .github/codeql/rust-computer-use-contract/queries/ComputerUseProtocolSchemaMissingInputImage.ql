@@ -17,7 +17,7 @@ from Function anchor
 where
   appServerProtocolV2File(anchor.getFile()) and
   anchor.getName().getText() = "from" and
-  functionContainsPathSegment(anchor, "ComputerUseCallOutputContentItem") and
-  not functionContainsPathSegment(anchor, "InputImage")
+  fileContainsPathSegment(anchor.getFile(), "ComputerUseCallOutputContentItem") and
+  not fileContainsPathSegment(anchor.getFile(), "InputImage")
 select anchor,
   "The computer-use app-server protocol conversion no longer includes InputImage. Keep inputImage in the schema and bridge so clients can return native visual evidence."

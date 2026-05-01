@@ -71,15 +71,30 @@ where
     F: Fn(&str) -> Option<String>,
 {
     first_value(&ANDROID_MCP_URL_ENV_VARS, env_var).or_else(|| {
-        first_value(&ANDROID_MCP_HOSTNAME_ENV_VARS, env_var).map(|host| {
-            let host = host.trim_end_matches('/');
-            if host.starts_with("http://") || host.starts_with("https://") {
-                format!("{host}{DEFAULT_MCP_URL_PATH}")
-            } else {
-                format!("https://{host}{DEFAULT_MCP_URL_PATH}")
-            }
-        })
+        first_value(&ANDROID_MCP_HOSTNAME_ENV_VARS, env_var)
+            .and_then(configured_android_provider_url_from_hostname)
     })
+}
+
+fn configured_android_provider_url_from_hostname(host: String) -> Option<String> {
+    let host = host.trim();
+    let host = if has_url_scheme(host) {
+        host.trim_end_matches('/')
+    } else {
+        host.trim_matches('/')
+    };
+    if host.is_empty() || host == "http:" || host == "https:" {
+        return None;
+    }
+    if has_url_scheme(host) {
+        Some(format!("{host}{DEFAULT_MCP_URL_PATH}"))
+    } else {
+        Some(format!("https://{host}{DEFAULT_MCP_URL_PATH}"))
+    }
+}
+
+fn has_url_scheme(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
 }
 
 fn configured_android_provider_url_from_file(codex_home: &Path) -> Option<String> {
@@ -156,6 +171,21 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_slash_wrapped_hostname_from_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let actual = load_android_runtime_config_with_env(
+            dir.path(),
+            env_from(&[("SOLARLAB_ANDROID_MCP_HOSTNAME", " ///android.example/// ")]),
+        );
+
+        assert_eq!(
+            actual.map(|config| config.mcp_url),
+            Some("https://android.example/mcp".to_string())
+        );
+    }
+
+    #[test]
     fn preserves_scheme_hostname_from_env() {
         let dir = tempfile::tempdir().expect("temp dir");
 
@@ -167,6 +197,26 @@ mod tests {
         assert_eq!(
             actual.map(|config| config.mcp_url),
             Some("http://localhost:8080/mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_slash_only_hostname_from_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"https://file.example/mcp"}"#,
+        )
+        .expect("write runtime config");
+
+        let actual = load_android_runtime_config_with_env(
+            dir.path(),
+            env_from(&[("CODEX_ANDROID_MCP_HOSTNAME", " /// ")]),
+        );
+
+        assert_eq!(
+            actual.map(|config| config.mcp_url),
+            Some("https://file.example/mcp".to_string())
         );
     }
 

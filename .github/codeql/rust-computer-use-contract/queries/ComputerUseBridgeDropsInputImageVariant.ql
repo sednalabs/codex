@@ -21,12 +21,9 @@ from MatchExpr matchExpr
 where
   guardedBridgeFile(matchExpr.getFile()) and
   not insideInlineRustTest(matchExpr) and
-  exists(Function function |
-    function = matchExpr.getEnclosingCallable() and
-    (
-      functionContainsPathSegment(function, "ComputerUseCallOutputContentItem") or
-      functionContainsPathSegment(function, "ComputerUseOutputContentItem")
-    )
+  (
+    fileContainsPathSegment(matchExpr.getFile(), "ComputerUseCallOutputContentItem") or
+    fileContainsPathSegment(matchExpr.getFile(), "ComputerUseOutputContentItem")
   ) and
   matchHandlesVariant(matchExpr, "InputText") and
   not matchHandlesVariant(matchExpr, "InputImage")

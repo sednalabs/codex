@@ -66,6 +66,13 @@ predicate functionContainsPathSegment(Function function, string segment) {
   )
 }
 
+predicate fileContainsPathSegment(File file, string segment) {
+  exists(PathAstNode path |
+    path.getFile() = file and
+    path.getPath().getSegment().getIdentifier().getText() = segment
+  )
+}
+
 predicate pathNodeInsidePattern(Pat pat, PathAstNode pathNode) {
   pathNode.getFile() = pat.getFile() and
   pat.getLocation().getStartLine() <= pathNode.getLocation().getStartLine() and

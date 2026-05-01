@@ -1,6 +1,5 @@
 enum ComputerUseCallOutputContentItem {
     InputText { text: String },
-    InputImage { image_url: String },
 }
 
 struct CoreComputerUseOutputContentItem;
