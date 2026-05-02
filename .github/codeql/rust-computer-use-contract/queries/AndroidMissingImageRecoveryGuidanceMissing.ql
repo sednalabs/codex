@@ -27,6 +27,6 @@ from Call call, Function handler, StringLiteralExpr message
 where
   nativeImageGuardCall(call, handler) and
   message = call.getPositionalArgument(1) and
-  not message.toString().regexpMatch("(?s).*visual claims.*")
+  not message.getTextValue().regexpMatch("(?s).*visual claims.*")
 select message,
   "This Android missing-image failure message does not warn the agent to recover before making visual claims."
