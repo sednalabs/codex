@@ -6066,6 +6066,34 @@ impl ChatWidget {
             } => {
                 self.on_image_generation_end(id, revised_prompt, saved_path);
             }
+            ThreadItem::ComputerUseCall {
+                id,
+                environment_id,
+                adapter,
+                tool,
+                arguments,
+                content_items,
+                success,
+                error,
+                duration_ms,
+                ..
+            } => {
+                self.flush_answer_stream_with_separator();
+                let mut cell = history_cell::new_active_computer_use_call(
+                    id,
+                    environment_id,
+                    adapter,
+                    tool,
+                    arguments,
+                    self.config.animations,
+                );
+                if let Some(success) = success {
+                    let duration =
+                        Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
+                    cell.complete(duration, content_items.unwrap_or_default(), success, error);
+                }
+                self.add_to_history(cell);
+            }
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ true);

@@ -1112,7 +1112,8 @@ impl ShortcutDescriptor {
             | ShortcutId::FilePaths
             | ShortcutId::PasteImage
             | ShortcutId::Quit
-            | ShortcutId::ChangeMode => self.binding_for(state).map(|binding| binding.key),
+            | ShortcutId::ChangeMode
+            | ShortcutId::QueueMessageNext => self.binding_for(state).map(|binding| binding.key),
         }?;
         let mut line = Line::from(vec![self.prefix.into(), key.into()]);
         match self.id {

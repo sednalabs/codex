@@ -93,6 +93,7 @@ impl RateLimitWindowDisplay {
         Self {
             used_percent: f64::from(window.used_percent),
             resets_at,
+            resets_at_unix_seconds: window.resets_at,
             window_minutes: window.window_duration_mins,
         }
     }
