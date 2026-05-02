@@ -1694,6 +1694,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {"uses": "security-and-quality"},
                     {"uses": "./.github/codeql/rust-computer-use-contract"},
                 ],
+                "paths": ["codex-rs", "tools"],
+                "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
                 "threat-models": "local",
             },
         )
