@@ -78,39 +78,19 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
-        let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
-        for id in &receiver_thread_ids {
-            if !seen.insert(*id) {
-                return Err(FunctionCallError::RespondToModel(
-                    "targets must resolve to unique agents".to_string(),
-                ));
-            }
-        }
-        let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        for receiver_thread_id in &receiver_thread_ids {
-            let agent_metadata = session
-                .services
-                .agent_control
-                .get_agent_metadata(*receiver_thread_id)
-                .unwrap_or_default();
-            receiver_agents.push(CollabAgentRef {
-                thread_id: *receiver_thread_id,
-                agent_nickname: agent_metadata.agent_nickname,
-                agent_role: agent_metadata.agent_role,
-            });
-        }
-
-        let timeout_ms = args
-            .timeout_ms
-            .unwrap_or(turn.config.background_terminal_max_timeout as i64);
+        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let min_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .min_wait_timeout_ms
+            .clamp(1, MAX_WAIT_TIMEOUT_MS);
         let timeout_ms = match timeout_ms {
             ms if ms <= 0 => {
                 return Err(FunctionCallError::RespondToModel(
                     "timeout_ms must be greater than zero".to_owned(),
                 ));
             }
-            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+            ms => ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS),
         };
         let mut mailbox_seq_rx = session.subscribe_mailbox_seq();
 

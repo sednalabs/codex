@@ -24,8 +24,7 @@ impl ToolHandler for Handler {
             invocation,
             MessageDeliveryMode::TriggerTurn,
             args.target,
-            args.items,
-            args.interrupt,
+            args.message,
         )
         .await
     }

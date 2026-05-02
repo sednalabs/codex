@@ -1132,6 +1132,7 @@
       "type": "object"
     },
     "FileChangeOutputDeltaNotification": {
+      "description": "Deprecated legacy notification for `apply_patch` textual output.\n\nThe server no longer emits this notification.",
       "properties": {
         "delta": {
           "type": "string"
@@ -1287,19 +1288,6 @@
             "kind"
           ],
           "title": "MinimalFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
           "type": "object"
         },
         {
@@ -1553,38 +1541,6 @@
         "sessionId",
         "query",
         "files"
-      ],
-      "type": "object"
-    },
-    "GhostCommit": {
-      "description": "Details of a ghost commit created from a repository state.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "preexisting_untracked_dirs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "preexisting_untracked_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "preexisting_untracked_files",
-        "preexisting_untracked_dirs"
       ],
       "type": "object"
     },
@@ -2076,6 +2032,8 @@
         "project",
         "mdm",
         "sessionFlags",
+        "plugin",
+        "cloudRequirements",
         "legacyManagedConfigFile",
         "legacyManagedConfigMdm",
         "unknown"
@@ -2927,6 +2885,33 @@
       ],
       "type": "object"
     },
+    "RemoteControlConnectionStatus": {
+      "enum": [
+        "disabled",
+        "connecting",
+        "connected",
+        "errored"
+      ],
+      "type": "string"
+    },
+    "RemoteControlStatusChangedNotification": {
+      "description": "Current remote-control connection status and environment id exposed to clients.",
+      "properties": {
+        "environmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/RemoteControlConnectionStatus"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
     "RequestId": {
       "anyOf": [
         {
@@ -3349,24 +3334,6 @@
             "result"
           ],
           "title": "ImageGenerationCallResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "ghost_commit": {
-              "$ref": "#/$defs/GhostCommit"
-            },
-            "type": {
-              "const": "ghost_snapshot",
-              "title": "GhostSnapshotResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "ghost_commit"
-          ],
-          "title": "GhostSnapshotResponseItem",
           "type": "object"
         },
         {
@@ -4763,7 +4730,7 @@
     "ThreadRealtimeStartedNotification": {
       "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
       "properties": {
-        "sessionId": {
+        "realtimeSessionId": {
           "type": [
             "string",
             "null"
@@ -5947,6 +5914,7 @@
       "type": "object"
     },
     {
+      "description": "Deprecated legacy apply_patch output stream notification.",
       "properties": {
         "method": {
           "const": "item/fileChange/outputDelta",
@@ -6106,6 +6074,24 @@
         "params"
       ],
       "title": "App/list/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "remoteControl/status/changed",
+          "title": "RemoteControl/status/changedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RemoteControlStatusChangedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "RemoteControl/status/changedNotification",
       "type": "object"
     },
     {

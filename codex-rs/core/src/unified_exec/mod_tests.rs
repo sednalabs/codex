@@ -96,9 +96,10 @@ async fn exec_command_with_tty(
                 &request,
                 tty,
                 Box::new(NoopSpawnLifecycle),
-                turn.environment
-                    .as_deref()
-                    .expect("test turn has environment"),
+                turn.primary_environment()
+                    .expect("turn environment")
+                    .environment
+                    .as_ref(),
             )
             .await?,
     );
@@ -113,7 +114,7 @@ async fn exec_command_with_tty(
             process_id,
             hook_command: cmd.to_string(),
             tty,
-            network_approval_id: None,
+            network_approval: None,
             session: Arc::downgrade(session),
             last_used: started_at,
         };
@@ -594,7 +595,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
 
     let remote_test_env = remote_test_env().await?;
     let (_, mut turn) = make_session_and_context().await;
-    turn.environment = Some(Arc::new(remote_test_env.environment().clone()));
+    turn.environments[0].environment = Arc::new(remote_test_env.environment().clone());
 
     let request = test_exec_request(
         &turn,
@@ -612,9 +613,10 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
-            turn.environment
-                .as_deref()
-                .expect("remote turn has environment"),
+            turn.primary_environment()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
         )
         .await
         .expect_err("expected inherited fd rejection");
