@@ -25,6 +25,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                timed_out: false,
                 agents_states: HashMap::new(),
             },
         }),
@@ -43,6 +44,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {

@@ -992,7 +992,12 @@ mod tests {
                 task_name: Some("Investigate /agent picker metadata display".to_string()),
                 approval_policy: Some(AskForApproval::OnRequest),
                 approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
-                sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
+                sandbox_policy: Some(SandboxPolicy::WorkspaceWrite {
+                    writable_roots: Vec::new(),
+                    network_access: false,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                }),
                 ..AgentPickerThreadUsage::default()
             },
         );
@@ -1018,6 +1023,7 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1038,6 +1044,7 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -1058,6 +1065,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -1075,6 +1083,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -1101,6 +1110,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -1285,6 +1295,7 @@ mod tests {
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1324,6 +1335,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),
