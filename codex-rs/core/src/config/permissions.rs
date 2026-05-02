@@ -10,9 +10,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_config::permissions_toml::FilesystemPermissionsToml;
-use codex_config::permissions_toml::NetworkToml;
-use codex_config::permissions_toml::PermissionProfileToml;
-use codex_config::permissions_toml::PermissionsToml;
 use codex_config::types::SandboxWorkspaceWrite;
 use codex_network_proxy::NetworkProxyConfig;
 #[cfg(test)]
