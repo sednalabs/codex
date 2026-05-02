@@ -7,6 +7,8 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
+use crate::protocol::v2::ComputerUseCallOutputContentItem;
+use crate::protocol::v2::ComputerUseCallStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -21,6 +23,7 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
+use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use serde_json::Value as JsonValue;
@@ -68,6 +71,44 @@ pub fn item_event_to_server_notification(
                         .collect(),
                 ),
                 success: Some(response.success),
+                duration_ms,
+            };
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id,
+                turn_id: response.turn_id,
+                item,
+            })
+        }
+        EventMsg::ComputerUseCallResponse(response) => {
+            let status = if response.success {
+                ComputerUseCallStatus::Completed
+            } else {
+                ComputerUseCallStatus::Failed
+            };
+            let duration_ms = i64::try_from(response.duration.as_millis()).ok();
+            let item = ThreadItem::ComputerUseCall {
+                id: response.call_id,
+                environment_id: response.environment_id,
+                adapter: response.adapter,
+                tool: response.tool,
+                arguments: response.arguments,
+                status,
+                content_items: Some(
+                    response
+                        .content_items
+                        .into_iter()
+                        .map(|item| match item {
+                            CoreComputerUseOutputContentItem::InputText { text } => {
+                                ComputerUseCallOutputContentItem::InputText { text }
+                            }
+                            CoreComputerUseOutputContentItem::InputImage { image_url, detail } => {
+                                ComputerUseCallOutputContentItem::InputImage { image_url, detail }
+                            }
+                        })
+                        .collect(),
+                ),
+                success: Some(response.success),
+                error: response.error,
                 duration_ms,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
