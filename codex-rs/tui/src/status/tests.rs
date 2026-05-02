@@ -291,6 +291,10 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
     config.cwd = PathBuf::from("/workspace/tests").abs();
+    config
+        .permissions
+        .set_permission_profile(PermissionProfile::read_only())
+        .expect("set permission profile");
 
     let thread_usage = TokenUsage {
         input_tokens: 1_200,
