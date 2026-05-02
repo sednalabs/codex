@@ -537,9 +537,10 @@ impl RemoteControlWebsocket {
             shutdown_token.clone(),
         ));
 
+        let mut enabled_rx = self.enabled_rx.clone();
         tokio::select! {
             _ = shutdown_token.cancelled() => {}
-            changed = self.enabled_rx.wait_for(|enabled| !*enabled) => {
+            changed = enabled_rx.wait_for(|enabled| !*enabled) => {
                 if changed.is_ok() {
                     self.status_publisher
                         .publish_status(RemoteControlConnectionStatus::Disabled);
