@@ -29,6 +29,7 @@ use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
+use codex_tools::request_user_input_available_modes;
 use codex_tools::request_user_input_unavailable_message;
 use serde::Deserialize;
 use serde::Serialize;
@@ -287,10 +288,8 @@ pub(crate) async fn require_spawn_agent_approval_if_requested(
     }
 
     let mode = session.collaboration_mode().await.mode;
-    if let Some(message) = request_user_input_unavailable_message(
-        mode,
-        &turn.config.request_user_input_available_modes,
-    ) {
+    let available_modes = request_user_input_available_modes(&turn.config.features);
+    if let Some(message) = request_user_input_unavailable_message(mode, &available_modes) {
         return Err(FunctionCallError::RespondToModel(message));
     }
 
