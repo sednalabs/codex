@@ -209,7 +209,7 @@ fn format_agent_picker_policy_details(
 ) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(approval_policy) = approval_policy {
-        parts.push(format!("approval: {approval_policy}"));
+        parts.push(format!("approval: {}", approval_policy.to_core()));
     }
     if let Some(sandbox_policy) = sandbox_policy {
         parts.push(format!("sandbox: {}", sandbox_policy.to_core()));
