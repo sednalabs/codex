@@ -184,17 +184,10 @@ pub async fn load_default_config_for_test_with_cloud_requirements(
     codex_home: &TempDir,
     cloud_requirements: CloudRequirementsLoader,
 ) -> Config {
-    ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
         .cloud_requirements(cloud_requirements)
-        .build()
-        .await
-        .expect("defaults for test should always succeed");
-    #[cfg(not(target_os = "linux"))]
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .harness_overrides(default_test_overrides())
         .build()
         .await
         .expect("defaults for test should always succeed");
