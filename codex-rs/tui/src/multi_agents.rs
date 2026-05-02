@@ -212,7 +212,7 @@ fn format_agent_picker_policy_details(
         parts.push(format!("approval: {approval_policy}"));
     }
     if let Some(sandbox_policy) = sandbox_policy {
-        parts.push(format!("sandbox: {sandbox_policy}"));
+        parts.push(format!("sandbox: {}", sandbox_policy.to_core()));
     }
     if let Some(approvals_reviewer) = approvals_reviewer {
         parts.push(format!("reviewer: {approvals_reviewer}"));
