@@ -4435,7 +4435,6 @@ impl CodexMessageProcessor {
             }
         };
 
-        let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
 
@@ -5091,7 +5090,7 @@ impl CodexMessageProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
-            dynamic_tools,
+            dynamic_tools: _dynamic_tools,
             ephemeral,
             exclude_turns,
             persist_extended_history,
