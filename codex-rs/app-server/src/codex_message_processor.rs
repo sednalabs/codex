@@ -1494,7 +1494,11 @@ impl CodexMessageProcessor {
         }
     }
 
-    async fn login_api_key_v2(&self, request_id: ConnectionRequestId, params: LoginApiKeyParams) {
+    async fn login_api_key_v2(
+        &mut self,
+        request_id: ConnectionRequestId,
+        params: LoginApiKeyParams,
+    ) {
         let result = self
             .login_api_key_common(&params)
             .await
@@ -1738,7 +1742,7 @@ impl CodexMessageProcessor {
     }
 
     async fn cancel_login_response(
-        &self,
+        &mut self,
         params: CancelLoginAccountParams,
     ) -> Result<CancelLoginAccountResponse, JSONRPCErrorError> {
         let login_id = params.login_id;
@@ -4374,7 +4378,7 @@ impl CodexMessageProcessor {
             base_instructions,
             developer_instructions,
             personality,
-            dynamic_tools,
+            dynamic_tools: _dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -4434,15 +4438,6 @@ impl CodexMessageProcessor {
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
-        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
-            Ok(tools) => tools,
-            Err(message) => {
-                self.outgoing
-                    .send_error(request_id, invalid_request(message))
-                    .await;
-                return;
-            }
-        };
 
         match self
             .thread_manager
@@ -4450,7 +4445,6 @@ impl CodexMessageProcessor {
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
-                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -4781,16 +4775,19 @@ impl CodexMessageProcessor {
             return true;
         }
 
-        let Some(source_thread) = self
+        let source_thread = match self
             .read_stored_thread_for_resume(
-                request_id.clone(),
                 &params.thread_id,
                 params.path.as_ref(),
                 /*include_history*/ false,
             )
             .await
-        else {
-            return true;
+        {
+            Ok(source_thread) => source_thread,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return true;
+            }
         };
         if source_thread.thread_id != existing_thread_id {
             self.send_invalid_request_error(

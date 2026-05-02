@@ -163,7 +163,7 @@ impl ExternalAuth for ExternalAuthRefreshBridge {
 
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
-    codex_message_processor: Mutex<CodexMessageProcessor>,
+    codex_message_processor: Arc<Mutex<CodexMessageProcessor>>,
     thread_manager: Arc<ThreadManager>,
     config_api: ConfigApi,
     device_key_api: DeviceKeyApi,
@@ -346,7 +346,7 @@ impl MessageProcessor {
 
         Self {
             outgoing,
-            codex_message_processor: Mutex::new(codex_message_processor),
+            codex_message_processor: Arc::new(Mutex::new(codex_message_processor)),
             thread_manager: Arc::clone(&thread_manager),
             config_api,
             device_key_api,
