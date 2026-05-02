@@ -1303,6 +1303,8 @@ impl MessageProcessor {
                         .prepare_validated_session_imports(pending_session_imports);
                     for pending_session_import in pending_session_imports {
                         match codex_message_processor
+                            .lock()
+                            .await
                             .import_external_agent_session(pending_session_import.session)
                             .await
                         {
