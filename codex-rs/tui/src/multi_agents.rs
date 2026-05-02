@@ -566,7 +566,7 @@ pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> Pla
         spans.push(Span::from(agent_id.to_string()).cyan());
     }
 
-    collab_event(title_spans_line(spans), vec![status_summary_line(status)])
+    collab_event(title_spans_line(spans), vec![agent_status_summary_line(status)])
 }
 
 fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> PlainHistoryCell {
@@ -731,6 +731,32 @@ fn status_summary_line(status: Option<&CollabAgentState>, fallback_error: &str) 
     match status {
         Some(status) => status_summary_spans(status).into(),
         None => error_summary_spans(fallback_error).into(),
+    }
+}
+
+fn agent_status_summary_line(status: &AgentStatus) -> Line<'static> {
+    match status {
+        AgentStatus::PendingInit => Span::from("Pending init").cyan().into(),
+        AgentStatus::Running => Span::from("Running").cyan().bold().into(),
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
+        AgentStatus::Interrupted => Span::from("Interrupted").yellow().into(),
+        AgentStatus::Completed(message) => {
+            let mut spans = vec![Span::from("Completed").green()];
+            if let Some(message) = message.as_ref() {
+                let message_preview = truncate_text(
+                    &message.split_whitespace().collect::<Vec<_>>().join(" "),
+                    COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES,
+                );
+                if !message_preview.is_empty() {
+                    spans.push(Span::from(format!(" - {message_preview}")).dim());
+                }
+            }
+            spans.into()
+        }
+        AgentStatus::Errored(message) => error_summary_spans(message).into(),
+        AgentStatus::Shutdown => Span::from("Shutdown").into(),
+        AgentStatus::NotFound => Span::from("Not found").red().into(),
     }
 }
 
