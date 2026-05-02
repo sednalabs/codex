@@ -1,4 +1,5 @@
 use crate::bespoke_event_handling::apply_bespoke_event_handling;
+use crate::bespoke_event_handling::maybe_emit_hook_prompt_item_completed;
 use crate::command_exec::CommandExecManager;
 use crate::command_exec::StartCommandExecParams;
 use crate::config_manager::ConfigManager;
@@ -8,6 +9,7 @@ use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::error_code::invalid_params;
+use crate::extensions::app_server_hooks;
 use crate::fuzzy_file_search::FuzzyFileSearchSession;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use crate::fuzzy_file_search::start_fuzzy_file_search_session;
@@ -393,9 +395,9 @@ use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::UpdateThreadMetadataParams as StoreUpdateThreadMetadataParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cli::RELEASE_VERSION;
 use codex_utils_json_to_toml::json_to_toml;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
-use codex_utils_version::RELEASE_VERSION;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1023,6 +1025,8 @@ impl CodexMessageProcessor {
                 self.thread_start(
                     to_connection_request_id(request_id),
                     params,
+                    app_server_client_name.clone(),
+                    client_version.clone(),
                     request_context,
                 )
                 .await;
@@ -2491,6 +2495,8 @@ impl CodexMessageProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadStartParams,
+        app_server_client_name: Option<String>,
+        client_version: Option<String>,
         request_context: RequestContext,
     ) {
         let ThreadStartParams {
@@ -2502,7 +2508,7 @@ impl CodexMessageProcessor {
             approvals_reviewer,
             sandbox,
             permissions,
-            config,
+            config: request_overrides,
             service_name,
             base_instructions,
             developer_instructions,
@@ -2571,6 +2577,8 @@ impl CodexMessageProcessor {
                 persist_extended_history,
                 service_name,
                 experimental_raw_events,
+                app_server_client_name,
+                client_version,
                 request_trace,
             )
             .await;
@@ -2702,6 +2710,8 @@ impl CodexMessageProcessor {
         persist_extended_history: bool,
         service_name: Option<String>,
         experimental_raw_events: bool,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
         request_trace: Option<W3cTraceContext>,
     ) {
         let result = async {
@@ -4364,7 +4374,7 @@ impl CodexMessageProcessor {
             base_instructions,
             developer_instructions,
             personality,
-            dynamic_tools: _dynamic_tools,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -4424,6 +4434,15 @@ impl CodexMessageProcessor {
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(tools) => tools,
+            Err(message) => {
+                self.outgoing
+                    .send_error(request_id, invalid_request(message))
+                    .await;
+                return;
+            }
+        };
 
         match self
             .thread_manager
@@ -6795,7 +6814,7 @@ impl CodexMessageProcessor {
             Self::set_app_server_client_info(
                 thread.as_ref(),
                 app_server_client_name,
-                app_server_client_version,
+                client_version,
             )
             .await
             .inspect_err(|error| {
@@ -8107,6 +8126,15 @@ impl CodexMessageProcessor {
         }
         let snapshot = self.feedback.snapshot(conversation_id);
         let thread_id = snapshot.thread_id.clone();
+        let mut feedback_thread_ids = Vec::new();
+        if let Some(conversation_id) = conversation_id {
+            feedback_thread_ids.push(conversation_id);
+        }
+        if let Ok(snapshot_thread_id) = ThreadId::from_string(&snapshot.thread_id)
+            && !feedback_thread_ids.contains(&snapshot_thread_id)
+        {
+            feedback_thread_ids.push(snapshot_thread_id);
+        }
         let state_db_ctx = if include_logs {
             if let Some(log_db) = self.log_db.as_ref() {
                 log_db.flush().await;
