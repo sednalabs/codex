@@ -411,8 +411,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
-use tokio::sync::SemaphorePermit;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -1441,9 +1441,10 @@ impl CodexMessageProcessor {
 
     async fn acquire_thread_list_state_permit(
         &self,
-    ) -> Result<SemaphorePermit<'_>, JSONRPCErrorError> {
+    ) -> Result<OwnedSemaphorePermit, JSONRPCErrorError> {
         self.thread_list_state_permit
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|err| {
                 internal_error(format!("failed to acquire thread list state permit: {err}"))
