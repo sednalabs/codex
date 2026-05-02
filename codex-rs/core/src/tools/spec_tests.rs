@@ -1161,6 +1161,8 @@ async fn tool_search_entries_skip_namespace_outputs_when_namespace_tools_are_dis
             description: "Create or update automations.".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
         DynamicToolSpec {
             namespace: None,
@@ -1168,6 +1170,8 @@ async fn tool_search_entries_skip_namespace_outputs_when_namespace_tools_are_dis
             description: "Plain dynamic tool.".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
 
