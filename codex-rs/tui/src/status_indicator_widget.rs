@@ -272,7 +272,10 @@ impl Renderable for StatusIndicatorWidget {
         }
         if self.show_interrupt_hint {
             spans.push(format!("({pretty_elapsed} • ").dim());
-            if interrupt_confirmation_pending {
+            if self
+                .interrupt_confirmation_deadline
+                .is_some_and(|deadline| deadline > now)
+            {
                 spans.push(key_hint::plain(KeyCode::Esc).into());
                 spans.push(" again to interrupt)".dim());
             } else {
