@@ -237,18 +237,6 @@ fn wait_agent_tool_v1_exposes_return_when_and_summary_output() {
         output_schema.expect("wait output schema")["required"],
         json!(["status", "timed_out"])
     );
-    let properties = parameters
-        .properties
-        .as_ref()
-        .expect("followup_task should use object params");
-    assert!(properties.contains_key("target"));
-    assert!(properties.contains_key("message"));
-    assert!(!properties.contains_key("items"));
-    assert_eq!(
-        parameters.required.as_ref(),
-        Some(&vec!["target".to_string(), "message".to_string()])
-    );
-    assert_eq!(output_schema, None);
 }
 
 #[test]
