@@ -1740,6 +1740,7 @@ async fn guardian_reused_trunk_ignores_stale_prior_turn_completion() -> anyhow::
                     "{\"risk_level\":\"high\",\"user_authorization\":\"low\",\"outcome\":\"deny\",\"rationale\":\"stale guardian rationale\"}"
                         .to_string(),
                 ),
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: Some(1),

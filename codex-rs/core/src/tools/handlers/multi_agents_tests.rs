@@ -2625,6 +2625,9 @@ async fn multi_agent_v2_wait_agent_uses_configured_min_timeout() {
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
+            requested_ids: Vec::new(),
+            pending_ids: Vec::new(),
+            completion_reason: CollabWaitingCompletionReason::Timeout,
             timed_out: true,
         }
     );
