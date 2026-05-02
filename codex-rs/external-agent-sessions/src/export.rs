@@ -164,6 +164,8 @@ fn token_count_item(response_items: &[ResponseItem]) -> RolloutItem {
             model_context_window: None,
         }),
         rate_limits: None,
+        provider: None,
+        model_used: None,
     }))
 }
 
@@ -187,6 +189,7 @@ fn turn_complete_item(
     RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id,
         last_agent_message,
+        compaction_events_in_turn: 0,
         completed_at,
         duration_ms: None,
         time_to_first_token_ms: None,
