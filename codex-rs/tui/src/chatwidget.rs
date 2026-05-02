@@ -3714,6 +3714,20 @@ impl ChatWidget {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn handle_codex_event(&mut self, event: codex_protocol::protocol::Event) {
+        match event.msg {
+            codex_protocol::protocol::EventMsg::BackgroundEvent(ev) => {
+                self.bottom_pane.ensure_status_indicator();
+                self.set_status_header(ev.message);
+            }
+            codex_protocol::protocol::EventMsg::GuardianAssessment(ev) => {
+                self.on_guardian_assessment(ev);
+            }
+            _ => {}
+        }
+    }
+
     fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {
         if !self.bottom_pane.is_task_running() {
             return;
