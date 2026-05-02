@@ -132,38 +132,6 @@
         }
       ]
     },
-    "GhostCommit": {
-      "description": "Details of a ghost commit created from a repository state.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "preexisting_untracked_dirs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "preexisting_untracked_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "preexisting_untracked_files",
-        "preexisting_untracked_dirs"
-      ],
-      "type": "object"
-    },
     "ImageDetail": {
       "enum": [
         "auto",
@@ -705,24 +673,6 @@
             "result"
           ],
           "title": "ImageGenerationCallResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "ghost_commit": {
-              "$ref": "#/$defs/GhostCommit"
-            },
-            "type": {
-              "const": "ghost_snapshot",
-              "title": "GhostSnapshotResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "ghost_commit"
-          ],
-          "title": "GhostSnapshotResponseItem",
           "type": "object"
         },
         {

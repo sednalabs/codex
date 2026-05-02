@@ -1,5 +1,16 @@
 {
   "$defs": {
+    "CommandMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "ExternalAgentConfigMigrationItem": {
       "properties": {
         "cwd": {
@@ -38,22 +49,81 @@
         "CONFIG",
         "SKILLS",
         "PLUGINS",
-        "MCP_SERVER_CONFIG"
+        "MCP_SERVER_CONFIG",
+        "SUBAGENTS",
+        "HOOKS",
+        "COMMANDS",
+        "SESSIONS"
       ],
       "type": "string"
     },
+    "HookMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "McpServerMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "MigrationDetails": {
       "properties": {
+        "commands": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CommandMigration"
+          },
+          "type": "array"
+        },
+        "hooks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HookMigration"
+          },
+          "type": "array"
+        },
+        "mcpServers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpServerMigration"
+          },
+          "type": "array"
+        },
         "plugins": {
+          "default": [],
           "items": {
             "$ref": "#/$defs/PluginsMigration"
           },
           "type": "array"
+        },
+        "sessions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SessionMigration"
+          },
+          "type": "array"
+        },
+        "subagents": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubagentMigration"
+          },
+          "type": "array"
         }
       },
-      "required": [
-        "plugins"
-      ],
       "type": "object"
     },
     "PluginsMigration": {
@@ -71,6 +141,38 @@
       "required": [
         "marketplaceName",
         "pluginNames"
+      ],
+      "type": "object"
+    },
+    "SessionMigration": {
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "SubagentMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     }

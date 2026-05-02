@@ -131,24 +131,17 @@
       ],
       "type": "object"
     },
-    "FileSystemAccessMode": {
-      "enum": [
-        "read",
-        "write",
-        "none"
-      ],
-      "type": "string"
-    },
-    "FileSystemPath": {
+    "PermissionProfileModificationParams": {
       "oneOf": [
         {
+          "description": "Additional concrete directory that should be writable.",
           "properties": {
             "path": {
               "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "const": "path",
-              "title": "PathFileSystemPathType",
+              "const": "additionalWritableRoot",
+              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
               "type": "string"
             }
           },
@@ -156,290 +149,42 @@
             "type",
             "path"
           ],
-          "title": "PathFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "pattern": {
-              "type": "string"
-            },
-            "type": {
-              "const": "glob_pattern",
-              "title": "GlobPatternFileSystemPathType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "pattern"
-          ],
-          "title": "GlobPatternFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "special",
-              "title": "SpecialFileSystemPathType",
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "title": "SpecialFileSystemPath",
+          "title": "AdditionalWritableRootPermissionProfileModificationParams",
           "type": "object"
         }
       ]
     },
-    "FileSystemSandboxEntry": {
-      "properties": {
-        "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
-        },
-        "path": {
-          "$ref": "#/$defs/FileSystemPath"
-        }
-      },
-      "required": [
-        "path",
-        "access"
-      ],
-      "type": "object"
-    },
-    "FileSystemSpecialPath": {
+    "PermissionProfileSelectionParams": {
       "oneOf": [
         {
+          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
           "properties": {
-            "kind": {
-              "const": "root",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "RootFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "minimal",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "MinimalFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "project_roots",
+            "id": {
               "type": "string"
             },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "KindFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "tmpdir",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "TmpdirFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "slash_tmp",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "SlashTmpFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "unknown",
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "path"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfile": {
-      "oneOf": [
-        {
-          "description": "Codex owns sandbox construction for this profile.",
-          "properties": {
-            "fileSystem": {
-              "$ref": "#/$defs/PermissionProfileFileSystemPermissions"
-            },
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
-            },
-            "type": {
-              "const": "managed",
-              "title": "ManagedPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "network",
-            "fileSystem"
-          ],
-          "title": "ManagedPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Do not apply an outer sandbox.",
-          "properties": {
-            "type": {
-              "const": "disabled",
-              "title": "DisabledPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "DisabledPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Filesystem isolation is enforced by an external caller.",
-          "properties": {
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
-            },
-            "type": {
-              "const": "external",
-              "title": "ExternalPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "network"
-          ],
-          "title": "ExternalPermissionProfile",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileFileSystemPermissions": {
-      "oneOf": [
-        {
-          "properties": {
-            "entries": {
+            "modifications": {
               "items": {
-                "$ref": "#/$defs/FileSystemSandboxEntry"
+                "$ref": "#/$defs/PermissionProfileModificationParams"
               },
-              "type": "array"
-            },
-            "globScanMaxDepth": {
-              "format": "uint",
-              "minimum": 1,
               "type": [
-                "integer",
+                "array",
                 "null"
               ]
             },
             "type": {
-              "const": "restricted",
-              "title": "RestrictedPermissionProfileFileSystemPermissionsType",
+              "const": "profile",
+              "title": "ProfilePermissionProfileSelectionParamsType",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "entries"
+            "id"
           ],
-          "title": "RestrictedPermissionProfileFileSystemPermissions",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "unrestricted",
-              "title": "UnrestrictedPermissionProfileFileSystemPermissionsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "UnrestrictedPermissionProfileFileSystemPermissions",
+          "title": "ProfilePermissionProfileSelectionParams",
           "type": "object"
         }
       ]
-    },
-    "PermissionProfileNetworkPermissions": {
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "enabled"
-      ],
-      "type": "object"
     },
     "Personality": {
       "enum": [
@@ -552,17 +297,6 @@
         "string",
         "null"
       ]
-    },
-    "permissionProfile": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PermissionProfile"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Full permissions override for this thread. Cannot be combined with\n`sandbox`."
     },
     "personality": {
       "anyOf": [

@@ -140,19 +140,6 @@
         {
           "properties": {
             "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
               "const": "project_roots",
               "type": "string"
             },
@@ -479,17 +466,6 @@
         "integer",
         "null"
       ]
-    },
-    "permissionProfile": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PermissionProfile"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Optional full permissions profile for this command.\n\nDefaults to the user's configured permissions when omitted. Cannot be\ncombined with `sandboxPolicy`."
     },
     "processId": {
       "description": "Optional client-supplied, connection-scoped process id.\n\nRequired for `tty`, `streamStdin`, `streamStdoutStderr`, and follow-up\n`command/exec/write`, `command/exec/resize`, and\n`command/exec/terminate` calls. When omitted, buffered execution gets an\ninternal id that is not exposed to the client.",

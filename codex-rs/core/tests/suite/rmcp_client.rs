@@ -29,6 +29,7 @@ use codex_mcp::MCP_SANDBOX_STATE_META_CAPABILITY;
 use codex_models_manager::manager::RefreshStrategy;
 
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -41,7 +42,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::assert_regex_match;
@@ -53,6 +53,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use reqwest::Client;
@@ -90,6 +91,39 @@ fn assert_wall_time_header(output: &str) {
     };
     assert_wall_time_line(wall_time);
     assert_eq!(marker, "Output:");
+}
+
+fn read_only_user_turn(fixture: &TestCodex, text: impl Into<String>) -> Op {
+    read_only_user_turn_with_model(fixture, text, fixture.session_configured.model.clone())
+}
+
+fn read_only_user_turn_with_model(
+    fixture: &TestCodex,
+    text: impl Into<String>,
+    model: String,
+) -> Op {
+    let cwd = fixture.cwd.path().to_path_buf();
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::read_only(), cwd.as_path());
+    Op::UserTurn {
+        items: vec![UserInput::Text {
+            text: text.into(),
+            text_elements: Vec::new(),
+        }],
+        final_output_json_schema: None,
+        cwd,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: None,
+        sandbox_policy,
+        permission_profile,
+        model,
+        effort: None,
+        summary: None,
+        service_tier: None,
+        collaboration_mode: None,
+        personality: None,
+        environments: None,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -325,28 +359,9 @@ async fn call_cwd_tool(
     )
     .await;
 
-    let session_model = fixture.session_configured.model.clone();
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp cwd tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.config.cwd.to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(fixture, "call the rmcp cwd tool"))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| {
@@ -459,29 +474,9 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
     let begin_event = wait_for_event(&fixture.codex, |ev| {
@@ -801,9 +796,11 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta() -> anyhow::Result<()>
         sleep(Duration::from_millis(200)).await;
     }
 
-    let sandbox_policy = SandboxPolicy::new_read_only_policy();
     fixture
-        .submit_turn_with_policy("call the rmcp sandbox_meta tool", sandbox_policy.clone())
+        .submit_turn_with_permission_profile(
+            "call the rmcp sandbox_meta tool",
+            PermissionProfile::read_only(),
+        )
         .await?;
 
     let request = call_mock.single_request();
@@ -828,6 +825,8 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta() -> anyhow::Result<()>
     let sandbox_meta = meta
         .get(MCP_SANDBOX_STATE_META_CAPABILITY)
         .expect("sandbox state metadata should be present");
+    let (sandbox_policy, _) =
+        turn_permission_fields(PermissionProfile::read_only(), fixture.config.cwd.as_path());
     let expected_sandbox_policy = serde_json::to_value(&sandbox_policy)?;
     assert_eq!(
         sandbox_meta.get("sandboxPolicy"),
@@ -892,29 +891,12 @@ async fn stdio_mcp_parallel_tool_calls_default_false_runs_serially() -> anyhow::
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp sync tool twice".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the rmcp sync tool twice",
+        ))
         .await?;
 
     let mut call_events = Vec::new();
@@ -1026,29 +1008,12 @@ async fn stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently() -> anyhow::Res
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp sync tool twice".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the rmcp sync tool twice",
+        ))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -1125,31 +1090,11 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     wait_for_mcp_tool(&fixture, &tool_name).await?;
 
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp image tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(&fixture, "call the rmcp image tool"))
         .await?;
 
     // Wait for tool begin/end and final completion.
@@ -1278,31 +1223,14 @@ async fn stdio_image_responses_preserve_original_detail_metadata() -> anyhow::Re
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     wait_for_mcp_tool(&fixture, &tool_name).await?;
 
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp image_scenario tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the rmcp image_scenario tool",
+        ))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -1439,25 +1367,11 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
 
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp image tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: text_only_model_slug.to_string(),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn_with_model(
+            &fixture,
+            "call the rmcp image tool",
+            text_only_model_slug.to_string(),
+        ))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| {
@@ -1545,29 +1459,9 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
     let begin_event = wait_for_event(&fixture.codex, |ev| {
@@ -1684,28 +1578,9 @@ async fn stdio_server_propagates_explicit_local_env_var_source() -> anyhow::Resu
         .build_remote_aware(&server)
         .await?;
 
-    let session_model = fixture.session_configured.model.clone();
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| {
@@ -1795,28 +1670,9 @@ async fn remote_stdio_env_var_source_does_not_copy_local_env() -> anyhow::Result
         .build_remote_aware(&server)
         .await?;
 
-    let session_model = fixture.session_configured.model.clone();
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
     wait_for_event(&fixture.codex, |ev| {
@@ -1996,30 +1852,13 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     // Phase 4: submit the user turn that should trigger the MCP tool call.
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp streamable http echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the rmcp streamable http echo tool",
+        ))
         .await?;
 
     // Phase 5: assert Codex begins the expected tool invocation.
@@ -2200,8 +2039,6 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         })
         .build_remote_aware(&server)
         .await?;
-    let session_model = fixture.session_configured.model.clone();
-
     // Phase 5: wait for MCP discovery to publish the expected tool before the
     // turn is submitted, which keeps failures tied to server startup/discovery.
     wait_for_mcp_tool(&fixture, &tool_name).await?;
@@ -2209,25 +2046,10 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     // Phase 6: submit the user turn that should invoke the OAuth-backed tool.
     fixture
         .codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "call the rmcp streamable http oauth echo tool".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-            environments: None,
-        })
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the rmcp streamable http oauth echo tool",
+        ))
         .await?;
 
     // Phase 7: assert Codex begins the expected tool invocation.

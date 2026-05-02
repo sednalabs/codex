@@ -43,9 +43,7 @@ pub(crate) struct SendMessageArgs {
 /// Input for the MultiAgentV2 `assign_task` tool.
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
-    pub(crate) items: Vec<UserInput>,
-    #[serde(default)]
-    pub(crate) interrupt: bool,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,33 +79,14 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
     Ok(message)
 }
 
-fn message_content_from_items(
-    tool_name: &str,
-    items: Vec<UserInput>,
-) -> Result<String, FunctionCallError> {
-    if items.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "Items can't be empty".to_string(),
-        ));
-    }
-    let mut text_segments = Vec::new();
-    for item in items {
-        match item {
-            UserInput::Text { text, .. } if !text.trim().is_empty() => text_segments.push(text),
-            UserInput::Text { .. } => {}
-            UserInput::Image { .. }
-            | UserInput::LocalImage { .. }
-            | UserInput::Skill { .. }
-            | UserInput::Mention { .. }
-            | _ => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "{tool_name} only supports text content in MultiAgentV2 for now"
-                )));
-            }
-        }
-    }
-
-    message_content(text_segments.join("\n"))
+/// Handles the shared MultiAgentV2 plain-text message flow for both `send_message` and `followup_task`.
+pub(crate) async fn handle_message_string_tool(
+    invocation: ToolInvocation,
+    mode: MessageDeliveryMode,
+    target: String,
+    message: String,
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    handle_message_submission(invocation, mode, target, message_content(message)?).await
 }
 
 async fn handle_message_submission(
@@ -115,8 +94,7 @@ async fn handle_message_submission(
     mode: MessageDeliveryMode,
     target: String,
     prompt: String,
-    interrupt: bool,
-) -> Result<MessageToolResult, FunctionCallError> {
+) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
         turn,
@@ -140,14 +118,6 @@ async fn handle_message_submission(
         return Err(FunctionCallError::RespondToModel(
             "Tasks can't be assigned to the root agent".to_string(),
         ));
-    }
-    if interrupt {
-        session
-            .services
-            .agent_control
-            .interrupt_agent(receiver_thread_id)
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     }
     session
         .send_event(

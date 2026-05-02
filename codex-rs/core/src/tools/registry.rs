@@ -8,7 +8,7 @@ use crate::goals::GoalRuntimeEvent;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::run_post_tool_use_hooks;
 use crate::hook_runtime::run_pre_tool_use_hooks;
-use crate::memories::usage::emit_metric_for_tool_read;
+use crate::memory_usage::emit_metric_for_tool_read;
 use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
@@ -98,9 +98,9 @@ pub(crate) trait ToolArgumentDiffConsumer: Send {
     fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str)
     -> Option<EventMsg>;
 
-    /// Flush any buffered event before the tool call completes.
-    fn flush_on_complete(&mut self) -> Option<EventMsg> {
-        None
+    /// Finish consuming argument diffs before the tool call completes.
+    fn finish(&mut self) -> Result<Option<EventMsg>, FunctionCallError> {
+        Ok(None)
     }
 }
 
