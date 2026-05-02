@@ -164,7 +164,6 @@ pub(super) use codex_protocol::parse_command::ParsedCommand;
 pub(super) use codex_protocol::plan_tool::PlanItemArg;
 pub(super) use codex_protocol::plan_tool::StepStatus;
 pub(super) use codex_protocol::plan_tool::UpdatePlanArgs;
-pub(super) use codex_protocol::protocol::ComputerUseCallResponseEvent;
 pub(super) use codex_protocol::protocol::Event;
 pub(super) use codex_protocol::protocol::EventMsg;
 pub(super) use codex_protocol::request_permissions::RequestPermissionProfile;

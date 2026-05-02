@@ -415,6 +415,7 @@ mod tests {
             tx,
             crate::tui::FrameRequester::test_dummy(),
             /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
         );
         w.is_paused = true;
         w.elapsed_running = Duration::ZERO;

@@ -632,7 +632,6 @@ async fn status_model_provider_uses_bedrock_runtime_base_url() {
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
-        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
     let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
