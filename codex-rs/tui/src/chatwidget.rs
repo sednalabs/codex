@@ -6162,29 +6162,7 @@ impl ChatWidget {
                 self.add_info_message("Context compacted".to_string(), /*hint*/ None);
             }
             ThreadItem::HookPrompt { .. } => {}
-            ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                timed_out,
-                agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                timed_out,
-                agents_states,
-            }),
+            item @ ThreadItem::CollabAgentToolCall { .. } => self.on_collab_agent_tool_call(item),
             ThreadItem::DynamicToolCall { .. } => {}
         }
 
@@ -6537,29 +6515,7 @@ impl ChatWidget {
             ThreadItem::ImageGeneration { .. } => {
                 self.on_image_generation_begin();
             }
-            ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                timed_out,
-                agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                timed_out,
-                agents_states,
-            }),
+            item @ ThreadItem::CollabAgentToolCall { .. } => self.on_collab_agent_tool_call(item),
             ThreadItem::EnteredReviewMode { review, .. } => {
                 if !from_replay {
                     self.enter_review_mode_with_hint(review, /*from_replay*/ false);
