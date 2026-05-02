@@ -3717,15 +3717,57 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn handle_codex_event(&mut self, event: codex_protocol::protocol::Event) {
         match event.msg {
-            codex_protocol::protocol::EventMsg::BackgroundEvent(ev) => {
-                self.bottom_pane.ensure_status_indicator();
-                self.set_status_header(ev.message);
-            }
             codex_protocol::protocol::EventMsg::GuardianAssessment(ev) => {
                 self.on_guardian_assessment(ev);
             }
             _ => {}
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_computer_use_begin_now(
+        &mut self,
+        request: codex_protocol::computer_use::ComputerUseCallRequest,
+    ) {
+        self.flush_answer_stream_with_separator();
+        self.active_cell = Some(Box::new(history_cell::new_active_computer_use_call(
+            request.call_id,
+            request.environment_id,
+            request.adapter,
+            request.tool,
+            request.arguments,
+            self.config.animations,
+        )));
+        self.request_redraw();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_computer_use_end_now(
+        &mut self,
+        event: codex_protocol::protocol::ComputerUseCallResponseEvent,
+    ) {
+        let content_items = event.content_items.into_iter().map(Into::into).collect();
+        if let Some(mut cell) = self.active_cell.take() {
+            if let Some(computer_use) = cell
+                .as_any_mut()
+                .downcast_mut::<history_cell::ComputerUseCallCell>()
+            {
+                computer_use.complete(event.duration, content_items, event.success, event.error);
+            }
+            self.add_boxed_history(cell);
+        } else {
+            let mut cell = history_cell::new_active_computer_use_call(
+                event.call_id,
+                event.environment_id,
+                event.adapter,
+                event.tool,
+                event.arguments,
+                self.config.animations,
+            );
+            cell.complete(event.duration, content_items, event.success, event.error);
+            self.add_to_history(cell);
+        }
+        self.request_redraw();
     }
 
     fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {

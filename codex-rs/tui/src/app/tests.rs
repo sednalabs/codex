@@ -70,6 +70,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -1389,6 +1390,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: false,
+                ..AgentPickerThreadEntry::default()
             })
         );
         Ok(())
@@ -4889,7 +4891,10 @@ async fn queued_rollback_syncs_overlay_and_clears_deferred_history() {
 #[tokio::test]
 async fn native_android_computer_use_events_render_in_transcript_and_overlay() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    app.overlay = Some(Overlay::new_transcript(app.transcript_cells.clone()));
+    app.overlay = Some(Overlay::new_transcript(
+        app.transcript_cells.clone(),
+        app.keymap.pager.clone(),
+    ));
 
     let request = ComputerUseCallRequest {
         call_id: "android-call-1".to_string(),

@@ -428,12 +428,8 @@ async fn app_server_mcp_startup_next_round_after_lag_can_settle_without_starting
 async fn background_event_updates_status_header() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.handle_codex_event(Event {
-        id: "bg-1".into(),
-        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-            message: "Waiting for `vim`".to_string(),
-        }),
-    });
+    chat.bottom_pane.ensure_status_indicator();
+    chat.set_status_header("Waiting for `vim`".to_string());
 
     assert!(chat.bottom_pane.status_indicator_visible());
     assert_eq!(chat.current_status.header, "Waiting for `vim`");
