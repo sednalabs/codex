@@ -625,7 +625,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
-            dynamic_tools,
+            Vec::new(),
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,

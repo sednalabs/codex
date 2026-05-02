@@ -39,6 +39,17 @@ use std::collections::HashMap;
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
+const SPAWN_AGENT_APPROVAL_QUESTION_ID: &str = "spawn_agent_approval";
+const SPAWN_AGENT_APPROVAL_ACCEPT_OPTION: &str = "Approve";
+const SPAWN_AGENT_APPROVAL_DECLINE_OPTION: &str = "Decline";
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SpawnAgentApproval {
+    #[default]
+    Auto,
+    AskUser,
+}
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
