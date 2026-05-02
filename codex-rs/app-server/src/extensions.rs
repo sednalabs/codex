@@ -180,7 +180,11 @@ impl AppServerHooks for SednaAppServerHooks {
     ) {
         thread_manager
             .plugins_manager()
-            .maybe_start_plugin_startup_tasks_for_config(config, auth_manager);
+            .maybe_start_plugin_startup_tasks_for_config(
+                &config.plugins_config_input(),
+                auth_manager,
+                None,
+            );
     }
 
     fn config_mutation_follow_up(&self, kind: ConfigMutationKind) -> ConfigMutationFollowUp {
