@@ -13,7 +13,7 @@ expression: sanitized
 │                                                                            │
 │  Model:                 gpt-5.1-codex-max (reasoning none, summaries auto) │
 │  Directory: [[workspace]]                                                  │
-│  Permissions:           Custom (read-only, on-request)                     │
+│  Permissions:           Read Only (on-request)                             │
 │  Agents.md:             <none>                                             │
 │  Thread name:           Main                                               │
 │  Collaboration mode:    Default                                            │
