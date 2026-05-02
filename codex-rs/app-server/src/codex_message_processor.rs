@@ -2796,6 +2796,15 @@ impl CodexMessageProcessor {
                         description: tool.description,
                         input_schema: tool.input_schema,
                         defer_loading: tool.defer_loading,
+                        persist_on_resume: tool.persist_on_resume,
+                        capability: tool.capability.map(|capability| {
+                            codex_protocol::dynamic_tools::DynamicToolCapability {
+                                family: capability.family,
+                                capability_scope: capability.capability_scope,
+                                mutation_class: capability.mutation_class,
+                                lease_mode: capability.lease_mode,
+                            }
+                        }),
                     })
                     .collect()
             };

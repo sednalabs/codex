@@ -1500,6 +1500,8 @@ fn namespaced_dynamic_specs_are_hidden_when_namespace_tools_are_disabled() {
             description: "Create or update automations.".to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         },
         DynamicToolSpec {
             namespace: None,
@@ -1507,6 +1509,8 @@ fn namespaced_dynamic_specs_are_hidden_when_namespace_tools_are_disabled() {
             description: "Plain dynamic tool.".to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
 
@@ -1928,6 +1932,8 @@ fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disab
             description: "Create or update automations.".to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
         DynamicToolSpec {
             namespace: None,
@@ -1935,6 +1941,8 @@ fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disab
             description: "Plain dynamic tool.".to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
 

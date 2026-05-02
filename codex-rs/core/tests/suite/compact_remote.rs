@@ -432,6 +432,8 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
             description: "Hidden until discovered.".to_string(),
             input_schema: input_schema.clone(),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
         DynamicToolSpec {
             namespace: Some("codex_app".to_string()),
@@ -439,6 +441,8 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
             description: "Visible immediately.".to_string(),
             input_schema,
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
     let new_thread = test
