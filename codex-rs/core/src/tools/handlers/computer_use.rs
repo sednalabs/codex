@@ -356,11 +356,9 @@ async fn request_computer_use(
 }
 
 fn selected_computer_use_environment_id(turn_context: &TurnContext) -> Option<String> {
-    let primary_environment = turn_context.environment.as_ref()?;
     turn_context
         .environments
-        .iter()
-        .find(|environment| Arc::ptr_eq(&environment.environment, primary_environment))
+        .first()
         .map(|environment| environment.environment_id.clone())
 }
 

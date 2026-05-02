@@ -1322,8 +1322,8 @@ fn exit_with_wait_status_or_policy_violation(
 ///   failure text across bubblewrap variants.
 /// - We do not stream output because this is a one-shot probe with a trivial
 ///   command, and reads are bounded to a fixed max size.
-fn run_bwrap_in_child_capture_stderr(bwrap_args: crate::bwrap::BwrapArgs) -> String {
-    const MAX_PREFLIGHT_STDERR_BYTES: u64 = 64 * 1024;
+fn run_bwrap_in_child_capture_output(bwrap_args: crate::bwrap::BwrapArgs) -> String {
+    const MAX_PREFLIGHT_OUTPUT_BYTES: u64 = 64 * 1024;
     let crate::bwrap::BwrapArgs {
         args,
         preserved_files,

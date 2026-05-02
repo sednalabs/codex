@@ -861,6 +861,22 @@ impl Session {
         }
     }
 
+    pub(crate) async fn dynamic_tool_by_name(
+        &self,
+        tool_name: &ToolName,
+    ) -> Option<codex_protocol::dynamic_tools::DynamicToolSpec> {
+        let state = self.state.lock().await;
+        state
+            .session_configuration
+            .dynamic_tools
+            .iter()
+            .find(|tool| {
+                tool.name == tool_name.name
+                    && tool.namespace.as_deref() == tool_name.namespace.as_deref()
+            })
+            .cloned()
+    }
+
     pub(crate) async fn configured_multi_agent_v2_usage_hint_texts(&self) -> Vec<String> {
         if !self.features.enabled(Feature::MultiAgentV2) {
             return Vec::new();

@@ -289,7 +289,7 @@ pub(crate) async fn require_spawn_agent_approval_if_requested(
     let mode = session.collaboration_mode().await.mode;
     if let Some(message) = request_user_input_unavailable_message(
         mode,
-        turn.tools_config.default_mode_request_user_input,
+        &turn.config.request_user_input_available_modes,
     ) {
         return Err(FunctionCallError::RespondToModel(message));
     }
