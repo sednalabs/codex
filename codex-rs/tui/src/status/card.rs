@@ -17,6 +17,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::ActivePermissionProfileModification;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
@@ -205,6 +206,45 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
     refreshing_rate_limits: bool,
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
+    new_status_output_with_rate_limits_handle_for_instruction_sources(
+        config,
+        runtime_model_provider_base_url,
+        account_display,
+        token_info,
+        total_usage,
+        session_id,
+        thread_name,
+        forked_from,
+        rate_limits,
+        _plan_type,
+        now,
+        model_name,
+        collaboration_mode,
+        reasoning_effort_override,
+        refreshing_rate_limits,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_status_output_with_rate_limits_handle_for_instruction_sources(
+    config: &Config,
+    runtime_model_provider_base_url: Option<&str>,
+    account_display: Option<&StatusAccountDisplay>,
+    token_info: Option<&TokenUsageInfo>,
+    total_usage: &TokenUsage,
+    session_id: &Option<ThreadId>,
+    thread_name: Option<String>,
+    forked_from: Option<ThreadId>,
+    rate_limits: &[RateLimitSnapshotDisplay],
+    _plan_type: Option<PlanType>,
+    now: DateTime<Local>,
+    model_name: &str,
+    collaboration_mode: Option<&str>,
+    reasoning_effort_override: Option<Option<ReasoningEffort>>,
+    refreshing_rate_limits: bool,
+    instruction_source_paths: &[AbsolutePathBuf],
+) -> (CompositeHistoryCell, StatusHistoryHandle) {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
     let (card, handle) = StatusHistoryCell::new(
         config,
@@ -222,6 +262,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         collaboration_mode,
         reasoning_effort_override,
         refreshing_rate_limits,
+        instruction_source_paths,
     );
 
     (
@@ -248,6 +289,7 @@ impl StatusHistoryCell {
         collaboration_mode: Option<&str>,
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
         refreshing_rate_limits: bool,
+        instruction_source_paths: &[AbsolutePathBuf],
     ) -> (Self, StatusHistoryHandle) {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
         let permission_profile = config.permissions.permission_profile();
@@ -329,6 +371,7 @@ impl StatusHistoryCell {
         } else {
             compose_rate_limit_data_many(rate_limits, now)
         };
+        let agents_summary = compose_agents_summary(config, instruction_source_paths);
         let rate_limit_state = Arc::new(RwLock::new(StatusRateLimitState {
             rate_limits,
             refreshing_rate_limits,

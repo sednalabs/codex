@@ -21,7 +21,6 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::CancellationEvent;
-#[cfg(test)]
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
@@ -51,7 +50,6 @@ use codex_app_server_protocol::NetworkApprovalContext;
 use codex_app_server_protocol::NetworkPolicyRuleAction;
 use codex_app_server_protocol::RequestId;
 use codex_features::Features;
-#[cfg(test)]
 use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;

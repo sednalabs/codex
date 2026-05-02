@@ -6856,23 +6856,25 @@ impl ChatWidget {
             .values()
             .cloned()
             .collect();
-        let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
-            &self.config,
-            self.runtime_model_provider_base_url.as_deref(),
-            self.status_account_display.as_ref(),
-            token_info,
-            total_usage,
-            &self.thread_id,
-            self.thread_name.clone(),
-            self.forked_from,
-            rate_limit_snapshots.as_slice(),
-            self.plan_type,
-            Local::now(),
-            self.model_display_name(),
-            collaboration_mode,
-            reasoning_effort_override,
-            refreshing_rate_limits,
-        );
+        let (cell, handle) =
+            crate::status::new_status_output_with_rate_limits_handle_for_instruction_sources(
+                &self.config,
+                self.runtime_model_provider_base_url.as_deref(),
+                self.status_account_display.as_ref(),
+                token_info,
+                total_usage,
+                &self.thread_id,
+                self.thread_name.clone(),
+                self.forked_from,
+                rate_limit_snapshots.as_slice(),
+                self.plan_type,
+                Local::now(),
+                self.model_display_name(),
+                collaboration_mode,
+                reasoning_effort_override,
+                refreshing_rate_limits,
+                self.instruction_source_paths.as_slice(),
+            );
         if let Some(request_id) = request_id {
             self.refreshing_status_outputs.push((request_id, handle));
         }
