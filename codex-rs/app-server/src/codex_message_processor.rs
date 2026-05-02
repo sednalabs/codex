@@ -4347,6 +4347,12 @@ impl CodexMessageProcessor {
             return;
         }
 
+        let has_dynamic_tools = params
+            .dynamic_tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty());
+        let dynamic_tool_resume_params = has_dynamic_tools.then(|| params.clone());
+
         let _thread_list_state_permit = match self.acquire_thread_list_state_permit().await {
             Ok(permit) => permit,
             Err(error) => {
@@ -4354,22 +4360,14 @@ impl CodexMessageProcessor {
                 return;
             }
         };
-        if params
-            .dynamic_tools
-            .as_ref()
-            .is_some_and(|tools| !tools.is_empty())
-            && self
-                .prepare_loaded_thread_for_dynamic_tool_resume(request_id.clone(), &params)
-                .await
-        {
-            return;
-        }
-        match self.resume_running_thread(&request_id, &params).await {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return;
+        if !has_dynamic_tools || params.history.is_some() {
+            match self.resume_running_thread(&request_id, &params).await {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
             }
         }
 
@@ -4457,6 +4455,13 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        if let Some(params) = dynamic_tool_resume_params.as_ref()
+            && self
+                .prepare_loaded_thread_for_dynamic_tool_resume(request_id.clone(), params)
+                .await
+        {
+            return;
+        }
 
         match self
             .thread_manager
