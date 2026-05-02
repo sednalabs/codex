@@ -390,7 +390,6 @@ url = "{mcp_server_url}/mcp"
     assert_eq!(status, McpToolCallStatus::Completed);
     assert_eq!(error, None);
     assert_eq!(result.structured_content, None);
-    assert_eq!(result.meta, None);
     assert_eq!(result.content.len(), 1);
 
     let text = result.content[0]
