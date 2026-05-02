@@ -4353,6 +4353,16 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        if params
+            .dynamic_tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty())
+            && self
+                .prepare_loaded_thread_for_dynamic_tool_resume(request_id.clone(), &params)
+                .await
+        {
+            return;
+        }
         match self.resume_running_thread(&request_id, &params).await {
             Ok(true) => return,
             Ok(false) => {}
@@ -4378,7 +4388,7 @@ impl CodexMessageProcessor {
             base_instructions,
             developer_instructions,
             personality,
-            dynamic_tools: _dynamic_tools,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -4437,13 +4447,23 @@ impl CodexMessageProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match convert_dynamic_tools(dynamic_tools.unwrap_or_default()) {
+            Ok(tools) => tools,
+            Err(message) => {
+                self.outgoing
+                    .send_error(request_id, invalid_request(message))
+                    .await;
+                return;
+            }
+        };
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_with_tools(
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )
@@ -5090,7 +5110,7 @@ impl CodexMessageProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
-            dynamic_tools: _dynamic_tools,
+            dynamic_tools,
             ephemeral,
             exclude_turns,
             persist_extended_history,
@@ -5167,6 +5187,8 @@ impl CodexMessageProcessor {
 
             let fallback_model_provider = config.model_provider_id.clone();
             let instruction_sources = Self::instruction_sources_from_config(&config).await;
+            let core_dynamic_tools = convert_dynamic_tools(dynamic_tools.unwrap_or_default())
+                .map_err(invalid_request)?;
 
             let NewThread {
                 thread_id,
@@ -5175,7 +5197,7 @@ impl CodexMessageProcessor {
                 ..
             } = self
                 .thread_manager
-                .fork_thread_from_history(
+                .fork_thread_from_history_with_tools(
                     ForkSnapshot::Interrupted,
                     config,
                     InitialHistory::Resumed(ResumedHistory {
@@ -5183,6 +5205,7 @@ impl CodexMessageProcessor {
                         history: history_items.clone(),
                         rollout_path: source_thread.rollout_path.clone(),
                     }),
+                    core_dynamic_tools,
                     persist_extended_history,
                     self.request_trace_context(&request_id).await,
                 )

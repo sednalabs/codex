@@ -616,6 +616,26 @@ impl ThreadManager {
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        self.resume_thread_with_history_with_tools(
+            config,
+            initial_history,
+            auth_manager,
+            Vec::new(),
+            persist_extended_history,
+            parent_trace,
+        )
+        .await
+    }
+
+    pub async fn resume_thread_with_history_with_tools(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        persist_extended_history: bool,
+        parent_trace: Option<W3cTraceContext>,
+    ) -> CodexResult<NewThread> {
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
             &config.cwd,
@@ -625,7 +645,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
-            Vec::new(),
+            dynamic_tools,
             persist_extended_history,
             /*metrics_service_name*/ None,
             parent_trace,
