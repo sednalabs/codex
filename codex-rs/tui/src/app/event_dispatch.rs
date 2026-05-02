@@ -297,9 +297,6 @@ impl App {
             AppEvent::Exit(mode) => {
                 return Ok(self.handle_exit_mode(app_server, mode).await);
             }
-            AppEvent::ConfirmSubagentExit | AppEvent::CancelSubagentExit => {
-                return Ok(AppRunControl::Continue);
-            }
             AppEvent::Logout => match app_server.logout_account().await {
                 Ok(()) => {
                     return Ok(self

@@ -4510,7 +4510,7 @@ impl ChatWidget {
             id: ev.call_id,
             reason: ev.reason,
             changes: ev.changes.clone(),
-            cwd: self.config.cwd.to_path_buf(),
+            cwd: self.config.cwd.clone(),
         };
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
