@@ -1424,6 +1424,8 @@ fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -1464,6 +1466,8 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let err = app
@@ -3440,6 +3444,8 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         assert!(
