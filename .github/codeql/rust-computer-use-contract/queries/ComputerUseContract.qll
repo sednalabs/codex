@@ -70,6 +70,16 @@ predicate fileContainsPathSegment(File file, string segment) {
   exists(PathAstNode path |
     path.getFile() = file and
     path.getPath().getSegment().getIdentifier().getText() = segment
+  ) or
+  // Enum and variant declarations are not PathAstNodes, but these contract
+  // queries use the helper to ask whether a guarded file carries a schema name.
+  exists(Enum enumDecl |
+    enumDecl.getFile() = file and
+    enumDecl.getName().getText() = segment
+  ) or
+  exists(Variant variant |
+    variant.getFile() = file and
+    variant.getName().getText() = segment
   )
 }
 
