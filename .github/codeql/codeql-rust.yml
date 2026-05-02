@@ -4,5 +4,13 @@ queries:
   - uses: security-and-quality
   - uses: ./.github/codeql/rust-computer-use-contract
 
+# Query-test fixtures live under .github/codeql and are exercised by
+# codeql-query-tests; production Rust CodeQL should scan real Rust roots.
+paths:
+  - codex-rs
+  - tools
+paths-ignore:
+  - .github/codeql/rust-computer-use-contract/test/**
+
 # Note: retained for planner/config consistency. Rust contract queries do not currently rely on threat-models.
 threat-models: local

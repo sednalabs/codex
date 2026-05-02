@@ -1,0 +1,20 @@
+[package]
+name = "codex-computer-use-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_computer_use_runtime"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+codex-app-server-protocol = { workspace = true }
+codex-tools = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["time"] }

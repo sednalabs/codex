@@ -3,6 +3,8 @@ use base64::prelude::BASE64_STANDARD;
 use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
+use codex_tools::AndroidRuntimeConfig;
+use codex_tools::load_android_runtime_config;
 use reqwest::StatusCode;
 use reqwest::header::ACCEPT;
 use reqwest::header::CONTENT_TYPE;
@@ -11,11 +13,11 @@ use reqwest::header::HeaderValue;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::time::Duration;
 use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const DEFAULT_MCP_URL_PATH: &str = "/mcp";
 const INSPECT_UI_MAX_ATTEMPTS: usize = 3;
 const INSPECT_UI_RETRY_DELAY: Duration = Duration::from_millis(250);
 const INSTALL_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
@@ -25,12 +27,13 @@ const TOOL_ANDROID_INSTALL_BUILD_FROM_RUN: &str = "android_install_build_from_ru
 const MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN: &str =
     "interactive_session.install_build_from_run";
 
-pub(crate) enum AndroidComputerUseOutcome {
+pub enum AndroidComputerUseOutcome {
     Handled(ComputerUseCallResponse),
     Unavailable,
 }
 
-pub(crate) async fn handle_android_computer_use(
+pub async fn handle_android_computer_use(
+    codex_home: &Path,
     params: &ComputerUseCallParams,
 ) -> AndroidComputerUseOutcome {
     if params.adapter != "android" {
@@ -40,7 +43,9 @@ pub(crate) async fn handle_android_computer_use(
         return AndroidComputerUseOutcome::Unavailable;
     }
 
-    let Some(config) = AndroidRuntimeConfig::load() else {
+    // Resolve per request so Android sessions and access credentials can appear
+    // or rotate while the Codex UI process remains alive.
+    let Some(config) = load_android_runtime_config(codex_home) else {
         return AndroidComputerUseOutcome::Unavailable;
     };
 
@@ -115,7 +120,7 @@ async fn observe(
     }?;
     require_native_image_for_visual_response(
         &mut response,
-        "Android observation missing native image output. Text and visible_ui summaries are not sufficient for native computer use.",
+        "Android observation missing native image output. Text and visible_ui summaries are not sufficient for native computer use; recover with a fresh android_observe before making visual claims.",
     );
     Ok(response)
 }
@@ -539,69 +544,6 @@ async fn run_action(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AndroidRuntimeConfig {
-    mcp_url: String,
-    cf_access_client_id: Option<String>,
-    cf_access_client_secret: Option<String>,
-}
-
-impl AndroidRuntimeConfig {
-    fn load() -> Option<Self> {
-        let file = AndroidRuntimeConfigFile::load();
-        let mcp_url = first_env(&["CODEX_ANDROID_MCP_URL", "SOLARLAB_ANDROID_MCP_URL"])
-            .or_else(|| {
-                first_env(&[
-                    "CODEX_ANDROID_MCP_HOSTNAME",
-                    "SOLARLAB_ANDROID_MCP_HOSTNAME",
-                ])
-                .map(|host| {
-                    let host = host.trim_end_matches('/');
-                    if host.starts_with("http://") || host.starts_with("https://") {
-                        format!("{host}{DEFAULT_MCP_URL_PATH}")
-                    } else {
-                        format!("https://{host}{DEFAULT_MCP_URL_PATH}")
-                    }
-                })
-            })
-            .or_else(|| file.as_ref().and_then(|config| config.mcp_url.clone()))?;
-        Some(Self {
-            mcp_url,
-            cf_access_client_id: first_env(&[
-                "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
-                "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
-            ]),
-            cf_access_client_secret: first_env(&[
-                "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
-                "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
-            ]),
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct AndroidRuntimeConfigFile {
-    mcp_url: Option<String>,
-}
-
-impl AndroidRuntimeConfigFile {
-    fn load() -> Option<Self> {
-        let home = dirs::home_dir()?;
-        for path in [
-            home.join(".codex/android-computer-use.json"),
-            home.join(".codex/android-dynamic-tools.json"),
-            home.join(".codex/solarlab-android-dynamic-tools.json"),
-        ] {
-            if let Ok(contents) = std::fs::read_to_string(path)
-                && let Ok(config) = serde_json::from_str(&contents)
-            {
-                return Some(config);
-            }
-        }
-        None
-    }
-}
-
 struct AndroidRuntimeClient {
     http: reqwest::Client,
     url: String,
@@ -673,7 +615,7 @@ impl AndroidRuntimeClient {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {},
                     "clientInfo": {
-                        "name": "codex-tui-native-android",
+                        "name": "codex-computer-use-runtime-android",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
@@ -1306,12 +1248,6 @@ fn value_display(value: Option<&Value>) -> String {
     value
         .map(compact_json)
         .unwrap_or_else(|| "<missing>".to_string())
-}
-
-fn first_env(keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .find(|value| !value.trim().is_empty())
 }
 
 fn format_http_error(status: StatusCode, text: &str) -> String {
