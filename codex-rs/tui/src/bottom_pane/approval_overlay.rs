@@ -21,17 +21,7 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::CancellationEvent;
-use crate::bottom_pane::approval_state::ApprovalDecision;
-use crate::bottom_pane::approval_state::ApprovalOption;
-use crate::bottom_pane::approval_state::ApprovalRequest;
-use crate::bottom_pane::approval_state::PermissionsDecision;
-use crate::bottom_pane::approval_state::build_approval_options;
 #[cfg(test)]
-use crate::bottom_pane::approval_state::exec_options;
-use crate::bottom_pane::approval_state::format_additional_permissions_rule;
-use crate::bottom_pane::approval_state::format_requested_permissions_rule;
-#[cfg(test)]
-use crate::bottom_pane::approval_state::permissions_options;
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;

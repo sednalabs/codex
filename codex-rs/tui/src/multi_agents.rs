@@ -8,14 +8,19 @@ use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::text_formatting::truncate_text;
+use chrono::Utc;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 #[cfg(target_os = "macos")]
@@ -340,6 +345,7 @@ pub(crate) fn tool_call_history_cell(
     let ThreadItem::CollabAgentToolCall {
         tool,
         status,
+        sender_thread_id,
         receiver_thread_ids,
         prompt,
         agents_states,
@@ -352,6 +358,7 @@ pub(crate) fn tool_call_history_cell(
     let first_receiver = receiver_thread_ids
         .first()
         .and_then(|id| parse_thread_id(id));
+    let sender_thread_id = parse_thread_id(sender_thread_id);
     let prompt = prompt.as_deref().unwrap_or_default();
 
     match tool {
@@ -405,7 +412,10 @@ pub(crate) fn tool_call_history_cell(
                 return None;
             }
             first_receiver
-                .map(|receiver_thread_id| close_end(receiver_thread_id, &mut agent_metadata))
+                .zip(sender_thread_id)
+                .map(|(receiver_thread_id, sender_thread_id)| {
+                    close_end(receiver_thread_id, sender_thread_id, &mut agent_metadata)
+                })
         }
     }
 }
@@ -493,6 +503,7 @@ fn waiting_end(
 
 fn close_end(
     receiver_thread_id: ThreadId,
+    sender_thread_id: ThreadId,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     collab_event(
@@ -506,6 +517,10 @@ fn close_end(
             resume_target_line("Return to parent: ", sender_thread_id),
         ],
     )
+}
+
+fn resume_target_line(label: &'static str, thread_id: ThreadId) -> Line<'static> {
+    Line::from(vec![label.into(), thread_id.to_string().cyan()])
 }
 
 fn resume_begin(
@@ -1187,14 +1202,17 @@ mod tests {
         let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid receiver thread id");
 
-        let close = close_end(CollabCloseEndEvent {
-            call_id: "call-close".to_string(),
-            sender_thread_id,
-            receiver_thread_id,
-            receiver_agent_nickname: Some("Robie".to_string()),
-            receiver_agent_role: Some("explorer".to_string()),
-            status: AgentStatus::Completed(Some("39916800".to_string())),
-        });
+        let mut agent_metadata = |thread_id| {
+            if thread_id == receiver_thread_id {
+                AgentMetadata {
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                }
+            } else {
+                AgentMetadata::default()
+            }
+        };
+        let close = close_end(receiver_thread_id, sender_thread_id, &mut agent_metadata);
         let rendered = cell_to_text(&close);
 
         assert!(
