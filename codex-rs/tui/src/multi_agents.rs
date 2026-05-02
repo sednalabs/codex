@@ -1121,41 +1121,15 @@ mod tests {
 
     #[test]
     fn collab_wait_timeout_snapshot() {
-        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
-            .expect("valid sender thread id");
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid robie thread id");
         let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
             .expect("valid bob thread id");
+        let receiver_thread_ids = vec![robie_id.to_string(), bob_id.to_string()];
+        let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
 
-        let waiting = waiting_begin(CollabWaitingBeginEvent {
-            sender_thread_id,
-            receiver_thread_ids: vec![robie_id, bob_id],
-            receiver_agents: vec![
-                CollabAgentRef {
-                    thread_id: robie_id,
-                    agent_nickname: Some("Robie".to_string()),
-                    agent_role: Some("explorer".to_string()),
-                },
-                CollabAgentRef {
-                    thread_id: bob_id,
-                    agent_nickname: Some("Bob".to_string()),
-                    agent_role: Some("worker".to_string()),
-                },
-            ],
-            call_id: "call-wait-timeout".to_string(),
-        });
-
-        let finished = waiting_end(CollabWaitingEndEvent {
-            sender_thread_id,
-            call_id: "call-wait-timeout".to_string(),
-            agent_statuses: Vec::new(),
-            statuses: HashMap::new(),
-            receiver_thread_ids: vec![robie_id, bob_id],
-            pending_thread_ids: vec![robie_id, bob_id],
-            completion_reason: CollabWaitingCompletionReason::Timeout,
-            timed_out: true,
-        });
+        let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
+        let finished = waiting_end(&receiver_thread_ids, &HashMap::new(), &mut agent_metadata);
 
         let snapshot = [waiting, finished]
             .iter()
@@ -1167,51 +1141,20 @@ mod tests {
 
     #[test]
     fn collab_wait_mailbox_snapshot() {
-        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
-            .expect("valid sender thread id");
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid robie thread id");
         let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
             .expect("valid bob thread id");
-
-        let waiting = waiting_begin(CollabWaitingBeginEvent {
-            sender_thread_id,
-            receiver_thread_ids: vec![robie_id, bob_id],
-            receiver_agents: vec![
-                CollabAgentRef {
-                    thread_id: robie_id,
-                    agent_nickname: Some("Robie".to_string()),
-                    agent_role: Some("explorer".to_string()),
-                },
-                CollabAgentRef {
-                    thread_id: bob_id,
-                    agent_nickname: Some("Bob".to_string()),
-                    agent_role: Some("worker".to_string()),
-                },
-            ],
-            call_id: "call-wait-mailbox".to_string(),
-        });
+        let receiver_thread_ids = vec![robie_id.to_string(), bob_id.to_string()];
+        let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
 
         let mut statuses = HashMap::new();
         statuses.insert(
-            robie_id,
-            AgentStatus::Completed(Some("39916800".to_string())),
+            robie_id.to_string(),
+            agent_state(CollabAgentStatus::Completed, Some("39916800")),
         );
-        let finished = waiting_end(CollabWaitingEndEvent {
-            sender_thread_id,
-            call_id: "call-wait-mailbox".to_string(),
-            agent_statuses: vec![CollabAgentStatusEntry {
-                thread_id: robie_id,
-                agent_nickname: Some("Robie".to_string()),
-                agent_role: Some("explorer".to_string()),
-                status: AgentStatus::Completed(Some("39916800".to_string())),
-            }],
-            statuses,
-            receiver_thread_ids: vec![robie_id, bob_id],
-            pending_thread_ids: vec![bob_id],
-            completion_reason: CollabWaitingCompletionReason::Mailbox,
-            timed_out: false,
-        });
+        let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
+        let finished = waiting_end(&receiver_thread_ids, &statuses, &mut agent_metadata);
 
         let snapshot = [waiting, finished]
             .iter()
@@ -1253,51 +1196,20 @@ mod tests {
 
     #[test]
     fn collab_wait_partial_timeout_snapshot() {
-        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
-            .expect("valid sender thread id");
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid robie thread id");
         let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
             .expect("valid bob thread id");
-
-        let waiting = waiting_begin(CollabWaitingBeginEvent {
-            sender_thread_id,
-            receiver_thread_ids: vec![robie_id, bob_id],
-            receiver_agents: vec![
-                CollabAgentRef {
-                    thread_id: robie_id,
-                    agent_nickname: Some("Robie".to_string()),
-                    agent_role: Some("explorer".to_string()),
-                },
-                CollabAgentRef {
-                    thread_id: bob_id,
-                    agent_nickname: Some("Bob".to_string()),
-                    agent_role: Some("worker".to_string()),
-                },
-            ],
-            call_id: "call-wait-partial".to_string(),
-        });
+        let receiver_thread_ids = vec![robie_id.to_string(), bob_id.to_string()];
+        let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
 
         let mut statuses = std::collections::HashMap::new();
         statuses.insert(
-            robie_id,
-            AgentStatus::Completed(Some("39916800".to_string())),
+            robie_id.to_string(),
+            agent_state(CollabAgentStatus::Completed, Some("39916800")),
         );
-        let finished = waiting_end(CollabWaitingEndEvent {
-            sender_thread_id,
-            call_id: "call-wait-partial".to_string(),
-            agent_statuses: vec![CollabAgentStatusEntry {
-                thread_id: robie_id,
-                agent_nickname: Some("Robie".to_string()),
-                agent_role: Some("explorer".to_string()),
-                status: AgentStatus::Completed(Some("39916800".to_string())),
-            }],
-            statuses,
-            receiver_thread_ids: vec![robie_id, bob_id],
-            pending_thread_ids: vec![bob_id],
-            completion_reason: CollabWaitingCompletionReason::Timeout,
-            timed_out: true,
-        });
+        let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
+        let finished = waiting_end(&receiver_thread_ids, &statuses, &mut agent_metadata);
 
         let snapshot = [waiting, finished]
             .iter()
