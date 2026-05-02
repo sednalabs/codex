@@ -218,71 +218,6 @@ impl ToolPluginProvenance {
     }
 }
 
-fn codex_apps_mcp_bearer_token_env_var() -> Option<String> {
-    match env::var(CODEX_CONNECTORS_TOKEN_ENV_VAR) {
-        Ok(value) if !value.trim().is_empty() => Some(CODEX_CONNECTORS_TOKEN_ENV_VAR.to_string()),
-        Ok(_) => None,
-        Err(env::VarError::NotPresent) => None,
-        Err(env::VarError::NotUnicode(_)) => Some(CODEX_CONNECTORS_TOKEN_ENV_VAR.to_string()),
-    }
-}
-
-fn normalize_codex_apps_base_url(base_url: &str) -> String {
-    let mut base_url = base_url.trim_end_matches('/').to_string();
-    if (base_url.starts_with("https://chatgpt.com")
-        || base_url.starts_with("https://chat.openai.com"))
-        && !base_url.contains("/backend-api")
-    {
-        base_url = format!("{base_url}/backend-api");
-    }
-    base_url
-}
-
-fn codex_apps_mcp_url_for_base_url(base_url: &str) -> String {
-    let base_url = normalize_codex_apps_base_url(base_url);
-    if base_url.contains("/backend-api") {
-        format!("{base_url}/wham/apps")
-    } else if base_url.contains("/api/codex") {
-        format!("{base_url}/apps")
-    } else {
-        format!("{base_url}/api/codex/apps")
-    }
-}
-
-pub(crate) fn codex_apps_mcp_url(config: &McpConfig) -> String {
-    codex_apps_mcp_url_for_base_url(&config.chatgpt_base_url)
-}
-
-fn codex_apps_mcp_server_config(config: &McpConfig) -> McpServerConfig {
-    let url = codex_apps_mcp_url(config);
-
-    McpServerConfig {
-        transport: McpServerTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var: codex_apps_mcp_bearer_token_env_var(),
-            http_headers: None,
-            env_http_headers: None,
-        },
-        experimental_environment: None,
-        enabled: true,
-        required: false,
-        supports_parallel_tool_calls: false,
-        disabled_reason: None,
-        startup_timeout_sec: Some(Duration::from_secs(30)),
-        tool_timeout_sec: None,
-        default_tools_approval_mode: None,
-        enabled_tools: None,
-        disabled_tools: None,
-        enable_elicitation: false,
-        read_only: false,
-        strict_tool_classification: false,
-        require_approval_for_mutating: false,
-        scopes: None,
-        oauth_resource: None,
-        tools: HashMap::new(),
-    }
-}
-
 pub fn with_codex_apps_mcp(
     mut servers: HashMap<String, McpServerConfig>,
     auth: Option<&CodexAuth>,
@@ -519,6 +454,10 @@ fn codex_apps_mcp_server_config(config: &McpConfig) -> McpServerConfig {
         default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
         scopes: None,
         oauth_resource: None,
         tools: HashMap::new(),
