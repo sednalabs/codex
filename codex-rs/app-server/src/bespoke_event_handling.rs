@@ -21,6 +21,8 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallParams;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::DynamicToolCallStatus;
@@ -836,7 +838,51 @@ pub(crate) async fn apply_bespoke_event_handling(
                 crate::dynamic_tools::on_call_response(call_id, rx, conversation).await;
             });
         }
+        EventMsg::ComputerUseCallRequest(request) => {
+            let call_id = request.call_id;
+            let turn_id = request.turn_id;
+            let environment_id = request.environment_id;
+            let adapter = request.adapter;
+            let tool = request.tool;
+            let arguments = request.arguments;
+            let item = ThreadItem::ComputerUseCall {
+                id: call_id.clone(),
+                environment_id: environment_id.clone(),
+                adapter: adapter.clone(),
+                tool: tool.clone(),
+                arguments: arguments.clone(),
+                status: ComputerUseCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                error: None,
+                duration_ms: None,
+            };
+            let notification = ItemStartedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: turn_id.clone(),
+                item,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemStarted(notification))
+                .await;
+            let params = ComputerUseCallParams {
+                thread_id: conversation_id.to_string(),
+                turn_id: turn_id.clone(),
+                call_id: call_id.clone(),
+                environment_id,
+                adapter,
+                tool,
+                arguments,
+            };
+            let (_pending_request_id, rx) = outgoing
+                .send_request(ServerRequestPayload::ComputerUseCall(params))
+                .await;
+            tokio::spawn(async move {
+                crate::computer_use::on_call_response(call_id, rx, conversation).await;
+            });
+        }
         msg @ (EventMsg::DynamicToolCallResponse(_)
+        | EventMsg::ComputerUseCallResponse(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::CollabAgentSpawnBegin(_)
