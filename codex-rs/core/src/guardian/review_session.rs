@@ -1065,6 +1065,7 @@ mod tests {
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: last_agent_message.map(str::to_string),
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms,
@@ -1078,8 +1079,6 @@ mod tests {
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id.to_string()),
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             }),
         }
     }
