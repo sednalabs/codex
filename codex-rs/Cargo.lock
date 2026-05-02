@@ -1897,6 +1897,7 @@ dependencies = [
  "codex-utils-json-to-toml",
  "codex-utils-pty",
  "codex-utils-rustls-provider",
+ "codex-utils-version",
  "core_test_support",
  "flate2",
  "futures",
