@@ -33,15 +33,17 @@ use std::collections::HashMap;
 ///
 /// This only covers the stateless event-to-notification projections that have a one-to-one
 /// mapping. Callers remain responsible for any surrounding state checks or side effects before
-/// invoking this helper.
+/// invoking this helper. Returns `None` for core events that do not have a direct v2 item
+/// notification mapping so new or unrelated [`EventMsg`] variants cannot panic the app-server
+/// hot path.
 pub fn item_event_to_server_notification(
     msg: EventMsg,
     thread_id: &str,
     turn_id: &str,
-) -> ServerNotification {
+) -> Option<ServerNotification> {
     let thread_id = thread_id.to_string();
     let turn_id = turn_id.to_string();
-    match msg {
+    let notification = match msg {
         EventMsg::DynamicToolCallResponse(response) => {
             let status = if response.success {
                 DynamicToolCallStatus::Completed
@@ -550,8 +552,9 @@ pub fn item_event_to_server_notification(
                 item: build_command_execution_end_item(&exec_command_end_event),
             })
         }
-        _ => unreachable!("unsupported item event"),
-    }
+        _ => return None,
+    };
+    Some(notification)
 }
 
 #[cfg(test)]
@@ -571,35 +574,47 @@ mod tests {
     use std::time::Duration;
 
     fn assert_item_started_server_notification(
-        notification: ServerNotification,
+        notification: Option<ServerNotification>,
         expected: ItemStartedNotification,
     ) {
-        match notification {
+        match notification.expect("supported event should map to notification") {
             ServerNotification::ItemStarted(payload) => assert_eq!(payload, expected),
             other => panic!("expected item started notification, got {other:?}"),
         }
     }
 
     fn assert_item_completed_server_notification(
-        notification: ServerNotification,
+        notification: Option<ServerNotification>,
         expected: ItemCompletedNotification,
     ) {
-        match notification {
+        match notification.expect("supported event should map to notification") {
             ServerNotification::ItemCompleted(payload) => assert_eq!(payload, expected),
             other => panic!("expected item completed notification, got {other:?}"),
         }
     }
 
     fn assert_command_execution_output_delta_server_notification(
-        notification: ServerNotification,
+        notification: Option<ServerNotification>,
         expected: CommandExecutionOutputDeltaNotification,
     ) {
-        match notification {
+        match notification.expect("supported event should map to notification") {
             ServerNotification::CommandExecutionOutputDelta(payload) => {
                 assert_eq!(payload, expected)
             }
             other => panic!("expected command execution output delta, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsupported_event_returns_none_instead_of_panicking() {
+        assert!(
+            item_event_to_server_notification(
+                EventMsg::SkillsUpdateAvailable,
+                "thread-1",
+                "turn-1",
+            )
+            .is_none()
+        );
     }
 
     #[test]
