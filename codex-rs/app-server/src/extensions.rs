@@ -374,6 +374,7 @@ mod tests {
                 enabled: true,
                 install_policy: codex_app_server_protocol::PluginInstallPolicy::Available,
                 auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
+                availability: codex_app_server_protocol::PluginAvailability::Available,
                 interface: None,
             },
             description: None,

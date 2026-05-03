@@ -474,6 +474,7 @@ mod tests {
     use codex_core::AuthManager;
     use codex_core::CodexAuth;
     use codex_features::Feature;
+    use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
     use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
     use pretty_assertions::assert_eq;
     use serde_json::json;
