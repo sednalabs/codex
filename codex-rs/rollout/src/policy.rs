@@ -188,40 +188,40 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabResumeBegin(_) => None,
     }
+}
 
-    #[test]
-    fn persists_computer_use_events_in_extended_mode() {
-        let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
-            call_id: "call-android-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: "android".to_string(),
-            tool: "android_observe".to_string(),
-            arguments: serde_json::json!({"scope": "screen_and_ui"}),
-        });
-        let response = EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
-            call_id: "call-android-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: "android".to_string(),
-            tool: "android_observe".to_string(),
-            arguments: serde_json::json!({"scope": "screen_and_ui"}),
-            content_items: vec![ComputerUseOutputContentItem::InputText {
-                text: "screen summary".to_string(),
-            }],
-            success: true,
-            error: None,
-            duration: Duration::from_millis(12),
-        });
+#[test]
+fn persists_computer_use_events_in_extended_mode() {
+    let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
+        call_id: "call-android-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        environment_id: Some("env-1".to_string()),
+        adapter: "android".to_string(),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({"scope": "screen_and_ui"}),
+    });
+    let response = EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
+        call_id: "call-android-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        environment_id: Some("env-1".to_string()),
+        adapter: "android".to_string(),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({"scope": "screen_and_ui"}),
+        content_items: vec![ComputerUseOutputContentItem::InputText {
+            text: "screen summary".to_string(),
+        }],
+        success: true,
+        error: None,
+        duration: Duration::from_millis(12),
+    });
 
-        assert_eq!(
-            vec![
-                should_persist_event_msg(&request, EventPersistenceMode::Limited),
-                should_persist_event_msg(&response, EventPersistenceMode::Limited),
-                should_persist_event_msg(&request, EventPersistenceMode::Extended),
-                should_persist_event_msg(&response, EventPersistenceMode::Extended),
-            ],
-            vec![false, false, true, true]
-        );
-    }
+    assert_eq!(
+        vec![
+            should_persist_event_msg(&request, EventPersistenceMode::Limited),
+            should_persist_event_msg(&response, EventPersistenceMode::Limited),
+            should_persist_event_msg(&request, EventPersistenceMode::Extended),
+            should_persist_event_msg(&response, EventPersistenceMode::Extended),
+        ],
+        vec![false, false, true, true]
+    );
 }
