@@ -502,10 +502,12 @@ def load_state(path):
 
 
 def save_state(path, state):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    state_dir = Path(tempfile.gettempdir())
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / safe_state_file_name(path.name)
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
     fd, tmp_name = tempfile.mkstemp(
-        prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
+        prefix="codex-babysit-pr-state.", suffix=".tmp", dir=state_dir
     )
     tmp_path = Path(tmp_name)
     try:
