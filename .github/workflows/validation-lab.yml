@@ -779,7 +779,7 @@ jobs:
       needs_just: false
       needs_node: false
       needs_nextest: false
-      needs_linux_build_deps: false
+      needs_linux_build_deps: true
       needs_dotslash: false
       needs_sccache: true
       cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
