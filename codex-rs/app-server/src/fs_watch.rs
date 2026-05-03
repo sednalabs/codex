@@ -438,7 +438,10 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
         let file_b = absolute_path(file_b);
@@ -620,7 +623,10 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
@@ -659,7 +665,10 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
@@ -693,7 +702,10 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
@@ -749,7 +761,10 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 

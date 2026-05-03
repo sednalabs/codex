@@ -2157,8 +2157,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_configured_from_thread_response_uses_review_policy_from_response() {
+    #[tokio::test]
+    async fn session_configured_from_thread_response_uses_review_policy_from_response() {
+        let codex_home = tempdir().expect("create temp codex home");
+        let cwd = tempdir().expect("create temp cwd");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(cwd.path().to_path_buf()))
+            .build()
+            .await
+            .expect("build config for session configured mapping");
         let response = ThreadStartResponse {
             thread: codex_app_server_protocol::Thread {
                 id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
@@ -2193,10 +2201,11 @@ mod tests {
                 exclude_slash_tmp: false,
             },
             permission_profile: None,
+            active_permission_profile: None,
             reasoning_effort: None,
         };
 
-        let event = session_configured_from_thread_start_response(&response)
+        let event = session_configured_from_thread_start_response(&response, &config)
             .expect("build bootstrap session configured event");
 
         assert_eq!(event.approvals_reviewer, ApprovalsReviewer::AutoReview);

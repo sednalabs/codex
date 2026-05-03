@@ -1091,7 +1091,10 @@ mod tests {
         let manager = CommandExecManager::default();
         manager
             .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
                 request_id: ConnectionRequestId {
                     connection_id: ConnectionId(14),
                     request_id: codex_app_server_protocol::RequestId::Integer(14),
@@ -1138,7 +1141,10 @@ mod tests {
     #[tokio::test]
     async fn streamed_output_delta_delivery_waits_for_queue_capacity_instead_of_dropping_chunks() {
         let (tx, mut rx) = mpsc::channel(1);
-        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
         let (output_tx, output_rx) = mpsc::channel(4);
         let (_stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
 
