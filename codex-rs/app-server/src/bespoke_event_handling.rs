@@ -899,11 +899,9 @@ pub(crate) async fn apply_bespoke_event_handling(
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::AgentReasoningSectionBreak(_)) => {
-            if let Some(notification) = item_event_to_server_notification(
-                msg,
-                &conversation_id.to_string(),
-                &event_turn_id,
-            ) {
+            if let Some(notification) =
+                item_event_to_server_notification(msg, &conversation_id.to_string(), &event_turn_id)
+            {
                 outgoing.send_server_notification(notification).await;
             }
         }
@@ -1033,11 +1031,9 @@ pub(crate) async fn apply_bespoke_event_handling(
         | EventMsg::ItemCompleted(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TerminalInteraction(_)) => {
-            if let Some(notification) = item_event_to_server_notification(
-                msg,
-                &conversation_id.to_string(),
-                &event_turn_id,
-            ) {
+            if let Some(notification) =
+                item_event_to_server_notification(msg, &conversation_id.to_string(), &event_turn_id)
+            {
                 outgoing.send_server_notification(notification).await;
             }
         }

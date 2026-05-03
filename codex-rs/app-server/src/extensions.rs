@@ -183,7 +183,7 @@ impl AppServerHooks for SednaAppServerHooks {
             .maybe_start_plugin_startup_tasks_for_config(
                 &config.plugins_config_input(),
                 auth_manager,
-                None,
+                /*on_effective_plugins_changed*/ None,
             );
     }
 
