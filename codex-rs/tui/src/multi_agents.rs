@@ -566,7 +566,10 @@ pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> Pla
         spans.push(Span::from(agent_id.to_string()).cyan());
     }
 
-    collab_event(title_spans_line(spans), vec![agent_status_summary_line(status)])
+    collab_event(
+        title_spans_line(spans),
+        vec![agent_status_summary_line(status)],
+    )
 }
 
 fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> PlainHistoryCell {

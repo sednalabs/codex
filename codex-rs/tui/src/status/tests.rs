@@ -295,7 +295,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
         .permissions
         .set_permission_profile_with_active_profile(
             PermissionProfile::read_only(),
-            /*active_profile*/ None,
+            /*active_permission_profile*/ None,
         )
         .expect("set permission profile");
 
