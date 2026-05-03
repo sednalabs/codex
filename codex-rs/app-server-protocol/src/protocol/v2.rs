@@ -1533,6 +1533,7 @@ pub enum FileSystemSpecialPath {
     Minimal,
     #[serde(alias = "current_working_directory")]
     ProjectRoots {
+        #[serde(default)]
         subpath: Option<PathBuf>,
     },
     Tmpdir,

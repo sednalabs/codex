@@ -58,6 +58,7 @@ SEEN_FEEDBACK_STATE_KEYS = (
     "seen_review_comment_ids",
     "seen_review_ids",
 )
+STATE_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class GhCommandError(RuntimeError):
@@ -169,7 +170,13 @@ def parse_args():
         default=3,
         help="Max rerun cycles per head SHA before stop recommendation",
     )
-    parser.add_argument("--state-file", help="Path to state JSON file")
+    parser.add_argument(
+        "--state-file",
+        help=(
+            "State JSON file name to store under the system temporary directory. "
+            "Directory components are rejected."
+        ),
+    )
     parser.add_argument(
         "--once", action="store_true", help="Emit one snapshot and exit"
     )
@@ -513,9 +520,29 @@ def save_state(path, state):
         raise
 
 
+def safe_state_file_name(name):
+    base_name = os.path.basename(name)
+    if base_name != name:
+        raise RuntimeError("--state-file must be a file name, not a path")
+    if not STATE_FILE_NAME_RE.fullmatch(base_name):
+        raise RuntimeError(
+            "--state-file may contain only letters, numbers, '.', '_', and '-'"
+        )
+    return base_name
+
+
 def default_state_file_for(pr):
     repo_slug = pr["repo"].replace("/", "-")
-    return Path(f"/tmp/codex-babysit-pr-{repo_slug}-pr{pr['number']}.json")
+    file_name = safe_state_file_name(
+        f"codex-babysit-pr-{repo_slug}-pr{pr['number']}.json"
+    )
+    return Path(tempfile.gettempdir()) / file_name
+
+
+def state_file_for(args, pr):
+    if args.state_file:
+        return Path(tempfile.gettempdir()) / safe_state_file_name(args.state_file)
+    return default_state_file_for(pr)
 
 
 def reset_seen_feedback_state(state):
@@ -1277,9 +1304,7 @@ def collect_snapshot(args):
     local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
     validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
-    state_path = (
-        Path(args.state_file) if args.state_file else default_state_file_for(pr)
-    )
+    state_path = state_file_for(args, pr)
     state, fresh_state = load_state(state_path)
     maybe_reset_seen_feedback(args, state)
 

@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
 use std::sync::Arc;
@@ -29,66 +28,84 @@ impl LocalAgentGraphStore {
     }
 }
 
-#[async_trait]
 impl AgentGraphStore for LocalAgentGraphStore {
-    async fn upsert_thread_spawn_edge(
+    fn upsert_thread_spawn_edge(
         &self,
         parent_thread_id: ThreadId,
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
-    ) -> AgentGraphStoreResult<()> {
-        self.state_db
-            .upsert_thread_spawn_edge(parent_thread_id, child_thread_id, to_state_status(status))
-            .await
-            .map_err(internal_error)
+    ) -> impl std::future::Future<Output = AgentGraphStoreResult<()>> + Send {
+        async move {
+            self.state_db
+                .upsert_thread_spawn_edge(
+                    parent_thread_id,
+                    child_thread_id,
+                    to_state_status(status),
+                )
+                .await
+                .map_err(internal_error)
+        }
     }
 
-    async fn set_thread_spawn_edge_status(
+    fn set_thread_spawn_edge_status(
         &self,
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
-    ) -> AgentGraphStoreResult<()> {
-        self.state_db
-            .set_thread_spawn_edge_status(child_thread_id, to_state_status(status))
-            .await
-            .map_err(internal_error)
+    ) -> impl std::future::Future<Output = AgentGraphStoreResult<()>> + Send {
+        async move {
+            self.state_db
+                .set_thread_spawn_edge_status(child_thread_id, to_state_status(status))
+                .await
+                .map_err(internal_error)
+        }
     }
 
-    async fn list_thread_spawn_children(
+    fn list_thread_spawn_children(
         &self,
         parent_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
-    ) -> AgentGraphStoreResult<Vec<ThreadId>> {
-        if let Some(status) = status_filter {
-            return self
-                .state_db
-                .list_thread_spawn_children_with_status(parent_thread_id, to_state_status(status))
-                .await
-                .map_err(internal_error);
-        }
+    ) -> impl std::future::Future<Output = AgentGraphStoreResult<Vec<ThreadId>>> + Send {
+        async move {
+            if let Some(status) = status_filter {
+                return self
+                    .state_db
+                    .list_thread_spawn_children_with_status(
+                        parent_thread_id,
+                        to_state_status(status),
+                    )
+                    .await
+                    .map_err(internal_error);
+            }
 
-        self.state_db
-            .list_thread_spawn_children(parent_thread_id)
-            .await
-            .map_err(internal_error)
+            self
+                .state_db
+                .list_thread_spawn_children(parent_thread_id)
+                .await
+                .map_err(internal_error)
+        }
     }
 
-    async fn list_thread_spawn_descendants(
+    fn list_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
-    ) -> AgentGraphStoreResult<Vec<ThreadId>> {
-        match status_filter {
-            Some(status) => self
-                .state_db
-                .list_thread_spawn_descendants_with_status(root_thread_id, to_state_status(status))
-                .await
-                .map_err(internal_error),
-            None => self
-                .state_db
-                .list_thread_spawn_descendants(root_thread_id)
-                .await
-                .map_err(internal_error),
+    ) -> impl std::future::Future<Output = AgentGraphStoreResult<Vec<ThreadId>>> + Send {
+        async move {
+            match status_filter {
+                Some(status) => self
+                    .state_db
+                    .list_thread_spawn_descendants_with_status(
+                        root_thread_id,
+                        to_state_status(status),
+                    )
+                    .await
+                    .map_err(internal_error),
+                None => self
+                    .state_db
+                    .list_thread_spawn_descendants(root_thread_id)
+                    .await
+                    .map_err(internal_error),
+            }
         }
     }
 }

@@ -321,13 +321,13 @@ async fn run_turn(thread: &CodexThread, thread_id: &str, prompt: String) -> anyh
             | EventMsg::TerminalInteraction(_)
             | EventMsg::ExecCommandBegin(_)
             | EventMsg::ExecCommandOutputDelta(_)
-            | EventMsg::ExecCommandEnd(_) => Some(item_event_to_server_notification(
+            | EventMsg::ExecCommandEnd(_) => item_event_to_server_notification(
                 event.msg.clone(),
                 thread_id,
                 current_turn_id
                     .as_deref()
                     .context("mapped notification arrived before turn started")?,
-            )),
+            ),
             _ => None,
         };
         if let Some(notification) = notification {
