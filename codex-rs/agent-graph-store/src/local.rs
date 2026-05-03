@@ -77,8 +77,7 @@ impl AgentGraphStore for LocalAgentGraphStore {
                     .map_err(internal_error);
             }
 
-            self
-                .state_db
+            self.state_db
                 .list_thread_spawn_children(parent_thread_id)
                 .await
                 .map_err(internal_error)
