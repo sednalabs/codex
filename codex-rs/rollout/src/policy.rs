@@ -1,6 +1,14 @@
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
+#[cfg(test)]
+use codex_protocol::computer_use::ComputerUseCallRequest;
+#[cfg(test)]
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
+#[cfg(test)]
+use codex_protocol::protocol::ComputerUseCallResponseEvent;
+#[cfg(test)]
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EventPersistenceMode {
