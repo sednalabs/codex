@@ -79,7 +79,6 @@ pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
     pub(crate) rollout_path: PathBuf,
-    state_db: Option<StateDbHandle>,
     event_persistence_mode: EventPersistenceMode,
 }
 
@@ -230,6 +229,7 @@ impl RolloutRecorder {
     /// List threads (rollout files) under the provided Codex home directory.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_threads(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -242,6 +242,7 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         Self::list_threads_with_db_fallback(
+            state_db_ctx,
             config,
             page_size,
             cursor,
@@ -260,6 +261,7 @@ impl RolloutRecorder {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn list_threads_from_state_db(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -272,6 +274,7 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         Self::list_threads_with_db_fallback(
+            state_db_ctx,
             config,
             page_size,
             cursor,
@@ -291,6 +294,7 @@ impl RolloutRecorder {
     /// List archived threads (rollout files) under the archived sessions directory.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_archived_threads(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -303,6 +307,7 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         Self::list_threads_with_db_fallback(
+            state_db_ctx,
             config,
             page_size,
             cursor,
@@ -321,6 +326,7 @@ impl RolloutRecorder {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn list_archived_threads_from_state_db(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -333,6 +339,7 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         Self::list_threads_with_db_fallback(
+            state_db_ctx,
             config,
             page_size,
             cursor,
@@ -351,6 +358,7 @@ impl RolloutRecorder {
 
     #[allow(clippy::too_many_arguments)]
     async fn list_threads_with_db_fallback(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -365,7 +373,6 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         let codex_home = config.codex_home();
-        let state_db_ctx = state_db::get_state_db(config).await;
         let archived = match archive_filter {
             ThreadListArchiveFilter::Active => false,
             ThreadListArchiveFilter::Archived => true,
@@ -575,6 +582,7 @@ impl RolloutRecorder {
     /// Find the newest recorded thread path, optionally filtering to a matching cwd.
     #[allow(clippy::too_many_arguments)]
     pub async fn find_latest_thread_path(
+        state_db_ctx: Option<StateDbHandle>,
         config: &impl RolloutConfigView,
         page_size: usize,
         cursor: Option<&Cursor>,
@@ -585,7 +593,6 @@ impl RolloutRecorder {
         filter_cwd: Option<&Path>,
     ) -> std::io::Result<Option<PathBuf>> {
         let codex_home = config.codex_home();
-        let state_db_ctx = state_db::get_state_db(config).await;
         let cwd_filter = filter_cwd.map(Path::to_path_buf);
         if state_db_ctx.is_some() {
             let mut db_cursor = cursor.cloned();
@@ -770,17 +777,12 @@ impl RolloutRecorder {
             tx,
             writer_task,
             rollout_path,
-            state_db: state_db_ctx,
             event_persistence_mode,
         })
     }
 
     pub fn rollout_path(&self) -> &Path {
         self.rollout_path.as_path()
-    }
-
-    pub fn state_db(&self) -> Option<StateDbHandle> {
-        self.state_db.clone()
     }
 
     pub async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {

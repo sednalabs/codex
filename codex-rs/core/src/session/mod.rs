@@ -556,7 +556,15 @@ impl Codex {
             };
             match thread_id {
                 Some(thread_id) => {
-                    let state_db_ctx = state_db::get_state_db(&config).await;
+                    let state_db_ctx = if config.ephemeral {
+                        None
+                    } else if let Some(local_store) =
+                        thread_store.as_any().downcast_ref::<LocalThreadStore>()
+                    {
+                        local_store.state_db().await
+                    } else {
+                        None
+                    };
                     state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
                         .await
                 }
@@ -1298,6 +1306,7 @@ impl Session {
             self.services.user_shell.as_ref().clone(),
             self.services.shell_snapshot_tx.clone(),
             self.services.session_telemetry.clone(),
+            self.services.state_db.clone(),
         );
     }
 
