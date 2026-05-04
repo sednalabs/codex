@@ -1,8 +1,16 @@
+use std::fmt;
+use std::future::Future;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::outgoing_message::ConnectionRequestId;
+use crate::outgoing_message::OutgoingMessageSender;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::DeviceKeyAlgorithm;
 use codex_app_server_protocol::DeviceKeyCreateParams;
 use codex_app_server_protocol::DeviceKeyCreateResponse;
@@ -28,19 +36,22 @@ use codex_device_key::RemoteControlClientEnrollmentAudience;
 use codex_device_key::RemoteControlClientEnrollmentSignPayload;
 use codex_state::DeviceKeyBindingRecord;
 use codex_state::StateRuntime;
-use std::fmt;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
-pub(crate) struct DeviceKeyApi {
+pub(crate) struct DeviceKeyRequestProcessor {
+    outgoing: Arc<OutgoingMessageSender>,
     store: DeviceKeyStore,
 }
 
-impl DeviceKeyApi {
-    pub(crate) fn new(sqlite_home: PathBuf, default_provider: String) -> Self {
+impl DeviceKeyRequestProcessor {
+    pub(crate) fn new(
+        outgoing: Arc<OutgoingMessageSender>,
+        sqlite_home: PathBuf,
+        default_provider: String,
+    ) -> Self {
         Self {
+            outgoing,
             store: DeviceKeyStore::new(Arc::new(StateDeviceKeyBindingStore::new(
                 sqlite_home,
                 default_provider,
@@ -48,56 +59,120 @@ impl DeviceKeyApi {
         }
     }
 
-    pub(crate) async fn create(
+    pub(crate) fn create(
         &self,
+        request_id: ConnectionRequestId,
         params: DeviceKeyCreateParams,
-    ) -> Result<DeviceKeyCreateResponse, JSONRPCErrorError> {
-        let info = self
-            .store
-            .create(DeviceKeyCreateRequest {
-                protection_policy: protection_policy_from_params(params.protection_policy),
-                binding: DeviceKeyBinding {
-                    account_user_id: params.account_user_id,
-                    client_id: params.client_id,
-                },
-            })
-            .await
-            .map_err(map_device_key_error)?;
-        Ok(create_response_from_info(info))
+        device_key_requests_allowed: bool,
+    ) {
+        self.spawn_request(
+            request_id,
+            "device/key/create",
+            device_key_requests_allowed,
+            move |store| async move { create_device_key(store, params).await },
+        );
     }
 
-    pub(crate) async fn public(
+    pub(crate) fn public(
         &self,
+        request_id: ConnectionRequestId,
         params: DeviceKeyPublicParams,
-    ) -> Result<DeviceKeyPublicResponse, JSONRPCErrorError> {
-        let info = self
-            .store
-            .get_public(DeviceKeyGetPublicRequest {
-                key_id: params.key_id,
-            })
-            .await
-            .map_err(map_device_key_error)?;
-        Ok(public_response_from_info(info))
+        device_key_requests_allowed: bool,
+    ) {
+        self.spawn_request(
+            request_id,
+            "device/key/public",
+            device_key_requests_allowed,
+            move |store| async move { public_device_key(store, params).await },
+        );
     }
 
-    pub(crate) async fn sign(
+    pub(crate) fn sign(
         &self,
+        request_id: ConnectionRequestId,
         params: DeviceKeySignParams,
-    ) -> Result<DeviceKeySignResponse, JSONRPCErrorError> {
-        let signature = self
-            .store
-            .sign(DeviceKeySignRequest {
-                key_id: params.key_id,
-                payload: payload_from_params(params.payload),
-            })
-            .await
-            .map_err(map_device_key_error)?;
-        Ok(DeviceKeySignResponse {
-            signature_der_base64: STANDARD.encode(signature.signature_der),
-            signed_payload_base64: STANDARD.encode(signature.signed_payload),
-            algorithm: algorithm_from_store(signature.algorithm),
-        })
+        device_key_requests_allowed: bool,
+    ) {
+        self.spawn_request(
+            request_id,
+            "device/key/sign",
+            device_key_requests_allowed,
+            move |store| async move { sign_device_key(store, params).await },
+        );
     }
+
+    fn spawn_request<R, F, Fut>(
+        &self,
+        request_id: ConnectionRequestId,
+        method: &'static str,
+        device_key_requests_allowed: bool,
+        run_request: F,
+    ) where
+        R: Into<ClientResponsePayload> + Send + 'static,
+        F: FnOnce(DeviceKeyStore) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<R, JSONRPCErrorError>> + Send + 'static,
+    {
+        let store = self.store.clone();
+        let outgoing = Arc::clone(&self.outgoing);
+        tokio::spawn(async move {
+            let result = if !device_key_requests_allowed {
+                Err(invalid_request(format!(
+                    "{method} is not available over remote transports"
+                )))
+            } else {
+                run_request(store).await
+            };
+            outgoing.send_result(request_id, result).await;
+        });
+    }
+}
+
+async fn create_device_key(
+    store: DeviceKeyStore,
+    params: DeviceKeyCreateParams,
+) -> Result<DeviceKeyCreateResponse, JSONRPCErrorError> {
+    let info = store
+        .create(DeviceKeyCreateRequest {
+            protection_policy: protection_policy_from_params(params.protection_policy),
+            binding: DeviceKeyBinding {
+                account_user_id: params.account_user_id,
+                client_id: params.client_id,
+            },
+        })
+        .await
+        .map_err(map_device_key_error)?;
+    Ok(create_response_from_info(info))
+}
+
+async fn public_device_key(
+    store: DeviceKeyStore,
+    params: DeviceKeyPublicParams,
+) -> Result<DeviceKeyPublicResponse, JSONRPCErrorError> {
+    let info = store
+        .get_public(DeviceKeyGetPublicRequest {
+            key_id: params.key_id,
+        })
+        .await
+        .map_err(map_device_key_error)?;
+    Ok(public_response_from_info(info))
+}
+
+async fn sign_device_key(
+    store: DeviceKeyStore,
+    params: DeviceKeySignParams,
+) -> Result<DeviceKeySignResponse, JSONRPCErrorError> {
+    let signature = store
+        .sign(DeviceKeySignRequest {
+            key_id: params.key_id,
+            payload: payload_from_params(params.payload),
+        })
+        .await
+        .map_err(map_device_key_error)?;
+    Ok(DeviceKeySignResponse {
+        signature_der_base64: STANDARD.encode(signature.signature_der),
+        signed_payload_base64: STANDARD.encode(signature.signed_payload),
+        algorithm: algorithm_from_store(signature.algorithm),
+    })
 }
 
 struct StateDeviceKeyBindingStore {

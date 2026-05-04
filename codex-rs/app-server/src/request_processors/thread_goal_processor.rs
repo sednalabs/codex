@@ -1,8 +1,92 @@
 use super::*;
 use codex_protocol::protocol::validate_thread_goal_objective;
 
-impl CodexMessageProcessor {
-    pub(super) async fn thread_goal_set(
+#[derive(Clone)]
+pub(crate) struct ThreadGoalRequestProcessor {
+    thread_manager: Arc<ThreadManager>,
+    outgoing: Arc<OutgoingMessageSender>,
+    config: Arc<Config>,
+    thread_state_manager: ThreadStateManager,
+}
+
+impl ThreadGoalRequestProcessor {
+    pub(crate) fn new(
+        thread_manager: Arc<ThreadManager>,
+        outgoing: Arc<OutgoingMessageSender>,
+        config: Arc<Config>,
+        thread_state_manager: ThreadStateManager,
+    ) -> Self {
+        Self {
+            thread_manager,
+            outgoing,
+            config,
+            thread_state_manager,
+        }
+    }
+
+    pub(crate) async fn thread_goal_set(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalSetParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_set_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
+    pub(crate) async fn thread_goal_get(
+        &self,
+        params: ThreadGoalGetParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_get_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_goal_clear(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalClearParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_clear_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
+    pub(crate) async fn emit_resume_goal_snapshot_and_continue(
+        &self,
+        thread_id: ThreadId,
+        thread: &CodexThread,
+    ) {
+        if !self.config.features.enabled(Feature::Goals) {
+            return;
+        }
+        self.emit_thread_goal_snapshot(thread_id).await;
+        // App-server owns resume response and snapshot ordering, so wait until
+        // those are sent before letting core start goal continuation.
+        if let Err(err) = thread.continue_active_goal_if_idle().await {
+            tracing::warn!("failed to continue active goal after resume: {err}");
+        }
+    }
+
+    pub(crate) async fn pending_resume_goal_state(
+        &self,
+        thread: &CodexThread,
+    ) -> (bool, Option<StateDbHandle>) {
+        let emit_thread_goal_update = self.config.features.enabled(Feature::Goals);
+        let thread_goal_state_db = if emit_thread_goal_update {
+            if let Some(state_db) = thread.state_db() {
+                Some(state_db)
+            } else {
+                open_state_db_for_direct_thread_lookup(&self.config).await
+            }
+        } else {
+            None
+        };
+        (emit_thread_goal_update, thread_goal_state_db)
+    }
+
+    async fn thread_goal_set_inner(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadGoalSetParams,
@@ -127,7 +211,7 @@ impl CodexMessageProcessor {
         Ok(())
     }
 
-    pub(super) async fn thread_goal_get(
+    async fn thread_goal_get_inner(
         &self,
         params: ThreadGoalGetParams,
     ) -> Result<ThreadGoalGetResponse, JSONRPCErrorError> {
@@ -145,7 +229,7 @@ impl CodexMessageProcessor {
         Ok(ThreadGoalGetResponse { goal })
     }
 
-    pub(super) async fn thread_goal_clear(
+    async fn thread_goal_clear_inner(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadGoalClearParams,
@@ -236,7 +320,7 @@ impl CodexMessageProcessor {
             .ok_or_else(|| internal_error("sqlite state db unavailable for thread goals"))
     }
 
-    pub(super) async fn emit_thread_goal_snapshot(&self, thread_id: ThreadId) {
+    async fn emit_thread_goal_snapshot(&self, thread_id: ThreadId) {
         let state_db = match self.state_db_for_materialized_thread(thread_id).await {
             Ok(state_db) => state_db,
             Err(err) => {
@@ -356,4 +440,9 @@ pub(super) fn api_thread_goal_from_state(goal: codex_state::ThreadGoal) -> Threa
         created_at: goal.created_at.timestamp(),
         updated_at: goal.updated_at.timestamp(),
     }
+}
+
+fn parse_thread_id_for_request(thread_id: &str) -> Result<ThreadId, JSONRPCErrorError> {
+    ThreadId::from_string(thread_id)
+        .map_err(|err| invalid_request(format!("invalid thread id: {err}")))
 }

@@ -1,5 +1,7 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::fs_watch::FsWatchManager;
+use crate::outgoing_message::ConnectionId;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use codex_app_server_protocol::FsCopyParams;
@@ -15,6 +17,10 @@ use codex_app_server_protocol::FsReadFileParams;
 use codex_app_server_protocol::FsReadFileResponse;
 use codex_app_server_protocol::FsRemoveParams;
 use codex_app_server_protocol::FsRemoveResponse;
+use codex_app_server_protocol::FsUnwatchParams;
+use codex_app_server_protocol::FsUnwatchResponse;
+use codex_app_server_protocol::FsWatchParams;
+use codex_app_server_protocol::FsWatchResponse;
 use codex_app_server_protocol::FsWriteFileParams;
 use codex_app_server_protocol::FsWriteFileResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -26,13 +32,24 @@ use std::io;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct FsApi {
+pub(crate) struct FsRequestProcessor {
     file_system: Arc<dyn ExecutorFileSystem>,
+    fs_watch_manager: FsWatchManager,
 }
 
-impl FsApi {
-    pub(crate) fn new(file_system: Arc<dyn ExecutorFileSystem>) -> Self {
-        Self { file_system }
+impl FsRequestProcessor {
+    pub(crate) fn new(
+        file_system: Arc<dyn ExecutorFileSystem>,
+        fs_watch_manager: FsWatchManager,
+    ) -> Self {
+        Self {
+            file_system,
+            fs_watch_manager,
+        }
+    }
+
+    pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
+        self.fs_watch_manager.connection_closed(connection_id).await;
     }
 
     pub(crate) async fn read_file(
@@ -156,9 +173,25 @@ impl FsApi {
             .map_err(map_fs_error)?;
         Ok(FsCopyResponse {})
     }
+
+    pub(crate) async fn watch(
+        &self,
+        connection_id: ConnectionId,
+        params: FsWatchParams,
+    ) -> Result<FsWatchResponse, JSONRPCErrorError> {
+        self.fs_watch_manager.watch(connection_id, params).await
+    }
+
+    pub(crate) async fn unwatch(
+        &self,
+        connection_id: ConnectionId,
+        params: FsUnwatchParams,
+    ) -> Result<FsUnwatchResponse, JSONRPCErrorError> {
+        self.fs_watch_manager.unwatch(connection_id, params).await
+    }
 }
 
-pub(crate) fn map_fs_error(err: io::Error) -> JSONRPCErrorError {
+fn map_fs_error(err: io::Error) -> JSONRPCErrorError {
     if err.kind() == io::ErrorKind::InvalidInput {
         invalid_request(err.to_string())
     } else {

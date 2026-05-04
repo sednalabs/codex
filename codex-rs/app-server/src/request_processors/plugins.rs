@@ -3,11 +3,252 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
+use codex_config::types::McpServerConfig;
 use codex_core_plugins::remote::is_valid_remote_plugin_id;
 use codex_core_plugins::remote::validate_remote_plugin_id;
+use codex_mcp::McpOAuthLoginSupport;
+use codex_mcp::oauth_login_support;
+use codex_mcp::should_retry_without_scopes;
+use codex_rmcp_client::perform_oauth_login_silent;
 
-impl CodexMessageProcessor {
-    pub(super) async fn plugin_list(
+#[derive(Clone)]
+pub(crate) struct PluginRequestProcessor {
+    auth_manager: Arc<AuthManager>,
+    thread_manager: Arc<ThreadManager>,
+    outgoing: Arc<OutgoingMessageSender>,
+    analytics_events_client: AnalyticsEventsClient,
+    config_manager: ConfigManager,
+    workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
+}
+
+fn plugin_skills_to_info(
+    skills: &[codex_core::skills::SkillMetadata],
+    disabled_skill_paths: &HashSet<AbsolutePathBuf>,
+) -> Vec<SkillSummary> {
+    skills
+        .iter()
+        .map(|skill| SkillSummary {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            short_description: skill.short_description.clone(),
+            interface: skill.interface.clone().map(|interface| {
+                codex_app_server_protocol::SkillInterface {
+                    display_name: interface.display_name,
+                    short_description: interface.short_description,
+                    icon_small: interface.icon_small,
+                    icon_large: interface.icon_large,
+                    brand_color: interface.brand_color,
+                    default_prompt: interface.default_prompt,
+                }
+            }),
+            path: Some(skill.path_to_skills_md.clone()),
+            enabled: !disabled_skill_paths.contains(&skill.path_to_skills_md),
+        })
+        .collect()
+}
+
+fn local_plugin_interface_to_info(interface: PluginManifestInterface) -> PluginInterface {
+    PluginInterface {
+        display_name: interface.display_name,
+        short_description: interface.short_description,
+        long_description: interface.long_description,
+        developer_name: interface.developer_name,
+        category: interface.category,
+        capabilities: interface.capabilities,
+        website_url: interface.website_url,
+        privacy_policy_url: interface.privacy_policy_url,
+        terms_of_service_url: interface.terms_of_service_url,
+        default_prompt: interface.default_prompt,
+        brand_color: interface.brand_color,
+        composer_icon: interface.composer_icon,
+        composer_icon_url: None,
+        logo: interface.logo,
+        logo_url: None,
+        screenshots: interface.screenshots,
+        screenshot_urls: Vec::new(),
+    }
+}
+
+fn marketplace_plugin_source_to_info(source: MarketplacePluginSource) -> PluginSource {
+    match source {
+        MarketplacePluginSource::Local { path } => PluginSource::Local { path },
+        MarketplacePluginSource::Git {
+            url,
+            path,
+            ref_name,
+            sha,
+        } => PluginSource::Git {
+            url,
+            path,
+            ref_name,
+            sha,
+        },
+    }
+}
+
+impl PluginRequestProcessor {
+    pub(crate) fn new(
+        auth_manager: Arc<AuthManager>,
+        thread_manager: Arc<ThreadManager>,
+        outgoing: Arc<OutgoingMessageSender>,
+        analytics_events_client: AnalyticsEventsClient,
+        config_manager: ConfigManager,
+        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
+    ) -> Self {
+        Self {
+            auth_manager,
+            thread_manager,
+            outgoing,
+            analytics_events_client,
+            config_manager,
+            workspace_settings_cache,
+        }
+    }
+
+    pub(crate) async fn plugin_list(
+        &self,
+        params: PluginListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_list_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_read(
+        &self,
+        params: PluginReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_read_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_skill_read(
+        &self,
+        params: PluginSkillReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_skill_read_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_share_save(
+        &self,
+        params: PluginShareSaveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_share_save_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_share_list(
+        &self,
+        params: PluginShareListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_share_list_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_share_delete(
+        &self,
+        params: PluginShareDeleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_share_delete_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_install(
+        &self,
+        params: PluginInstallParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_install_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn plugin_uninstall(
+        &self,
+        params: PluginUninstallParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.plugin_uninstall_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) fn effective_plugins_changed_callback(
+        &self,
+        config: Config,
+    ) -> Arc<dyn Fn() + Send + Sync> {
+        let thread_manager = Arc::clone(&self.thread_manager);
+        Arc::new(move || {
+            Self::spawn_effective_plugins_changed_task(Arc::clone(&thread_manager), config.clone());
+        })
+    }
+
+    fn on_effective_plugins_changed(&self, config: Config) {
+        Self::spawn_effective_plugins_changed_task(Arc::clone(&self.thread_manager), config);
+    }
+
+    fn spawn_effective_plugins_changed_task(thread_manager: Arc<ThreadManager>, config: Config) {
+        tokio::spawn(async move {
+            thread_manager.plugins_manager().clear_cache();
+            thread_manager.skills_manager().clear_cache();
+            if thread_manager.list_thread_ids().await.is_empty() {
+                return;
+            }
+            if let Err(err) =
+                McpRequestProcessor::queue_mcp_server_refresh_for_config(&thread_manager, &config)
+                    .await
+            {
+                warn!("failed to queue MCP refresh after effective plugins changed: {err:?}");
+            }
+        });
+    }
+
+    fn clear_plugin_related_caches(&self) {
+        self.thread_manager.plugins_manager().clear_cache();
+        self.thread_manager.skills_manager().clear_cache();
+    }
+
+    async fn load_latest_config(
+        &self,
+        fallback_cwd: Option<PathBuf>,
+    ) -> Result<Config, JSONRPCErrorError> {
+        self.config_manager
+            .load_latest_config(fallback_cwd)
+            .await
+            .map_err(|err| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to reload config: {err}"),
+                data: None,
+            })
+    }
+
+    async fn workspace_codex_plugins_enabled(
+        &self,
+        config: &Config,
+        auth: Option<&CodexAuth>,
+    ) -> bool {
+        match workspace_settings::codex_plugins_enabled_for_workspace(
+            config,
+            auth,
+            Some(&self.workspace_settings_cache),
+        )
+        .await
+        {
+            Ok(enabled) => enabled,
+            Err(err) => {
+                warn!(
+                    "failed to fetch workspace Codex plugins setting; allowing Codex plugins: {err:#}"
+                );
+                true
+            }
+        }
+    }
+
+    async fn plugin_list_response(
         &self,
         params: PluginListParams,
     ) -> Result<PluginListResponse, JSONRPCErrorError> {
@@ -164,7 +405,7 @@ impl CodexMessageProcessor {
         })
     }
 
-    pub(super) async fn plugin_read(
+    async fn plugin_read_response(
         &self,
         params: PluginReadParams,
     ) -> Result<PluginReadResponse, JSONRPCErrorError> {
@@ -201,12 +442,9 @@ impl CodexMessageProcessor {
                     .await
                     .map_err(|err| Self::marketplace_error(err, "read plugin details"))?;
                 let environment_manager = self.thread_manager.environment_manager();
-                let app_summaries = plugin_app_helpers::load_plugin_app_summaries(
-                    &config,
-                    &outcome.plugin.apps,
-                    &environment_manager,
-                )
-                .await;
+                let app_summaries =
+                    load_plugin_app_summaries(&config, &outcome.plugin.apps, &environment_manager)
+                        .await;
                 let visible_skills = outcome
                     .plugin
                     .skills
@@ -271,12 +509,8 @@ impl CodexMessageProcessor {
                     .map(codex_plugin::AppConnectorId)
                     .collect::<Vec<_>>();
                 let environment_manager = self.thread_manager.environment_manager();
-                let app_summaries = plugin_app_helpers::load_plugin_app_summaries(
-                    &config,
-                    &plugin_apps,
-                    &environment_manager,
-                )
-                .await;
+                let app_summaries =
+                    load_plugin_app_summaries(&config, &plugin_apps, &environment_manager).await;
                 remote_plugin_detail_to_info(remote_detail, app_summaries)
             }
         };
@@ -284,7 +518,7 @@ impl CodexMessageProcessor {
         Ok(PluginReadResponse { plugin })
     }
 
-    pub(super) async fn plugin_skill_read(
+    async fn plugin_skill_read_response(
         &self,
         params: PluginSkillReadParams,
     ) -> Result<PluginSkillReadResponse, JSONRPCErrorError> {
@@ -330,7 +564,7 @@ impl CodexMessageProcessor {
         })
     }
 
-    pub(super) async fn plugin_share_save(
+    async fn plugin_share_save_response(
         &self,
         params: PluginShareSaveParams,
     ) -> Result<PluginShareSaveResponse, JSONRPCErrorError> {
@@ -365,7 +599,7 @@ impl CodexMessageProcessor {
         })
     }
 
-    pub(super) async fn plugin_share_list(
+    async fn plugin_share_list_response(
         &self,
         _params: PluginShareListParams,
     ) -> Result<PluginShareListResponse, JSONRPCErrorError> {
@@ -398,7 +632,7 @@ impl CodexMessageProcessor {
         Ok(PluginShareListResponse { data })
     }
 
-    pub(super) async fn plugin_share_delete(
+    async fn plugin_share_delete_response(
         &self,
         params: PluginShareDeleteParams,
     ) -> Result<PluginShareDeleteResponse, JSONRPCErrorError> {
@@ -436,7 +670,7 @@ impl CodexMessageProcessor {
         Ok((config, auth))
     }
 
-    pub(super) async fn plugin_install(
+    async fn plugin_install_response(
         &self,
         params: PluginInstallParams,
     ) -> Result<PluginInstallResponse, JSONRPCErrorError> {
@@ -689,7 +923,7 @@ impl CodexMessageProcessor {
             );
         }
 
-        plugin_app_helpers::plugin_apps_needing_auth(
+        plugin_apps_needing_auth(
             &all_connectors,
             &accessible_connectors,
             plugin_apps,
@@ -697,7 +931,85 @@ impl CodexMessageProcessor {
         )
     }
 
-    pub(super) async fn plugin_uninstall(
+    async fn start_plugin_mcp_oauth_logins(
+        &self,
+        config: &Config,
+        plugin_mcp_servers: HashMap<String, McpServerConfig>,
+    ) {
+        for (name, server) in plugin_mcp_servers {
+            let oauth_config = match oauth_login_support(&server.transport).await {
+                McpOAuthLoginSupport::Supported(config) => config,
+                McpOAuthLoginSupport::Unsupported => continue,
+                McpOAuthLoginSupport::Unknown(err) => {
+                    warn!(
+                        "MCP server may or may not require login for plugin install {name}: {err}"
+                    );
+                    continue;
+                }
+            };
+
+            let resolved_scopes = resolve_oauth_scopes(
+                /*explicit_scopes*/ None,
+                server.scopes.clone(),
+                oauth_config.discovered_scopes.clone(),
+            );
+
+            let store_mode = config.mcp_oauth_credentials_store_mode;
+            let callback_port = config.mcp_oauth_callback_port;
+            let callback_url = config.mcp_oauth_callback_url.clone();
+            let outgoing = Arc::clone(&self.outgoing);
+            let notification_name = name.clone();
+
+            tokio::spawn(async move {
+                let first_attempt = perform_oauth_login_silent(
+                    &name,
+                    &oauth_config.url,
+                    store_mode,
+                    oauth_config.http_headers.clone(),
+                    oauth_config.env_http_headers.clone(),
+                    &resolved_scopes.scopes,
+                    server.oauth_resource.as_deref(),
+                    callback_port,
+                    callback_url.as_deref(),
+                )
+                .await;
+
+                let final_result = match first_attempt {
+                    Err(err) if should_retry_without_scopes(&resolved_scopes, &err) => {
+                        perform_oauth_login_silent(
+                            &name,
+                            &oauth_config.url,
+                            store_mode,
+                            oauth_config.http_headers,
+                            oauth_config.env_http_headers,
+                            &[],
+                            server.oauth_resource.as_deref(),
+                            callback_port,
+                            callback_url.as_deref(),
+                        )
+                        .await
+                    }
+                    result => result,
+                };
+
+                let (success, error) = match final_result {
+                    Ok(()) => (true, None),
+                    Err(err) => (false, Some(err.to_string())),
+                };
+
+                let notification = ServerNotification::McpServerOauthLoginCompleted(
+                    McpServerOauthLoginCompletedNotification {
+                        name: notification_name,
+                        success,
+                        error,
+                    },
+                );
+                outgoing.send_server_notification(notification).await;
+            });
+        }
+    }
+
+    async fn plugin_uninstall_response(
         &self,
         params: PluginUninstallParams,
     ) -> Result<PluginUninstallResponse, JSONRPCErrorError> {
@@ -843,6 +1155,108 @@ fn is_valid_remote_uninstall_plugin_id(plugin_name: &str) -> bool {
             || plugin_name.starts_with("app_")
             || plugin_name.starts_with("asdk_app_")
             || plugin_name.starts_with("connector_"))
+}
+
+async fn load_plugin_app_summaries(
+    config: &Config,
+    plugin_apps: &[codex_plugin::AppConnectorId],
+    environment_manager: &EnvironmentManager,
+) -> Vec<AppSummary> {
+    if plugin_apps.is_empty() {
+        return Vec::new();
+    }
+
+    let connectors =
+        match connectors::list_all_connectors_with_options(config, /*force_refetch*/ false).await {
+            Ok(connectors) => connectors,
+            Err(err) => {
+                warn!("failed to load app metadata for plugin/read: {err:#}");
+                connectors::list_cached_all_connectors(config)
+                    .await
+                    .unwrap_or_default()
+            }
+        };
+
+    let plugin_connectors = connectors::connectors_for_plugin_apps(connectors, plugin_apps);
+
+    let accessible_connectors =
+        match connectors::list_accessible_connectors_from_mcp_tools_with_environment_manager(
+            config,
+            /*force_refetch*/ false,
+            environment_manager,
+        )
+        .await
+        {
+            Ok(status) if status.codex_apps_ready => status.connectors,
+            Ok(_) => {
+                return plugin_connectors
+                    .into_iter()
+                    .map(AppSummary::from)
+                    .collect();
+            }
+            Err(err) => {
+                warn!("failed to load app auth state for plugin/read: {err:#}");
+                return plugin_connectors
+                    .into_iter()
+                    .map(AppSummary::from)
+                    .collect();
+            }
+        };
+
+    let accessible_ids = accessible_connectors
+        .iter()
+        .map(|connector| connector.id.as_str())
+        .collect::<HashSet<_>>();
+
+    plugin_connectors
+        .into_iter()
+        .map(|connector| {
+            let needs_auth = !accessible_ids.contains(connector.id.as_str());
+            AppSummary {
+                id: connector.id,
+                name: connector.name,
+                description: connector.description,
+                install_url: connector.install_url,
+                needs_auth,
+            }
+        })
+        .collect()
+}
+
+fn plugin_apps_needing_auth(
+    all_connectors: &[AppInfo],
+    accessible_connectors: &[AppInfo],
+    plugin_apps: &[codex_plugin::AppConnectorId],
+    codex_apps_ready: bool,
+) -> Vec<AppSummary> {
+    if !codex_apps_ready {
+        return Vec::new();
+    }
+
+    let accessible_ids = accessible_connectors
+        .iter()
+        .map(|connector| connector.id.as_str())
+        .collect::<HashSet<_>>();
+    let plugin_app_ids = plugin_apps
+        .iter()
+        .map(|connector_id| connector_id.0.as_str())
+        .collect::<HashSet<_>>();
+
+    all_connectors
+        .iter()
+        .filter(|connector| {
+            plugin_app_ids.contains(connector.id.as_str())
+                && !accessible_ids.contains(connector.id.as_str())
+        })
+        .cloned()
+        .map(|connector| AppSummary {
+            id: connector.id,
+            name: connector.name,
+            description: connector.description,
+            install_url: connector.install_url,
+            needs_auth: true,
+        })
+        .collect()
 }
 
 fn remote_marketplace_to_info(marketplace: RemoteMarketplace) -> PluginMarketplaceEntry {
