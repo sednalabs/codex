@@ -5123,6 +5123,7 @@
               "type": "string"
             },
             "subpath": {
+              "default": null,
               "type": [
                 "string",
                 "null"
