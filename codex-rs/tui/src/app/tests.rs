@@ -153,6 +153,42 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
 }
 
 #[test]
+fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
+    let resume = SessionSelection::Resume(crate::resume_picker::SessionTarget {
+        path: Some(PathBuf::from("/tmp/restore")),
+        thread_id: ThreadId::new(),
+    });
+    let fork = SessionSelection::Fork(crate::resume_picker::SessionTarget {
+        path: Some(PathBuf::from("/tmp/fork")),
+        thread_id: ThreadId::new(),
+    });
+    let no_images: Vec<PathBuf> = Vec::new();
+    let initial_images = vec![PathBuf::from("/tmp/image.png")];
+
+    assert!(App::should_prompt_for_paused_goal_after_startup_resume(
+        &resume, &None, &no_images
+    ));
+    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
+        &resume,
+        &Some("continue from here".to_string()),
+        &no_images
+    ));
+    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
+        &resume,
+        &None,
+        &initial_images
+    ));
+    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
+        &SessionSelection::StartFresh,
+        &None,
+        &no_images
+    ));
+    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
+        &fork, &None, &no_images
+    ));
+}
+
+#[test]
 fn startup_waiting_gate_holds_active_thread_events_until_primary_thread_configured() {
     let mut wait_for_initial_session =
         App::should_wait_for_initial_session(&SessionSelection::StartFresh);

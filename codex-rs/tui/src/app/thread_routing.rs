@@ -1281,6 +1281,16 @@ impl App {
         )
     }
 
+    pub(super) fn should_prompt_for_paused_goal_after_startup_resume(
+        session_selection: &SessionSelection,
+        initial_prompt: &Option<String>,
+        initial_images: &[PathBuf],
+    ) -> bool {
+        matches!(session_selection, SessionSelection::Resume(_))
+            && initial_prompt.is_none()
+            && initial_images.is_empty()
+    }
+
     pub(super) fn should_handle_active_thread_events(
         waiting_for_initial_session_configured: bool,
         has_active_thread_receiver: bool,
