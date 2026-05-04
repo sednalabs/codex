@@ -271,6 +271,23 @@ async fn read_rejects_directory_and_returns_file_content() {
 }
 
 #[tokio::test]
+async fn read_rejects_missing_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let err = backend(&tempdir)
+        .read(ReadMemoryRequest {
+            path: "missing.md".to_string(),
+            line_offset: 1,
+            max_lines: None,
+            max_tokens: DEFAULT_READ_MAX_TOKENS,
+        })
+        .await
+        .expect_err("missing files should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
 async fn read_supports_line_offset() {
     let tempdir = TempDir::new().expect("tempdir");
     tokio::fs::write(tempdir.path().join("MEMORY.md"), "alpha\nbeta\ngamma\n")
@@ -723,6 +740,36 @@ async fn search_rejects_invalid_cursor() {
 }
 
 #[tokio::test]
+async fn list_rejects_missing_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let err = backend(&tempdir)
+        .list(ListMemoriesRequest {
+            path: Some("missing".to_string()),
+            cursor: None,
+            max_results: DEFAULT_LIST_MAX_RESULTS,
+        })
+        .await
+        .expect_err("missing scoped paths should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
+async fn search_rejects_missing_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let mut request = search_request(&["needle"]);
+    request.path = Some("missing".to_string());
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("missing scoped paths should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
 async fn scoped_paths_reject_parent_segments() {
     let tempdir = TempDir::new().expect("tempdir");
     let err = backend(&tempdir)
@@ -758,6 +805,77 @@ async fn read_rejects_symlinked_files() {
         })
         .await
         .expect_err("symlink should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_rejects_symlinked_ancestor_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    tokio::fs::write(outside.join("secret.md"), "outside secret")
+        .await
+        .expect("write outside file");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let err = backend(&tempdir)
+        .read(ReadMemoryRequest {
+            path: "skills/secret.md".to_string(),
+            line_offset: 1,
+            max_lines: None,
+            max_tokens: DEFAULT_READ_MAX_TOKENS,
+        })
+        .await
+        .expect_err("symlinked ancestors should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn list_rejects_symlinked_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let err = backend(&tempdir)
+        .list(ListMemoriesRequest {
+            path: Some("skills".to_string()),
+            cursor: None,
+            max_results: DEFAULT_LIST_MAX_RESULTS,
+        })
+        .await
+        .expect_err("symlinked directories should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn search_rejects_symlinked_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    tokio::fs::write(outside.join("secret.md"), "needle")
+        .await
+        .expect("write outside file");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let mut request = search_request(&["needle"]);
+    request.path = Some("skills".to_string());
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("symlinked directories should be rejected");
 
     assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
 }

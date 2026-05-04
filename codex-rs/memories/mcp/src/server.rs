@@ -268,6 +268,7 @@ fn backend_error_to_mcp(err: MemoriesBackendError) -> McpError {
     match err {
         MemoriesBackendError::InvalidPath { .. }
         | MemoriesBackendError::InvalidCursor { .. }
+        | MemoriesBackendError::NotFound { .. }
         | MemoriesBackendError::InvalidLineOffset
         | MemoriesBackendError::InvalidMaxLines
         | MemoriesBackendError::LineOffsetExceedsFileLength

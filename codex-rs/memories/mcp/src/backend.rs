@@ -124,6 +124,8 @@ pub enum MemoriesBackendError {
     InvalidPath { path: String, reason: String },
     #[error("cursor '{cursor}' {reason}")]
     InvalidCursor { cursor: String, reason: String },
+    #[error("path '{path}' was not found")]
+    NotFound { path: String },
     #[error("line_offset must be a 1-indexed line number")]
     InvalidLineOffset,
     #[error("max_lines must be a positive integer")]
