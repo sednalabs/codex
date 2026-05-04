@@ -3047,6 +3047,7 @@ dependencies = [
  "codex-utils-output-truncation",
  "pretty_assertions",
  "rmcp",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",

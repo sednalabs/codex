@@ -2,13 +2,16 @@ use crate::backend::DEFAULT_LIST_MAX_RESULTS;
 use crate::backend::DEFAULT_READ_MAX_TOKENS;
 use crate::backend::DEFAULT_SEARCH_MAX_RESULTS;
 use crate::backend::ListMemoriesRequest;
+use crate::backend::ListMemoriesResponse;
 use crate::backend::MAX_LIST_RESULTS;
 use crate::backend::MAX_SEARCH_RESULTS;
 use crate::backend::MemoriesBackend;
 use crate::backend::MemoriesBackendError;
 use crate::backend::ReadMemoryRequest;
+use crate::backend::ReadMemoryResponse;
 use crate::backend::SearchMatchMode;
 use crate::backend::SearchMemoriesRequest;
+use crate::backend::SearchMemoriesResponse;
 use crate::local::LocalMemoriesBackend;
 use crate::schema;
 use anyhow::Context;
@@ -25,6 +28,7 @@ use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
@@ -40,29 +44,37 @@ pub struct MemoriesMcpServer<B> {
     tools: Arc<Vec<Tool>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ListArgs {
     path: Option<String>,
     cursor: Option<String>,
+    #[schemars(range(min = 1))]
     max_results: Option<usize>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
+    #[schemars(range(min = 1))]
     line_offset: Option<usize>,
+    #[schemars(range(min = 1))]
     max_lines: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
+    #[schemars(length(min = 1))]
     queries: Vec<String>,
     match_mode: Option<SearchMatchMode>,
     path: Option<String>,
     cursor: Option<String>,
+    #[schemars(range(min = 0))]
     context_lines: Option<usize>,
     case_sensitive: Option<bool>,
+    #[schemars(range(min = 1))]
     max_results: Option<usize>,
 }
 
@@ -191,9 +203,9 @@ fn list_tool() -> Tool {
         Cow::Borrowed(
             "List immediate files and directories under a path in the Codex memories store.",
         ),
-        Arc::new(schema::list_input_schema()),
+        Arc::new(schema::input_schema_for::<ListArgs>()),
     );
-    tool.output_schema = Some(Arc::new(schema::list_output_schema()));
+    tool.output_schema = Some(Arc::new(schema::output_schema_for::<ListMemoriesResponse>()));
     tool.annotations = Some(ToolAnnotations::new().read_only(true));
     tool
 }
@@ -204,9 +216,9 @@ fn read_tool() -> Tool {
         Cow::Borrowed(
             "Read a Codex memory file by relative path, optionally starting at a 1-indexed line offset and limiting the number of lines returned.",
         ),
-        Arc::new(schema::read_input_schema()),
+        Arc::new(schema::input_schema_for::<ReadArgs>()),
     );
-    tool.output_schema = Some(Arc::new(schema::read_output_schema()));
+    tool.output_schema = Some(Arc::new(schema::output_schema_for::<ReadMemoryResponse>()));
     tool.annotations = Some(ToolAnnotations::new().read_only(true));
     tool
 }
@@ -217,9 +229,11 @@ fn search_tool() -> Tool {
         Cow::Borrowed(
             "Search Codex memory files for line-based substring matches, optionally requiring any or all query substrings on the same line.",
         ),
-        Arc::new(schema::search_input_schema()),
+        Arc::new(schema::input_schema_for::<SearchArgs>()),
     );
-    tool.output_schema = Some(Arc::new(schema::search_output_schema()));
+    tool.output_schema = Some(Arc::new(
+        schema::output_schema_for::<SearchMemoriesResponse>(),
+    ));
     tool.annotations = Some(ToolAnnotations::new().read_only(true));
     tool
 }

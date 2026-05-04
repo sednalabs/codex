@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::future::Future;
@@ -38,7 +39,8 @@ pub struct ListMemoriesRequest {
     pub max_results: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ListMemoriesResponse {
     pub path: Option<String>,
     pub entries: Vec<MemoryEntry>,
@@ -54,7 +56,8 @@ pub struct ReadMemoryRequest {
     pub max_tokens: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ReadMemoryResponse {
     pub path: String,
     pub start_line_number: usize,
@@ -73,7 +76,8 @@ pub struct SearchMemoriesRequest {
     pub max_results: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct SearchMemoriesResponse {
     pub queries: Vec<String>,
     pub match_mode: SearchMatchMode,
@@ -83,27 +87,29 @@ pub struct SearchMemoriesResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMatchMode {
     Any,
     All,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct MemoryEntry {
     pub path: String,
     pub entry_type: MemoryEntryType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryEntryType {
     File,
     Directory,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct MemorySearchMatch {
     pub path: String,
     pub match_line_number: usize,
