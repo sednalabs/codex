@@ -103,6 +103,7 @@ mod audio_device {
     }
 }
 mod bottom_pane;
+mod branch_summary;
 mod chatwidget;
 mod cli;
 mod clipboard_copy;
@@ -188,6 +189,7 @@ mod version;
 #[cfg(not(target_os = "linux"))]
 mod voice;
 mod width;
+mod workspace_command;
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod voice {

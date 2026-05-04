@@ -1544,6 +1544,12 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
+        if self.composer.set_status_line_hyperlink(url) {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) {
         if self.composer.set_status_line_enabled(enabled) {
             self.request_redraw();

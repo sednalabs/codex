@@ -19,6 +19,7 @@ pub(super) async fn make_test_app() -> App {
         session_telemetry,
         app_event_tx,
         chat_widget,
+        workspace_command_runner: None,
         config,
         state_db: None,
         active_profile: None,
