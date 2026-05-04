@@ -153,6 +153,7 @@ impl SlashCommand {
                 | SlashCommand::Goal
                 | SlashCommand::Fast
                 | SlashCommand::Ide
+                | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Side
                 | SlashCommand::Resume

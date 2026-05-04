@@ -1926,6 +1926,9 @@ impl App {
                 self.chat_widget
                     .open_keymap_capture(context, action, intent, &self.keymap);
             }
+            AppEvent::OpenKeymapDebug => {
+                self.chat_widget.open_keymap_debug(&self.keymap);
+            }
             AppEvent::KeymapCaptured {
                 context,
                 action,

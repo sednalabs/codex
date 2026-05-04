@@ -873,6 +873,9 @@ pub(crate) enum AppEvent {
         intent: KeymapEditIntent,
     },
 
+    /// Open the keymap keypress inspector.
+    OpenKeymapDebug,
+
     /// Apply a captured key to the selected keymap action.
     KeymapCaptured {
         context: String,
