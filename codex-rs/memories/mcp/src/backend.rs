@@ -66,6 +66,8 @@ pub struct SearchMemoriesRequest {
     pub query: String,
     pub path: Option<String>,
     pub cursor: Option<String>,
+    pub context_lines: usize,
+    pub case_sensitive: bool,
     pub max_results: usize,
 }
 
@@ -95,7 +97,8 @@ pub enum MemoryEntryType {
 pub struct MemorySearchMatch {
     pub path: String,
     pub line_number: usize,
-    pub line: String,
+    pub start_line_number: usize,
+    pub content: String,
 }
 
 #[derive(Debug, thiserror::Error)]

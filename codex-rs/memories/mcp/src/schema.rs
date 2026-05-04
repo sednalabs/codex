@@ -76,6 +76,8 @@ pub(crate) fn search_input_schema() -> JsonObject {
             "query": { "type": "string" },
             "path": { "type": "string" },
             "cursor": { "type": "string" },
+            "context_lines": { "type": "integer", "minimum": 0 },
+            "case_sensitive": { "type": "boolean" },
             "max_results": { "type": "integer", "minimum": 1 }
         },
         "required": ["query"],
@@ -101,9 +103,10 @@ pub(crate) fn search_output_schema() -> JsonObject {
                     "properties": {
                         "path": { "type": "string" },
                         "line_number": { "type": "integer" },
-                        "line": { "type": "string" }
+                        "start_line_number": { "type": "integer" },
+                        "content": { "type": "string" }
                     },
-                    "required": ["path", "line_number", "line"],
+                    "required": ["path", "line_number", "start_line_number", "content"],
                     "additionalProperties": false
                 }
             },
