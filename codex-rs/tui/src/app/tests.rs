@@ -4023,6 +4023,33 @@ async fn initial_replay_buffer_keeps_recent_rows_when_row_cap_present() {
 }
 
 #[tokio::test]
+async fn thread_switch_replay_buffer_uses_transcript_tail_mode_when_row_cap_present() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
+
+    app.begin_thread_switch_history_replay_buffer();
+
+    let buffer = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("thread switch replay buffer should be active");
+    assert!(buffer.render_from_transcript_tail);
+    assert!(buffer.retained_lines.is_empty());
+}
+
+#[tokio::test]
+async fn thread_switch_replay_buffer_is_disabled_without_row_cap() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
+
+    app.begin_thread_switch_history_replay_buffer();
+
+    assert!(app.initial_history_replay_buffer.is_none());
+}
+
+#[tokio::test]
 async fn height_shrink_schedules_resize_reflow() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     enable_terminal_resize_reflow(&mut app);

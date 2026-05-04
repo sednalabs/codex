@@ -423,6 +423,7 @@ struct SessionSummary {
 #[derive(Debug, Default)]
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<Line<'static>>,
+    render_from_transcript_tail: bool,
 }
 
 pub(crate) struct App {

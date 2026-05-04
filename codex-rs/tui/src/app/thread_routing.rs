@@ -1238,6 +1238,12 @@ impl App {
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
+        let should_buffer_replay = self.terminal_resize_reflow_enabled()
+            && (!snapshot.turns.is_empty() || !snapshot.events.is_empty());
+        if should_buffer_replay {
+            self.app_event_tx
+                .send(AppEvent::BeginThreadSwitchHistoryReplayBuffer);
+        }
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
         if let Some(session) = snapshot.session {
@@ -1262,6 +1268,10 @@ impl App {
                 continue;
             }
             self.handle_thread_event_replay(event);
+        }
+        if should_buffer_replay {
+            self.app_event_tx
+                .send(AppEvent::EndInitialHistoryReplayBuffer);
         }
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ false);
