@@ -345,6 +345,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -1425,10 +1426,10 @@
     }
   },
   "required": [
-    "completedAtMs",
     "item",
     "threadId",
-    "turnId"
+    "turnId",
+    "completedAtMs"
   ],
   "title": "ItemCompletedNotification",
   "type": "object"

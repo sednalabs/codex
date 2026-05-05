@@ -7012,6 +7012,9 @@ pub struct McpToolCallResult {
     // representations). Using `JsonValue` keeps the payload wire-shaped and easy to export.
     pub content: Vec<JsonValue>,
     pub structured_content: Option<JsonValue>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

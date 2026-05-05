@@ -15,7 +15,6 @@ fn schema_for<T: JsonSchema>(option_add_null_type: bool) -> JsonObject {
     let schema = SchemaSettings::draft2019_09()
         .with(|settings| {
             settings.inline_subschemas = true;
-            settings.option_add_null_type = option_add_null_type;
         })
         .into_generator()
         .into_root_schema_for::<T>();

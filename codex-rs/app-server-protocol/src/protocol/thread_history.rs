@@ -604,6 +604,7 @@ impl ThreadHistoryBuilder {
                 Some(Box::new(McpToolCallResult {
                     content: value.content.clone(),
                     structured_content: value.structured_content.clone(),
+                    meta: value.meta.clone(),
                 })),
                 None,
             ),
@@ -2030,6 +2031,7 @@ mod tests {
                         "text": "result"
                     })],
                     structured_content: Some(serde_json::json!({"id":"123"})),
+                    meta: None,
                 })),
                 error: None,
                 duration_ms: Some(8),

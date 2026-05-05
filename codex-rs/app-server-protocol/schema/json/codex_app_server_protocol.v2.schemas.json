@@ -6555,10 +6555,10 @@
         }
       },
       "required": [
-        "completedAtMs",
         "item",
         "threadId",
-        "turnId"
+        "turnId",
+        "completedAtMs"
       ],
       "title": "ItemCompletedNotification",
       "type": "object"
@@ -6663,9 +6663,9 @@
       },
       "required": [
         "item",
-        "startedAtMs",
         "threadId",
-        "turnId"
+        "turnId",
+        "startedAtMs"
       ],
       "title": "ItemStartedNotification",
       "type": "object"
@@ -7491,6 +7491,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -9041,7 +9042,7 @@
       "type": "object"
     },
     "ProcessExitedNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Final process exit notification for `process/spawn`.",
       "properties": {
         "exitCode": {
@@ -9058,7 +9059,7 @@
           "type": "string"
         },
         "stderrCapReached": {
-          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the final stderr `process/outputDelta` notification.",
+          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the\nfinal stderr `process/outputDelta` notification.",
           "type": "boolean"
         },
         "stdout": {
@@ -9066,27 +9067,27 @@
           "type": "string"
         },
         "stdoutCapReached": {
-          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the final stdout `process/outputDelta` notification.",
+          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the\nfinal stdout `process/outputDelta` notification.",
           "type": "boolean"
         }
       },
       "required": [
-        "exitCode",
         "processHandle",
-        "stderr",
-        "stderrCapReached",
+        "exitCode",
         "stdout",
-        "stdoutCapReached"
+        "stdoutCapReached",
+        "stderr",
+        "stderrCapReached"
       ],
       "title": "ProcessExitedNotification",
       "type": "object"
     },
     "ProcessOutputDeltaNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Base64-encoded output chunk emitted for a streaming `process/spawn` request.",
       "properties": {
         "capReached": {
-          "description": "True on the final streamed chunk for this stream when output was truncated by `outputBytesCap`.",
+          "description": "True on the final streamed chunk for this stream when output was\ntruncated by `outputBytesCap`.",
           "type": "boolean"
         },
         "deltaBase64": {
@@ -9098,19 +9099,15 @@
           "type": "string"
         },
         "stream": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ProcessOutputStream"
-            }
-          ],
+          "$ref": "#/definitions/ProcessOutputStream",
           "description": "Output stream this chunk belongs to."
         }
       },
       "required": [
-        "capReached",
-        "deltaBase64",
         "processHandle",
-        "stream"
+        "stream",
+        "deltaBase64",
+        "capReached"
       ],
       "title": "ProcessOutputDeltaNotification",
       "type": "object"
@@ -9119,17 +9116,13 @@
       "description": "Stream label for `process/outputDelta` notifications.",
       "oneOf": [
         {
+          "const": "stdout",
           "description": "stdout stream. PTY mode multiplexes terminal output here.",
-          "enum": [
-            "stdout"
-          ],
           "type": "string"
         },
         {
+          "const": "stderr",
           "description": "stderr stream.",
-          "enum": [
-            "stderr"
-          ],
           "type": "string"
         }
       ]
@@ -9140,19 +9133,21 @@
         "cols": {
           "description": "Terminal width in character cells.",
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": "integer"
         },
         "rows": {
           "description": "Terminal height in character cells.",
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "cols",
-        "rows"
+        "rows",
+        "cols"
       ],
       "type": "object"
     },
@@ -10281,9 +10276,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "context_compaction"
-              ],
+              "const": "context_compaction",
               "title": "ContextCompactionResponseItemType",
               "type": "string"
             }
@@ -11128,9 +11121,7 @@
           "description": "Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.",
           "properties": {
             "method": {
-              "enum": [
-                "process/outputDelta"
-              ],
+              "const": "process/outputDelta",
               "title": "Process/outputDeltaNotificationMethod",
               "type": "string"
             },
@@ -11149,9 +11140,7 @@
           "description": "Final exit notification for a `process/spawn` session.",
           "properties": {
             "method": {
-              "enum": [
-                "process/exited"
-              ],
+              "const": "process/exited",
               "title": "Process/exitedNotificationMethod",
               "type": "string"
             },

@@ -345,6 +345,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -1426,9 +1427,9 @@
   },
   "required": [
     "item",
-    "startedAtMs",
     "threadId",
-    "turnId"
+    "turnId",
+    "startedAtMs"
   ],
   "title": "ItemStartedNotification",
   "type": "object"

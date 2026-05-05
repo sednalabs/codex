@@ -75,6 +75,7 @@ pub fn item_event_to_server_notification(
                 thread_id,
                 turn_id: response.turn_id,
                 item,
+                completed_at_ms: response.completed_at_ms,
             })
         }
         EventMsg::ComputerUseCallResponse(response) => {
@@ -113,7 +114,10 @@ pub fn item_event_to_server_notification(
                 thread_id,
                 turn_id: response.turn_id,
                 item,
-                completed_at_ms: response.completed_at_ms,
+                // The computer-use core response event does not currently carry
+                // completion wall-clock metadata. Preserve the v2 notification
+                // shape without inventing a timestamp.
+                completed_at_ms: 0,
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {

@@ -702,9 +702,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "context_compaction"
-              ],
+              "const": "context_compaction",
               "title": "ContextCompactionResponseItemType",
               "type": "string"
             }
