@@ -1,4 +1,5 @@
 use crate::agent::AgentStatus;
+use crate::agent::role::apply_role_to_spawn_config;
 use crate::agent::status::is_final;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -9,6 +10,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
@@ -183,6 +185,7 @@ pub(crate) async fn send_wait_end_event(
                 timed_out,
                 agent_statuses,
                 statuses,
+                completed_at_ms: now_unix_timestamp_ms(),
             }
             .into(),
         )
@@ -462,6 +465,47 @@ pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32)
     }
 }
 
+/// Applies the complete spawn-agent model policy to a child config.
+///
+/// The selection order is intentionally centralized so legacy and MultiAgentV2
+/// spawns stay in lock-step:
+///
+/// 1. inherit the parent config built for this turn
+/// 2. apply role-provided model carry
+/// 3. apply explicit model / reasoning arguments
+/// 4. normalize reasoning against the final model metadata
+pub(crate) async fn apply_spawn_agent_model_selection(
+    session: &Session,
+    turn: &TurnContext,
+    config: &mut Config,
+    role_name: Option<&str>,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    let pre_role_reasoning_effort = config.model_reasoning_effort;
+    let spawn_model_selection_carry = apply_role_to_spawn_config(config, role_name)
+        .await
+        .map_err(FunctionCallError::RespondToModel)?;
+    spawn_model_selection_carry.apply_to_config(config);
+
+    apply_requested_spawn_agent_model_overrides(
+        session,
+        turn,
+        config,
+        requested_model,
+        requested_reasoning_effort,
+    )
+    .await?;
+
+    normalize_spawn_agent_reasoning_effort(
+        session,
+        config,
+        pre_role_reasoning_effort,
+        requested_reasoning_effort,
+    )
+    .await
+}
+
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
     turn: &TurnContext,
@@ -508,6 +552,50 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
             reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
+    }
+
+    Ok(())
+}
+
+async fn normalize_spawn_agent_reasoning_effort(
+    session: &Session,
+    config: &mut Config,
+    pre_role_reasoning_effort: Option<ReasoningEffort>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    let Some(model) = config.model.clone() else {
+        return Ok(());
+    };
+
+    let model_info = session
+        .services
+        .models_manager
+        .get_model_info(&model, &config.to_models_manager_config())
+        .await;
+
+    match config.model_reasoning_effort {
+        Some(reasoning_effort) => {
+            if !model_info
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| preset.effort == reasoning_effort)
+            {
+                let role_changed_reasoning_effort =
+                    config.model_reasoning_effort != pre_role_reasoning_effort;
+                if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
+                    validate_spawn_agent_reasoning_effort(
+                        &model,
+                        &model_info.supported_reasoning_levels,
+                        reasoning_effort,
+                    )?;
+                }
+
+                config.model_reasoning_effort = model_info.default_reasoning_level;
+            }
+        }
+        None => {
+            config.model_reasoning_effort = model_info.default_reasoning_level;
+        }
     }
 
     Ok(())

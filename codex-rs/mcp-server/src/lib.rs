@@ -84,6 +84,7 @@ pub async fn run_main(
             std::io::Error::new(ErrorKind::InvalidData, format!("error loading config: {e}"))
         })?;
     set_default_client_residency_requirement(config.enforce_residency.value());
+    let state_db = codex_core::init_state_db(&config).await;
 
     let otel = codex_core::otel_init::build_provider(
         &config,
@@ -145,6 +146,7 @@ pub async fn run_main(
             arg0_paths,
             Arc::new(config),
             environment_manager,
+            state_db,
         )
         .await;
         async move {

@@ -345,6 +345,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -1409,6 +1410,11 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "completedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this item lifecycle completed.",
+      "format": "int64",
+      "type": "integer"
+    },
     "item": {
       "$ref": "#/$defs/ThreadItem"
     },
@@ -1422,7 +1428,8 @@
   "required": [
     "item",
     "threadId",
-    "turnId"
+    "turnId",
+    "completedAtMs"
   ],
   "title": "ItemCompletedNotification",
   "type": "object"

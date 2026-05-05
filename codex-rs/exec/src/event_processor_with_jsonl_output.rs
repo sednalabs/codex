@@ -772,6 +772,7 @@ mod tests {
                 },
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
             },
         ));
 

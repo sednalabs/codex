@@ -13,6 +13,7 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -238,9 +239,11 @@ async fn request_dynamic_tool(
     }
 
     let started_at = Instant::now();
+    let started_at_ms = now_unix_timestamp_ms();
     let event = EventMsg::DynamicToolCallRequest(DynamicToolCallRequest {
         call_id: call_id.clone(),
         turn_id: turn_id.clone(),
+        started_at_ms,
         namespace: namespace.clone(),
         tool: tool.clone(),
         arguments: arguments.clone(),
@@ -252,6 +255,7 @@ async fn request_dynamic_tool(
         Some(response) => EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
             call_id,
             turn_id,
+            completed_at_ms: now_unix_timestamp_ms(),
             namespace,
             tool,
             arguments,
@@ -263,6 +267,7 @@ async fn request_dynamic_tool(
         None => EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
             call_id,
             turn_id,
+            completed_at_ms: now_unix_timestamp_ms(),
             namespace,
             tool,
             arguments,
