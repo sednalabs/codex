@@ -7877,6 +7877,7 @@
       "properties": {
         "additionalSpeedTiers": {
           "default": [],
+          "description": "Deprecated: use `serviceTiers` instead.",
           "items": {
             "type": "string"
           },
@@ -7922,6 +7923,13 @@
         },
         "model": {
           "type": "string"
+        },
+        "serviceTiers": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ModelServiceTier"
+          },
+          "type": "array"
         },
         "supportedReasoningEfforts": {
           "items": {
@@ -8085,6 +8093,25 @@
         "turnId"
       ],
       "title": "ModelReroutedNotification",
+      "type": "object"
+    },
+    "ModelServiceTier": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "id",
+        "name"
+      ],
       "type": "object"
     },
     "ModelUpgradeInfo": {
