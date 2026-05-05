@@ -207,6 +207,7 @@ fn keep_forked_rollout_item(item: &RolloutItem) -> bool {
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::Compaction { .. }
+            | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other,
         ) => false,
         // A forked child gets its own runtime config, including spawned-agent
@@ -615,6 +616,7 @@ impl AgentControl {
             let _ = config.features.disable(Feature::Collab);
         }
         let state = self.upgrade()?;
+        let state_db_ctx = state.state_db();
         let mut reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
         let (session_source, agent_metadata) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -625,7 +627,7 @@ impl AgentControl {
                 agent_nickname: _,
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
-                    if let Some(state_db_ctx) = state_db::get_state_db(&config).await {
+                    if let Some(state_db_ctx) = state_db_ctx.as_ref() {
                         match state_db_ctx.get_thread(thread_id).await {
                             Ok(Some(metadata)) => (metadata.agent_nickname, metadata.agent_role),
                             Ok(None) | Err(_) => (None, None),

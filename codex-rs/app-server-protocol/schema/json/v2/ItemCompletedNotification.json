@@ -1409,6 +1409,11 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "completedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this item lifecycle completed.",
+      "format": "int64",
+      "type": "integer"
+    },
     "item": {
       "$ref": "#/$defs/ThreadItem"
     },
@@ -1420,6 +1425,7 @@
     }
   },
   "required": [
+    "completedAtMs",
     "item",
     "threadId",
     "turnId"

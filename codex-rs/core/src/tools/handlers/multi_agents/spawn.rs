@@ -8,7 +8,7 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_spawn_config;
-use crate::session::turn_context::TurnEnvironment;
+use crate::turn_timing::now_unix_timestamp_ms;
 
 pub(crate) struct Handler;
 
@@ -66,6 +66,7 @@ impl ToolHandler for Handler {
                 &turn,
                 CollabAgentSpawnBeginEvent {
                     call_id: call_id.clone(),
+                    started_at_ms: now_unix_timestamp_ms(),
                     sender_thread_id: session.conversation_id,
                     prompt: prompt.clone(),
                     model: args.model.clone().unwrap_or_default(),
@@ -132,29 +133,22 @@ impl ToolHandler for Handler {
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
-        let result = Box::pin(
-            session.services.agent_control.spawn_agent_with_metadata(
-                config,
-                input_items,
-                Some(thread_spawn_source(
-                    session.conversation_id,
-                    &turn.session_source,
-                    child_depth,
-                    role_name,
-                    requested_task_name.clone(),
-                )?),
-                SpawnAgentOptions {
-                    fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
-                    fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
-                    environments: Some(
-                        turn.environments
-                            .iter()
-                            .map(TurnEnvironment::selection)
-                            .collect(),
-                    ),
-                },
-            ),
-        )
+        let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
+            config,
+            input_items,
+            Some(thread_spawn_source(
+                session.conversation_id,
+                &turn.session_source,
+                child_depth,
+                role_name,
+                requested_task_name.clone(),
+            )?),
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
+                environments: Some(turn.environments.to_selections()),
+            },
+        ))
         .await
         .map_err(collab_spawn_error);
         let spawned_thread_id = result.as_ref().ok().map(|agent| agent.thread_id);
@@ -216,6 +210,7 @@ impl ToolHandler for Handler {
                 &turn,
                 CollabAgentSpawnEndEvent {
                     call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
                     sender_thread_id: session.conversation_id,
                     new_thread_id: spawned_thread_id,
                     new_agent_nickname: nickname.clone(),

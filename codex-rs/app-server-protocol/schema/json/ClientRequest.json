@@ -2344,6 +2344,28 @@
       ],
       "type": "object"
     },
+    "ProcessTerminalSize": {
+      "description": "PTY size in character cells for `process/spawn` PTY sessions.",
+      "properties": {
+        "cols": {
+          "description": "Terminal width in character cells.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rows": {
+          "description": "Terminal height in character cells.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cols",
+        "rows"
+      ],
+      "type": "object"
+    },
     "RealtimeOutputModality": {
       "enum": [
         "text",
@@ -2895,6 +2917,28 @@
             "encrypted_content"
           ],
           "title": "CompactionResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "context_compaction"
+              ],
+              "title": "ContextCompactionResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ContextCompactionResponseItem",
           "type": "object"
         },
         {

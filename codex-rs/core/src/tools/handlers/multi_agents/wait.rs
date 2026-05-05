@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use futures::StreamExt;
@@ -75,6 +76,7 @@ impl ToolHandler for Handler {
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
+                    started_at_ms: now_unix_timestamp_ms(),
                     sender_thread_id: session.conversation_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),

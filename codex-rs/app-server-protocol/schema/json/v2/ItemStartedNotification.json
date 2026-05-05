@@ -1412,6 +1412,11 @@
     "item": {
       "$ref": "#/$defs/ThreadItem"
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this item lifecycle started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -1421,6 +1426,7 @@
   },
   "required": [
     "item",
+    "startedAtMs",
     "threadId",
     "turnId"
   ],
