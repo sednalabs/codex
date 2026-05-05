@@ -59,6 +59,17 @@
 //! Slash commands with arguments (like `/plan` and `/review`) reuse the same preparation path so
 //! pasted content and text elements are preserved when extracting args.
 //!
+//! # Large Paste Placeholders
+//!
+//! Large pastes insert an element placeholder in the buffer and store the full text in
+//! `pending_pastes`. The placeholder label is derived from the pasted character count:
+//!
+//! - First paste of a given size uses `[Pasted Content N chars]`.
+//! - Additional pending pastes of the same size add a numeric suffix (`#2`, `#3`, ...), where the
+//!   next suffix is computed from the placeholders that still exist in `pending_pastes`.
+//! - When all placeholders for a size are cleared or deleted, the next paste of that size reuses
+//!   the base label without a suffix.
+//!
 //! # Remote Image Rows (Up/Down/Delete)
 //!
 //! Remote image URLs are rendered as non-editable `[Image #N]` rows above the textarea (inside the
@@ -338,7 +349,6 @@ pub(crate) struct ChatComposer {
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
     pending_pastes: Vec<(String, String)>,
-    large_paste_counters: HashMap<usize, usize>,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
     /// Invariant: attached images are labeled in vec order as
@@ -536,7 +546,6 @@ impl ChatComposer {
             dismissed_file_popup_token: None,
             current_file_query: None,
             pending_pastes: Vec::new(),
-            large_paste_counters: HashMap::new(),
             has_focus: has_input_focus,
             frame_requester: None,
             attached_images: Vec::new(),
@@ -1625,14 +1634,27 @@ impl ChatComposer {
             .is_some_and(|expires_at| Instant::now() < expires_at)
     }
 
-    fn next_large_paste_placeholder(&mut self, char_count: usize) -> String {
+    fn next_large_paste_placeholder(&self, char_count: usize) -> String {
         let base = format!("[Pasted Content {char_count} chars]");
-        let next_suffix = self.large_paste_counters.entry(char_count).or_insert(0);
-        *next_suffix += 1;
-        if *next_suffix == 1 {
+        let prefix = format!("{base} #");
+        let mut max_suffix = 0usize;
+
+        for (placeholder, _) in &self.pending_pastes {
+            if placeholder == &base {
+                max_suffix = max_suffix.max(1);
+                continue;
+            }
+            if let Some(suffix) = placeholder.strip_prefix(&prefix)
+                && let Ok(value) = suffix.parse::<usize>()
+            {
+                max_suffix = max_suffix.max(value);
+            }
+        }
+
+        if max_suffix == 0 {
             base
         } else {
-            format!("{base} #{next_suffix}")
+            format!("{base} #{}", max_suffix + 1)
         }
     }
 
@@ -5722,6 +5744,35 @@ mod tests {
     }
 
     #[test]
+    fn large_paste_numbering_reuses_after_ctrl_c_clear() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let base = format!("[Pasted Content {} chars]", paste.chars().count());
+
+        composer.handle_paste(paste.clone());
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+
+        assert_eq!(composer.clear_for_ctrl_c(), Some(base.clone()));
+        assert!(composer.textarea.text().is_empty());
+        assert!(composer.pending_pastes.is_empty());
+
+        composer.handle_paste(paste);
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+        assert_eq!(composer.pending_pastes[0].0, base);
+    }
+
+    #[test]
     fn vim_mode_resets_to_normal_after_submission() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
@@ -8539,10 +8590,10 @@ mod tests {
         assert_eq!(composer.pending_pastes[0].1, paste);
     }
 
-    /// Behavior: large-paste placeholder numbering does not get reused after deletion, so a new
-    /// paste of the same length gets a new unique placeholder label.
+    /// Behavior: large-paste placeholder numbering continues when another placeholder of the
+    /// same length still exists, so a new paste gets a new unique placeholder label.
     #[test]
-    fn large_paste_numbering_does_not_reuse_after_deletion() {
+    fn large_paste_numbering_continues_with_same_length_placeholder() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -8579,6 +8630,42 @@ mod tests {
         assert_eq!(composer.pending_pastes.len(), 2);
         assert_eq!(composer.pending_pastes[0].0, second);
         assert_eq!(composer.pending_pastes[1].0, third);
+    }
+
+    /// Behavior: if all placeholders of a given length are removed, numbering resets to the
+    /// base placeholder on the next paste.
+    #[test]
+    fn large_paste_numbering_reuses_after_all_deleted() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let base = format!("[Pasted Content {} chars]", paste.chars().count());
+
+        composer.handle_paste(paste.clone());
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+
+        composer.textarea.set_cursor(composer.textarea.text().len());
+        composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(composer.textarea.text().is_empty());
+        assert!(composer.pending_pastes.is_empty());
+
+        composer.handle_paste(paste);
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+        assert_eq!(composer.pending_pastes[0].0, base);
     }
 
     #[test]
