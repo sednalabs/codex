@@ -502,6 +502,7 @@ impl TurnRequestProcessor {
         let turn = Turn {
             id: turn_id,
             items: vec![],
+            items_view: TurnItemsView::NotLoaded,
             error: None,
             status: TurnStatus::InProgress,
             started_at: None,
@@ -807,6 +808,7 @@ impl TurnRequestProcessor {
         Turn {
             id: turn_id,
             items,
+            items_view: TurnItemsView::NotLoaded,
             error: None,
             status: TurnStatus::InProgress,
             started_at: None,
@@ -981,7 +983,7 @@ impl TurnRequestProcessor {
                     request_id,
                     parent_thread,
                     review_request,
-                    display_text.as_str(),
+                    &display_text,
                     thread_id,
                 )
                 .await?;
@@ -992,7 +994,7 @@ impl TurnRequestProcessor {
                     parent_thread_id,
                     parent_thread,
                     review_request,
-                    display_text.as_str(),
+                    &display_text,
                 )
                 .await?;
             }

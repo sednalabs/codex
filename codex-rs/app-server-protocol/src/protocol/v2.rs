@@ -5434,10 +5434,11 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
 #[ts(export_to = "v2/")]
 pub struct Turn {
     pub id: String,
-    /// Only populated on a `thread/resume` or `thread/fork` response.
-    /// For all other responses and notifications returning a Turn,
-    /// the items field will be an empty list.
+    /// Thread items currently included in this turn payload.
     pub items: Vec<ThreadItem>,
+    /// Describes how much of `items` has been loaded for this turn.
+    #[serde(default)]
+    pub items_view: TurnItemsView,
     pub status: TurnStatus,
     /// Only populated when the Turn's status is failed.
     pub error: Option<TurnError>,
@@ -5450,6 +5451,19 @@ pub struct Turn {
     /// Duration between turn start and completion in milliseconds, if known.
     #[ts(type = "number | null")]
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum TurnItemsView {
+    /// `items` was not loaded for this turn. The field is intentionally empty.
+    NotLoaded,
+    /// `items` contains only a display summary for this turn.
+    Summary,
+    /// `items` contains every ThreadItem available from persisted app-server history for this turn.
+    #[default]
+    Full,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -8439,6 +8453,22 @@ mod tests {
             };
             assert_eq!(expected, reviewer);
         }
+    }
+
+    #[test]
+    fn turn_defaults_legacy_missing_items_view_to_full() {
+        let turn: Turn = serde_json::from_value(json!({
+            "id": "turn_123",
+            "items": [],
+            "status": "completed",
+            "error": null,
+            "startedAt": null,
+            "completedAt": null,
+            "durationMs": null,
+        }))
+        .expect("legacy turn should deserialize");
+
+        assert_eq!(turn.items_view, TurnItemsView::Full);
     }
 
     #[test]
