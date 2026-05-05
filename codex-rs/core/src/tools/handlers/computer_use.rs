@@ -358,6 +358,7 @@ async fn request_computer_use(
 fn selected_computer_use_environment_id(turn_context: &TurnContext) -> Option<String> {
     turn_context
         .environments
+        .turn_environments
         .first()
         .map(|environment| environment.environment_id.clone())
 }

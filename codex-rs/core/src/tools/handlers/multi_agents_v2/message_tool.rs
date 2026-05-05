@@ -198,6 +198,7 @@ async fn handle_message_submission(
                         receiver_agent_role: receiver_agent.agent_role,
                         prompt: prompt.clone(),
                         status,
+                        completed_at_ms: now_unix_timestamp_ms(),
                     }
                     .into(),
                 )

@@ -183,6 +183,7 @@ pub(crate) async fn send_wait_end_event(
                 timed_out,
                 agent_statuses,
                 statuses,
+                completed_at_ms: codex_protocol::protocol::now_unix_timestamp_ms(),
             }
             .into(),
         )

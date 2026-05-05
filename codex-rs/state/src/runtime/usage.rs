@@ -941,6 +941,7 @@ WHERE tool_call_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                started_at_ms: 0,
             }),
         };
         logger.record_event(&spawn_begin).await;
@@ -957,6 +958,7 @@ WHERE tool_call_id = ?
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
                 status: AgentStatus::Completed(None),
+                completed_at_ms: 0,
             }),
         };
         logger.record_event(&spawn_end).await;
@@ -1060,6 +1062,7 @@ WHERE child_thread_id = ?
                     prompt: String::new(),
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
+                    started_at_ms: 0,
                 }),
             })
             .await;
@@ -1076,6 +1079,7 @@ WHERE child_thread_id = ?
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
                     status: AgentStatus::Completed(None),
+                    completed_at_ms: 0,
                 }),
             })
             .await;
@@ -1432,6 +1436,7 @@ WHERE thread_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                started_at_ms: 0,
             }),
         };
         parent_logger.record_event(&spawn_begin).await;
@@ -1448,6 +1453,7 @@ WHERE thread_id = ?
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
                 status: AgentStatus::Completed(None),
+                completed_at_ms: 0,
             }),
         };
         parent_logger.record_event(&spawn_end).await;
