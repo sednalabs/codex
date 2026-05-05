@@ -240,6 +240,43 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn map_validated_dynamic_tools(
+    dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
+) -> Result<Vec<CoreDynamicToolSpec>, String> {
+    let dynamic_tools = dynamic_tools.unwrap_or_default();
+    if dynamic_tools.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    validate_dynamic_tools(&dynamic_tools)?;
+    Ok(dynamic_tools
+        .into_iter()
+        .map(|tool| CoreDynamicToolSpec {
+            namespace: tool.namespace,
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            defer_loading: tool.defer_loading,
+            persist_on_resume: tool.persist_on_resume,
+            capability: tool.capability.map(|capability| {
+                codex_protocol::dynamic_tools::DynamicToolCapability {
+                    family: capability.family,
+                    capability_scope: capability.capability_scope,
+                    mutation_class: capability.mutation_class,
+                    lease_mode: capability.lease_mode,
+                }
+            }),
+        })
+        .collect())
+}
+
+fn resume_request_requires_thread_replacement(params: &ThreadResumeParams) -> bool {
+    params
+        .dynamic_tools
+        .as_ref()
+        .is_some_and(|dynamic_tools| !dynamic_tools.is_empty())
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -678,6 +715,36 @@ impl ThreadRequestProcessor {
         self.finalize_thread_teardown(thread_id).await;
     }
 
+    async fn replace_loaded_thread_for_resume(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), JSONRPCErrorError> {
+        let existing_thread = match self.thread_manager.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => return Ok(()),
+        };
+        if matches!(existing_thread.agent_status().await, AgentStatus::Running) {
+            return Err(invalid_request(format!(
+                "thread {thread_id} is running; retry thread/resume after the current turn completes"
+            )));
+        }
+
+        let removed_conversation = self.thread_manager.remove_thread(&thread_id).await;
+        if let Some(conversation) = removed_conversation {
+            match wait_for_thread_shutdown(&conversation).await {
+                ThreadShutdownResult::Complete => {}
+                ThreadShutdownResult::SubmitFailed => {
+                    error!("failed to submit Shutdown to thread {thread_id}; proceeding with resume replacement");
+                }
+                ThreadShutdownResult::TimedOut => {
+                    warn!("thread {thread_id} shutdown timed out; proceeding with resume replacement");
+                }
+            }
+        }
+        self.finalize_thread_teardown(thread_id).await;
+        Ok(())
+    }
+
     fn listener_task_context(&self) -> ListenerTaskContext {
         ListenerTaskContext {
             thread_manager: Arc::clone(&self.thread_manager),
@@ -967,22 +1034,7 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                })
-                .collect()
-        };
+        let core_dynamic_tools = map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         let NewThread {
@@ -2228,6 +2280,26 @@ impl ThreadRequestProcessor {
                 .await;
         }
 
+        if resume_request_requires_thread_replacement(&params) {
+            match ThreadId::from_string(&params.thread_id) {
+                Ok(thread_id) => {
+                    if let Err(error) = self.replace_loaded_thread_for_resume(thread_id).await {
+                        self.outgoing.send_error(request_id, error).await;
+                        return Ok(());
+                    }
+                }
+                Err(err) => {
+                    self.outgoing
+                        .send_error(
+                            request_id,
+                            invalid_request(format!("invalid thread id: {err}")),
+                        )
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+
         let _thread_list_state_permit = match self.acquire_thread_list_state_permit().await {
             Ok(permit) => permit,
             Err(error) => {
@@ -2268,6 +2340,7 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history: _persist_extended_history,
         } = params;
@@ -2326,13 +2399,23 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match map_validated_dynamic_tools(dynamic_tools) {
+            Ok(tools) => tools,
+            Err(err) => {
+                self.outgoing
+                    .send_error(request_id, invalid_request(err))
+                    .await;
+                return Ok(());
+            }
+        };
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_with_tools(
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
@@ -2880,6 +2963,7 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             ephemeral,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -2954,6 +3038,7 @@ impl ThreadRequestProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
+        let core_dynamic_tools = map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
 
         let NewThread {
             thread_id,
@@ -2962,7 +3047,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_tools(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -2970,6 +3055,7 @@ impl ThreadRequestProcessor {
                     history: history_items.clone(),
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
+                core_dynamic_tools,
                 /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
