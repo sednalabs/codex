@@ -734,10 +734,14 @@ impl ThreadRequestProcessor {
             match wait_for_thread_shutdown(&conversation).await {
                 ThreadShutdownResult::Complete => {}
                 ThreadShutdownResult::SubmitFailed => {
-                    error!("failed to submit Shutdown to thread {thread_id}; proceeding with resume replacement");
+                    error!(
+                        "failed to submit Shutdown to thread {thread_id}; proceeding with resume replacement"
+                    );
                 }
                 ThreadShutdownResult::TimedOut => {
-                    warn!("thread {thread_id} shutdown timed out; proceeding with resume replacement");
+                    warn!(
+                        "thread {thread_id} shutdown timed out; proceeding with resume replacement"
+                    );
                 }
             }
         }
@@ -1034,7 +1038,8 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let core_dynamic_tools = map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
+        let core_dynamic_tools =
+            map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         let NewThread {
@@ -3038,7 +3043,8 @@ impl ThreadRequestProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
-        let core_dynamic_tools = map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
+        let core_dynamic_tools =
+            map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
 
         let NewThread {
             thread_id,

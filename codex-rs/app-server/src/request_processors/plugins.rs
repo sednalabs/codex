@@ -399,7 +399,9 @@ impl PluginRequestProcessor {
             marketplaces: data,
             marketplace_load_errors,
             featured_plugin_ids,
-        })
+        };
+        app_server_hooks().augment_plugin_list(&mut response);
+        Ok(response)
     }
 
     async fn plugin_read_response(
