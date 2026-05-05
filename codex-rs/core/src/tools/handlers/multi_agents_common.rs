@@ -9,6 +9,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
@@ -183,7 +184,7 @@ pub(crate) async fn send_wait_end_event(
                 timed_out,
                 agent_statuses,
                 statuses,
-                completed_at_ms: codex_protocol::protocol::now_unix_timestamp_ms(),
+                completed_at_ms: now_unix_timestamp_ms(),
             }
             .into(),
         )
