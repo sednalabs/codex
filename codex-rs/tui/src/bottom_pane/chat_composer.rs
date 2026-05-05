@@ -2810,24 +2810,27 @@ impl ChatComposer {
         if !self.slash_commands_enabled() || self.is_bash_mode {
             return None;
         }
-        let first_line = self.textarea.text().lines().next().unwrap_or("");
-        if let Some((name, rest, _rest_offset)) = parse_slash_name(first_line)
-            && rest.is_empty()
-            && let Some(cmd) =
-                slash_commands::find_builtin_command(name, self.builtin_command_flags())
-        {
-            if self.reject_slash_command_if_unavailable(cmd) {
-                self.stage_slash_command_history();
-                self.record_pending_slash_command_history();
-                return Some(InputResult::None);
-            }
-            self.stage_slash_command_history();
-            self.textarea.set_text_clearing_elements("");
-            self.is_bash_mode = false;
-            Some(InputResult::Command(cmd))
-        } else {
-            None
+        let text = self.textarea.text();
+        let first_line = text.lines().next().unwrap_or("");
+        let (name, rest, _rest_offset) = parse_slash_name(first_line)?;
+        if !rest.is_empty() {
+            return None;
         }
+        let cmd = slash_commands::find_builtin_command(name, self.builtin_command_flags())?;
+        if cmd.supports_inline_args()
+            && parse_slash_name(text).is_some_and(|(_, full_rest, _)| !full_rest.is_empty())
+        {
+            return None;
+        }
+        if self.reject_slash_command_if_unavailable(cmd) {
+            self.stage_slash_command_history();
+            self.record_pending_slash_command_history();
+            return Some(InputResult::None);
+        }
+        self.stage_slash_command_history();
+        self.textarea.set_text_clearing_elements("");
+        self.is_bash_mode = false;
+        Some(InputResult::Command(cmd))
     }
 
     /// Check if the input is a slash command with args (e.g., /review args) and dispatch it.
