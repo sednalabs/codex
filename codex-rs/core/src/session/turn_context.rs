@@ -699,7 +699,7 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&per_turn_config.plugins_config_input())
             .await;
-        let effective_skill_roots = plugin_outcome.effective_skill_roots();
+        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
         let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
         let fs = primary_turn_environment
             .map(|turn_environment| turn_environment.environment.get_filesystem());

@@ -501,6 +501,7 @@ impl AnalyticsReducer {
                         product_client_id: Some(originator().value),
                         repo_url,
                         skill_scope: Some(skill_scope.to_string()),
+                        plugin_id: invocation.plugin_id,
                     },
                 },
             ));
