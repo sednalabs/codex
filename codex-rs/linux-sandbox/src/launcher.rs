@@ -8,8 +8,9 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::vendored_bwrap::exec_vendored_bwrap;
-use codex_sandboxing::find_system_bwrap_in_path;
 use codex_utils_absolute_path::AbsolutePathBuf;
+
+const TRUSTED_SYSTEM_BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BubblewrapLauncher {
@@ -41,11 +42,18 @@ pub(crate) fn exec_bwrap(argv: Vec<String>, preserved_files: Vec<File>) -> ! {
 fn preferred_bwrap_launcher() -> BubblewrapLauncher {
     static LAUNCHER: OnceLock<BubblewrapLauncher> = OnceLock::new();
     LAUNCHER
-        .get_or_init(|| match find_system_bwrap_in_path() {
-            Some(path) => preferred_bwrap_launcher_for_path(&path),
+        .get_or_init(|| match trusted_system_bwrap_path() {
+            Some(path) => preferred_bwrap_launcher_for_path(path.as_path()),
             None => BubblewrapLauncher::Vendored,
         })
         .clone()
+}
+
+fn trusted_system_bwrap_path() -> Option<AbsolutePathBuf> {
+    TRUSTED_SYSTEM_BWRAP_PATHS
+        .iter()
+        .filter_map(|candidate| AbsolutePathBuf::from_absolute_path(Path::new(candidate)).ok())
+        .find(|candidate| candidate.as_path().is_file())
 }
 
 fn preferred_bwrap_launcher_for_path(system_bwrap_path: &Path) -> BubblewrapLauncher {
