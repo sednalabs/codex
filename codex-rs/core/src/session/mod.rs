@@ -758,6 +758,7 @@ impl Codex {
         &self,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        mcp_elicitations_auto_deny: bool,
     ) -> ConstraintResult<()> {
         self.session
             .update_settings(SessionSettingsUpdate {
@@ -765,7 +766,10 @@ impl Codex {
                 app_server_client_version,
                 ..Default::default()
             })
-            .await
+            .await?;
+        let mcp_connection_manager = self.session.services.mcp_connection_manager.read().await;
+        mcp_connection_manager.set_elicitations_auto_deny(mcp_elicitations_auto_deny);
+        Ok(())
     }
 
     pub(crate) async fn agent_status(&self) -> AgentStatus {
