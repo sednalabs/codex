@@ -366,6 +366,17 @@
       ],
       "type": "object"
     },
+    "CommandMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "ConfigBatchWriteParams": {
       "properties": {
         "edits": {
@@ -893,7 +904,11 @@
         "CONFIG",
         "SKILLS",
         "PLUGINS",
-        "MCP_SERVER_CONFIG"
+        "MCP_SERVER_CONFIG",
+        "SUBAGENTS",
+        "HOOKS",
+        "COMMANDS",
+        "SESSIONS"
       ],
       "type": "string"
     },
@@ -1054,23 +1069,11 @@
         {
           "properties": {
             "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
               "const": "project_roots",
               "type": "string"
             },
             "subpath": {
+              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1477,38 +1480,6 @@
         }
       ]
     },
-    "GhostCommit": {
-      "description": "Details of a ghost commit created from a repository state.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "preexisting_untracked_dirs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "preexisting_untracked_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "preexisting_untracked_files",
-        "preexisting_untracked_dirs"
-      ],
-      "type": "object"
-    },
     "GitDiffToRemoteParams": {
       "properties": {
         "cwd": {
@@ -1518,6 +1489,29 @@
       "required": [
         "cwd"
       ],
+      "type": "object"
+    },
+    "HookMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "HooksListParams": {
+      "properties": {
+        "cwds": {
+          "description": "When empty, defaults to the current session working directory.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "ImageDetail": {
@@ -1695,6 +1689,9 @@
         },
         {
           "properties": {
+            "codexStreamlinedLogin": {
+              "type": "boolean"
+            },
             "type": {
               "const": "chatgpt",
               "title": "ChatgptLoginAccountParamsType",
@@ -1824,6 +1821,17 @@
       ],
       "type": "object"
     },
+    "McpServerMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "McpServerOauthLoginParams": {
       "properties": {
         "name": {
@@ -1903,16 +1911,49 @@
     },
     "MigrationDetails": {
       "properties": {
+        "commands": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CommandMigration"
+          },
+          "type": "array"
+        },
+        "hooks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HookMigration"
+          },
+          "type": "array"
+        },
+        "mcpServers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpServerMigration"
+          },
+          "type": "array"
+        },
         "plugins": {
+          "default": [],
           "items": {
             "$ref": "#/$defs/PluginsMigration"
           },
           "type": "array"
+        },
+        "sessions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SessionMigration"
+          },
+          "type": "array"
+        },
+        "subagents": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubagentMigration"
+          },
+          "type": "array"
         }
       },
-      "required": [
-        "plugins"
-      ],
       "type": "object"
     },
     "MockExperimentalMethodParams": {
@@ -1961,6 +2002,9 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ModelProviderCapabilitiesReadParams": {
       "type": "object"
     },
     "NetworkAccess": {
@@ -2078,6 +2122,29 @@
         }
       ]
     },
+    "PermissionProfileModificationParams": {
+      "oneOf": [
+        {
+          "description": "Additional concrete directory that should be writable.",
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            "type": {
+              "const": "additionalWritableRoot",
+              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "AdditionalWritableRootPermissionProfileModificationParams",
+          "type": "object"
+        }
+      ]
+    },
     "PermissionProfileNetworkPermissions": {
       "properties": {
         "enabled": {
@@ -2088,6 +2155,38 @@
         "enabled"
       ],
       "type": "object"
+    },
+    "PermissionProfileSelectionParams": {
+      "oneOf": [
+        {
+          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "modifications": {
+              "items": {
+                "$ref": "#/$defs/PermissionProfileModificationParams"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "profile",
+              "title": "ProfilePermissionProfileSelectionParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "title": "ProfilePermissionProfileSelectionParams",
+          "type": "object"
+        }
+      ]
     },
     "Personality": {
       "enum": [
@@ -2163,6 +2262,56 @@
       },
       "required": [
         "pluginName"
+      ],
+      "type": "object"
+    },
+    "PluginShareDeleteParams": {
+      "properties": {
+        "remotePluginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "remotePluginId"
+      ],
+      "type": "object"
+    },
+    "PluginShareListParams": {
+      "type": "object"
+    },
+    "PluginShareSaveParams": {
+      "properties": {
+        "pluginPath": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "remotePluginId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pluginPath"
+      ],
+      "type": "object"
+    },
+    "PluginSkillReadParams": {
+      "properties": {
+        "remoteMarketplaceName": {
+          "type": "string"
+        },
+        "remotePluginId": {
+          "type": "string"
+        },
+        "skillName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "remoteMarketplaceName",
+        "remotePluginId",
+        "skillName"
       ],
       "type": "object"
     },
@@ -2732,24 +2881,6 @@
         },
         {
           "properties": {
-            "ghost_commit": {
-              "$ref": "#/$defs/GhostCommit"
-            },
-            "type": {
-              "const": "ghost_snapshot",
-              "title": "GhostSnapshotResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "ghost_commit"
-          ],
-          "title": "GhostSnapshotResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
             "encrypted_content": {
               "type": "string"
             },
@@ -3105,6 +3236,27 @@
       ],
       "type": "string"
     },
+    "SessionMigration": {
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "cwd"
+      ],
+      "type": "object"
+    },
     "Settings": {
       "description": "Settings for a collaboration mode.",
       "properties": {
@@ -3213,6 +3365,17 @@
         "desc"
       ],
       "type": "string"
+    },
+    "SubagentMigration": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
     },
     "TextElement": {
       "properties": {
@@ -3380,16 +3543,16 @@
             "null"
           ]
         },
-        "permissionProfile": {
+        "permissions": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PermissionProfile"
+              "$ref": "#/$defs/PermissionProfileSelectionParams"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Full permissions override for the forked thread. Cannot be combined\nwith `sandbox`."
+          "description": "Named profile selection for the forked thread. Cannot be combined with\n`sandbox`. Use bounded `modifications` for supported thread\nadjustments instead of replacing the full permissions profile."
         },
         "persistExtendedHistory": {
           "default": false,
@@ -3823,7 +3986,7 @@
             "null"
           ]
         },
-        "sessionId": {
+        "realtimeSessionId": {
           "type": [
             "string",
             "null"
@@ -4001,16 +4164,16 @@
             "null"
           ]
         },
-        "permissionProfile": {
+        "permissions": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PermissionProfile"
+              "$ref": "#/$defs/PermissionProfileSelectionParams"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Full permissions override for the resumed thread. Cannot be combined\nwith `sandbox`."
+          "description": "Named profile selection for the resumed thread. Cannot be combined\nwith `sandbox`. Use bounded `modifications` for supported thread\nadjustments instead of replacing the full permissions profile."
         },
         "persistExtendedHistory": {
           "default": false,
@@ -4224,16 +4387,16 @@
             "null"
           ]
         },
-        "permissionProfile": {
+        "permissions": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PermissionProfile"
+              "$ref": "#/$defs/PermissionProfileSelectionParams"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Full permissions override for this thread. Cannot be combined with\n`sandbox`."
+          "description": "Named profile selection for this thread. Cannot be combined with\n`sandbox`. Use bounded `modifications` for supported turn/thread\nadjustments instead of replacing the full permissions profile."
         },
         "persistExtendedHistory": {
           "default": false,
@@ -4465,16 +4628,16 @@
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
         },
-        "permissionProfile": {
+        "permissions": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PermissionProfile"
+              "$ref": "#/$defs/PermissionProfileSelectionParams"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Override the full permissions profile for this turn and subsequent\nturns. Cannot be combined with `sandboxPolicy`."
+          "description": "Select a named permissions profile for this turn and subsequent turns.\nCannot be combined with `sandboxPolicy`. Use bounded `modifications`\nfor supported turn adjustments instead of replacing the full\npermissions profile."
         },
         "personality": {
           "anyOf": [
@@ -5069,28 +5232,6 @@
       "type": "object"
     },
     {
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/RequestId"
-        },
-        "method": {
-          "const": "thread/turns/list",
-          "title": "Thread/turns/listRequestMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/$defs/ThreadTurnsListParams"
-        }
-      },
-      "required": [
-        "method",
-        "id",
-        "params"
-      ],
-      "title": "Thread/turns/listRequest",
-      "type": "object"
-    },
-    {
       "description": "Append raw Responses API items to the thread history without starting a user turn.",
       "properties": {
         "id": {
@@ -5133,6 +5274,28 @@
         "params"
       ],
       "title": "Skills/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "hooks/list",
+          "title": "Hooks/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/HooksListParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Hooks/listRequest",
       "type": "object"
     },
     {
@@ -5243,6 +5406,94 @@
         "params"
       ],
       "title": "Plugin/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "plugin/skill/read",
+          "title": "Plugin/skill/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PluginSkillReadParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Plugin/skill/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "plugin/share/save",
+          "title": "Plugin/share/saveRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PluginShareSaveParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Plugin/share/saveRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "plugin/share/list",
+          "title": "Plugin/share/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PluginShareListParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Plugin/share/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "plugin/share/delete",
+          "title": "Plugin/share/deleteRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/PluginShareDeleteParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Plugin/share/deleteRequest",
       "type": "object"
     },
     {
@@ -5705,6 +5956,28 @@
         "params"
       ],
       "title": "Model/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "modelProvider/capabilities/read",
+          "title": "ModelProvider/capabilities/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ModelProviderCapabilitiesReadParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "ModelProvider/capabilities/readRequest",
       "type": "object"
     },
     {

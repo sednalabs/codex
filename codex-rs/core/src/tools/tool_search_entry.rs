@@ -5,6 +5,7 @@ use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolSearchResultSource;
+use codex_tools::ToolsConfig;
 use codex_tools::canonical_android_dynamic_tool;
 use codex_tools::dynamic_tool_to_loadable_tool_spec;
 use codex_tools::tool_search_result_source_to_loadable_tool_spec;
@@ -71,6 +72,24 @@ fn is_native_computer_use_dynamic_tool(tool: &DynamicToolSpec) -> bool {
                 | ANDROID_STEP_TOOL_NAME
                 | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
         )
+}
+
+pub(crate) fn build_tool_search_entries_for_config(
+    config: &ToolsConfig,
+    mcp_tools: Option<&HashMap<String, ToolInfo>>,
+    dynamic_tools: &[DynamicToolSpec],
+) -> Vec<ToolSearchEntry> {
+    let mcp_tools = if config.namespace_tools {
+        mcp_tools
+    } else {
+        None
+    };
+    let dynamic_tools = dynamic_tools
+        .iter()
+        .filter(|tool| config.namespace_tools || tool.namespace.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    build_tool_search_entries(mcp_tools, &dynamic_tools)
 }
 
 fn mcp_tool_search_entry(info: &ToolInfo) -> Result<ToolSearchEntry, serde_json::Error> {

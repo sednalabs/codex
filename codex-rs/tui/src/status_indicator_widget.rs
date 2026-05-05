@@ -19,11 +19,13 @@ use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app_event_sender::AppEventSender;
-use crate::exec_cell::spinner;
 use crate::key_hint;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
+use crate::motion::MotionMode;
+use crate::motion::ReducedMotionIndicator;
+use crate::motion::activity_indicator;
+use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
-use crate::shimmer::shimmer_spans;
 use crate::text_formatting::capitalize_first;
 use crate::tui::FrameRequester;
 use crate::wrapping::RtOptions;
@@ -153,22 +155,12 @@ impl StatusIndicatorWidget {
         self.show_interrupt_hint = visible;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         self.interrupt_requires_double_press = requires_double_press;
-        if !requires_double_press {
-            self.interrupt_confirmation_deadline = None;
-        }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_interrupt_confirmation_deadline(&mut self, deadline: Option<Instant>) {
         self.interrupt_confirmation_deadline = deadline;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn interrupt_hint_visible(&self) -> bool {
-        self.show_interrupt_hint
     }
 
     pub(crate) fn pause_timer(&mut self) {
@@ -263,22 +255,27 @@ impl Renderable for StatusIndicatorWidget {
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
-        let interrupt_confirmation_pending = self
-            .interrupt_confirmation_deadline
-            .is_some_and(|deadline| deadline > now);
+        let motion_mode = MotionMode::from_animations_enabled(self.animations_enabled);
 
         let mut spans = Vec::with_capacity(5);
-        spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
-        spans.push(" ".into());
-        if self.animations_enabled {
-            spans.extend(shimmer_spans(&self.header));
-        } else if !self.header.is_empty() {
-            spans.push(self.header.clone().into());
+        if let Some(indicator) = activity_indicator(
+            Some(self.last_resume_at),
+            motion_mode,
+            ReducedMotionIndicator::Hidden,
+        ) {
+            spans.push(indicator);
+            spans.push(" ".into());
         }
-        spans.push(" ".into());
+        spans.extend(shimmer_text(&self.header, motion_mode));
+        if !spans.is_empty() {
+            spans.push(" ".into());
+        }
         if self.show_interrupt_hint {
             spans.push(format!("({pretty_elapsed} • ").dim());
-            if interrupt_confirmation_pending {
+            if self
+                .interrupt_confirmation_deadline
+                .is_some_and(|deadline| deadline > now)
+            {
                 spans.push(key_hint::plain(KeyCode::Esc).into());
                 spans.push(" again to interrupt)".dim());
             } else {
@@ -408,6 +405,31 @@ mod tests {
             .draw(|f| w.render(f.area(), f.buffer_mut()))
             .expect("draw");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn renders_without_spinner_when_animations_disabled() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
+        );
+        w.is_paused = true;
+        w.elapsed_running = Duration::ZERO;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(line.starts_with("Working (0s • esc to interrupt)"));
     }
 
     #[test]

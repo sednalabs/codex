@@ -37,7 +37,7 @@ pub enum ToolHandlerKind {
     SpawnAgentV2,
     TestSync,
     ToolSearch,
-    ToolSuggest,
+    RequestPluginInstall,
     UnifiedExec,
     ViewImage,
     WaitAgentV1,

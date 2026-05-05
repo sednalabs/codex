@@ -43,6 +43,21 @@
       ],
       "type": "string"
     },
+    "PluginAvailability": {
+      "oneOf": [
+        {
+          "enum": [
+            "DISABLED_BY_ADMIN"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "AVAILABLE",
+          "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins.\nCodex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps\ndecoding compatible with that upstream response.",
+          "type": "string"
+        }
+      ]
+    },
     "PluginDetail": {
       "properties": {
         "apps": {
@@ -310,6 +325,11 @@
       "properties": {
         "authPolicy": {
           "$ref": "#/$defs/PluginAuthPolicy"
+        },
+        "availability": {
+          "$ref": "#/$defs/PluginAvailability",
+          "default": "AVAILABLE",
+          "description": "Availability state for installing and using the plugin."
         },
         "enabled": {
           "type": "boolean"

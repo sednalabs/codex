@@ -55,6 +55,13 @@ In the codex-rs folder where the rust code lives:
   - Do not add these comments for string or char literals unless the comment adds real clarity; those literals are intentionally exempt from the lint.
   - If you add one of these comments, the parameter name must exactly match the callee signature.
 - When possible, make `match` statements exhaustive and avoid wildcard arms.
+- Newly added traits should include doc comments that explain their role and how implementations are expected to use them.
+- Discourage both `#[async_trait]` and `#[allow(async_fn_in_trait)]` in Rust traits.
+  - Prefer native RPITIT trait methods with explicit `Send` bounds on the returned future, as in `3c7f013f9735` / `#16630`.
+  - Preferred trait shape:
+    `fn foo(&self, ...) -> impl std::future::Future<Output = T> + Send;`
+  - Implementations may still use `async fn foo(&self, ...) -> T` when they satisfy that contract.
+  - Do not use `#[allow(async_fn_in_trait)]` as a shortcut around spelling the future contract explicitly.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 - Prefer private modules and explicitly exported public crate API.
