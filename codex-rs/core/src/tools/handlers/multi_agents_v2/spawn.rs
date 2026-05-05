@@ -4,8 +4,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_spawn_config;
-use crate::session::turn_context::TurnEnvironment;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
@@ -52,6 +51,7 @@ impl ToolHandler for Handler {
                 &turn,
                 CollabAgentSpawnBeginEvent {
                     call_id: call_id.clone(),
+                    started_at_ms: now_unix_timestamp_ms(),
                     sender_thread_id: session.conversation_id,
                     prompt: prompt.clone(),
                     model: args.model.clone().unwrap_or_default(),
@@ -69,51 +69,15 @@ impl ToolHandler for Handler {
                 args.reasoning_effort,
             )?;
         } else {
-            let pre_role_reasoning_effort = config.model_reasoning_effort;
-            let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
-                .await
-                .map_err(FunctionCallError::RespondToModel)?;
-            spawn_model_selection_carry.apply_to_config(&mut config);
-            apply_requested_spawn_agent_model_overrides(
+            Box::pin(apply_spawn_agent_model_selection(
                 &session,
                 turn.as_ref(),
                 &mut config,
+                role_name,
                 args.model.as_deref(),
                 args.reasoning_effort,
-            )
+            ))
             .await?;
-            if let Some(model) = config.model.clone() {
-                let model_info = session
-                    .services
-                    .models_manager
-                    .get_model_info(&model, &config.to_models_manager_config())
-                    .await;
-
-                match config.model_reasoning_effort {
-                    Some(reasoning_effort) => {
-                        if !model_info
-                            .supported_reasoning_levels
-                            .iter()
-                            .any(|preset| preset.effort == reasoning_effort)
-                        {
-                            let role_changed_reasoning_effort =
-                                config.model_reasoning_effort != pre_role_reasoning_effort;
-                            if args.reasoning_effort.is_some() || role_changed_reasoning_effort {
-                                validate_spawn_agent_reasoning_effort(
-                                    &model,
-                                    &model_info.supported_reasoning_levels,
-                                    reasoning_effort,
-                                )?;
-                            }
-
-                            config.model_reasoning_effort = model_info.default_reasoning_level;
-                        }
-                    }
-                    None => {
-                        config.model_reasoning_effort = model_info.default_reasoning_level;
-                    }
-                }
-            }
         }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
@@ -154,12 +118,7 @@ impl ToolHandler for Handler {
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
-                    environments: Some(
-                        turn.environments
-                            .iter()
-                            .map(TurnEnvironment::selection)
-                            .collect(),
-                    ),
+                    environments: Some(turn.environments.to_selections()),
                 },
             )
             .await
@@ -213,6 +172,7 @@ impl ToolHandler for Handler {
                 &turn,
                 CollabAgentSpawnEndEvent {
                     call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
                     sender_thread_id: session.conversation_id,
                     new_thread_id,
                     new_agent_nickname,

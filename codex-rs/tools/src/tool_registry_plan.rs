@@ -138,7 +138,7 @@ pub fn build_tool_registry_plan(
         );
     }
 
-    if config.has_environment {
+    if config.environment_mode.has_environment() {
         match &config.shell_type {
             ConfigShellToolType::Default => {
                 plan.push_spec(
@@ -187,7 +187,9 @@ pub fn build_tool_registry_plan(
         }
     }
 
-    if config.has_environment && config.shell_type != ConfigShellToolType::Disabled {
+    if config.environment_mode.has_environment()
+        && config.shell_type != ConfigShellToolType::Disabled
+    {
         plan.register_handler("shell", ToolHandlerKind::Shell);
         plan.register_handler("container.exec", ToolHandlerKind::Shell);
         plan.register_handler("local_shell", ToolHandlerKind::Shell);
@@ -283,7 +285,7 @@ pub fn build_tool_registry_plan(
                     ToolSearchSource {
                         server_name: tool.server_name,
                         connector_name: tool.connector_name,
-                        connector_description: tool.connector_description,
+                        description: tool.description,
                     }
                 }))
             })
@@ -327,7 +329,7 @@ pub fn build_tool_registry_plan(
         );
     }
 
-    if config.has_environment
+    if config.environment_mode.has_environment()
         && let Some(apply_patch_tool_type) = &config.apply_patch_tool_type
     {
         match apply_patch_tool_type {
@@ -349,7 +351,7 @@ pub fn build_tool_registry_plan(
         plan.register_handler("apply_patch", ToolHandlerKind::ApplyPatch);
     }
 
-    if config.has_environment
+    if config.environment_mode.has_environment()
         && config
             .experimental_supported_tools
             .iter()
@@ -396,7 +398,7 @@ pub fn build_tool_registry_plan(
         );
     }
 
-    if config.has_environment {
+    if config.environment_mode.has_environment() {
         plan.push_spec(
             create_view_image_tool(ViewImageToolOptions {
                 can_request_original_image_detail: config.can_request_original_image_detail,

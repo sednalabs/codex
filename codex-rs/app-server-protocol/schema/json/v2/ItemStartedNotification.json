@@ -345,6 +345,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -1412,6 +1413,11 @@
     "item": {
       "$ref": "#/$defs/ThreadItem"
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this item lifecycle started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -1422,7 +1428,8 @@
   "required": [
     "item",
     "threadId",
-    "turnId"
+    "turnId",
+    "startedAtMs"
   ],
   "title": "ItemStartedNotification",
   "type": "object"
