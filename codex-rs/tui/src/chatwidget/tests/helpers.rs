@@ -189,6 +189,7 @@ pub(super) async fn make_chatwidget_manual(
         bottom_pane: bottom,
         active_cell: None,
         active_cell_revision: 0,
+        raw_output_mode: cfg.tui_raw_output_mode,
         config: cfg,
         effective_service_tier,
         current_collaboration_mode,
