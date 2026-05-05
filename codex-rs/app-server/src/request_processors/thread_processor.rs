@@ -2851,6 +2851,7 @@ impl ThreadRequestProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
+            dynamic_tools,
             ephemeral,
             exclude_turns,
             persist_extended_history,
@@ -2922,6 +2923,10 @@ impl ThreadRequestProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
+        let core_dynamic_tools = match map_validated_dynamic_tools(dynamic_tools) {
+            Ok(tools) => tools,
+            Err(err) => return Err(invalid_request(err)),
+        };
 
         let NewThread {
             thread_id,
@@ -2930,7 +2935,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_tools(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -2938,6 +2943,7 @@ impl ThreadRequestProcessor {
                     history: history_items.clone(),
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )

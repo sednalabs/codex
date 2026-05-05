@@ -779,8 +779,8 @@ pub async fn run_main_with_transport_options(
             remote_control_handle: Some(remote_control_handle.clone()),
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
         }));
-        let mut thread_created_rx = processor.thread_created_receiver().await;
-        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count().await;
+        let mut thread_created_rx = processor.thread_created_receiver();
+        let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         let mut remote_control_status_rx = remote_control_handle.status_receiver();
         let mut remote_control_status = remote_control_status_rx.borrow().clone();

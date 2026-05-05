@@ -431,7 +431,7 @@ fn start_uninitialized(args: InProcessStartArgs) -> InProcessClientHandle {
                 remote_control_handle: None,
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
-            let mut thread_created_rx = processor.thread_created_receiver().await;
+            let mut thread_created_rx = processor.thread_created_receiver();
             let session = Arc::new(ConnectionSessionState::new(ConnectionOrigin::InProcess));
             let mut listen_for_threads = true;
 

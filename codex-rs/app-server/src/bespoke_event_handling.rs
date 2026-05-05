@@ -844,7 +844,6 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::ComputerUseCallRequest(request) => {
             let call_id = request.call_id;
             let turn_id = request.turn_id;
-            let started_at_ms = request.started_at_ms;
             let environment_id = request.environment_id;
             let adapter = request.adapter;
             let tool = request.tool;
@@ -865,7 +864,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: turn_id.clone(),
                 item,
-                started_at_ms,
+                started_at_ms: now_unix_timestamp_ms(),
             };
             outgoing
                 .send_server_notification(ServerNotification::ItemStarted(notification))
