@@ -244,6 +244,34 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn map_validated_dynamic_tools(
+    dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
+) -> Result<Vec<CoreDynamicToolSpec>, String> {
+    let dynamic_tools = dynamic_tools.unwrap_or_default();
+    if dynamic_tools.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    validate_dynamic_tools(&dynamic_tools)?;
+    Ok(dynamic_tools
+        .into_iter()
+        .map(|tool| CoreDynamicToolSpec {
+            namespace: tool.namespace,
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            defer_loading: tool.defer_loading,
+            persist_on_resume: tool.persist_on_resume,
+            capability: tool.capability.map(|capability| CoreDynamicToolCapability {
+                family: capability.family,
+                capability_scope: capability.capability_scope,
+                mutation_class: capability.mutation_class,
+                lease_mode: capability.lease_mode,
+            }),
+        })
+        .collect())
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -946,22 +974,8 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                })
-                .collect()
-        };
+        let core_dynamic_tools =
+            map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         let NewThread {
@@ -2235,6 +2249,7 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -2293,13 +2308,23 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match map_validated_dynamic_tools(dynamic_tools) {
+            Ok(tools) => tools,
+            Err(err) => {
+                self.outgoing
+                    .send_error(request_id, invalid_request(err))
+                    .await;
+                return Ok(());
+            }
+        };
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_with_tools(
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 persist_extended_history,
                 self.request_trace_context(&request_id).await,
             )

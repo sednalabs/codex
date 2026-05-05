@@ -333,6 +333,7 @@ use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::dynamic_tools::DynamicToolCapability as CoreDynamicToolCapability;
 use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
