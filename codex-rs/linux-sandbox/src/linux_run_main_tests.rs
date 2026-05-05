@@ -61,6 +61,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
             ..Default::default()
         },
     )
+    .expect("build bwrap argv")
     .args;
     apply_inner_command_argv0_for_launcher(
         &mut argv,
@@ -104,6 +105,7 @@ fn rewrites_inner_command_path_when_bwrap_lacks_argv0() {
             ..Default::default()
         },
     )
+    .expect("build bwrap argv")
     .args;
     apply_inner_command_argv0_for_launcher(
         &mut argv,
@@ -172,6 +174,7 @@ fn inserts_unshare_net_when_network_isolation_requested() {
             ..Default::default()
         },
     )
+    .expect("build bwrap argv")
     .args;
     assert!(argv.contains(&"--unshare-net".to_string()));
 }
@@ -190,6 +193,7 @@ fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
             ..Default::default()
         },
     )
+    .expect("build bwrap argv")
     .args;
     assert!(argv.contains(&"--unshare-net".to_string()));
 }
@@ -265,6 +269,7 @@ fn managed_proxy_preflight_argv_is_wrapped_for_full_access_policy() {
         &FileSystemSandboxPolicy::unrestricted(),
         mode,
     )
+    .expect("build preflight argv")
     .args;
     assert!(argv.iter().any(|arg| arg == "--"));
 }
