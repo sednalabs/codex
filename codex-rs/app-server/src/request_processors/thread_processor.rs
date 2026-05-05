@@ -3006,23 +3006,10 @@ impl ThreadRequestProcessor {
         // `excludeTurns` is the cheap fork path, so skip restored usage replay
         // instead of rebuilding history only to attribute a historical update.
         if let Some(token_usage_thread) = token_usage_thread {
-            let token_usage_turn_id = if let Some(rollout_path) = token_usage_thread.path.as_deref()
-            {
-                read_rollout_items_from_rollout(rollout_path)
-                    .await
-                    .ok()
-                    .and_then(|rollout_items| {
-                        latest_token_usage_turn_id_from_rollout_items(
-                            &rollout_items,
-                            token_usage_thread.turns.as_slice(),
-                        )
-                    })
-            } else {
-                latest_token_usage_turn_id_from_rollout_items(
-                    &history_items,
-                    token_usage_thread.turns.as_slice(),
-                )
-            };
+            let token_usage_turn_id = latest_token_usage_turn_id_from_rollout_items(
+                &history_items,
+                token_usage_thread.turns.as_slice(),
+            );
             // Mirror the resume contract for forks: the new thread is usable as soon
             // as the response arrives, so restored usage must follow immediately.
             send_thread_token_usage_update_to_connection(
@@ -3588,7 +3575,7 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
     thread.name = Some(title);
 }
 
-fn thread_from_stored_thread(
+pub(crate) fn thread_from_stored_thread(
     thread: StoredThread,
     fallback_provider: &str,
     fallback_cwd: &AbsolutePathBuf,

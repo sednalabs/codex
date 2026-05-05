@@ -70,6 +70,11 @@ pub(super) async fn read_thread(
         })?;
 
     let mut thread = read_thread_from_rollout_path(store, path).await?;
+    if !params.include_archived && thread.archived_at.is_some() {
+        return Err(ThreadStoreError::InvalidRequest {
+            message: format!("thread {} is archived", thread.thread_id),
+        });
+    }
     attach_history_if_requested(&mut thread, params.include_history).await?;
     Ok(thread)
 }

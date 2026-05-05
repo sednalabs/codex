@@ -331,7 +331,6 @@ pub(super) async fn ensure_listener_task_running(
                         thread_watch_manager.clone(),
                         thread_list_state_permit.clone(),
                         fallback_model_provider.clone(),
-                        codex_home.as_path(),
                     )
                     .await;
                 }
@@ -702,7 +701,7 @@ pub(super) async fn send_thread_goal_snapshot_notification(
     }
 }
 
-pub(super) fn populate_thread_turns_from_history(
+pub(crate) fn populate_thread_turns_from_history(
     thread: &mut Thread,
     items: &[RolloutItem],
     active_turn: Option<&Turn>,

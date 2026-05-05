@@ -10,6 +10,7 @@ use crate::AppendThreadItemsParams;
 use crate::CreateThreadParams;
 use crate::LoadThreadHistoryParams;
 use crate::LocalThreadStore;
+use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
@@ -136,6 +137,20 @@ impl LiveThread {
             .load_history(LoadThreadHistoryParams {
                 thread_id: self.thread_id,
                 include_archived,
+            })
+            .await
+    }
+
+    pub async fn read_thread(
+        &self,
+        include_archived: bool,
+        include_history: bool,
+    ) -> ThreadStoreResult<StoredThread> {
+        self.thread_store
+            .read_thread(ReadThreadParams {
+                thread_id: self.thread_id,
+                include_archived,
+                include_history,
             })
             .await
     }

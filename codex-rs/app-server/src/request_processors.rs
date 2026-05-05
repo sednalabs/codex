@@ -248,7 +248,7 @@ use codex_core::CodexThread;
 use codex_core::CodexThreadTurnContextOverrides;
 use codex_core::ForkSnapshot;
 use codex_core::NewThread;
-use codex_core::RolloutRecorder;
+#[cfg(test)]
 use codex_core::SessionMeta;
 use codex_core::StartThreadOptions;
 use codex_core::SteerInputError;
@@ -266,6 +266,7 @@ use codex_core::exec_env::create_env;
 use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_path_by_id_str;
 use codex_core::path_utils;
+#[cfg(test)]
 use codex_core::read_head_for_summary;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -336,6 +337,7 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+#[cfg(test)]
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -345,6 +347,7 @@ use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::EventMsg;
+#[cfg(test)]
 use codex_protocol::protocol::GitInfo as CoreGitInfo;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::McpAuthStatus as CoreMcpAuthStatus;
@@ -358,6 +361,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget as CoreReviewTarget;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
+#[cfg(test)]
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
@@ -477,7 +481,9 @@ use self::thread_goal_processor::api_thread_goal_from_state;
 use self::thread_lifecycle::*;
 use self::thread_summary::*;
 
-pub(crate) use self::thread_summary::read_rollout_items_from_rollout;
+pub(crate) use self::thread_lifecycle::populate_thread_turns_from_history;
+pub(crate) use self::thread_processor::thread_from_stored_thread;
+#[cfg(test)]
 pub(crate) use self::thread_summary::read_summary_from_rollout;
 pub(crate) use self::thread_summary::summary_to_thread;
 

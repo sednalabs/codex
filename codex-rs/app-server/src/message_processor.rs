@@ -409,7 +409,6 @@ impl MessageProcessor {
             thread_state_manager,
             thread_watch_manager,
             thread_list_state_permit,
-            state_db.clone(),
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.

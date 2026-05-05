@@ -413,6 +413,23 @@ impl CodexThread {
         live_thread.load_history(include_archived).await
     }
 
+    pub async fn read_thread(
+        &self,
+        include_archived: bool,
+        include_history: bool,
+    ) -> ThreadStoreResult<StoredThread> {
+        let live_thread = self
+            .codex
+            .session
+            .live_thread_for_persistence("read thread")
+            .map_err(|err| ThreadStoreError::Internal {
+                message: err.to_string(),
+            })?;
+        live_thread
+            .read_thread(include_archived, include_history)
+            .await
+    }
+
     pub async fn update_thread_metadata(
         &self,
         patch: ThreadMetadataPatch,
