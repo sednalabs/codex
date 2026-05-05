@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::file_watcher::WatchRegistration;
+use crate::goals::ExternalGoalSet;
 use crate::goals::GoalRuntimeEvent;
 use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
@@ -160,11 +161,11 @@ impl CodexThread {
         }
     }
 
-    pub async fn apply_external_goal_set(&self, status: codex_state::ThreadGoalStatus) {
+    pub async fn apply_external_goal_set(&self, external_set: ExternalGoalSet) {
         if let Err(err) = self
             .codex
             .session
-            .goal_runtime_apply(GoalRuntimeEvent::ExternalSet { status })
+            .goal_runtime_apply(GoalRuntimeEvent::ExternalSet { external_set })
             .await
         {
             tracing::warn!("failed to apply external goal status runtime effects: {err}");
