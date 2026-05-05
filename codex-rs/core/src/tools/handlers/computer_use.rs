@@ -356,11 +356,9 @@ async fn request_computer_use(
 }
 
 fn selected_computer_use_environment_id(turn_context: &TurnContext) -> Option<String> {
-    let primary_environment = turn_context.environment.as_ref()?;
     turn_context
         .environments
-        .iter()
-        .find(|environment| Arc::ptr_eq(&environment.environment, primary_environment))
+        .first()
         .map(|environment| environment.environment_id.clone())
 }
 
@@ -578,17 +576,18 @@ mod tests {
             codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
                 .expect("create second environment"),
         );
-        turn_context.environment = Some(Arc::clone(&second_environment));
         turn_context.environments = vec![
             TurnEnvironment {
                 environment_id: "first".to_string(),
                 environment: first_environment,
                 cwd: cwd.clone(),
+                shell: "bash".to_string(),
             },
             TurnEnvironment {
                 environment_id: "second".to_string(),
                 environment: second_environment,
                 cwd,
+                shell: "bash".to_string(),
             },
         ];
 

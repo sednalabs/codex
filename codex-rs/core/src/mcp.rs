@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::plugins::PluginsManager;
 use codex_config::McpServerConfig;
+use codex_core_plugins::PluginsManager;
 use codex_login::CodexAuth;
 pub use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolPluginProvenance;

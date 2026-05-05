@@ -1,6 +1,8 @@
 use crate::agent::AgentStatus;
 use crate::agent::status::is_final;
 use crate::config::Config;
+use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
+use crate::config::MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -27,6 +29,7 @@ use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
+use codex_tools::request_user_input_available_modes;
 use codex_tools::request_user_input_unavailable_message;
 use serde::Deserialize;
 use serde::Serialize;
@@ -34,9 +37,9 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
-pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
+pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
 const SPAWN_AGENT_APPROVAL_QUESTION_ID: &str = "spawn_agent_approval";
 const SPAWN_AGENT_APPROVAL_ACCEPT_OPTION: &str = "Approve";
 const SPAWN_AGENT_APPROVAL_DECLINE_OPTION: &str = "Decline";
@@ -285,10 +288,8 @@ pub(crate) async fn require_spawn_agent_approval_if_requested(
     }
 
     let mode = session.collaboration_mode().await.mode;
-    if let Some(message) = request_user_input_unavailable_message(
-        mode,
-        turn.tools_config.default_mode_request_user_input,
-    ) {
+    let available_modes = request_user_input_available_modes(&turn.config.features);
+    if let Some(message) = request_user_input_unavailable_message(mode, &available_modes) {
         return Err(FunctionCallError::RespondToModel(message));
     }
 

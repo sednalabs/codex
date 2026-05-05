@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
 use codex_protocol::approvals::GuardianAssessmentAction;
-use codex_protocol::protocol::GuardianAssessmentEvent;
-use codex_protocol::protocol::GuardianAssessmentStatus;
+use codex_protocol::approvals::GuardianAssessmentEvent;
+use codex_protocol::approvals::GuardianAssessmentStatus;
 
 const MAX_RECENT_DENIALS: usize = 10;
 

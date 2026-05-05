@@ -3,6 +3,8 @@ name: v8-canary
 on:
   pull_request:
     paths:
+      - ".github/actions/setup-bazel-ci/**"
+      - ".github/scripts/compute-bazel-windows-path.ps1"
       - ".github/scripts/rusty_v8_bazel.py"
       - ".github/workflows/rusty-v8-release.yml"
       - ".github/workflows/v8-canary.yml"
@@ -17,6 +19,8 @@ on:
       - main
       - upstream-main
     paths:
+      - ".github/actions/setup-bazel-ci/**"
+      - ".github/scripts/compute-bazel-windows-path.ps1"
       - ".github/scripts/rusty_v8_bazel.py"
       - ".github/workflows/rusty-v8-release.yml"
       - ".github/workflows/v8-canary.yml"
@@ -76,7 +80,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Bazel
-        uses: bazelbuild/setup-bazelisk@b39c379c82683a5f25d34f0d062761f62693e0b2 # v3
+        uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: ${{ matrix.target }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6

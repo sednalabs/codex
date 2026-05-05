@@ -43,9 +43,7 @@ pub(crate) struct SendMessageArgs {
 /// Input for the MultiAgentV2 `assign_task` tool.
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
-    pub(crate) items: Vec<UserInput>,
-    #[serde(default)]
-    pub(crate) interrupt: bool,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +77,23 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
         ));
     }
     Ok(message)
+}
+
+/// Handles the shared MultiAgentV2 plain-text message flow for both `send_message` and `followup_task`.
+pub(crate) async fn handle_message_string_tool(
+    invocation: ToolInvocation,
+    mode: MessageDeliveryMode,
+    target: String,
+    message: String,
+) -> Result<MessageToolResult, FunctionCallError> {
+    handle_message_submission(
+        invocation,
+        mode,
+        target,
+        message_content(message)?,
+        /*interrupt*/ false,
+    )
+    .await
 }
 
 fn message_content_from_items(

@@ -199,197 +199,6 @@
       ],
       "type": "object"
     },
-    "FileSystemAccessMode": {
-      "enum": [
-        "read",
-        "write",
-        "none"
-      ],
-      "type": "string"
-    },
-    "FileSystemPath": {
-      "oneOf": [
-        {
-          "properties": {
-            "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
-            },
-            "type": {
-              "const": "path",
-              "title": "PathFileSystemPathType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path"
-          ],
-          "title": "PathFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "pattern": {
-              "type": "string"
-            },
-            "type": {
-              "const": "glob_pattern",
-              "title": "GlobPatternFileSystemPathType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "pattern"
-          ],
-          "title": "GlobPatternFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "special",
-              "title": "SpecialFileSystemPathType",
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "title": "SpecialFileSystemPath",
-          "type": "object"
-        }
-      ]
-    },
-    "FileSystemSandboxEntry": {
-      "properties": {
-        "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
-        },
-        "path": {
-          "$ref": "#/$defs/FileSystemPath"
-        }
-      },
-      "required": [
-        "path",
-        "access"
-      ],
-      "type": "object"
-    },
-    "FileSystemSpecialPath": {
-      "oneOf": [
-        {
-          "properties": {
-            "kind": {
-              "const": "root",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "RootFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "minimal",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "MinimalFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "project_roots",
-              "type": "string"
-            },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "KindFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "tmpdir",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "TmpdirFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "slash_tmp",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "SlashTmpFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "unknown",
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "path"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "FunctionCallOutputBody": {
       "anyOf": [
         {
@@ -453,38 +262,6 @@
           "type": "object"
         }
       ]
-    },
-    "GhostCommit": {
-      "description": "Details of a ghost commit created from a repository state.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "preexisting_untracked_dirs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "preexisting_untracked_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "preexisting_untracked_files",
-        "preexisting_untracked_dirs"
-      ],
-      "type": "object"
     },
     "ImageDetail": {
       "enum": [
@@ -580,124 +357,60 @@
         }
       ]
     },
-    "PermissionProfile": {
+    "PermissionProfileModificationParams": {
       "oneOf": [
         {
-          "description": "Codex owns sandbox construction for this profile.",
+          "description": "Additional concrete directory that should be writable.",
           "properties": {
-            "fileSystem": {
-              "$ref": "#/$defs/PermissionProfileFileSystemPermissions"
-            },
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "const": "managed",
-              "title": "ManagedPermissionProfileType",
+              "const": "additionalWritableRoot",
+              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "network",
-            "fileSystem"
+            "path"
           ],
-          "title": "ManagedPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Do not apply an outer sandbox.",
-          "properties": {
-            "type": {
-              "const": "disabled",
-              "title": "DisabledPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "DisabledPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Filesystem isolation is enforced by an external caller.",
-          "properties": {
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
-            },
-            "type": {
-              "const": "external",
-              "title": "ExternalPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "network"
-          ],
-          "title": "ExternalPermissionProfile",
+          "title": "AdditionalWritableRootPermissionProfileModificationParams",
           "type": "object"
         }
       ]
     },
-    "PermissionProfileFileSystemPermissions": {
+    "PermissionProfileSelectionParams": {
       "oneOf": [
         {
+          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
           "properties": {
-            "entries": {
-              "items": {
-                "$ref": "#/$defs/FileSystemSandboxEntry"
-              },
-              "type": "array"
+            "id": {
+              "type": "string"
             },
-            "globScanMaxDepth": {
-              "format": "uint",
-              "minimum": 1,
+            "modifications": {
+              "items": {
+                "$ref": "#/$defs/PermissionProfileModificationParams"
+              },
               "type": [
-                "integer",
+                "array",
                 "null"
               ]
             },
             "type": {
-              "const": "restricted",
-              "title": "RestrictedPermissionProfileFileSystemPermissionsType",
+              "const": "profile",
+              "title": "ProfilePermissionProfileSelectionParamsType",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "entries"
+            "id"
           ],
-          "title": "RestrictedPermissionProfileFileSystemPermissions",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "unrestricted",
-              "title": "UnrestrictedPermissionProfileFileSystemPermissionsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "UnrestrictedPermissionProfileFileSystemPermissions",
+          "title": "ProfilePermissionProfileSelectionParams",
           "type": "object"
         }
       ]
-    },
-    "PermissionProfileNetworkPermissions": {
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "enabled"
-      ],
-      "type": "object"
     },
     "Personality": {
       "enum": [
@@ -1158,24 +871,6 @@
         },
         {
           "properties": {
-            "ghost_commit": {
-              "$ref": "#/$defs/GhostCommit"
-            },
-            "type": {
-              "const": "ghost_snapshot",
-              "title": "GhostSnapshotResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "ghost_commit"
-          ],
-          "title": "GhostSnapshotResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
             "encrypted_content": {
               "type": "string"
             },
@@ -1366,10 +1061,6 @@
         "null"
       ]
     },
-    "excludeTurns": {
-      "description": "When true, return only thread metadata and live-resume state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after resuming.",
-      "type": "boolean"
-    },
     "model": {
       "description": "Configuration overrides for the resumed thread, if any.",
       "type": [
@@ -1382,17 +1073,6 @@
         "string",
         "null"
       ]
-    },
-    "permissionProfile": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PermissionProfile"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Full permissions override for the resumed thread. Cannot be combined\nwith `sandbox`."
     },
     "personality": {
       "anyOf": [

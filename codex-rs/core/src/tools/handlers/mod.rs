@@ -12,11 +12,11 @@ pub(crate) mod multi_agents_common;
 pub(crate) mod multi_agents_v2;
 mod plan;
 mod request_permissions;
+mod request_plugin_install;
 mod request_user_input;
 mod shell;
 mod test_sync;
 mod tool_search;
-mod tool_suggest;
 mod unavailable_tool;
 pub(crate) mod unified_exec;
 mod view_image;
@@ -47,12 +47,12 @@ pub use mcp::McpHandler;
 pub use mcp_resource::McpResourceHandler;
 pub use plan::PlanHandler;
 pub use request_permissions::RequestPermissionsHandler;
+pub use request_plugin_install::RequestPluginInstallHandler;
 pub use request_user_input::RequestUserInputHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
-pub use tool_suggest::ToolSuggestHandler;
 pub use unavailable_tool::UnavailableToolHandler;
 pub(crate) use unavailable_tool::unavailable_tool_message;
 pub use unified_exec::UnifiedExecHandler;
@@ -358,7 +358,7 @@ mod tests {
                 entries: vec![
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Special {
-                            value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                            value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                         },
                         access: FileSystemAccessMode::Write,
                     },

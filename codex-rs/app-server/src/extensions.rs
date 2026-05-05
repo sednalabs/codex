@@ -180,7 +180,11 @@ impl AppServerHooks for SednaAppServerHooks {
     ) {
         thread_manager
             .plugins_manager()
-            .maybe_start_plugin_startup_tasks_for_config(config, auth_manager);
+            .maybe_start_plugin_startup_tasks_for_config(
+                &config.plugins_config_input(),
+                auth_manager,
+                /*on_effective_plugins_changed*/ None,
+            );
     }
 
     fn config_mutation_follow_up(&self, kind: ConfigMutationKind) -> ConfigMutationFollowUp {
@@ -370,6 +374,7 @@ mod tests {
                 enabled: true,
                 install_policy: codex_app_server_protocol::PluginInstallPolicy::Available,
                 auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
+                availability: codex_app_server_protocol::PluginAvailability::Available,
                 interface: None,
             },
             description: None,

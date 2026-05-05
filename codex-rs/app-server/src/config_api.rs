@@ -32,12 +32,11 @@ use codex_config::ResidencyRequirement as CoreResidencyRequirement;
 use codex_config::SandboxModeRequirement as CoreSandboxModeRequirement;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
-use codex_core::plugins::PluginId;
 use codex_core_plugins::loader::installed_plugin_telemetry_metadata;
 use codex_core_plugins::toggles::collect_plugin_enabled_candidates;
 use codex_features::canonical_feature_for_key;
 use codex_features::feature_for_key;
-use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
+use codex_plugin::PluginId;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::Op;
 use serde_json::json;
@@ -49,6 +48,7 @@ const SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT: &[&str] = &[
     "apps",
     "memories",
     "plugins",
+    "remote_control",
     "tool_search",
     "tool_suggest",
     "tool_call_mcp_elicitation",
@@ -474,6 +474,7 @@ mod tests {
     use codex_core::AuthManager;
     use codex_core::CodexAuth;
     use codex_features::Feature;
+    use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
     use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -536,6 +537,7 @@ mod tests {
                 },
             }),
             mcp_servers: None,
+            plugins: None,
             apps: None,
             rules: None,
             enforce_residency: Some(CoreResidencyRequirement::Us),
@@ -664,6 +666,7 @@ mod tests {
             feature_requirements: None,
             hooks: None,
             mcp_servers: None,
+            plugins: None,
             apps: None,
             rules: None,
             enforce_residency: None,
@@ -724,6 +727,7 @@ mod tests {
             feature_requirements: None,
             hooks: None,
             mcp_servers: None,
+            plugins: None,
             apps: None,
             rules: None,
             enforce_residency: None,

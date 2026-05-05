@@ -736,11 +736,11 @@ fn find_top_level_brace_span(input: &str) -> Option<(usize, usize)> {
     let mut state = ScanState::default();
     let mut open_index = None;
     for (index, ch) in input.char_indices() {
-        if !state.in_string() && ch == '{' && state.depth.is_top_level() {
+        if !state.in_ignored_syntax() && ch == '{' && state.depth.is_top_level() {
             open_index = Some(index);
         }
         state.observe(ch);
-        if !state.in_string()
+        if !state.in_ignored_syntax()
             && ch == '}'
             && state.depth.is_top_level()
             && let Some(open) = open_index
@@ -760,7 +760,7 @@ fn split_top_level_multi(input: &str, delimiters: &[char]) -> Vec<String> {
     let mut start = 0usize;
     let mut parts = Vec::new();
     for (index, ch) in input.char_indices() {
-        if !state.in_string() && state.depth.is_top_level() && delimiters.contains(&ch) {
+        if !state.in_ignored_syntax() && state.depth.is_top_level() && delimiters.contains(&ch) {
             let part = input[start..index].trim();
             if !part.is_empty() {
                 parts.push(part.to_string());
@@ -882,22 +882,58 @@ struct ScanState {
     depth: Depth,
     string_delim: Option<char>,
     escape: bool,
+    block_comment: bool,
+    line_comment: bool,
+    previous_char: Option<char>,
 }
 
 impl ScanState {
     fn observe(&mut self, ch: char) {
+        if self.line_comment {
+            if ch == '\n' {
+                self.line_comment = false;
+            }
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.block_comment {
+            if self.previous_char == Some('*') && ch == '/' {
+                self.block_comment = false;
+                self.previous_char = None;
+            } else {
+                self.previous_char = Some(ch);
+            }
+            return;
+        }
+
         if let Some(delim) = self.string_delim {
             if self.escape {
                 self.escape = false;
+                self.previous_char = Some(ch);
                 return;
             }
             if ch == '\\' {
                 self.escape = true;
+                self.previous_char = Some(ch);
                 return;
             }
             if ch == delim {
                 self.string_delim = None;
             }
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.previous_char == Some('/') && ch == '/' {
+            self.line_comment = true;
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.previous_char == Some('/') && ch == '*' {
+            self.block_comment = true;
+            self.previous_char = Some(ch);
             return;
         }
 
@@ -919,10 +955,11 @@ impl ScanState {
             }
             _ => {}
         }
+        self.previous_char = Some(ch);
     }
 
-    fn in_string(&self) -> bool {
-        self.string_delim.is_some()
+    fn in_ignored_syntax(&self) -> bool {
+        self.string_delim.is_some() || self.block_comment || self.line_comment
     }
 }
 
@@ -1091,7 +1128,10 @@ fn build_flat_v2_schema(bundle: &Value) -> Result<Value> {
     flat_root.insert("definitions".to_string(), Value::Object(flat_definitions));
     let mut flat_bundle = Value::Object(flat_root);
     rewrite_ref_prefix(&mut flat_bundle, "#/definitions/v2/", "#/definitions/");
+    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/v2/", "#/definitions/");
+    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/", "#/definitions/");
     ensure_no_ref_prefix(&flat_bundle, "#/definitions/v2/", "flat v2")?;
+    ensure_no_ref_prefix(&flat_bundle, "#/$defs/", "flat v2")?;
     ensure_referenced_definitions_present(&flat_bundle, "flat v2")?;
     Ok(flat_bundle)
 }
@@ -1106,9 +1146,10 @@ fn collect_non_v2_refs_inner(value: &Value, refs: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
-                && !reference.starts_with("#/definitions/v2/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
+                && !suffix.starts_with("v2/")
             {
+                let name = suffix.split('/').next().unwrap_or(suffix);
                 refs.insert(name.to_string());
             }
             for child in obj.values() {
@@ -1218,9 +1259,9 @@ fn collect_missing_definitions(
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
             {
-                let name = name.split('/').next().unwrap_or(name);
+                let name = suffix.split('/').next().unwrap_or(suffix);
                 if !definitions.contains_key(name) {
                     missing.insert(name.to_string());
                 }
@@ -2743,6 +2784,79 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
         );
         assert_eq!(
             filtered.contains(r#"import type { Keep } from "./Keep";"#),
+            true
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn experimental_type_fields_ts_filter_handles_generated_command_params_shape() -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_ts_filter_{}", Uuid::now_v7()));
+        fs::create_dir_all(&output_dir)?;
+
+        struct TempDirGuard(PathBuf);
+
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let _guard = TempDirGuard(output_dir.clone());
+        let path = output_dir.join("CommandExecParams.ts");
+        let content = r#"import type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+import type { PermissionProfile } from "./PermissionProfile";
+import type { SandboxPolicy } from "./SandboxPolicy";
+
+export type CommandExecParams = {/**
+ * Command argv vector. Empty arrays are rejected.
+ */
+command: Array<string>, /**
+ * Optional environment overrides merged into the server-computed
+ * environment.
+ */
+env?: { [key in string]?: string | null } | null, /**
+ * Optional initial PTY size in character cells. Only valid when `tty` is
+ * true.
+ */
+size?: CommandExecTerminalSize | null, /**
+ * Optional sandbox policy for this command.
+ *
+ * Uses the same shape as thread/turn execution sandbox configuration and
+ * defaults to the user's configured policy when omitted. Cannot be
+ * combined with `permissionProfile`.
+ */
+sandboxPolicy?: SandboxPolicy | null,
+/**
+ * Optional full permissions profile for this command.
+ *
+ * Defaults to the user's configured permissions when omitted. Cannot be
+ * combined with `sandboxPolicy`.
+ */
+permissionProfile?: PermissionProfile | null};
+"#;
+        fs::write(&path, content)?;
+
+        static CUSTOM_FIELD: crate::experimental_api::ExperimentalField =
+            crate::experimental_api::ExperimentalField {
+                type_name: "CommandExecParams",
+                field_name: "permissionProfile",
+                reason: "command/exec.permissionProfile",
+            };
+        filter_experimental_type_fields_ts(&output_dir, &[&CUSTOM_FIELD])?;
+
+        let filtered = fs::read_to_string(&path)?;
+        assert_eq!(
+            filtered.contains("permissionProfile?: PermissionProfile"),
+            false
+        );
+        assert_eq!(
+            filtered.contains(r#"import type { PermissionProfile } from "./PermissionProfile";"#),
+            false
+        );
+        assert_eq!(filtered.contains("sandboxPolicy?: SandboxPolicy"), true);
+        assert_eq!(
+            filtered.contains(r#"import type { SandboxPolicy } from "./SandboxPolicy";"#),
             true
         );
         Ok(())
