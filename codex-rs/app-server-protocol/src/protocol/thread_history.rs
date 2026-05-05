@@ -2031,7 +2031,9 @@ mod tests {
                         "text": "result"
                     })],
                     structured_content: Some(serde_json::json!({"id":"123"})),
-                    meta: None,
+                    meta: Some(serde_json::json!({
+                        "ui/resourceUri": "ui://widget/lookup.html"
+                    })),
                 })),
                 error: None,
                 duration_ms: Some(8),

@@ -272,6 +272,17 @@ fn map_validated_dynamic_tools(
         .collect())
 }
 
+fn resume_request_requires_thread_replacement(params: &ThreadResumeParams) -> bool {
+    // Dynamic tools are part of the core session/tool-registry configuration.
+    // A loaded thread cannot safely hot-swap that registry in place, so force
+    // resume through the replacement path whenever a caller supplies an
+    // explicit non-empty dynamic-tool bundle.
+    params
+        .dynamic_tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -697,6 +708,36 @@ impl ThreadRequestProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
+    }
+
+    async fn replace_loaded_thread_for_resume(
+        &self,
+        thread_id: ThreadId,
+        loaded_thread: Arc<CodexThread>,
+    ) -> Result<(), JSONRPCErrorError> {
+        if matches!(loaded_thread.agent_status().await, AgentStatus::Running) {
+            return Err(invalid_request(format!(
+                "cannot resume thread {thread_id} with dynamic tools while a turn is running; retry after the turn completes"
+            )));
+        }
+
+        let removed_thread = self
+            .thread_manager
+            .remove_thread(&thread_id)
+            .await
+            .unwrap_or(loaded_thread);
+        info!("thread {thread_id} is loaded; replacing it for resume");
+        match wait_for_thread_shutdown(&removed_thread).await {
+            ThreadShutdownResult::Complete => {}
+            ThreadShutdownResult::SubmitFailed => {
+                error!("failed to submit Shutdown to thread {thread_id}; proceeding with resume");
+            }
+            ThreadShutdownResult::TimedOut => {
+                warn!("thread {thread_id} shutdown timed out; proceeding with resume");
+            }
+        }
+        self.finalize_thread_teardown(thread_id).await;
+        Ok(())
     }
 
     fn listener_task_context(&self) -> ListenerTaskContext {
@@ -2533,6 +2574,12 @@ impl ThreadRequestProcessor {
         };
 
         if let Some((existing_thread_id, existing_thread, source_thread)) = running_thread {
+            if resume_request_requires_thread_replacement(params) {
+                self.replace_loaded_thread_for_resume(existing_thread_id, existing_thread)
+                    .await?;
+                return Ok(false);
+            }
+
             let history_items = source_thread
                 .history
                 .as_ref()
