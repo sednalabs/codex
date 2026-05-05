@@ -114,7 +114,7 @@ jobs:
       - name: Resolve PR changed files via API
         id: pr_diff
         if: ${{ github.event_name == 'pull_request' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         env:
           BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
         with:
@@ -224,7 +224,7 @@ jobs:
       - name: Check previous required result on follow-up head
         id: previous_required
         if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         env:
           BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
         with:
