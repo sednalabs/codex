@@ -72,6 +72,8 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
             display_order: hook.display_order,
             enabled: hook.enabled,
             is_managed: hook.is_managed,
+            current_hash: hook.current_hash.clone(),
+            trust_status: hook.trust_status.into(),
         })
         .collect()
 }

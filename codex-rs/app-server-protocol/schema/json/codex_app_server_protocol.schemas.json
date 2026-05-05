@@ -9833,6 +9833,9 @@
               "null"
             ]
           },
+          "currentHash": {
+            "type": "string"
+          },
           "displayOrder": {
             "format": "int64",
             "type": "integer"
@@ -9880,9 +9883,13 @@
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "trustStatus": {
+            "$ref": "#/definitions/v2/HookTrustStatus"
           }
         },
         "required": [
+          "currentHash",
           "displayOrder",
           "enabled",
           "eventName",
@@ -9891,7 +9898,8 @@
           "key",
           "source",
           "sourcePath",
-          "timeoutSec"
+          "timeoutSec",
+          "trustStatus"
         ],
         "type": "object"
       },
@@ -10080,6 +10088,15 @@
         ],
         "title": "HookStartedNotification",
         "type": "object"
+      },
+      "HookTrustStatus": {
+        "enum": [
+          "managed",
+          "untrusted",
+          "trusted",
+          "modified"
+        ],
+        "type": "string"
       },
       "HooksListEntry": {
         "properties": {
