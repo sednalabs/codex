@@ -140,7 +140,7 @@ jobs:
           target: ${{ runner.os }}
           install-test-prereqs: ${{ inputs.needs_dotslash && 'true' || 'false' }}
 
-      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+      - uses: taiki-e/install-action@7ea35f098a7369cd23488403f58be9c491a6c55f # v2
         if: ${{ inputs.needs_just }}
         with:
           tool: just
