@@ -4294,7 +4294,7 @@
     },
     "notify": {
       "default": null,
-      "description": "Deprecated optional external command to spawn for end-user notifications.",
+      "description": "Optional external command to spawn for end-user notifications.",
       "items": {
         "type": "string"
       },
