@@ -80,6 +80,7 @@ use codex_protocol::protocol::HookRunStatus as CoreHookRunStatus;
 use codex_protocol::protocol::HookRunSummary as CoreHookRunSummary;
 use codex_protocol::protocol::HookScope as CoreHookScope;
 use codex_protocol::protocol::HookSource as CoreHookSource;
+use codex_protocol::protocol::HookTrustStatus as CoreHookTrustStatus;
 use codex_protocol::protocol::ModelRerouteReason as CoreModelRerouteReason;
 use codex_protocol::protocol::ModelVerification as CoreModelVerification;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
@@ -471,6 +472,12 @@ v2_enum_from_core!(
         LegacyManagedConfigFile,
         LegacyManagedConfigMdm,
         Unknown,
+    }
+);
+
+v2_enum_from_core!(
+    pub enum HookTrustStatus from CoreHookTrustStatus {
+        Managed, Untrusted, Trusted, Modified
     }
 );
 
@@ -2547,6 +2554,15 @@ impl From<CoreModelAvailabilityNux> for ModelAvailabilityNux {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct Model {
     pub id: String,
     pub model: String,
@@ -2562,8 +2578,11 @@ pub struct Model {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_personality: bool,
+    /// Deprecated: use `serviceTiers` instead.
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
     // Only one model should be marked as default.
     pub is_default: bool,
 }
@@ -3866,9 +3885,9 @@ pub struct ThreadStartParams {
     #[experimental("thread/start.experimentalRawEvents")]
     #[serde(default)]
     pub experimental_raw_events: bool,
-    /// If true, persist additional EventMsg variants to the rollout file.
-    /// However, `thread/read`, `thread/resume`, and `thread/fork` still only
-    /// return the limited form of thread history for scalability reasons.
+    /// Deprecated and ignored by app-server. Kept only so older clients can
+    /// continue sending the field while rollout persistence always uses the
+    /// limited history policy.
     #[experimental("thread/start.persistFullHistory")]
     #[serde(default)]
     pub persist_extended_history: bool,
@@ -4006,9 +4025,9 @@ pub struct ThreadResumeParams {
     #[experimental("thread/resume.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
-    /// If true, persist additional EventMsg variants to the rollout file.
-    /// However, `thread/read`, `thread/resume`, and `thread/fork` still only
-    /// return the limited form of thread history for scalability reasons.
+    /// Deprecated and ignored by app-server. Kept only so older clients can
+    /// continue sending the field while rollout persistence always uses the
+    /// limited history policy.
     #[experimental("thread/resume.persistFullHistory")]
     #[serde(default)]
     pub persist_extended_history: bool,
@@ -4120,9 +4139,9 @@ pub struct ThreadForkParams {
     #[experimental("thread/fork.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
-    /// If true, persist additional EventMsg variants to the rollout file.
-    /// However, `thread/read`, `thread/resume`, and `thread/fork` still only
-    /// return the limited form of thread history for scalability reasons.
+    /// Deprecated and ignored by app-server. Kept only so older clients can
+    /// continue sending the field while rollout persistence always uses the
+    /// limited history policy.
     #[experimental("thread/fork.persistFullHistory")]
     #[serde(default)]
     pub persist_extended_history: bool,
@@ -5073,6 +5092,8 @@ pub struct HookMetadata {
     pub display_order: i64,
     pub enabled: bool,
     pub is_managed: bool,
+    pub current_hash: String,
+    pub trust_status: HookTrustStatus,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -5466,10 +5487,11 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
 #[ts(export_to = "v2/")]
 pub struct Turn {
     pub id: String,
-    /// Only populated on a `thread/resume` or `thread/fork` response.
-    /// For all other responses and notifications returning a Turn,
-    /// the items field will be an empty list.
+    /// Thread items currently included in this turn payload.
     pub items: Vec<ThreadItem>,
+    /// Describes how much of `items` has been loaded for this turn.
+    #[serde(default)]
+    pub items_view: TurnItemsView,
     pub status: TurnStatus,
     /// Only populated when the Turn's status is failed.
     pub error: Option<TurnError>,
@@ -5482,6 +5504,19 @@ pub struct Turn {
     /// Duration between turn start and completion in milliseconds, if known.
     #[ts(type = "number | null")]
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum TurnItemsView {
+    /// `items` was not loaded for this turn. The field is intentionally empty.
+    NotLoaded,
+    /// `items` contains only a display summary for this turn.
+    Summary,
+    /// `items` contains every ThreadItem available from persisted app-server history for this turn.
+    #[default]
+    Full,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -7479,6 +7514,15 @@ pub enum WindowsSandboxSetupMode {
     Unelevated,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum WindowsSandboxReadiness {
+    Ready,
+    NotConfigured,
+    UpdateRequired,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -7493,6 +7537,13 @@ pub struct WindowsSandboxSetupStartParams {
 #[ts(export_to = "v2/")]
 pub struct WindowsSandboxSetupStartResponse {
     pub started: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct WindowsSandboxReadinessResponse {
+    pub status: WindowsSandboxReadiness,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -8562,6 +8613,22 @@ mod tests {
             };
             assert_eq!(expected, reviewer);
         }
+    }
+
+    #[test]
+    fn turn_defaults_legacy_missing_items_view_to_full() {
+        let turn: Turn = serde_json::from_value(json!({
+            "id": "turn_123",
+            "items": [],
+            "status": "completed",
+            "error": null,
+            "startedAt": null,
+            "completedAt": null,
+            "durationMs": null,
+        }))
+        .expect("legacy turn should deserialize");
+
+        assert_eq!(turn.items_view, TurnItemsView::Full);
     }
 
     #[test]

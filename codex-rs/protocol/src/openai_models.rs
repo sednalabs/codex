@@ -117,6 +117,13 @@ pub struct ModelAvailabilityNux {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Metadata describing a Codex-supported model.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct ModelPreset {
@@ -135,9 +142,12 @@ pub struct ModelPreset {
     /// Whether this model supports personality-specific instructions.
     #[serde(default)]
     pub supports_personality: bool,
-    /// Additional speed tiers this model can run with beyond the standard path.
+    /// Deprecated: use `service_tiers` instead.
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    /// Service tiers this model can run with.
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
     /// Whether this is the default model for new users.
     pub is_default: bool,
     /// recommended upgrade model
@@ -260,6 +270,8 @@ pub struct ModelInfo {
     pub priority: i32,
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
     pub base_instructions: String,
@@ -443,7 +455,8 @@ impl From<ModelInfo> for ModelPreset {
                 .unwrap_or(ReasoningEffort::None),
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             supports_personality,
-            additional_speed_tiers: info.additional_speed_tiers.clone(),
+            additional_speed_tiers: info.additional_speed_tiers,
+            service_tiers: info.service_tiers,
             is_default: false, // default is the highest priority available model
             upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
                 id: upgrade.model.clone(),
@@ -465,25 +478,14 @@ impl From<ModelInfo> for ModelPreset {
 }
 
 impl ModelPreset {
-    /// Whether this preset advertises the given service-speed tier.
-    pub fn supports_speed_tier(&self, speed_tier: &str) -> bool {
-        self.additional_speed_tiers
-            .iter()
-            .any(|tier| tier == speed_tier)
-    }
-
-    /// Whether this preset can use the fast-mode service tier.
     pub fn supports_fast_mode(&self) -> bool {
-        self.supports_speed_tier(SPEED_TIER_FAST)
-    }
-
-    /// Whether this preset should be shown in interactive picker-style surfaces.
-    ///
-    /// Some legacy models remain directly supported in the API and intentionally advertise an
-    /// upgrade path even when they are hidden from the default picker list. Keep those models
-    /// reachable from downstream "All models" flows without re-exposing fully hidden models.
-    pub fn show_in_interactive_picker(&self) -> bool {
-        self.show_in_picker || (self.supported_in_api && self.upgrade.is_some())
+        self.service_tiers
+            .iter()
+            .any(|tier| tier.id == SPEED_TIER_FAST)
+            || self
+                .additional_speed_tiers
+                .iter()
+                .any(|tier| tier == SPEED_TIER_FAST)
     }
 
     /// Filter models based on authentication mode.
@@ -564,7 +566,8 @@ mod tests {
             visibility: ModelVisibility::List,
             supported_in_api: true,
             priority: 1,
-            additional_speed_tiers: vec![],
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
             availability_nux: None,
             upgrade: None,
             base_instructions: "base".to_string(),
@@ -834,6 +837,8 @@ mod tests {
             availability_nux: Some(ModelAvailabilityNux {
                 message: "Try Spark.".to_string(),
             }),
+            additional_speed_tiers: vec![SPEED_TIER_FAST.to_string()],
+            service_tiers: Vec::new(),
             ..test_model(/*spec*/ None)
         });
 
@@ -843,5 +848,19 @@ mod tests {
                 message: "Try Spark.".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn model_preset_supports_fast_mode_from_service_tiers() {
+        let preset = ModelPreset::from(ModelInfo {
+            service_tiers: vec![ModelServiceTier {
+                id: SPEED_TIER_FAST.to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        });
+
+        assert!(preset.supports_fast_mode());
     }
 }

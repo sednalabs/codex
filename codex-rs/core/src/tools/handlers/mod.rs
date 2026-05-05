@@ -3,8 +3,6 @@ pub(crate) mod apply_patch;
 mod computer_use;
 mod dynamic;
 mod goal;
-mod inspect_agent_tree;
-mod list_dir;
 mod mcp;
 mod mcp_resource;
 pub(crate) mod multi_agents;
@@ -33,6 +31,8 @@ use std::path::Path;
 use crate::function_tool::FunctionCallError;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
+use crate::session::turn_context::TurnEnvironment;
 pub(crate) use crate::tools::code_mode::CodeModeExecuteHandler;
 pub(crate) use crate::tools::code_mode::CodeModeWaitHandler;
 pub use apply_patch::ApplyPatchHandler;
@@ -40,22 +40,27 @@ use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 pub use computer_use::ComputerUseHandler;
 pub use dynamic::DynamicToolHandler;
-pub use goal::GoalHandler;
-pub use inspect_agent_tree::InspectAgentTreeHandler;
-pub use list_dir::ListDirHandler;
+pub use goal::CreateGoalHandler;
+pub use goal::GetGoalHandler;
+pub use goal::UpdateGoalHandler;
 pub use mcp::McpHandler;
-pub use mcp_resource::McpResourceHandler;
+pub use mcp_resource::ListMcpResourceTemplatesHandler;
+pub use mcp_resource::ListMcpResourcesHandler;
+pub use mcp_resource::ReadMcpResourceHandler;
 pub use plan::PlanHandler;
 pub use request_permissions::RequestPermissionsHandler;
 pub use request_plugin_install::RequestPluginInstallHandler;
 pub use request_user_input::RequestUserInputHandler;
+pub use shell::ContainerExecHandler;
+pub use shell::LocalShellHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
 pub use unavailable_tool::UnavailableToolHandler;
 pub(crate) use unavailable_tool::unavailable_tool_message;
-pub use unified_exec::UnifiedExecHandler;
+pub use unified_exec::ExecCommandHandler;
+pub use unified_exec::WriteStdinHandler;
 pub use view_image::ViewImageHandler;
 
 fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
@@ -88,6 +93,27 @@ fn resolve_workdir_base_path(
         .and_then(Value::as_str)
         .filter(|workdir| !workdir.is_empty())
         .map_or_else(|| default_cwd.clone(), |workdir| default_cwd.join(workdir)))
+}
+
+fn resolve_tool_environment<'a>(
+    turn: &'a TurnContext,
+    environment_id: Option<&str>,
+) -> Result<Option<&'a TurnEnvironment>, FunctionCallError> {
+    environment_id.map_or_else(
+        || Ok(turn.environments.primary()),
+        |environment_id| {
+            turn.environments
+                .turn_environments
+                .iter()
+                .find(|environment| environment.environment_id == environment_id)
+                .map(Some)
+                .ok_or_else(|| {
+                    FunctionCallError::RespondToModel(format!(
+                        "unknown turn environment id `{environment_id}`"
+                    ))
+                })
+        },
+    )
 }
 
 /// Validates feature/policy constraints for `with_additional_permissions` and

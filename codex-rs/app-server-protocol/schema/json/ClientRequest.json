@@ -2344,161 +2344,25 @@
       ],
       "type": "object"
     },
-    "ProcessKillParams": {
-      "description": "Terminate a running `process/spawn` session.",
-      "properties": {
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "processHandle"
-      ],
-      "type": "object"
-    },
-    "ProcessResizePtyParams": {
-      "description": "Resize a running PTY-backed `process/spawn` session.",
-      "properties": {
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        },
-        "size": {
-          "$ref": "#/$defs/ProcessTerminalSize",
-          "description": "New PTY size in character cells."
-        }
-      },
-      "required": [
-        "processHandle",
-        "size"
-      ],
-      "type": "object"
-    },
-    "ProcessSpawnParams": {
-      "description": "Spawn a standalone process (argv vector) without a Codex sandbox on the host\nwhere the app server is running.\n\n`process/spawn` returns after the process has started and the connection-scoped\n`processHandle` has been registered. Process output and exit are reported via\n`process/outputDelta` and `process/exited` notifications.",
-      "properties": {
-        "command": {
-          "description": "Command argv vector. Empty arrays are rejected.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "cwd": {
-          "$ref": "#/$defs/AbsolutePathBuf",
-          "description": "Absolute working directory for the process."
-        },
-        "env": {
-          "additionalProperties": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "description": "Optional environment overrides merged into the app-server process\nenvironment.\n\nMatching names override inherited values. Set a key to `null` to unset\nan inherited variable.",
-          "type": [
-            "object",
-            "null"
-          ]
-        },
-        "outputBytesCap": {
-          "description": "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Set to `null` to disable the\ncap.",
-          "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped process handle.\n\nDuplicate active handles are rejected on the same connection. The same\nhandle can be reused after the prior process exits.",
-          "type": "string"
-        },
-        "size": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProcessTerminalSize"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional initial PTY size in character cells. Only valid when `tty` is\ntrue."
-        },
-        "streamStdin": {
-          "description": "Allow follow-up `process/writeStdin` requests to write stdin bytes.",
-          "type": "boolean"
-        },
-        "streamStdoutStderr": {
-          "description": "Stream stdout/stderr via `process/outputDelta` notifications.\n\nStreamed bytes are not duplicated into the `process/exited` notification.",
-          "type": "boolean"
-        },
-        "timeoutMs": {
-          "description": "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Set to `null` to disable the\ntimeout.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "tty": {
-          "description": "Enable PTY mode.\n\nThis implies `streamStdin` and `streamStdoutStderr`.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "command",
-        "processHandle",
-        "cwd"
-      ],
-      "type": "object"
-    },
     "ProcessTerminalSize": {
       "description": "PTY size in character cells for `process/spawn` PTY sessions.",
       "properties": {
         "cols": {
           "description": "Terminal width in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "rows": {
           "description": "Terminal height in character cells.",
           "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
       "required": [
-        "rows",
-        "cols"
-      ],
-      "type": "object"
-    },
-    "ProcessWriteStdinParams": {
-      "description": "Write stdin bytes to a running `process/spawn` session, close stdin, or\nboth.",
-      "properties": {
-        "closeStdin": {
-          "description": "Close stdin after writing `deltaBase64`, if present.",
-          "type": "boolean"
-        },
-        "deltaBase64": {
-          "description": "Optional base64-encoded stdin bytes to write.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "processHandle"
+        "cols",
+        "rows"
       ],
       "type": "object"
     },
@@ -3063,6 +2927,22 @@
                 "null"
               ]
             },
+            "type": {
+              "enum": [
+                "context_compaction"
+              ],
+              "title": "ContextCompactionResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ContextCompactionResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "type": {
               "const": "context_compaction",
               "title": "ContextCompactionResponseItemType",
@@ -6339,7 +6219,32 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "const": "account/login/start",
+          "enum": [
+            "windowsSandbox/readiness"
+          ],
+          "title": "WindowsSandbox/readinessRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "WindowsSandbox/readinessRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/login/start"
+          ],
           "title": "Account/login/startRequestMethod",
           "type": "string"
         },

@@ -2,6 +2,10 @@ use super::*;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const PERSIST_EXTENDED_HISTORY_DEPRECATION_SUMMARY: &str =
+    "persistExtendedHistory is deprecated and ignored";
+const PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS: &str =
+    "Remove this parameter. App-server always uses limited history persistence.";
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -121,12 +125,6 @@ fn collect_resume_override_mismatches(
             "developerInstructions override was provided and ignored while running".to_string(),
         );
     }
-    if request.persist_extended_history {
-        mismatch_details.push(
-            "persistExtendedHistory override was provided and ignored while running".to_string(),
-        );
-    }
-
     mismatch_details
 }
 
@@ -165,10 +163,8 @@ fn normalize_thread_list_cwd_filters(
     for cwd in cwds {
         let cwd = AbsolutePathBuf::relative_to_current_dir(cwd.as_str())
             .map(AbsolutePathBuf::into_path_buf)
-            .map_err(|err| JSONRPCErrorError {
-                code: INVALID_PARAMS_ERROR_CODE,
-                message: format!("invalid thread/list cwd filter `{cwd}`: {err}"),
-                data: None,
+            .map_err(|err| {
+                invalid_params(format!("invalid thread/list cwd filter `{cwd}`: {err}"))
             })?;
         normalized_cwds.push(cwd);
     }
@@ -242,45 +238,6 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn map_validated_dynamic_tools(
-    dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
-) -> Result<Vec<CoreDynamicToolSpec>, String> {
-    let dynamic_tools = dynamic_tools.unwrap_or_default();
-    if dynamic_tools.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    validate_dynamic_tools(&dynamic_tools)?;
-    Ok(dynamic_tools
-        .into_iter()
-        .map(|tool| CoreDynamicToolSpec {
-            namespace: tool.namespace,
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            defer_loading: tool.defer_loading,
-            persist_on_resume: tool.persist_on_resume,
-            capability: tool.capability.map(|capability| CoreDynamicToolCapability {
-                family: capability.family,
-                capability_scope: capability.capability_scope,
-                mutation_class: capability.mutation_class,
-                lease_mode: capability.lease_mode,
-            }),
-        })
-        .collect())
-}
-
-fn resume_request_requires_thread_replacement(params: &ThreadResumeParams) -> bool {
-    // Dynamic tools are part of the core session/tool-registry configuration.
-    // A loaded thread cannot safely hot-swap that registry in place, so force
-    // resume through the replacement path whenever a caller supplies an
-    // explicit non-empty dynamic-tool bundle.
-    params
-        .dynamic_tools
-        .as_ref()
-        .is_some_and(|tools| !tools.is_empty())
 }
 
 #[derive(Clone)]
@@ -372,20 +329,34 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_resume_inner(request_id, params)
-            .await
-            .map(|()| None)
+        self.thread_resume_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await
+        .map(|()| None)
     }
 
     pub(crate) async fn thread_fork(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadForkParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_fork_inner(request_id, params)
-            .await
-            .map(|()| None)
+        self.thread_fork_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await
+        .map(|()| None)
     }
 
     pub(crate) async fn thread_archive(
@@ -606,21 +577,14 @@ impl ThreadRequestProcessor {
         thread_id: &str,
     ) -> Result<(ThreadId, Arc<CodexThread>), JSONRPCErrorError> {
         // Resolve the core conversation handle from a v2 thread id string.
-        let thread_id = ThreadId::from_string(thread_id).map_err(|err| JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message: format!("invalid thread id: {err}"),
-            data: None,
-        })?;
+        let thread_id = ThreadId::from_string(thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
         let thread = self
             .thread_manager
             .get_thread(thread_id)
             .await
-            .map_err(|_| JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!("thread not found: {thread_id}"),
-                data: None,
-            })?;
+            .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
 
         Ok((thread_id, thread))
     }
@@ -640,14 +604,18 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
+        let mcp_elicitations_auto_deny = xcode_26_4_mcp_elicitations_auto_deny(
+            app_server_client_name.as_deref(),
+            app_server_client_version.as_deref(),
+        );
         thread
-            .set_app_server_client_info(app_server_client_name, app_server_client_version)
+            .set_app_server_client_info(
+                app_server_client_name,
+                app_server_client_version,
+                mcp_elicitations_auto_deny,
+            )
             .await
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to set app server client info: {err}"),
-                data: None,
-            })
+            .map_err(|err| internal_error(format!("failed to set app server client info: {err}")))
     }
 
     async fn finalize_thread_teardown(&self, thread_id: ThreadId) {
@@ -708,36 +676,6 @@ impl ThreadRequestProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
-    }
-
-    async fn replace_loaded_thread_for_resume(
-        &self,
-        thread_id: ThreadId,
-        loaded_thread: Arc<CodexThread>,
-    ) -> Result<(), JSONRPCErrorError> {
-        if matches!(loaded_thread.agent_status().await, AgentStatus::Running) {
-            return Err(invalid_request(format!(
-                "cannot resume thread {thread_id} with dynamic tools while a turn is running; retry after the turn completes"
-            )));
-        }
-
-        let removed_thread = self
-            .thread_manager
-            .remove_thread(&thread_id)
-            .await
-            .unwrap_or(loaded_thread);
-        info!("thread {thread_id} is loaded; replacing it for resume");
-        match wait_for_thread_shutdown(&removed_thread).await {
-            ThreadShutdownResult::Complete => {}
-            ThreadShutdownResult::SubmitFailed => {
-                error!("failed to submit Shutdown to thread {thread_id}; proceeding with resume");
-            }
-            ThreadShutdownResult::TimedOut => {
-                warn!("thread {thread_id} shutdown timed out; proceeding with resume");
-            }
-        }
-        self.finalize_thread_teardown(thread_id).await;
-        Ok(())
     }
 
     fn listener_task_context(&self) -> ListenerTaskContext {
@@ -819,6 +757,10 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        if persist_extended_history {
+            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
+                .await;
+        }
         let environment_selections = self.parse_environment_selections(environments)?;
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
@@ -861,7 +803,6 @@ impl ThreadRequestProcessor {
                 dynamic_tools,
                 session_start_source,
                 environment_selections,
-                persist_extended_history,
                 service_name,
                 experimental_raw_events,
                 request_trace,
@@ -910,6 +851,18 @@ impl ThreadRequestProcessor {
         self.outgoing.request_trace_context(request_id).await
     }
 
+    async fn send_persist_extended_history_deprecation_notice(&self, connection_id: ConnectionId) {
+        self.outgoing
+            .send_server_notification_to_connections(
+                &[connection_id],
+                ServerNotification::DeprecationNotice(DeprecationNoticeNotification {
+                    summary: PERSIST_EXTENDED_HISTORY_DEPRECATION_SUMMARY.to_string(),
+                    details: Some(PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS.to_string()),
+                }),
+            )
+            .await;
+    }
+
     async fn submit_core_op(
         &self,
         request_id: &ConnectionRequestId,
@@ -933,7 +886,6 @@ impl ThreadRequestProcessor {
         dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
         session_start_source: Option<codex_app_server_protocol::ThreadStartSource>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
-        persist_extended_history: bool,
         service_name: Option<String>,
         experimental_raw_events: bool,
         request_trace: Option<W3cTraceContext>,
@@ -1015,8 +967,22 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let core_dynamic_tools =
-            map_validated_dynamic_tools(dynamic_tools).map_err(invalid_request)?;
+        let dynamic_tools = dynamic_tools.unwrap_or_default();
+        let core_dynamic_tools = if dynamic_tools.is_empty() {
+            Vec::new()
+        } else {
+            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
+            dynamic_tools
+                .into_iter()
+                .map(|tool| CoreDynamicToolSpec {
+                    namespace: tool.namespace,
+                    name: tool.name,
+                    description: tool.description,
+                    input_schema: tool.input_schema,
+                    defer_loading: tool.defer_loading,
+                })
+                .collect()
+        };
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         let NewThread {
@@ -1036,7 +1002,7 @@ impl ThreadRequestProcessor {
                 },
                 session_source: None,
                 dynamic_tools: core_dynamic_tools,
-                persist_extended_history,
+                persist_extended_history: false,
                 metrics_service_name: service_name,
                 parent_trace: request_trace,
                 environments,
@@ -1045,7 +1011,7 @@ impl ThreadRequestProcessor {
                 "app_server.thread_start.create_thread",
                 otel.name = "app_server.thread_start.create_thread",
                 thread_start.dynamic_tool_count = core_dynamic_tool_count,
-                thread_start.persist_extended_history = persist_extended_history,
+                thread_start.persist_extended_history = false,
             ))
             .await
             .map_err(|err| match err {
@@ -1591,10 +1557,8 @@ impl ThreadRequestProcessor {
             .and_then(|stored_thread| {
                 summary_from_stored_thread(stored_thread, fallback_provider.as_str())
                     .map(|summary| summary_to_thread(summary, &self.config.cwd))
-                    .ok_or_else(|| JSONRPCErrorError {
-                        code: INTERNAL_ERROR_CODE,
-                        message: format!("failed to read unarchived thread {thread_id}"),
-                        data: None,
+                    .ok_or_else(|| {
+                        internal_error(format!("failed to read unarchived thread {thread_id}"))
                     })
             })?;
 
@@ -2229,6 +2193,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
@@ -2257,6 +2223,10 @@ impl ThreadRequestProcessor {
                 .await;
             return Ok(());
         }
+        if params.persist_extended_history {
+            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
+                .await;
+        }
 
         let _thread_list_state_permit = match self.acquire_thread_list_state_permit().await {
             Ok(permit) => permit,
@@ -2265,7 +2235,15 @@ impl ThreadRequestProcessor {
                 return Ok(());
             }
         };
-        match self.resume_running_thread(&request_id, &params).await {
+        match self
+            .resume_running_thread(
+                &request_id,
+                &params,
+                app_server_client_name.clone(),
+                app_server_client_version.clone(),
+            )
+            .await
+        {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
@@ -2290,9 +2268,8 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
-            dynamic_tools,
             exclude_turns,
-            persist_extended_history,
+            persist_extended_history: _persist_extended_history,
         } = params;
         let include_turns = !exclude_turns;
 
@@ -2349,24 +2326,14 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
-        let core_dynamic_tools = match map_validated_dynamic_tools(dynamic_tools) {
-            Ok(tools) => tools,
-            Err(err) => {
-                self.outgoing
-                    .send_error(request_id, invalid_request(err))
-                    .await;
-                return Ok(());
-            }
-        };
 
         match self
             .thread_manager
-            .resume_thread_with_history_with_tools(
+            .resume_thread_with_history(
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
-                core_dynamic_tools,
-                persist_extended_history,
+                /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -2377,6 +2344,16 @@ impl ThreadRequestProcessor {
                 session_configured,
                 ..
             }) => {
+                if let Err(err) = Self::set_app_server_client_info(
+                    codex_thread.as_ref(),
+                    app_server_client_name,
+                    app_server_client_version,
+                )
+                .await
+                {
+                    self.outgoing.send_error(request_id, err).await;
+                    return Ok(());
+                }
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
                 let Some(rollout_path) = rollout_path else {
                     let error =
@@ -2513,6 +2490,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: &ConnectionRequestId,
         params: &ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<bool, JSONRPCErrorError> {
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
@@ -2574,12 +2553,6 @@ impl ThreadRequestProcessor {
         };
 
         if let Some((existing_thread_id, existing_thread, source_thread)) = running_thread {
-            if resume_request_requires_thread_replacement(params) {
-                self.replace_loaded_thread_for_resume(existing_thread_id, existing_thread)
-                    .await?;
-                return Ok(false);
-            }
-
             let history_items = source_thread
                 .history
                 .as_ref()
@@ -2598,6 +2571,12 @@ impl ThreadRequestProcessor {
                 existing_thread_id,
                 existing_thread.clone(),
                 thread_state.clone(),
+            )
+            .await?;
+            Self::set_app_server_client_info(
+                existing_thread.as_ref(),
+                app_server_client_name,
+                app_server_client_version,
             )
             .await?;
 
@@ -2632,10 +2611,10 @@ impl ThreadRequestProcessor {
                 )));
             };
 
-            let (emit_thread_goal_update, thread_goal_state_db) = self
-                .thread_goal_processor
-                .pending_resume_goal_state(existing_thread.as_ref())
-                .await;
+            let emit_thread_goal_update = self.config.features.enabled(Feature::Goals);
+            let thread_goal_state_db = emit_thread_goal_update
+                .then(|| self.state_db.clone())
+                .flatten();
 
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
@@ -2883,6 +2862,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadForkParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadForkParams {
             thread_id,
@@ -2898,7 +2879,6 @@ impl ThreadRequestProcessor {
             config: cli_overrides,
             base_instructions,
             developer_instructions,
-            dynamic_tools,
             ephemeral,
             exclude_turns,
             persist_extended_history,
@@ -2908,6 +2888,10 @@ impl ThreadRequestProcessor {
             return Err(invalid_request(
                 "`permissions` cannot be combined with `sandbox`",
             ));
+        }
+        if persist_extended_history {
+            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
+                .await;
         }
 
         let source_thread = self
@@ -2970,10 +2954,6 @@ impl ThreadRequestProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
-        let core_dynamic_tools = match map_validated_dynamic_tools(dynamic_tools) {
-            Ok(tools) => tools,
-            Err(err) => return Err(invalid_request(err)),
-        };
 
         let NewThread {
             thread_id,
@@ -2982,7 +2962,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history_with_tools(
+            .fork_thread_from_history(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -2990,8 +2970,7 @@ impl ThreadRequestProcessor {
                     history: history_items.clone(),
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
-                core_dynamic_tools,
-                persist_extended_history,
+                /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -3002,6 +2981,13 @@ impl ThreadRequestProcessor {
                 CodexErr::InvalidRequest(message) => invalid_request(message),
                 err => internal_error(format!("error forking thread: {err}")),
             })?;
+
+        Self::set_app_server_client_info(
+            forked_thread.as_ref(),
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await?;
 
         // Auto-attach a conversation listener when forking a thread.
         log_listener_attach_result(
@@ -3084,23 +3070,10 @@ impl ThreadRequestProcessor {
         // `excludeTurns` is the cheap fork path, so skip restored usage replay
         // instead of rebuilding history only to attribute a historical update.
         if let Some(token_usage_thread) = token_usage_thread {
-            let token_usage_turn_id = if let Some(rollout_path) = token_usage_thread.path.as_deref()
-            {
-                read_rollout_items_from_rollout(rollout_path)
-                    .await
-                    .ok()
-                    .and_then(|rollout_items| {
-                        latest_token_usage_turn_id_from_rollout_items(
-                            &rollout_items,
-                            token_usage_thread.turns.as_slice(),
-                        )
-                    })
-            } else {
-                latest_token_usage_turn_id_from_rollout_items(
-                    &history_items,
-                    token_usage_thread.turns.as_slice(),
-                )
-            };
+            let token_usage_turn_id = latest_token_usage_turn_id_from_rollout_items(
+                &history_items,
+                token_usage_thread.turns.as_slice(),
+            );
             // Mirror the resume contract for forks: the new thread is usable as soon
             // as the response arrives, so restored usage must follow immediately.
             send_thread_token_usage_update_to_connection(
@@ -3272,6 +3245,17 @@ impl ThreadRequestProcessor {
     }
 }
 
+fn xcode_26_4_mcp_elicitations_auto_deny(
+    client_name: Option<&str>,
+    client_version: Option<&str>,
+) -> bool {
+    // Xcode 26.4 shipped before app-server MCP elicitation requests were
+    // client-visible. Keep elicitations auto-denied for that client line.
+    // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
+    client_name == Some("Xcode")
+        && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
 const THREAD_TURNS_DEFAULT_LIMIT: usize = 25;
 const THREAD_TURNS_MAX_LIMIT: usize = 100;
 
@@ -3330,11 +3314,9 @@ fn paginate_thread_turns(
         .as_ref()
         .and_then(|anchor| turns.iter().position(|turn| turn.id == anchor.turn_id));
     if anchor.is_some() && anchor_index.is_none() {
-        return Err(JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message: "invalid cursor: anchor turn is no longer present".to_string(),
-            data: None,
-        });
+        return Err(invalid_request(
+            "invalid cursor: anchor turn is no longer present",
+        ));
     }
 
     let mut keyed_turns: Vec<_> = turns.into_iter().enumerate().collect();
@@ -3395,19 +3377,11 @@ fn serialize_thread_turns_cursor(
         turn_id: turn_id.to_string(),
         include_anchor,
     })
-    .map_err(|err| JSONRPCErrorError {
-        code: INTERNAL_ERROR_CODE,
-        message: format!("failed to serialize cursor: {err}"),
-        data: None,
-    })
+    .map_err(|err| internal_error(format!("failed to serialize cursor: {err}")))
 }
 
 fn parse_thread_turns_cursor(cursor: &str) -> Result<ThreadTurnsCursor, JSONRPCErrorError> {
-    serde_json::from_str(cursor).map_err(|_| JSONRPCErrorError {
-        code: INVALID_REQUEST_ERROR_CODE,
-        message: format!("invalid cursor: {cursor}"),
-        data: None,
-    })
+    serde_json::from_str(cursor).map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))
 }
 
 fn reconstruct_thread_turns_for_turns_list(
@@ -3458,36 +3432,18 @@ fn thread_read_view_error(err: ThreadReadViewError) -> JSONRPCErrorError {
 
 fn thread_store_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
     match err {
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to list threads: {err}"),
-            data: None,
-        },
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        err => internal_error(format!("failed to list threads: {err}")),
     }
 }
 
 fn thread_store_resume_read_error(err: ThreadStoreError) -> JSONRPCErrorError {
     match err {
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        ThreadStoreError::ThreadNotFound { thread_id } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message: format!("no rollout found for thread id {thread_id}"),
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to read thread: {err}"),
-            data: None,
-        },
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        ThreadStoreError::ThreadNotFound { thread_id } => {
+            invalid_request(format!("no rollout found for thread id {thread_id}"))
+        }
+        err => internal_error(format!("failed to read thread: {err}")),
     }
 }
 
@@ -3550,25 +3506,17 @@ fn conversation_summary_thread_id_read_error(
         ThreadStoreError::ThreadNotFound { thread_id } if thread_id == conversation_id => {
             conversation_summary_not_found_error(conversation_id)
         }
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to load conversation summary for {conversation_id}: {err}"),
-            data: None,
-        },
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        err => internal_error(format!(
+            "failed to load conversation summary for {conversation_id}: {err}"
+        )),
     }
 }
 
 fn conversation_summary_not_found_error(conversation_id: ThreadId) -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: INVALID_REQUEST_ERROR_CODE,
-        message: format!("no rollout found for conversation id {conversation_id}"),
-        data: None,
-    }
+    invalid_request(format!(
+        "no rollout found for conversation id {conversation_id}"
+    ))
 }
 
 fn conversation_summary_rollout_path_read_error(
@@ -3576,55 +3524,29 @@ fn conversation_summary_rollout_path_read_error(
     err: ThreadStoreError,
 ) -> JSONRPCErrorError {
     match err {
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!(
-                "failed to load conversation summary from {}: {}",
-                path.display(),
-                err
-            ),
-            data: None,
-        },
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        err => internal_error(format!(
+            "failed to load conversation summary from {}: {}",
+            path.display(),
+            err
+        )),
     }
 }
 
 fn thread_store_write_error(operation: &str, err: ThreadStoreError) -> JSONRPCErrorError {
     match err {
-        ThreadStoreError::ThreadNotFound { thread_id } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message: format!("thread not found: {thread_id}"),
-            data: None,
-        },
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to {operation}: {err}"),
-            data: None,
-        },
+        ThreadStoreError::ThreadNotFound { thread_id } => {
+            invalid_request(format!("thread not found: {thread_id}"))
+        }
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        err => internal_error(format!("failed to {operation}: {err}")),
     }
 }
 
 fn thread_store_archive_error(operation: &str, err: ThreadStoreError) -> JSONRPCErrorError {
     match err {
-        ThreadStoreError::InvalidRequest { message } => JSONRPCErrorError {
-            code: INVALID_REQUEST_ERROR_CODE,
-            message,
-            data: None,
-        },
-        err => JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("failed to {operation} thread: {err}"),
-            data: None,
-        },
+        ThreadStoreError::InvalidRequest { message } => invalid_request(message),
+        err => internal_error(format!("failed to {operation} thread: {err}")),
     }
 }
 
@@ -3666,7 +3588,7 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
     thread.name = Some(title);
 }
 
-fn thread_from_stored_thread(
+pub(crate) fn thread_from_stored_thread(
     thread: StoredThread,
     fallback_provider: &str,
     fallback_cwd: &AbsolutePathBuf,

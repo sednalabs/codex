@@ -1,14 +1,5 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_agent_targets;
-use crate::agent::status::is_final;
-use crate::session::session::Session;
 use crate::turn_timing::now_unix_timestamp_ms;
-use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::CollabAgentRef;
-use codex_protocol::protocol::CollabWaitingCompletionReason;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -60,6 +51,10 @@ impl CompletionRule {
 
 impl ToolHandler for Handler {
     type Output = WaitAgentResult;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("wait_agent")
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -132,17 +127,23 @@ impl ToolHandler for Handler {
             )
             .await;
 
-        let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
-        let mut final_statuses = HashMap::new();
-        for id in &receiver_thread_ids {
-            match session.services.agent_control.subscribe_status(*id).await {
-                Ok(rx) => {
-                    let status = rx.borrow().clone();
-                    if is_final(&status) {
-                        final_statuses.insert(*id, status);
-                    } else {
-                        status_rxs.push((*id, rx));
-                    }
+        let timed_out = if session.has_pending_mailbox_items().await {
+            false
+        } else {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+            !wait_for_mailbox_change(&mut mailbox_seq_rx, deadline).await
+        };
+        let result = WaitAgentResult::from_timed_out(timed_out);
+
+        session
+            .send_event(
+                &turn,
+                CollabWaitingEndEvent {
+                    sender_thread_id: session.conversation_id,
+                    call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
+                    agent_statuses: Vec::new(),
+                    statuses: HashMap::new(),
                 }
                 Err(CodexErr::ThreadNotFound(_)) => {
                     final_statuses.insert(*id, AgentStatus::NotFound);
