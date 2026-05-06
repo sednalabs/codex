@@ -5733,7 +5733,6 @@ session_picker_view = "dense"
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
-                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![
                     ThreadItem::UserMessage {
                         id: String::from("user-1"),
@@ -5799,7 +5798,6 @@ session_picker_view = "dense"
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
-                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::Reasoning {
                     id: String::from("reasoning-1"),
                     summary: Vec::new(),
@@ -5855,7 +5853,6 @@ session_picker_view = "dense"
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
                 id: String::from("turn-1"),
-                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::Reasoning {
                     id: String::from("reasoning-1"),
                     summary: vec![String::from("public summary")],
