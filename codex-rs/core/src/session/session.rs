@@ -918,6 +918,9 @@ impl Session {
             let enabled_mcp_server_count = mcp_servers.values().filter(|server| server.enabled).count();
             let required_mcp_server_count = required_mcp_servers.len();
             let tool_plugin_provenance = mcp_manager.tool_plugin_provenance(config.as_ref()).await;
+            let host_owned_codex_apps_enabled = config
+                .features
+                .apps_enabled_for_auth(auth.as_ref().is_some_and(|auth| auth.uses_codex_backend()));
             {
                 let mut cancel_guard = sess.services.mcp_startup_cancellation_token.lock().await;
                 cancel_guard.cancel();
@@ -959,6 +962,7 @@ impl Session {
                 mcp_runtime_environment,
                 config.codex_home.to_path_buf(),
                 codex_apps_tools_cache_key(auth),
+                host_owned_codex_apps_enabled,
                 tool_plugin_provenance,
                 auth,
             )

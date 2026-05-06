@@ -4557,7 +4557,14 @@ impl ChatWidget {
         });
 
         let thread_id = self.thread_id.unwrap_or_default();
-        if let Some(request) = McpServerElicitationFormRequest::from_app_server_request(
+        if let Some(params) = crate::bottom_pane::AppLinkViewParams::from_url_app_server_request(
+            thread_id,
+            &params.server_name,
+            request_id.clone(),
+            &params.request,
+        ) {
+            self.open_app_link_view(params);
+        } else if let Some(request) = McpServerElicitationFormRequest::from_app_server_request(
             thread_id,
             request_id.clone(),
             params.clone(),
@@ -4565,18 +4572,29 @@ impl ChatWidget {
             self.bottom_pane
                 .push_mcp_server_elicitation_request(request);
         } else {
-            let request = ApprovalRequest::McpElicitation {
-                thread_id,
-                thread_label: None,
-                server_name: params.server_name,
-                request_id,
-                message: match params.request {
-                    McpServerElicitationRequest::Form { message, .. }
-                    | McpServerElicitationRequest::Url { message, .. } => message,
-                },
-            };
-            self.bottom_pane
-                .push_approval_request(request, &self.config.features);
+            match params.request {
+                McpServerElicitationRequest::Form { message, .. } => {
+                    let request = ApprovalRequest::McpElicitation {
+                        thread_id,
+                        thread_label: None,
+                        server_name: params.server_name,
+                        request_id,
+                        message,
+                    };
+                    self.bottom_pane
+                        .push_approval_request(request, &self.config.features);
+                }
+                McpServerElicitationRequest::Url { .. } => {
+                    self.app_event_tx.resolve_elicitation(
+                        thread_id,
+                        params.server_name,
+                        request_id,
+                        codex_app_server_protocol::McpServerElicitationAction::Decline,
+                        /*content*/ None,
+                        /*meta*/ None,
+                    );
+                }
+            }
         }
         self.request_redraw();
     }

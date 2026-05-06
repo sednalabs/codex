@@ -37,6 +37,8 @@ use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::McpServerElicitationRequest;
+use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::McpServerStartupState;
 use codex_app_server_protocol::McpServerStatusUpdatedNotification;
 use codex_app_server_protocol::NetworkApprovalContext as AppServerNetworkApprovalContext;
@@ -2752,6 +2754,84 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
                 Some(vec![test_absolute_path("/tmp/write")]),
             )),
         }
+    );
+}
+
+#[tokio::test]
+async fn inactive_thread_url_elicitation_routes_to_app_link() {
+    let app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let request = ServerRequest::McpServerElicitationRequest {
+        request_id: AppServerRequestId::Integer(9),
+        params: McpServerElicitationRequestParams {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-auth".to_string()),
+            server_name: "payments".to_string(),
+            request: McpServerElicitationRequest::Url {
+                meta: None,
+                message: "Review the payment details to continue.".to_string(),
+                url: "https://payments.example/checkout/123".to_string(),
+                elicitation_id: "payment-123".to_string(),
+            },
+        },
+    };
+
+    let Some(ThreadInteractiveRequest::AppLink(params)) = app
+        .interactive_request_for_thread_request(thread_id, &request)
+        .await
+    else {
+        panic!("expected app link request");
+    };
+
+    assert_eq!(params.title, "Action required");
+    assert_eq!(params.description, Some("Server: payments".to_string()));
+    assert_eq!(params.url, "https://payments.example/checkout/123");
+    assert_eq!(
+        params.elicitation_target,
+        Some(crate::bottom_pane::AppLinkElicitationTarget {
+            thread_id,
+            server_name: "payments".to_string(),
+            request_id: AppServerRequestId::Integer(9),
+        })
+    );
+}
+
+#[tokio::test]
+async fn inactive_thread_invalid_url_elicitation_is_declined() {
+    let (app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let request = ServerRequest::McpServerElicitationRequest {
+        request_id: AppServerRequestId::Integer(10),
+        params: McpServerElicitationRequestParams {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-auth".to_string()),
+            server_name: "payments".to_string(),
+            request: McpServerElicitationRequest::Url {
+                meta: None,
+                message: "Review the payment details to continue.".to_string(),
+                url: "http://payments.example/checkout/123".to_string(),
+                elicitation_id: "payment-123".to_string(),
+            },
+        },
+    };
+
+    assert!(
+        app.interactive_request_for_thread_request(thread_id, &request)
+            .await
+            .is_none()
+    );
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::SubmitThreadOp {
+            thread_id: op_thread_id,
+            op: Op::ResolveElicitation {
+                server_name,
+                request_id: AppServerRequestId::Integer(10),
+                decision: codex_app_server_protocol::McpServerElicitationAction::Decline,
+                content: None,
+                meta: None,
+            },
+        }) if op_thread_id == thread_id && server_name == "payments"
     );
 }
 
