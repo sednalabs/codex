@@ -195,12 +195,13 @@ async fn load_config_loads_global_agents_instructions() -> std::io::Result<()> {
         "\n  global instructions  \n",
     )?;
 
-    let config = Config::load_from_base_config_with_overrides(
+    let mut config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         ConfigOverrides::default(),
         codex_home.abs(),
     )
     .await?;
+    let _ = config.features.enable(Feature::MemoryTool);
 
     assert_eq!(
         config.user_instructions.as_deref(),
@@ -3345,6 +3346,77 @@ async fn add_dir_override_extends_workspace_writable_roots() -> std::io::Result<
 }
 
 #[tokio::test]
+async fn to_mcp_config_empty_mcp_requirements_preserve_builtin_mcps() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let requirements = codex_config::ConfigRequirementsToml {
+        mcp_servers: Some(BTreeMap::new()),
+        ..Default::default()
+    };
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .cloud_requirements(CloudRequirementsLoader::new(async move {
+            Ok(Some(requirements))
+        }))
+        .build()
+        .await?;
+    config.codex_self_exe = Some(PathBuf::from("/tmp/codex"));
+    let _ = config.features.enable(Feature::BuiltInMcp);
+    let _ = config.features.enable(Feature::MemoryTool);
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+
+    assert_eq!(
+        mcp_config
+            .configured_mcp_servers
+            .get(codex_mcp::MEMORIES_MCP_SERVER_NAME)
+            .map(|server| (server.enabled, server.disabled_reason.clone())),
+        Some((true, None))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn to_mcp_config_nonempty_mcp_requirements_preserve_builtin_mcps() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let requirements = codex_config::ConfigRequirementsToml {
+        mcp_servers: Some(BTreeMap::from([(
+            "docs".to_string(),
+            McpServerRequirement {
+                identity: McpServerIdentity::Command {
+                    command: "docs-mcp".to_string(),
+                },
+            },
+        )])),
+        ..Default::default()
+    };
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .cloud_requirements(CloudRequirementsLoader::new(async move {
+            Ok(Some(requirements))
+        }))
+        .build()
+        .await?;
+    config.codex_self_exe = Some(PathBuf::from("/tmp/codex"));
+    let _ = config.features.enable(Feature::BuiltInMcp);
+    let _ = config.features.enable(Feature::MemoryTool);
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+
+    assert_eq!(
+        mcp_config
+            .configured_mcp_servers
+            .get(codex_mcp::MEMORIES_MCP_SERVER_NAME)
+            .map(|server| (server.enabled, server.disabled_reason.clone())),
+        Some((true, None))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn sqlite_home_defaults_to_codex_home_for_workspace_write() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let config = Config::load_from_base_config_with_overrides(
@@ -4162,6 +4234,107 @@ async fn to_mcp_config_preserves_apps_feature_from_config() -> std::io::Result<(
     let _ = config.features.enable(Feature::Apps);
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(mcp_config.apps_enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn to_mcp_config_includes_enabled_builtin_mcps() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            codex_self_exe: Some(PathBuf::from("/tmp/codex")),
+            ..ConfigOverrides::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+    let _ = config.features.enable(Feature::BuiltInMcp);
+    let _ = config.features.enable(Feature::MemoryTool);
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+
+    assert_eq!(
+        mcp_config
+            .configured_mcp_servers
+            .get(codex_mcp::MEMORIES_MCP_SERVER_NAME)
+            .map(|server| &server.transport),
+        Some(&McpServerTransportConfig::Stdio {
+            command: "/tmp/codex".to_string(),
+            args: vec![
+                "builtin-mcp".to_string(),
+                "memories".to_string(),
+                "--codex-home".to_string(),
+                codex_home.path().display().to_string(),
+            ],
+            env: None,
+            env_vars: Vec::new(),
+            cwd: None,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn to_mcp_config_omits_builtin_mcps_when_feature_is_disabled() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            codex_self_exe: Some(PathBuf::from("/tmp/codex")),
+            ..ConfigOverrides::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+    let _ = config.features.enable(Feature::MemoryTool);
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+
+    assert!(
+        !mcp_config
+            .configured_mcp_servers
+            .contains_key(codex_mcp::MEMORIES_MCP_SERVER_NAME)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn to_mcp_config_reserves_enabled_builtin_mcp_names() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            mcp_servers: HashMap::from([(
+                codex_mcp::MEMORIES_MCP_SERVER_NAME.to_string(),
+                http_mcp("https://user.example/memories"),
+            )]),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides {
+            codex_self_exe: Some(PathBuf::from("/tmp/codex")),
+            ..ConfigOverrides::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+    let _ = config.features.enable(Feature::BuiltInMcp);
+    let _ = config.features.enable(Feature::MemoryTool);
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+
+    assert!(matches!(
+        mcp_config
+            .configured_mcp_servers
+            .get(codex_mcp::MEMORIES_MCP_SERVER_NAME)
+            .map(|server| &server.transport),
+        Some(McpServerTransportConfig::Stdio { .. })
+    ));
 
     Ok(())
 }

@@ -129,7 +129,11 @@ pub struct McpConfig {
     /// ChatGPT auth is checked separately at runtime before the built-in apps
     /// MCP server is added.
     pub apps_enabled: bool,
-    /// User-configured and plugin-provided MCP servers keyed by server name.
+    /// Configured MCP servers keyed by server name.
+    ///
+    /// This includes product-owned built-ins, user-configured servers, and
+    /// plugin-provided servers. Runtime-only additions belong in
+    /// [`effective_mcp_servers`].
     pub configured_mcp_servers: HashMap<String, McpServerConfig>,
     /// Plugin metadata used to attribute MCP tools/connectors to plugin display names.
     pub plugin_capability_summaries: Vec<PluginCapabilitySummary>,

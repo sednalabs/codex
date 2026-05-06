@@ -19,6 +19,9 @@ pub use auth_elicitation::build_auth_elicitation_plan;
 pub use auth_elicitation::connector_auth_failure_from_tool_result;
 pub use codex_apps::CodexAppsToolsCacheKey;
 pub use codex_apps::codex_apps_tools_cache_key;
+pub use codex_builtin_mcps::BuiltinMcpServerOptions;
+pub use codex_builtin_mcps::MEMORIES_MCP_SERVER_NAME;
+pub use codex_builtin_mcps::configured_builtin_mcp_servers;
 
 pub use mcp::configured_mcp_servers;
 pub use mcp::effective_mcp_servers;
