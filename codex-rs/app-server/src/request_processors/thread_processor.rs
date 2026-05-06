@@ -270,11 +270,33 @@ fn map_validated_dynamic_tools(
         .collect())
 }
 
-fn resume_request_requires_thread_replacement(params: &ThreadResumeParams) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThreadResumeSource {
+    History,
+    Path,
+    ThreadId,
+}
+
+fn thread_resume_source(params: &ThreadResumeParams) -> ThreadResumeSource {
+    if params.history.is_some() {
+        ThreadResumeSource::History
+    } else if params.path.is_some() {
+        ThreadResumeSource::Path
+    } else {
+        ThreadResumeSource::ThreadId
+    }
+}
+
+fn resume_request_has_dynamic_tools(params: &ThreadResumeParams) -> bool {
     params
         .dynamic_tools
         .as_ref()
         .is_some_and(|dynamic_tools| !dynamic_tools.is_empty())
+}
+
+fn resume_request_requires_thread_replacement(params: &ThreadResumeParams) -> bool {
+    resume_request_has_dynamic_tools(params)
+        && matches!(thread_resume_source(params), ThreadResumeSource::ThreadId)
 }
 
 #[derive(Clone)]

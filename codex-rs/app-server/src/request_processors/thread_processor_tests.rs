@@ -82,6 +82,79 @@ mod thread_processor_behavior_tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    fn test_dynamic_tool() -> ApiDynamicToolSpec {
+        ApiDynamicToolSpec {
+            namespace: None,
+            name: "my_tool".to_string(),
+            description: "test".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
+        }
+    }
+
+    fn resume_params_for_source(
+        history: Option<Vec<codex_protocol::models::ResponseItem>>,
+        path: Option<PathBuf>,
+        dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
+    ) -> ThreadResumeParams {
+        ThreadResumeParams {
+            thread_id: "thread_resume_seed".to_string(),
+            history,
+            path,
+            model: None,
+            model_provider: None,
+            service_tier: None,
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox: None,
+            permissions: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            personality: None,
+            dynamic_tools,
+            exclude_turns: false,
+            persist_extended_history: false,
+        }
+    }
+
+    #[test]
+    fn resume_dynamic_tools_replace_loaded_thread_only_for_thread_id_source() {
+        assert!(resume_request_requires_thread_replacement(
+            &resume_params_for_source(None, None, Some(vec![test_dynamic_tool()]))
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(Some(Vec::new()), None, Some(vec![test_dynamic_tool()]))
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                None,
+                Some(PathBuf::from("thread.jsonl")),
+                Some(vec![test_dynamic_tool()])
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                Some(Vec::new()),
+                Some(PathBuf::from("thread.jsonl")),
+                Some(vec![test_dynamic_tool(),])
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(None, None, Some(Vec::new()))
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(None, None, None)
+        ));
+    }
+
     #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {
         let tools = vec![ApiDynamicToolSpec {
