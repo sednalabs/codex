@@ -450,7 +450,6 @@ impl TestCodexBuilder {
                 Arc::clone(&environment_manager),
                 state_db.clone(),
             )
-            .await
         };
         let thread_manager = Arc::new(thread_manager);
         let user_shell_override = self.user_shell_override.clone();

@@ -105,7 +105,6 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     };
 
     let config = new_config(args.model, arg0_paths)?;
-    let state_db = init_state_db(&config).await;
 
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
