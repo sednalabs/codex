@@ -318,6 +318,9 @@ impl ToolHandler for ExecCommandHandler {
             tty,
             yield_time_ms,
             max_output_tokens,
+            wait_until_terminal,
+            max_wait_ms,
+            heartbeat_interval_ms,
             sandbox_permissions,
             additional_permissions,
             justification,
@@ -434,7 +437,25 @@ impl ToolHandler for ExecCommandHandler {
             )
             .await
         {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                if wait_until_terminal {
+                    complete_terminal_wait(
+                        manager,
+                        response,
+                        max_wait_ms,
+                        heartbeat_interval_ms,
+                        yield_time_ms,
+                    )
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "exec_command failed for `{command_for_display}`: {err:?}"
+                        ))
+                    })
+                } else {
+                    Ok(response)
+                }
+            }
             Err(UnifiedExecError::SandboxDenied { output, .. }) => {
                 let output_text = output.aggregated_output.text;
                 let original_token_count = approx_token_count(&output_text);
@@ -504,9 +525,12 @@ impl ToolHandler for WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        let wait_until_terminal = args.wait_until_terminal;
+        let max_wait_ms = args.max_wait_ms;
+        let heartbeat_interval_ms = args.heartbeat_interval_ms;
         let max_output_tokens =
             effective_max_output_tokens(args.max_output_tokens, turn.truncation_policy);
-        let response = session
+        let mut response = session
             .services
             .unified_exec_manager
             .write_stdin(WriteStdinRequest {
@@ -520,6 +544,19 @@ impl ToolHandler for WriteStdinHandler {
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
+        if wait_until_terminal {
+            response = complete_terminal_wait(
+                &session.services.unified_exec_manager,
+                response,
+                max_wait_ms,
+                heartbeat_interval_ms,
+                args.yield_time_ms,
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+            })?;
+        }
 
         let interaction = TerminalInteractionEvent {
             call_id: response.event_call_id.clone(),
