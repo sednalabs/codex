@@ -52,7 +52,7 @@ async fn run_unified_exec(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<ExecCommandToolOutput, FunctionCallError> {
-    UnifiedExecHandler
+    ExecCommandHandler
         .handle(invocation(session, turn, tool_name, function_payload(args)))
         .await
 }

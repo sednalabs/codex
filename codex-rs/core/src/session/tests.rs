@@ -3798,7 +3798,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         model_info,
         &models_manager,
         /*network*/ None,
-        crate::environment_selection::ResolvedTurnEnvironments { turn_environments },
+        turn_environments,
         session_configuration.cwd.clone(),
         "turn_id".to_string(),
         skills_outcome,
@@ -5124,9 +5124,31 @@ async fn make_session_and_context_with_auth_and_config_and_rx<F>(
 where
     F: FnOnce(&mut Config),
 {
-    let (tx_event, rx_event) = async_channel::unbounded();
     let codex_home = tempfile::tempdir().expect("create temp dir").keep();
-    let mut config = build_test_config(codex_home.as_path()).await;
+    make_session_and_context_with_auth_config_home_and_rx(
+        auth,
+        dynamic_tools,
+        codex_home.as_path(),
+        configure_config,
+    )
+    .await
+}
+
+async fn make_session_and_context_with_auth_config_home_and_rx<F>(
+    auth: CodexAuth,
+    dynamic_tools: Vec<DynamicToolSpec>,
+    codex_home: &std::path::Path,
+    configure_config: F,
+) -> (
+    Arc<Session>,
+    Arc<TurnContext>,
+    async_channel::Receiver<Event>,
+)
+where
+    F: FnOnce(&mut Config),
+{
+    let (tx_event, rx_event) = async_channel::unbounded();
+    let mut config = build_test_config(codex_home).await;
     configure_config(&mut config);
     let state_db = if config.features.enabled(Feature::Goals) {
         Some(
@@ -5322,7 +5344,7 @@ where
         model_info,
         &models_manager,
         /*network*/ None,
-        crate::environment_selection::ResolvedTurnEnvironments { turn_environments },
+        turn_environments,
         session_configuration.cwd.clone(),
         "turn_id".to_string(),
         skills_outcome,

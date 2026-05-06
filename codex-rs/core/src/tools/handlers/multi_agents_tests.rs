@@ -2358,7 +2358,7 @@ async fn wait_agent_rejects_empty_targets() {
 #[tokio::test]
 async fn wait_agent_emits_end_event_when_status_subscription_fails() {
     let (mut session, turn, rx) = make_session_and_context_with_rx().await;
-    let manager = thread_manager();
+    let manager = thread_manager().await;
     Arc::get_mut(&mut session)
         .expect("test owns session")
         .services
@@ -2442,7 +2442,7 @@ async fn multi_agent_v2_wait_agent_rejects_empty_targets() {
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_emits_end_event_when_status_subscription_fails() {
     let (mut session, turn, rx) = make_session_and_context_with_rx().await;
-    let manager = thread_manager();
+    let manager = thread_manager().await;
     Arc::get_mut(&mut session)
         .expect("test owns session")
         .services
@@ -2492,7 +2492,7 @@ async fn multi_agent_v2_wait_agent_emits_end_event_when_status_subscription_fail
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_honors_return_when_all() {
     let (mut session, mut turn) = make_session_and_context().await;
-    let manager = thread_manager();
+    let manager = thread_manager().await;
     let root = manager
         .start_thread((*turn.config).clone())
         .await
