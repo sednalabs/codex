@@ -182,19 +182,18 @@ impl ToolHandler for Handler {
             timed_out,
         };
 
-        session
-            .send_event(
-                &turn,
-                CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
-                    call_id,
-                    completed_at_ms: now_unix_timestamp_ms(),
-                    agent_statuses,
-                    statuses: statuses_by_id,
-                }
-                .into(),
-            )
-            .await;
+        send_wait_end_event(
+            session.as_ref(),
+            turn.as_ref(),
+            call_id,
+            receiver_thread_ids,
+            &receiver_agents,
+            pending_ids,
+            completion_reason,
+            timed_out,
+            statuses_by_id,
+        )
+        .await;
 
         Ok(result)
     }
