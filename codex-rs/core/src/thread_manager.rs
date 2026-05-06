@@ -253,7 +253,6 @@ pub(crate) struct ThreadManagerState {
     agent_graph_store: Arc<dyn AgentGraphStore>,
     session_source: SessionSource,
     analytics_events_client: Option<AnalyticsEventsClient>,
-    state_db: Option<StateDbHandle>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -347,7 +346,6 @@ impl ThreadManager {
                 auth_manager,
                 session_source,
                 analytics_events_client,
-                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -399,6 +397,24 @@ impl ThreadManager {
             OPENAI_PROVIDER_ID.to_string(),
         )
         .await;
+        Self::with_models_provider_and_home_and_state_db_for_tests(
+            auth,
+            provider,
+            codex_home,
+            environment_manager,
+            state_db,
+        )
+    }
+
+    pub(crate) fn with_models_provider_home_and_state_for_tests(
+        auth: CodexAuth,
+        provider: ModelProviderInfo,
+        codex_home: PathBuf,
+        environment_manager: Arc<EnvironmentManager>,
+        state_db: Option<StateDbHandle>,
+    ) -> Self {
+        let state_db =
+            state_db.expect("ThreadManager test helper requires an initialized state db");
         Self::with_models_provider_and_home_and_state_db_for_tests(
             auth,
             provider,
@@ -461,7 +477,6 @@ impl ThreadManager {
                 auth_manager,
                 session_source: SessionSource::Exec,
                 analytics_events_client: None,
-                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),

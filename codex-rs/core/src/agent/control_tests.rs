@@ -123,8 +123,8 @@ impl AgentControlHarness {
             config.model_provider.clone(),
             config.codex_home.to_path_buf(),
             std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        )
-        .await;
+            state_db.clone(),
+        );
         let control = manager.agent_control();
         Self {
             _home: home,
@@ -1009,8 +1009,8 @@ async fn spawn_agent_respects_max_threads_limit() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    )
-    .await;
+        state_db.clone(),
+    );
     let control = manager.agent_control();
 
     let _ = manager

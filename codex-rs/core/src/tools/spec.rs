@@ -77,11 +77,13 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::CodeModeExecuteHandler;
     use crate::tools::handlers::CodeModeWaitHandler;
+    use crate::tools::handlers::ComputerUseHandler;
     use crate::tools::handlers::ContainerExecHandler;
     use crate::tools::handlers::CreateGoalHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::ExecCommandHandler;
     use crate::tools::handlers::GetGoalHandler;
+    use crate::tools::handlers::InspectAgentTreeHandler;
     use crate::tools::handlers::ListMcpResourceTemplatesHandler;
     use crate::tools::handlers::ListMcpResourcesHandler;
     use crate::tools::handlers::LocalShellHandler;
@@ -204,7 +206,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
                 builder.register_handler(Arc::new(CreateGoalHandler));
             }
             ToolHandlerKind::ComputerUse => {
-                builder.register_handler(handler.name, computer_use_handler.clone());
+                builder.register_handler(Arc::new(ComputerUseHandler::new(name)));
             }
             ToolHandlerKind::DynamicTool => {
                 builder.register_handler(Arc::new(DynamicToolHandler::new(name)));
@@ -219,7 +221,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
                 builder.register_handler(Arc::new(GetGoalHandler));
             }
             ToolHandlerKind::InspectAgentTree => {
-                builder.register_handler(handler.name, Arc::new(InspectAgentTreeHandler));
+                builder.register_handler(Arc::new(InspectAgentTreeHandler));
             }
             ToolHandlerKind::ListAgentsV2 => {
                 builder.register_handler(Arc::new(ListAgentsHandlerV2));

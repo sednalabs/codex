@@ -513,6 +513,7 @@ impl ToolHandler for WriteStdinHandler {
                 process_id: args.session_id,
                 input: &args.chars,
                 yield_time_ms: args.yield_time_ms,
+                empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens: Some(max_output_tokens),
             })
             .await
