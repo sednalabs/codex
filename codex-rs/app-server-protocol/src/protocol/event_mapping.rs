@@ -20,10 +20,11 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
-use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// Build the v2 app-server notification that directly corresponds to a single core event.
 ///
@@ -76,6 +77,38 @@ pub fn item_event_to_server_notification(
                 turn_id: response.turn_id,
                 item,
                 completed_at_ms: response.completed_at_ms,
+            })
+        }
+        EventMsg::ComputerUseCallResponse(response) => {
+            let status = if response.success {
+                ComputerUseCallStatus::Completed
+            } else {
+                ComputerUseCallStatus::Failed
+            };
+            let duration_ms = i64::try_from(response.duration.as_millis()).ok();
+            let item = ThreadItem::ComputerUseCall {
+                id: response.call_id,
+                environment_id: response.environment_id,
+                adapter: response.adapter,
+                tool: response.tool,
+                arguments: response.arguments,
+                status,
+                content_items: Some(
+                    response
+                        .content_items
+                        .into_iter()
+                        .map(ComputerUseCallOutputContentItem::from)
+                        .collect(),
+                ),
+                success: Some(response.success),
+                error: response.error,
+                duration_ms,
+            };
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id,
+                turn_id: response.turn_id,
+                item,
+                completed_at_ms: now_unix_timestamp_ms(),
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
@@ -471,6 +504,13 @@ pub fn item_event_to_server_notification(
         _ => return None,
     };
     Some(notification)
+}
+
+fn now_unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

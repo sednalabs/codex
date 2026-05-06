@@ -98,18 +98,20 @@
           "type": "integer"
         },
         "trustStatus": {
-          "$ref": "#/definitions/HookTrustStatus"
+          "$ref": "#/$defs/HookTrustStatus"
         }
       },
       "required": [
-        "currentHash",
-        "displayOrder",
-        "enabled",
+        "key",
         "eventName",
         "handlerType",
         "timeoutSec",
         "sourcePath",
-        "timeoutSec",
+        "source",
+        "displayOrder",
+        "enabled",
+        "isManaged",
+        "currentHash",
         "trustStatus"
       ],
       "type": "object"

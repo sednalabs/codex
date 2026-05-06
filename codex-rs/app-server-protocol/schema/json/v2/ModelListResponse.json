@@ -69,7 +69,7 @@
         "serviceTiers": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/ModelServiceTier"
+            "$ref": "#/$defs/ModelServiceTier"
           },
           "type": "array"
         },
@@ -136,9 +136,9 @@
         }
       },
       "required": [
-        "description",
         "id",
-        "name"
+        "name",
+        "description"
       ],
       "type": "object"
     },
