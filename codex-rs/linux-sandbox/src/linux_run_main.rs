@@ -468,7 +468,7 @@ fn preflight_proc_mount_support(
         command_cwd,
         file_system_sandbox_policy,
         network_mode,
-        true,
+        /*mount_proc*/ true,
     )?;
     let output = run_bwrap_in_child_capture_output(preflight_argv);
     Ok(!is_proc_mount_failure(output.as_str()))

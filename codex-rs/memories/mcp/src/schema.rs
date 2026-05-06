@@ -1,6 +1,6 @@
 use rmcp::model::JsonObject;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::generate::SchemaSettings;
 
 pub(crate) fn input_schema_for<T: JsonSchema>() -> JsonObject {
     schema_for::<T>(/*option_add_null_type*/ false)

@@ -1017,7 +1017,6 @@ mod tests {
             .join(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"));
         let mut builder =
             ThreadMetadataBuilder::new(thread_id, rollout_path, Utc::now(), SessionSource::Cli);
-        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
         builder.archived_at = Some(Utc::now());
         let mut metadata = builder.build(config.default_model_provider_id.as_str());
         metadata.first_user_message = Some("Archived SQLite preview".to_string());
