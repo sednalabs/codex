@@ -9,7 +9,7 @@ use crate::tools::handlers::multi_agents_common::tool_output_response_item;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use crate::tools::registry::ToolName;
+use codex_tools::ToolName;
 use codex_protocol::models::ResponseInputItem;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
