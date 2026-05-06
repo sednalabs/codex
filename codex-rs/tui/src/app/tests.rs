@@ -550,17 +550,8 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
 
-    let handled = app
-        .try_handle_local_history_op(
-            thread_id,
-            &Op::GetHistoryEntryRequest {
-                offset: 0,
-                log_id: 1,
-            },
-        )
+    app.lookup_message_history_entry(thread_id, /*offset*/ 0, /*log_id*/ 1)
         .await?;
-
-    assert!(handled);
 
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -3751,8 +3742,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             cwd: test_path_buf("/tmp/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: Some(ReasoningEffortConfig::High),
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         };
@@ -3997,8 +3987,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         cwd: cwd.abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(PathBuf::new()),
     }
@@ -4543,8 +4532,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             cwd: test_path_buf("/home/user/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         };
@@ -4607,8 +4595,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             cwd: test_path_buf("/home/user/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         });
@@ -4700,8 +4687,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
             cwd: test_path_buf("/home/user/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         });
@@ -5099,8 +5085,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
             cwd: test_path_buf("/home/user/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         };
@@ -5221,8 +5206,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
             cwd: test_path_buf("/tmp/project").abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         });

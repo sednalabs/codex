@@ -3133,6 +3133,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-message-history"
+version = "0.0.0"
+dependencies = [
+ "codex-config",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "codex-model-provider"
 version = "0.0.0"
 dependencies = [
@@ -3674,6 +3687,7 @@ dependencies = [
  "codex-install-context",
  "codex-login",
  "codex-mcp",
+ "codex-message-history",
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
