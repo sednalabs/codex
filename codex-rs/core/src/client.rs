@@ -147,6 +147,12 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
 
+pub(crate) struct CompactConversationRequestSettings {
+    pub(crate) effort: Option<ReasoningEffortConfig>,
+    pub(crate) summary: ReasoningSummaryConfig,
+    pub(crate) service_tier: Option<ServiceTier>,
+}
+
 /// Session-scoped state shared by all [`ModelClient`] clones.
 ///
 /// This is intentionally kept minimal so `ModelClient` does not need to hold a full `Config`. Most
@@ -414,12 +420,11 @@ impl ModelClient {
     ///
     /// The model selection and telemetry context are passed explicitly to keep `ModelClient`
     /// session-scoped.
-    pub async fn compact_conversation_history(
+    pub(crate) async fn compact_conversation_history(
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        effort: Option<ReasoningEffortConfig>,
-        summary: ReasoningSummaryConfig,
+        settings: CompactConversationRequestSettings,
         session_telemetry: &SessionTelemetry,
         compaction_trace: &CompactionTraceContext,
     ) -> Result<Vec<ResponseItem>> {
@@ -442,9 +447,9 @@ impl ModelClient {
             &client_setup.api_provider,
             prompt,
             model_info,
-            effort,
-            summary,
-            /*service_tier*/ None,
+            settings.effort,
+            settings.summary,
+            settings.service_tier,
         )?;
         let ResponsesApiRequest {
             model,
@@ -453,6 +458,8 @@ impl ModelClient {
             tools,
             parallel_tool_calls,
             reasoning,
+            service_tier,
+            prompt_cache_key,
             text,
             ..
         } = request;
@@ -466,6 +473,8 @@ impl ModelClient {
             tools,
             parallel_tool_calls,
             reasoning,
+            service_tier: service_tier.as_deref(),
+            prompt_cache_key: prompt_cache_key.as_deref(),
             text,
         };
 
