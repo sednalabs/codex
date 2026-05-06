@@ -221,7 +221,9 @@ pub(crate) fn build_specs_with_discoverable_tools(
                 builder.register_handler(Arc::new(GetGoalHandler));
             }
             ToolHandlerKind::InspectAgentTree => {
-                builder.register_handler(Arc::new(InspectAgentTreeHandler));
+                builder.register_handler(Arc::new(InspectAgentTreeHandler::new(
+                    crate::tools::registry::ToolName::plain("inspect_agent_tree"),
+                )));
             }
             ToolHandlerKind::ListAgentsV2 => {
                 builder.register_handler(Arc::new(ListAgentsHandlerV2));

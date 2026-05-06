@@ -9,6 +9,7 @@ use crate::tools::handlers::multi_agents_common::tool_output_response_item;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::tools::registry::ToolName;
 use codex_protocol::models::ResponseInputItem;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -16,10 +17,22 @@ use serde_json::Value as JsonValue;
 const DEFAULT_TREE_MAX_DEPTH: usize = 2;
 const DEFAULT_TREE_MAX_AGENTS: usize = 25;
 
-pub struct InspectAgentTreeHandler;
+pub struct InspectAgentTreeHandler {
+    tool_name: ToolName,
+}
+
+impl InspectAgentTreeHandler {
+    pub fn new(tool_name: ToolName) -> Self {
+        Self { tool_name }
+    }
+}
 
 impl ToolHandler for InspectAgentTreeHandler {
     type Output = AgentTreeInspection;
+
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
