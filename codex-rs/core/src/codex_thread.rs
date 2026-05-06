@@ -391,7 +391,7 @@ impl CodexThread {
         self.rollout_path.clone()
     }
 
-    pub(crate) fn session_configured(&self) -> SessionConfiguredEvent {
+    pub fn session_configured(&self) -> SessionConfiguredEvent {
         self.session_configured.clone()
     }
 

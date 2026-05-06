@@ -15057,6 +15057,11 @@
             }
           ]
         },
+        "sessionId": {
+          "default": "",
+          "description": "Session id shared by threads that belong to the same session tree.",
+          "type": "string"
+        },
         "thread": {
           "$ref": "#/definitions/Thread"
         }
@@ -15379,6 +15384,11 @@
               "type": "null"
             }
           ]
+        },
+        "sessionId": {
+          "default": "",
+          "description": "Session id shared by threads that belong to the same session tree.",
+          "type": "string"
         },
         "thread": {
           "$ref": "#/definitions/Thread"

@@ -102,6 +102,7 @@ fn sample_permission_profile() -> AppServerPermissionProfile {
 
 fn sample_thread_start_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadStart(ThreadStartResponse {
+        session_id: "session-1".to_string(),
         thread: sample_thread("thread-1"),
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
@@ -119,6 +120,7 @@ fn sample_thread_start_response() -> ClientResponsePayload {
 
 fn sample_thread_resume_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadResume(ThreadResumeResponse {
+        session_id: "session-2".to_string(),
         thread: sample_thread("thread-2"),
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),

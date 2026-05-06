@@ -189,6 +189,9 @@ pub struct MockExperimentalMethodResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
+    /// Session id shared by threads that belong to the same session tree.
+    #[serde(default)]
+    pub session_id: String,
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
@@ -304,6 +307,9 @@ pub struct ThreadResumeParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadResumeResponse {
+    /// Session id shared by threads that belong to the same session tree.
+    #[serde(default)]
+    pub session_id: String,
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,

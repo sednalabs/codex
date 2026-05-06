@@ -1,5 +1,6 @@
 use super::*;
 use crate::goals::GoalRuntimeState;
+use codex_protocol::SessionId;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::ThreadSource;
@@ -363,7 +364,7 @@ impl Session {
         } else {
             ThreadEventPersistenceMode::Limited
         };
-        let conversation_id = match &initial_history {
+        let thread_id = match &initial_history {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
                 ThreadId::default()
             }
@@ -394,7 +395,7 @@ impl Session {
                         LiveThread::create(
                             Arc::clone(&thread_store),
                             CreateThreadParams {
-                                thread_id: conversation_id,
+                                thread_id,
                                 forked_from_id,
                                 source: session_source,
                                 thread_source: session_configuration.thread_source,
@@ -508,7 +509,7 @@ impl Session {
             let trace_task_name =
                 (!trace_agent_path.is_root()).then(|| trace_agent_path.name().to_string());
             let trace_metadata = ThreadStartedTraceMetadata {
-                thread_id: conversation_id.to_string(),
+                thread_id: thread_id.to_string(),
                 agent_path: trace_agent_path.to_string(),
                 task_name: trace_task_name,
                 nickname: session_configuration.session_source.get_nickname(),
@@ -599,7 +600,7 @@ impl Session {
                 auth_manager.codex_api_key_env_enabled(),
             );
             let mut session_telemetry = SessionTelemetry::new(
-                conversation_id,
+                thread_id,
                 session_model.as_str(),
                 session_model.as_str(),
                 account_id.clone(),
@@ -615,7 +616,7 @@ impl Session {
                 session_telemetry = session_telemetry.with_metrics_service_name(service_name);
             }
             let network_proxy_audit_metadata = NetworkProxyAuditMetadata {
-                conversation_id: Some(conversation_id.to_string()),
+                conversation_id: Some(thread_id.to_string()),
                 app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 user_account_id: account_id,
                 auth_mode: auth_mode.map(|mode| mode.to_string()),
@@ -685,7 +686,7 @@ impl Session {
                 } else {
                     ShellSnapshot::start_snapshotting(
                         config.codex_home.clone(),
-                        conversation_id,
+                        thread_id,
                         session_configuration.cwd.clone(),
                         &mut default_shell,
                         session_telemetry.clone(),
@@ -698,7 +699,7 @@ impl Session {
                 tx
             };
             let thread_name =
-                thread_title_from_state_db(state_db_ctx.as_ref(), &config.codex_home, conversation_id)
+                thread_title_from_state_db(state_db_ctx.as_ref(), &config.codex_home, thread_id)
                     .instrument(info_span!(
                         "session_init.thread_name_lookup",
                         otel.name = "session_init.thread_name_lookup",
@@ -706,7 +707,7 @@ impl Session {
                     .await;
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
-            export_config_lock_if_configured(&session_configuration, conversation_id).await?;
+            export_config_lock_if_configured(&session_configuration, thread_id).await?;
             let state = SessionState::new(session_configuration.clone());
             let managed_network_requirements_configured = config
                 .config_layer_stack
@@ -786,6 +787,12 @@ impl Session {
                     config.analytics_enabled,
                 )
             });
+            let session_id = if session_configuration.session_source.is_non_root_agent() {
+                agent_control.session_id()
+            } else {
+                SessionId::from(thread_id)
+            };
+            let agent_control = agent_control.with_session_id(session_id);
             let services = SessionServices {
                 // Initialize the MCP connection manager with an uninitialized
                 // instance. It will be replaced with one created via
@@ -830,7 +837,8 @@ impl Session {
                 thread_store: Arc::clone(&thread_store),
                 model_client: ModelClient::new(
                     Some(Arc::clone(&auth_manager)),
-                    conversation_id,
+                    session_id,
+                    thread_id,
                     installation_id,
                     session_configuration.provider.clone(),
                     session_configuration.session_source.clone(),
@@ -850,7 +858,7 @@ impl Session {
 
             let (mailbox, mailbox_rx) = Mailbox::new();
             let sess = Arc::new(Session {
-                conversation_id,
+                conversation_id: thread_id,
                 tx_event: tx_event.clone(),
                 agent_status,
                 out_of_band_elicitation_paused,
@@ -878,7 +886,8 @@ impl Session {
             let events = std::iter::once(Event {
                 id: INITIAL_SUBMIT_ID.to_owned(),
                 msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                    session_id: conversation_id,
+                    session_id,
+                    thread_id,
                     forked_from_id,
                     thread_source: session_configuration.thread_source,
                     thread_name: session_configuration.thread_name.clone(),

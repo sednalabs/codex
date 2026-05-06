@@ -8,13 +8,15 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::ThreadId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TS, Hash)]
 #[ts(type = "string")]
-pub struct ThreadId {
+pub struct SessionId {
     pub(crate) uuid: Uuid,
 }
 
-impl ThreadId {
+impl SessionId {
     pub fn new() -> Self {
         Self {
             uuid: Uuid::now_v7(),
@@ -28,7 +30,7 @@ impl ThreadId {
     }
 }
 
-impl TryFrom<&str> for ThreadId {
+impl TryFrom<&str> for SessionId {
     type Error = uuid::Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -36,7 +38,7 @@ impl TryFrom<&str> for ThreadId {
     }
 }
 
-impl TryFrom<String> for ThreadId {
+impl TryFrom<String> for SessionId {
     type Error = uuid::Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -44,25 +46,37 @@ impl TryFrom<String> for ThreadId {
     }
 }
 
-impl From<ThreadId> for String {
-    fn from(value: ThreadId) -> Self {
+impl From<SessionId> for String {
+    fn from(value: SessionId) -> Self {
         value.to_string()
     }
 }
 
-impl Default for ThreadId {
+impl From<ThreadId> for SessionId {
+    fn from(value: ThreadId) -> Self {
+        Self { uuid: value.uuid }
+    }
+}
+
+impl From<SessionId> for ThreadId {
+    fn from(value: SessionId) -> Self {
+        ThreadId { uuid: value.uuid }
+    }
+}
+
+impl Default for SessionId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Display for ThreadId {
+impl Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.uuid, f)
     }
 }
 
-impl Serialize for ThreadId {
+impl Serialize for SessionId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -71,7 +85,7 @@ impl Serialize for ThreadId {
     }
 }
 
-impl<'de> Deserialize<'de> for ThreadId {
+impl<'de> Deserialize<'de> for SessionId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -82,9 +96,9 @@ impl<'de> Deserialize<'de> for ThreadId {
     }
 }
 
-impl JsonSchema for ThreadId {
+impl JsonSchema for SessionId {
     fn schema_name() -> String {
-        "ThreadId".to_string()
+        "SessionId".to_string()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -95,9 +109,18 @@ impl JsonSchema for ThreadId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn test_thread_id_default_is_not_zeroes() {
-        let id = ThreadId::default();
+    fn test_session_id_default_is_not_zeroes() {
+        let id = SessionId::default();
         assert_ne!(id.uuid, Uuid::nil());
+    }
+
+    #[test]
+    fn converts_to_and_from_thread_id() {
+        let thread_id = ThreadId::new();
+        let session_id = SessionId::from(thread_id);
+
+        assert_eq!(ThreadId::from(session_id), thread_id);
     }
 }

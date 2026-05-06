@@ -30,6 +30,7 @@ use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_protocol::AgentPath;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::config_types::ServiceTier;
@@ -393,10 +394,12 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
 }
 
 fn test_model_client_session() -> crate::client::ModelClientSession {
+    let thread_id = ThreadId::try_from("00000000-0000-4000-8000-000000000001")
+        .expect("test thread id should be valid");
     crate::client::ModelClient::new(
         /*auth_manager*/ None,
-        ThreadId::try_from("00000000-0000-4000-8000-000000000001")
-            .expect("test thread id should be valid"),
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         ModelProviderInfo::create_openai_provider(/* base_url */ /*base_url*/ None),
         codex_protocol::protocol::SessionSource::Exec,
@@ -3605,7 +3608,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
-    let conversation_id = ThreadId::default();
+    let thread_id = ThreadId::default();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -3671,7 +3674,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         &per_turn_config.to_models_manager_config(),
     );
     let session_telemetry = session_telemetry(
-        conversation_id,
+        thread_id,
         config.as_ref(),
         &model_info,
         session_configuration.session_source.clone(),
@@ -3743,7 +3746,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         )),
         model_client: ModelClient::new(
             Some(auth_manager.clone()),
-            conversation_id,
+            thread_id.into(),
+            thread_id,
             /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
@@ -3772,7 +3776,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     );
     let turn_environments = turn_environments_for_tests(&environment, &session_configuration.cwd);
     let turn_context = Session::make_turn_context(
-        conversation_id,
+        thread_id,
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
@@ -3793,7 +3797,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
     let session = Session {
-        conversation_id,
+        conversation_id: thread_id,
         tx_event,
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
@@ -3929,6 +3933,178 @@ async fn make_session_with_config_and_rx(
     .await?;
 
     Ok((session, rx_event, codex_home))
+}
+
+async fn make_session_with_history_source_and_agent_control_and_rx(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: AgentControl,
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let mut config = build_test_config(codex_home.path()).await;
+    config.ephemeral = true;
+    let config = Arc::new(config);
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+    let models_manager = models_manager_with_provider(
+        config.codex_home.to_path_buf(),
+        auth_manager.clone(),
+        config.model_provider.clone(),
+    );
+    let model = get_model_offline_for_tests(config.model.as_deref());
+    let model_info =
+        construct_model_info_offline_for_tests(model.as_str(), &config.to_models_manager_config());
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Default,
+        settings: Settings {
+            model,
+            reasoning_effort: config.model_reasoning_effort,
+            developer_instructions: None,
+        },
+    };
+    let default_environments = vec![TurnEnvironmentSelection {
+        environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+        cwd: config.cwd.clone(),
+    }];
+    let session_configuration = SessionConfiguration {
+        provider: config.model_provider.clone(),
+        collaboration_mode,
+        model_reasoning_summary: config.model_reasoning_summary,
+        developer_instructions: config.developer_instructions.clone(),
+        user_instructions: config.user_instructions.clone(),
+        service_tier: None,
+        personality: config.personality,
+        base_instructions: config
+            .base_instructions
+            .clone()
+            .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        compact_prompt: config.compact_prompt.clone(),
+        approval_policy: config.permissions.approval_policy.clone(),
+        approvals_reviewer: config.approvals_reviewer,
+        permission_profile: config.permissions.permission_profile.clone(),
+        active_permission_profile: config.permissions.active_permission_profile(),
+        windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+        cwd: config.cwd.clone(),
+        codex_home: config.codex_home.clone(),
+        thread_name: None,
+        environments: default_environments,
+        original_config_do_not_use: Arc::clone(&config),
+        metrics_service_name: None,
+        app_server_client_name: None,
+        app_server_client_version: None,
+        session_source: session_source.clone(),
+        thread_source: None,
+        dynamic_tools: Vec::new(),
+        persist_extended_history: false,
+        inherited_shell_snapshot: None,
+        user_shell_override: None,
+    };
+
+    let (tx_event, rx_event) = async_channel::unbounded();
+    let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
+    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
+    let skills_manager = Arc::new(SkillsManager::new(
+        config.codex_home.clone(),
+        /*bundled_skills_enabled*/ true,
+    ));
+
+    let session = Session::new(
+        session_configuration,
+        Arc::clone(&config),
+        auth_manager,
+        models_manager,
+        Arc::new(ExecPolicyManager::default()),
+        tx_event,
+        agent_status_tx,
+        initial_history,
+        session_source,
+        skills_manager,
+        plugins_manager,
+        mcp_manager,
+        Arc::new(SkillsWatcher::noop()),
+        agent_control,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*analytics_events_client*/ None,
+        /*state_db*/ None,
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
+            codex_state::StateRuntime::init(
+                config.sqlite_home.clone(),
+                config.model_provider_id.clone(),
+            )
+            .await
+            .expect("state db should initialize"),
+        )),
+        codex_rollout_trace::ThreadTraceContext::disabled(),
+    )
+    .await?;
+
+    Ok((session, rx_event))
+}
+
+#[tokio::test]
+async fn resumed_root_session_uses_thread_id_as_session_id() {
+    let thread_id = ThreadId::new();
+    let (session, rx_event) = make_session_with_history_source_and_agent_control_and_rx(
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: Vec::new(),
+            rollout_path: None,
+        }),
+        SessionSource::Exec,
+        AgentControl::default(),
+    )
+    .await
+    .expect("resume should succeed");
+
+    assert_eq!(
+        session.services.agent_control.session_id(),
+        SessionId::from(thread_id)
+    );
+
+    let event = rx_event.recv().await.expect("session configured event");
+    let EventMsg::SessionConfigured(event) = event.msg else {
+        panic!("expected session configured event");
+    };
+    assert_eq!(event.session_id, SessionId::from(thread_id));
+    assert_eq!(event.thread_id, thread_id);
+}
+
+#[tokio::test]
+async fn resumed_subagent_session_keeps_inherited_session_id() {
+    let parent_thread_id = ThreadId::new();
+    let parent_session_id = SessionId::from(parent_thread_id);
+    let thread_id = ThreadId::new();
+    let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (session, rx_event) = make_session_with_history_source_and_agent_control_and_rx(
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: Vec::new(),
+            rollout_path: None,
+        }),
+        session_source,
+        AgentControl::default().with_session_id(parent_session_id),
+    )
+    .await
+    .expect("resume should succeed");
+
+    assert_eq!(
+        session.services.agent_control.session_id(),
+        parent_session_id
+    );
+
+    let event = rx_event.recv().await.expect("session configured event");
+    let EventMsg::SessionConfigured(event) = event.msg else {
+        panic!("expected session configured event");
+    };
+    assert_eq!(event.session_id, parent_session_id);
+    assert_eq!(event.thread_id, thread_id);
 }
 
 #[tokio::test]
@@ -5117,7 +5293,7 @@ where
     let mut config = build_test_config(codex_home.as_path()).await;
     configure_config(&mut config);
     let config = Arc::new(config);
-    let conversation_id = ThreadId::default();
+    let thread_id = ThreadId::default();
     let auth_manager = AuthManager::from_auth_for_testing(auth);
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -5183,7 +5359,7 @@ where
         &per_turn_config.to_models_manager_config(),
     );
     let session_telemetry = session_telemetry(
-        conversation_id,
+        thread_id,
         config.as_ref(),
         &model_info,
         session_configuration.session_source.clone(),
@@ -5256,7 +5432,8 @@ where
         )),
         model_client: ModelClient::new(
             Some(Arc::clone(&auth_manager)),
-            conversation_id,
+            thread_id.into(),
+            thread_id,
             /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
@@ -5285,7 +5462,7 @@ where
     );
     let turn_environments = turn_environments_for_tests(&environment, &session_configuration.cwd);
     let turn_context = Arc::new(Session::make_turn_context(
-        conversation_id,
+        thread_id,
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
@@ -5306,7 +5483,7 @@ where
 
     let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
     let session = Arc::new(Session {
-        conversation_id,
+        conversation_id: thread_id,
         tx_event,
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
@@ -7767,7 +7944,7 @@ async fn completed_goal_accounts_current_turn_tokens_before_tool_response() -> a
     )
     .await?;
     let persisted_goal = state_db
-        .get_thread_goal(test.session_configured.session_id)
+        .get_thread_goal(test.session_configured.thread_id)
         .await?
         .expect("goal should be persisted");
     assert_eq!(

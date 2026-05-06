@@ -14,6 +14,7 @@ use std::time::Duration;
 use strum_macros::EnumIter;
 
 use crate::AgentPath;
+use crate::SessionId;
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
 use crate::config_types::ApprovalsReviewer;
@@ -3456,7 +3457,8 @@ pub struct SessionNetworkProxyRuntime {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, TS)]
 pub struct SessionConfiguredEvent {
-    pub session_id: ThreadId,
+    pub session_id: SessionId,
+    pub thread_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from_id: Option<ThreadId>,
     /// Optional analytics source classification for this thread.
@@ -3530,7 +3532,9 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
     {
         #[derive(Deserialize)]
         struct Wire {
-            session_id: ThreadId,
+            session_id: SessionId,
+            #[serde(default)]
+            thread_id: Option<ThreadId>,
             forked_from_id: Option<ThreadId>,
             #[serde(default)]
             thread_source: Option<ThreadSource>,
@@ -3572,6 +3576,7 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
 
         Ok(Self {
             session_id: wire.session_id,
+            thread_id: wire.thread_id.unwrap_or_else(|| wire.session_id.into()),
             forked_from_id: wire.forked_from_id,
             thread_source: wire.thread_source,
             thread_name: wire.thread_name,
@@ -5294,13 +5299,15 @@ mod tests {
     /// amount of nesting.
     #[test]
     fn serialize_event() -> Result<()> {
-        let conversation_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let session_id = SessionId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c7")?;
+        let thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
         let rollout_file = NamedTempFile::new()?;
         let permission_profile = PermissionProfile::read_only();
         let event = Event {
             id: "1234".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: conversation_id,
+                session_id,
+                thread_id,
                 forked_from_id: None,
                 thread_source: None,
                 thread_name: None,
@@ -5325,7 +5332,8 @@ mod tests {
             "id": "1234",
             "msg": {
                 "type": "session_configured",
-                "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                "thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
                 "approval_policy": "never",

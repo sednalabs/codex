@@ -15,6 +15,7 @@ use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_login::default_client::originator;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
@@ -174,6 +175,7 @@ impl MemoryStartupContext {
         let session_source = self.thread.config_snapshot().await.session_source;
         let model_client = ModelClient::new(
             Some(Arc::clone(&self.auth_manager)),
+            SessionId::from(self.thread_id),
             self.thread_id,
             installation_id,
             config.model_provider.clone(),

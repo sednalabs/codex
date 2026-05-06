@@ -270,7 +270,10 @@ async fn thread_resume_tracks_thread_initialized_analytics() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
     )
     .await??;
-    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    let ThreadResumeResponse {
+        session_id, thread, ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert!(!session_id.is_empty(), "session id should not be empty");
     assert_eq!(thread.thread_source, Some(ThreadSource::User));
 
     let payload = wait_for_analytics_payload(&server, DEFAULT_READ_TIMEOUT).await?;

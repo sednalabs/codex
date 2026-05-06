@@ -1202,10 +1202,10 @@ async fn submit_user_message_queues_while_compaction_turn_is_running() {
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,

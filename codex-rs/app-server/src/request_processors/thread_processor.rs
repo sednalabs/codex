@@ -1148,6 +1148,7 @@ impl ThreadRequestProcessor {
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
 
         let response = ThreadStartResponse {
+            session_id: session_configured.session_id.to_string(),
             thread: thread.clone(),
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
@@ -2476,6 +2477,7 @@ impl ThreadRequestProcessor {
                 );
 
                 let response = ThreadResumeResponse {
+                    session_id: session_configured.session_id.to_string(),
                     thread,
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,

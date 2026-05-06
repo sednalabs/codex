@@ -596,7 +596,7 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
     );
     assert_eq!(
         apps_tool_call.pointer("/params/_meta/x-codex-turn-metadata/session_id"),
-        Some(&json!(test.session_configured.session_id.to_string()))
+        Some(&json!(test.session_configured.thread_id.to_string()))
     );
     assert!(
         apps_tool_call
