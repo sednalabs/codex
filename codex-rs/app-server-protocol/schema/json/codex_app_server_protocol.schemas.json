@@ -12353,6 +12353,14 @@
         ],
         "type": "object"
       },
+      "PluginListMarketplaceKind": {
+        "enum": [
+          "local",
+          "workspace-directory",
+          "shared-with-me"
+        ],
+        "type": "string"
+      },
       "PluginListParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -12360,6 +12368,16 @@
             "description": "Optional working directories used to discover repo marketplaces. When omitted, only home-scoped marketplaces and the official curated marketplace are considered.",
             "items": {
               "$ref": "#/definitions/v2/AbsolutePathBuf"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "marketplaceKinds": {
+            "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus the default remote catalog when enabled by feature flag.",
+            "items": {
+              "$ref": "#/definitions/v2/PluginListMarketplaceKind"
             },
             "type": [
               "array",
@@ -12479,6 +12497,29 @@
           "plugin"
         ],
         "title": "PluginReadResponse",
+        "type": "object"
+      },
+      "PluginShareContext": {
+        "properties": {
+          "creatorAccountUserId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "creatorName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remotePluginId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "remotePluginId"
+        ],
         "type": "object"
       },
       "PluginShareDeleteParams": {
@@ -12844,6 +12885,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "shareContext": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PluginShareContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Remote sharing context associated with this plugin when available."
           },
           "source": {
             "$ref": "#/definitions/v2/PluginSource"
