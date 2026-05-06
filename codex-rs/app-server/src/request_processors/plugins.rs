@@ -246,33 +246,35 @@ impl PluginRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
-    pub(crate) fn effective_plugins_changed_callback(
-        &self,
-        config: Config,
-    ) -> Arc<dyn Fn() + Send + Sync> {
+    pub(crate) fn effective_plugins_changed_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
         let thread_manager = Arc::clone(&self.thread_manager);
+        let config_manager = self.config_manager.clone();
         Arc::new(move || {
-            Self::spawn_effective_plugins_changed_task(Arc::clone(&thread_manager), config.clone());
+            Self::spawn_effective_plugins_changed_task(
+                Arc::clone(&thread_manager),
+                config_manager.clone(),
+            );
         })
     }
 
-    fn on_effective_plugins_changed(&self, config: Config) {
-        Self::spawn_effective_plugins_changed_task(Arc::clone(&self.thread_manager), config);
+    fn on_effective_plugins_changed(&self) {
+        Self::spawn_effective_plugins_changed_task(
+            Arc::clone(&self.thread_manager),
+            self.config_manager.clone(),
+        );
     }
 
-    fn spawn_effective_plugins_changed_task(thread_manager: Arc<ThreadManager>, config: Config) {
+    fn spawn_effective_plugins_changed_task(
+        thread_manager: Arc<ThreadManager>,
+        config_manager: ConfigManager,
+    ) {
         tokio::spawn(async move {
             thread_manager.plugins_manager().clear_cache();
             thread_manager.skills_manager().clear_cache();
             if thread_manager.list_thread_ids().await.is_empty() {
                 return;
             }
-            if let Err(err) =
-                McpRequestProcessor::queue_mcp_server_refresh_for_config(&thread_manager, &config)
-                    .await
-            {
-                warn!("failed to queue MCP refresh after effective plugins changed: {err:?}");
-            }
+            crate::mcp_refresh::queue_best_effort_refresh(&thread_manager, &config_manager).await;
         });
     }
 
@@ -342,7 +344,7 @@ impl PluginRequestProcessor {
             &plugins_input,
             auth.clone(),
             &roots,
-            Some(self.effective_plugins_changed_callback(config.clone())),
+            Some(self.effective_plugins_changed_callback()),
         );
 
         let config_for_marketplace_listing = plugins_input.clone();
@@ -840,7 +842,7 @@ impl PluginRequestProcessor {
             }
         };
 
-        self.on_effective_plugins_changed(config.clone());
+        self.on_effective_plugins_changed();
 
         let plugin_mcp_servers = load_plugin_mcp_servers(result.installed_path.as_path()).await;
         if !plugin_mcp_servers.is_empty() {
@@ -951,7 +953,7 @@ impl PluginRequestProcessor {
             .maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
                 &config.plugins_config_input(),
                 auth.clone(),
-                Some(self.effective_plugins_changed_callback(config.clone())),
+                Some(self.effective_plugins_changed_callback()),
             );
 
         let mut plugin_metadata =
@@ -1144,7 +1146,7 @@ impl PluginRequestProcessor {
             .await
             .map_err(Self::plugin_uninstall_error)?;
         match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(config) => self.on_effective_plugins_changed(config),
+            Ok(_) => self.on_effective_plugins_changed(),
             Err(err) => {
                 warn!(
                     "failed to reload config after plugin uninstall, clearing plugin-related caches only: {err:?}"
@@ -1245,12 +1247,12 @@ impl PluginRequestProcessor {
         ) {
             let plugins_manager = self.thread_manager.plugins_manager();
             if plugins_manager.clear_remote_installed_plugins_cache() {
-                self.on_effective_plugins_changed(config.clone());
+                self.on_effective_plugins_changed();
             }
             plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
                 &config.plugins_config_input(),
                 auth.clone(),
-                Some(self.effective_plugins_changed_callback(config.clone())),
+                Some(self.effective_plugins_changed_callback()),
             );
         }
 

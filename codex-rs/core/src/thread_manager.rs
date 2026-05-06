@@ -42,7 +42,6 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
-use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -524,27 +523,6 @@ impl ThreadManager {
 
     pub async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.state.list_thread_ids().await
-    }
-
-    pub async fn refresh_mcp_servers(&self, refresh_config: McpServerRefreshConfig) {
-        let threads = self
-            .state
-            .threads
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for thread in threads {
-            if let Err(err) = thread
-                .submit(Op::RefreshMcpServers {
-                    config: refresh_config.clone(),
-                })
-                .await
-            {
-                warn!("failed to request MCP server refresh: {err}");
-            }
-        }
     }
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
