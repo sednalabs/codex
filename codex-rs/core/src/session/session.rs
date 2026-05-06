@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) conversation_id: ThreadId,
+    pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) out_of_band_elicitation_paused: watch::Sender<bool>,
@@ -344,6 +345,7 @@ impl Session {
     pub(crate) async fn new(
         mut session_configuration: SessionConfiguration,
         config: Arc<Config>,
+        installation_id: String,
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
         exec_policy: Arc<ExecPolicyManager>,
@@ -789,7 +791,6 @@ impl Session {
                 });
             }
 
-            let installation_id = resolve_installation_id(&config.codex_home).await?;
             let analytics_events_client = analytics_events_client.unwrap_or_else(|| {
                 AnalyticsEventsClient::new(
                     Arc::clone(&auth_manager),
@@ -849,7 +850,7 @@ impl Session {
                     Some(Arc::clone(&auth_manager)),
                     session_id,
                     thread_id,
-                    installation_id,
+                    installation_id.clone(),
                     session_configuration.provider.clone(),
                     session_configuration.session_source.clone(),
                     config.model_verbosity,
@@ -869,6 +870,7 @@ impl Session {
             let (mailbox, mailbox_rx) = Mailbox::new();
             let sess = Arc::new(Session {
                 conversation_id: thread_id,
+                installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
                 out_of_band_elicitation_paused,

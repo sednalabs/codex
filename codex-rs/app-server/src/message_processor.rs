@@ -259,6 +259,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) installation_id: String,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
@@ -281,6 +282,7 @@ impl MessageProcessor {
             config_warnings,
             session_source,
             auth_manager,
+            installation_id,
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
@@ -302,6 +304,7 @@ impl MessageProcessor {
             state_db.clone(),
             Arc::clone(&thread_store),
             agent_graph_store.clone(),
+            installation_id,
         ));
         thread_manager
             .plugins_manager()

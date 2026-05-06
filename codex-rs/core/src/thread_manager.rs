@@ -7,6 +7,7 @@ use crate::environment_selection::default_thread_environment_selections;
 use crate::environment_selection::resolve_environment_selections;
 use crate::file_watcher::FileWatcher;
 use crate::mcp::McpManager;
+use crate::resolve_installation_id;
 use crate::rollout::RolloutRecorder;
 use crate::rollout::truncation;
 use crate::session::Codex;
@@ -253,6 +254,7 @@ pub(crate) struct ThreadManagerState {
     state_db: StateDbHandle,
     agent_graph_store: Arc<dyn AgentGraphStore>,
     session_source: SessionSource,
+    installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
@@ -316,6 +318,7 @@ impl ThreadManager {
         state_db: StateDbHandle,
         thread_store: Arc<dyn ThreadStore>,
         agent_graph_store: Arc<dyn AgentGraphStore>,
+        installation_id: String,
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
@@ -346,6 +349,7 @@ impl ThreadManager {
                 agent_graph_store,
                 auth_manager,
                 session_source,
+                installation_id,
                 analytics_events_client,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
@@ -373,12 +377,21 @@ impl ThreadManager {
             OPENAI_PROVIDER_ID.to_string(),
         )
         .await;
+        let skills_codex_home = match AbsolutePathBuf::from_absolute_path_checked(&codex_home) {
+            Ok(codex_home) => codex_home,
+            Err(err) => panic!("test codex_home should be absolute: {err}"),
+        };
+        let installation_id = resolve_installation_id(&skills_codex_home)
+            .await
+            .unwrap_or_else(|err| panic!("resolve test installation id failed: {err}"));
         let mut manager = Self::with_models_provider_and_home_and_state_db_for_tests(
             auth,
             provider,
             codex_home.clone(),
             Arc::new(EnvironmentManager::default_for_tests()),
             state_db,
+            skills_codex_home,
+            installation_id,
         );
         manager._test_codex_home_guard = Some(TempCodexHomeGuard { path: codex_home });
         manager
@@ -398,12 +411,21 @@ impl ThreadManager {
             OPENAI_PROVIDER_ID.to_string(),
         )
         .await;
+        let skills_codex_home = match AbsolutePathBuf::from_absolute_path_checked(&codex_home) {
+            Ok(codex_home) => codex_home,
+            Err(err) => panic!("test codex_home should be absolute: {err}"),
+        };
+        let installation_id = resolve_installation_id(&skills_codex_home)
+            .await
+            .unwrap_or_else(|err| panic!("resolve test installation id failed: {err}"));
         Self::with_models_provider_and_home_and_state_db_for_tests(
             auth,
             provider,
             codex_home,
             environment_manager,
             state_db,
+            skills_codex_home,
+            installation_id,
         )
     }
 
@@ -413,13 +435,11 @@ impl ThreadManager {
         codex_home: PathBuf,
         environment_manager: Arc<EnvironmentManager>,
         state_db: StateDbHandle,
+        skills_codex_home: AbsolutePathBuf,
+        installation_id: String,
     ) -> Self {
         set_thread_manager_test_mode_for_tests(/*enabled*/ true);
         let auth_manager = AuthManager::from_auth_for_testing(auth);
-        let skills_codex_home = match AbsolutePathBuf::from_absolute_path_checked(&codex_home) {
-            Ok(codex_home) => codex_home,
-            Err(err) => panic!("test codex_home should be absolute: {err}"),
-        };
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let restriction_product = SessionSource::Exec.restriction_product();
         let plugins_manager = Arc::new(PluginsManager::new_with_restriction_product(
@@ -459,6 +479,7 @@ impl ThreadManager {
                 agent_graph_store,
                 auth_manager,
                 session_source: SessionSource::Exec,
+                installation_id,
                 analytics_events_client: None,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
@@ -1199,6 +1220,7 @@ impl ThreadManagerState {
             codex, thread_id, ..
         } = Codex::spawn(CodexSpawnArgs {
             config,
+            installation_id: self.installation_id.clone(),
             auth_manager,
             models_manager: Arc::clone(&self.models_manager),
             environment_manager: Arc::clone(&self.environment_manager),
