@@ -14,7 +14,6 @@ use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadTokenUsage;
-use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_protocol::models::WebSearchAction;
@@ -786,7 +785,7 @@ mod tests {
                 turn: codex_app_server_protocol::Turn {
                     id: "turn-1".to_string(),
                     items: Vec::new(),
-                    items_view: TurnItemsView::Full,
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Failed,
                     error: Some(codex_app_server_protocol::TurnError {
                         message: "turn failed".to_string(),

@@ -1062,8 +1062,8 @@ async fn spawn_agent_releases_slot_after_shutdown() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        state_db.clone(),
-    );
+    )
+    .await;
     let control = manager.agent_control();
 
     let first_agent_id = control
