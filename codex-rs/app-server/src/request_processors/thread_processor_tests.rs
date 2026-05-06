@@ -128,30 +128,46 @@ mod thread_processor_behavior_tests {
     #[test]
     fn resume_dynamic_tools_replace_loaded_thread_only_for_thread_id_source() {
         assert!(resume_request_requires_thread_replacement(
-            &resume_params_for_source(None, None, Some(vec![test_dynamic_tool()]))
-        ));
-        assert!(!resume_request_requires_thread_replacement(
-            &resume_params_for_source(Some(Vec::new()), None, Some(vec![test_dynamic_tool()]))
-        ));
-        assert!(!resume_request_requires_thread_replacement(
             &resume_params_for_source(
-                None,
-                Some(PathBuf::from("thread.jsonl")),
-                Some(vec![test_dynamic_tool()])
+                /* history */ None,
+                /* path */ None,
+                /* dynamic_tools */ Some(vec![test_dynamic_tool()]),
             )
         ));
         assert!(!resume_request_requires_thread_replacement(
             &resume_params_for_source(
-                Some(Vec::new()),
-                Some(PathBuf::from("thread.jsonl")),
-                Some(vec![test_dynamic_tool(),])
+                /* history */ Some(Vec::new()),
+                /* path */ None,
+                /* dynamic_tools */ Some(vec![test_dynamic_tool()]),
             )
         ));
         assert!(!resume_request_requires_thread_replacement(
-            &resume_params_for_source(None, None, Some(Vec::new()))
+            &resume_params_for_source(
+                /* history */ None,
+                /* path */ Some(PathBuf::from("thread.jsonl")),
+                /* dynamic_tools */ Some(vec![test_dynamic_tool()]),
+            )
         ));
         assert!(!resume_request_requires_thread_replacement(
-            &resume_params_for_source(None, None, None)
+            &resume_params_for_source(
+                /* history */ Some(Vec::new()),
+                /* path */ Some(PathBuf::from("thread.jsonl")),
+                /* dynamic_tools */ Some(vec![test_dynamic_tool()]),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /* history */ None,
+                /* path */ None,
+                /* dynamic_tools */ Some(Vec::new()),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /* history */ None,
+                /* path */ None,
+                /* dynamic_tools */ None,
+            )
         ));
     }
 
