@@ -25,6 +25,7 @@ use crate::launcher::exec_bwrap;
 use crate::launcher::preferred_bwrap_supports_argv0;
 use crate::proxy_routing::activate_proxy_routes_in_netns;
 use crate::proxy_routing::prepare_host_proxy_route_spec;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::NetworkSandboxPolicy;
@@ -333,6 +334,7 @@ fn run_bwrap_with_proc_fallback(
             file_system_sandbox_policy,
             network_mode,
         )
+        .unwrap_or_else(|err| exit_with_bwrap_build_error(err))
     {
         // Keep the retry silent so sandbox-internal diagnostics do not leak into the
         // child process stderr stream.
@@ -347,6 +349,7 @@ fn run_bwrap_with_proc_fallback(
             network_mode,
             mount_proc,
         )
+        .unwrap_or_else(|err| exit_with_bwrap_build_error(err))
     {
         // Some constrained hosts deny loopback setup in an unshared netns.
         // Fall back to a shared netns; inner-stage seccomp still enforces
@@ -365,7 +368,8 @@ fn run_bwrap_with_proc_fallback(
         sandbox_policy_cwd,
         command_cwd,
         options,
-    );
+    )
+    .unwrap_or_else(|err| exit_with_bwrap_build_error(err));
     apply_inner_command_argv0(&mut bwrap_args.args);
     run_or_exec_bwrap(bwrap_args);
 }
@@ -389,24 +393,28 @@ fn build_bwrap_argv(
     sandbox_policy_cwd: &Path,
     command_cwd: &Path,
     options: BwrapOptions,
-) -> crate::bwrap::BwrapArgs {
+) -> CodexResult<crate::bwrap::BwrapArgs> {
     let bwrap_args = create_bwrap_command_args(
         inner,
         file_system_sandbox_policy,
         sandbox_policy_cwd,
         command_cwd,
         options,
-    )
-    .unwrap_or_else(|err| panic!("error building bubblewrap command: {err:?}"));
+    )?;
 
     let mut argv = vec!["bwrap".to_string()];
     argv.extend(bwrap_args.args);
-    crate::bwrap::BwrapArgs {
+    Ok(crate::bwrap::BwrapArgs {
         args: argv,
         preserved_files: bwrap_args.preserved_files,
         synthetic_mount_targets: bwrap_args.synthetic_mount_targets,
         protected_create_targets: bwrap_args.protected_create_targets,
-    }
+    })
+}
+
+fn exit_with_bwrap_build_error(err: codex_protocol::error::CodexErr) -> ! {
+    eprintln!("error building bubblewrap command: {err}");
+    std::process::exit(1);
 }
 
 fn apply_inner_command_argv0(argv: &mut Vec<String>) {
@@ -454,16 +462,16 @@ fn preflight_proc_mount_support(
     command_cwd: &Path,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
-) -> bool {
+) -> CodexResult<bool> {
     let preflight_argv = build_preflight_bwrap_argv(
         sandbox_policy_cwd,
         command_cwd,
         file_system_sandbox_policy,
         network_mode,
         /*mount_proc*/ true,
-    );
+    )?;
     let output = run_bwrap_in_child_capture_output(preflight_argv);
-    !is_proc_mount_failure(output.as_str())
+    Ok(!is_proc_mount_failure(output.as_str()))
 }
 
 fn preflight_network_namespace_support(
@@ -472,16 +480,16 @@ fn preflight_network_namespace_support(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
     mount_proc: bool,
-) -> bool {
+) -> CodexResult<bool> {
     let preflight_argv = build_preflight_bwrap_argv(
         sandbox_policy_cwd,
         command_cwd,
         file_system_sandbox_policy,
         network_mode,
         mount_proc,
-    );
+    )?;
     let output = run_bwrap_in_child_capture_output(preflight_argv);
-    !is_loopback_setup_failure(output.as_str())
+    Ok(!is_loopback_setup_failure(output.as_str()))
 }
 
 fn build_preflight_bwrap_argv(
@@ -490,7 +498,7 @@ fn build_preflight_bwrap_argv(
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
     mount_proc: bool,
-) -> crate::bwrap::BwrapArgs {
+) -> CodexResult<crate::bwrap::BwrapArgs> {
     let preflight_command = vec![resolve_true_command()];
     build_bwrap_argv(
         preflight_command,
@@ -1012,17 +1020,11 @@ fn synthetic_mount_marker_dir_has_active_process_matching(
     let entries = match fs::read_dir(marker_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(err) => panic!(
-            "failed to read synthetic bubblewrap mount marker directory {}: {err}",
-            marker_dir.display()
-        ),
+        Err(err) => panic!("failed to read synthetic bubblewrap mount marker directory: {err}"),
     };
     for entry in entries {
         let entry = entry.unwrap_or_else(|err| {
-            panic!(
-                "failed to read synthetic bubblewrap mount marker in {}: {err}",
-                marker_dir.display()
-            )
+            panic!("failed to read synthetic bubblewrap mount marker entry: {err}")
         });
         let path = entry.path();
         let Some(pid) = path
@@ -1270,7 +1272,10 @@ fn synthetic_mount_marker_dir(path: &Path) -> PathBuf {
 }
 
 fn synthetic_mount_registry_root() -> PathBuf {
-    std::env::temp_dir().join("codex-bwrap-synthetic-mount-targets")
+    let effective_uid = unsafe { libc::geteuid() };
+    std::env::temp_dir().join(format!(
+        "codex-bwrap-synthetic-mount-targets-{effective_uid}"
+    ))
 }
 
 fn hash_path(path: &Path) -> u64 {

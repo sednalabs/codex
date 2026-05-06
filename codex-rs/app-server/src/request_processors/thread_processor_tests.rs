@@ -52,6 +52,7 @@ mod thread_processor_behavior_tests {
     use chrono::DateTime;
     use chrono::Utc;
     use codex_app_server_protocol::ServerRequestPayload;
+    use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_config::CloudRequirementsLoader;
     use codex_config::LoaderOverrides;
@@ -80,6 +81,93 @@ mod thread_processor_behavior_tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn test_dynamic_tool() -> ApiDynamicToolSpec {
+        ApiDynamicToolSpec {
+            namespace: None,
+            name: "my_tool".to_string(),
+            description: "test".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
+        }
+    }
+
+    fn resume_params_for_source(
+        history: Option<Vec<codex_protocol::models::ResponseItem>>,
+        path: Option<PathBuf>,
+        dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
+    ) -> ThreadResumeParams {
+        ThreadResumeParams {
+            thread_id: "thread_resume_seed".to_string(),
+            history,
+            path,
+            model: None,
+            model_provider: None,
+            service_tier: None,
+            cwd: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox: None,
+            permissions: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            personality: None,
+            dynamic_tools,
+            exclude_turns: false,
+            persist_extended_history: false,
+        }
+    }
+
+    #[test]
+    fn resume_dynamic_tools_replace_loaded_thread_only_for_thread_id_source() {
+        assert!(resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ None,
+                /*path*/ None,
+                /*dynamic_tools*/ Some(vec![test_dynamic_tool()]),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ Some(Vec::new()),
+                /*path*/ None,
+                /*dynamic_tools*/ Some(vec![test_dynamic_tool()]),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ None,
+                /*path*/ Some(PathBuf::from("thread.jsonl")),
+                /*dynamic_tools*/ Some(vec![test_dynamic_tool()]),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ Some(Vec::new()),
+                /*path*/ Some(PathBuf::from("thread.jsonl")),
+                /*dynamic_tools*/ Some(vec![test_dynamic_tool()]),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ None,
+                /*path*/ None,
+                /*dynamic_tools*/ Some(Vec::new()),
+            )
+        ));
+        assert!(!resume_request_requires_thread_replacement(
+            &resume_params_for_source(
+                /*history*/ None, /*path*/ None, /*dynamic_tools*/ None,
+            )
+        ));
+    }
 
     #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {
@@ -219,6 +307,7 @@ mod thread_processor_behavior_tests {
                     text_elements: Vec::new(),
                 }],
             }],
+            items_view: TurnItemsView::Full,
             error: None,
             status: TurnStatus::InProgress,
             started_at: None,

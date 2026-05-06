@@ -27,7 +27,15 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::warn;
 
-pub struct DynamicToolHandler;
+pub struct DynamicToolHandler {
+    tool_name: ToolName,
+}
+
+impl DynamicToolHandler {
+    pub fn new(tool_name: ToolName) -> Self {
+        Self { tool_name }
+    }
+}
 
 pub struct DynamicToolOutput {
     tool_name: String,
@@ -67,6 +75,10 @@ impl ToolOutput for DynamicToolOutput {
 
 impl ToolHandler for DynamicToolHandler {
     type Output = DynamicToolOutput;
+
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -155,7 +167,6 @@ impl ToolHandler for DynamicToolHandler {
             session,
             turn,
             call_id,
-            tool_name,
             payload,
             ..
         } = invocation;
@@ -170,14 +181,20 @@ impl ToolHandler for DynamicToolHandler {
         };
 
         let args: Value = parse_arguments(&arguments)?;
-        let output_tool_name = tool_name.display();
-        let response = request_dynamic_tool(&session, turn.as_ref(), call_id, tool_name, args)
-            .await
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel(
-                    "dynamic tool call was cancelled before receiving a response".to_string(),
-                )
-            })?;
+        let output_tool_name = self.tool_name.display();
+        let response = request_dynamic_tool(
+            &session,
+            turn.as_ref(),
+            call_id,
+            self.tool_name.clone(),
+            args,
+        )
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "dynamic tool call was cancelled before receiving a response".to_string(),
+            )
+        })?;
 
         let DynamicToolResponse {
             content_items,
@@ -321,7 +338,8 @@ mod tests {
     #[tokio::test]
     async fn android_observe_is_non_mutating() {
         let (session, turn) = make_session_and_context().await;
-        let handler = DynamicToolHandler;
+        let handler =
+            DynamicToolHandler::new(codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen_and_ui"}).to_string(),
         };
@@ -360,7 +378,7 @@ mod tests {
                 }),
             }])
             .await;
-        let handler = DynamicToolHandler;
+        let handler = DynamicToolHandler::new(codex_tools::ToolName::plain("brokered_read"));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen"}).to_string(),
         };
@@ -399,7 +417,10 @@ mod tests {
                 }),
             }])
             .await;
-        let handler = DynamicToolHandler;
+        let handler = DynamicToolHandler::new(codex_tools::ToolName::namespaced(
+            "codex_app",
+            "brokered_read",
+        ));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen"}).to_string(),
         };
@@ -436,7 +457,8 @@ mod tests {
             source: ToolCallSource::Direct,
             payload: payload.clone(),
         };
-        let handler = DynamicToolHandler;
+        let handler =
+            DynamicToolHandler::new(codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME));
         let output = DynamicToolOutput {
             tool_name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
             output: FunctionToolOutput {

@@ -57,11 +57,7 @@ use codex_cloud_requirements::cloud_requirements_loader_for_storage;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
-use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
-use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
-use codex_core::auth::AuthConfig;
-use codex_core::auth::enforce_login_restrictions;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -74,6 +70,8 @@ use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
 use codex_feedback::CodexFeedback;
 use codex_git_utils::get_git_repo_root;
+use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::config_types::SandboxMode;
@@ -116,8 +114,10 @@ use uuid::Uuid;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+use codex_login::AuthConfig;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
+use codex_login::enforce_login_restrictions;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
 
@@ -2092,6 +2092,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2104,6 +2105,7 @@ mod tests {
                         id: "plan-1".to_string(),
                         text: "ship it".to_string(),
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,

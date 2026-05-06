@@ -4,7 +4,6 @@
 //! resulting `InterAgentCommunication` should wake the target immediately.
 
 use super::*;
-use crate::tools::context::FunctionToolOutput;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::protocol::InterAgentCommunication;
 

@@ -165,10 +165,7 @@ jobs:
       - name: Install Linux build dependencies
         if: ${{ inputs.needs_linux_build_deps }}
         shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+        run: bash .workflow-src/.github/scripts/install_linux_build_deps.sh
 
       - name: Install DotSlash
         if: ${{ inputs.needs_dotslash }}

@@ -141,7 +141,7 @@ pub async fn run_main(
     // Task: process incoming messages.
     let processor_handle = tokio::spawn({
         let outgoing_message_sender = OutgoingMessageSender::new(outgoing_tx);
-        let mut processor = MessageProcessor::new(
+        let processor = MessageProcessor::new(
             outgoing_message_sender,
             arg0_paths,
             Arc::new(config),
@@ -150,6 +150,10 @@ pub async fn run_main(
         )
         .await;
         async move {
+            let Some(mut processor) = processor else {
+                error!("failed to initialize MCP processor");
+                return;
+            };
             while let Some(msg) = incoming_rx.recv().await {
                 match msg {
                     JsonRpcMessage::Request(r) => processor.process_request(r).await,

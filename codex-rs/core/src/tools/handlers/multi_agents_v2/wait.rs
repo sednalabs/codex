@@ -61,6 +61,10 @@ impl CompletionRule {
 impl ToolHandler for Handler {
     type Output = WaitAgentResult;
 
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("wait_agent")
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }

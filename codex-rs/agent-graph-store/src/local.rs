@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::AgentGraphStore;
 use crate::AgentGraphStoreError;
+use crate::AgentGraphStoreFuture;
 use crate::AgentGraphStoreResult;
 use crate::ThreadSpawnEdgeStatus;
 
@@ -34,8 +35,8 @@ impl AgentGraphStore for LocalAgentGraphStore {
         parent_thread_id: ThreadId,
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
-    ) -> impl std::future::Future<Output = AgentGraphStoreResult<()>> + Send {
-        async move {
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
             self.state_db
                 .upsert_thread_spawn_edge(
                     parent_thread_id,
@@ -44,28 +45,28 @@ impl AgentGraphStore for LocalAgentGraphStore {
                 )
                 .await
                 .map_err(internal_error)
-        }
+        })
     }
 
     fn set_thread_spawn_edge_status(
         &self,
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
-    ) -> impl std::future::Future<Output = AgentGraphStoreResult<()>> + Send {
-        async move {
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
             self.state_db
                 .set_thread_spawn_edge_status(child_thread_id, to_state_status(status))
                 .await
                 .map_err(internal_error)
-        }
+        })
     }
 
     fn list_thread_spawn_children(
         &self,
         parent_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
-    ) -> impl std::future::Future<Output = AgentGraphStoreResult<Vec<ThreadId>>> + Send {
-        async move {
+    ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
             if let Some(status) = status_filter {
                 return self
                     .state_db
@@ -81,15 +82,15 @@ impl AgentGraphStore for LocalAgentGraphStore {
                 .list_thread_spawn_children(parent_thread_id)
                 .await
                 .map_err(internal_error)
-        }
+        })
     }
 
     fn list_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
-    ) -> impl std::future::Future<Output = AgentGraphStoreResult<Vec<ThreadId>>> + Send {
-        async move {
+    ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
             match status_filter {
                 Some(status) => self
                     .state_db
@@ -105,7 +106,7 @@ impl AgentGraphStore for LocalAgentGraphStore {
                     .await
                     .map_err(internal_error),
             }
-        }
+        })
     }
 }
 

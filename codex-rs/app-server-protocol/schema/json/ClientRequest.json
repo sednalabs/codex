@@ -3734,7 +3734,7 @@
         },
         "persistExtendedHistory": {
           "default": false,
-          "description": "If true, persist additional EventMsg variants to the rollout file.\nHowever, `thread/read`, `thread/resume`, and `thread/fork` still only\nreturn the limited form of thread history for scalability reasons.",
+          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
         "sandbox": {
@@ -4355,7 +4355,7 @@
         },
         "persistExtendedHistory": {
           "default": false,
-          "description": "If true, persist additional EventMsg variants to the rollout file.\nHowever, `thread/read`, `thread/resume`, and `thread/fork` still only\nreturn the limited form of thread history for scalability reasons.",
+          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
         "personality": {
@@ -4578,7 +4578,7 @@
         },
         "persistExtendedHistory": {
           "default": false,
-          "description": "If true, persist additional EventMsg variants to the rollout file.\nHowever, `thread/read`, `thread/resume`, and `thread/fork` still only\nreturn the limited form of thread history for scalability reasons.",
+          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
         "personality": {
@@ -6331,6 +6331,27 @@
         "params"
       ],
       "title": "WindowsSandbox/setupStartRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "windowsSandbox/readiness",
+          "title": "WindowsSandbox/readinessRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "method",
+        "id"
+      ],
+      "title": "WindowsSandbox/readinessRequest",
       "type": "object"
     },
     {

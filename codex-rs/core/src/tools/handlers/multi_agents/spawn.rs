@@ -14,6 +14,10 @@ pub(crate) struct Handler;
 impl ToolHandler for Handler {
     type Output = SpawnAgentResult;
 
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("spawn_agent")
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -104,7 +108,7 @@ impl ToolHandler for Handler {
                 &turn.session_source,
                 child_depth,
                 role_name,
-                requested_task_name.clone(),
+                /*task_name*/ None,
             )?),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),

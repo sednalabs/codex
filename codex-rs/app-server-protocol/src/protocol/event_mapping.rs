@@ -20,10 +20,11 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
-use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 /// Build the v2 app-server notification that directly corresponds to a single core event.
 ///
@@ -96,14 +97,7 @@ pub fn item_event_to_server_notification(
                     response
                         .content_items
                         .into_iter()
-                        .map(|item| match item {
-                            CoreComputerUseOutputContentItem::InputText { text } => {
-                                ComputerUseCallOutputContentItem::InputText { text }
-                            }
-                            CoreComputerUseOutputContentItem::InputImage { image_url, detail } => {
-                                ComputerUseCallOutputContentItem::InputImage { image_url, detail }
-                            }
-                        })
+                        .map(ComputerUseCallOutputContentItem::from)
                         .collect(),
                 ),
                 success: Some(response.success),
@@ -114,10 +108,7 @@ pub fn item_event_to_server_notification(
                 thread_id,
                 turn_id: response.turn_id,
                 item,
-                // The computer-use core response event does not currently carry
-                // completion wall-clock metadata. Preserve the v2 notification
-                // shape without inventing a timestamp.
-                completed_at_ms: 0,
+                completed_at_ms: now_unix_timestamp_ms(),
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
@@ -513,6 +504,13 @@ pub fn item_event_to_server_notification(
         _ => return None,
     };
     Some(notification)
+}
+
+fn now_unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

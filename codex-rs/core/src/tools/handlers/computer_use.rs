@@ -32,7 +32,15 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::warn;
 
-pub struct ComputerUseHandler;
+pub struct ComputerUseHandler {
+    tool_name: ToolName,
+}
+
+impl ComputerUseHandler {
+    pub fn new(tool_name: ToolName) -> Self {
+        Self { tool_name }
+    }
+}
 
 pub struct ComputerUseOutput {
     tool_name: String,
@@ -74,6 +82,10 @@ impl ToolOutput for ComputerUseOutput {
 
 impl ToolHandler for ComputerUseHandler {
     type Output = ComputerUseOutput;
+
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -422,7 +434,7 @@ mod tests {
         let (session, turn) = make_session_and_context().await;
         let session = Arc::new(session);
         let turn = Arc::new(turn);
-        let handler = ComputerUseHandler;
+        let handler = ComputerUseHandler::new(ToolName::plain(ANDROID_OBSERVE_TOOL_NAME));
 
         let observe_payload = ToolPayload::Function {
             arguments: json!({"scope": "screen_and_ui"}).to_string(),
