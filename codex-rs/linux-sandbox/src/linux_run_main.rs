@@ -1020,17 +1020,11 @@ fn synthetic_mount_marker_dir_has_active_process_matching(
     let entries = match fs::read_dir(marker_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(err) => panic!(
-            "failed to read synthetic bubblewrap mount marker directory {}: {err}",
-            marker_dir.display()
-        ),
+        Err(err) => panic!("failed to read synthetic bubblewrap mount marker directory: {err}"),
     };
     for entry in entries {
         let entry = entry.unwrap_or_else(|err| {
-            panic!(
-                "failed to read synthetic bubblewrap mount marker in {}: {err}",
-                marker_dir.display()
-            )
+            panic!("failed to read synthetic bubblewrap mount marker entry: {err}")
         });
         let path = entry.path();
         let Some(pid) = path

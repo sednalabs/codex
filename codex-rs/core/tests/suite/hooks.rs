@@ -2014,8 +2014,8 @@ async fn blocked_pre_tool_use_records_additional_context_for_shell_command() -> 
 
     let server = start_mock_server().await;
     let call_id = "pretooluse-shell-command-blocked-context";
-    let marker = std::env::temp_dir().join("pretooluse-shell-command-blocked-context-marker");
-    let command = format!("printf blocked > {}", marker.display());
+    let marker = "pretooluse-shell-command-blocked-context-marker";
+    let command = format!("printf blocked > {marker}");
     let args = serde_json::json!({ "command": command });
     let responses = mount_sse_sequence(
         &server,
@@ -2049,9 +2049,10 @@ async fn blocked_pre_tool_use_records_additional_context_for_shell_command() -> 
         })
         .with_config(trust_discovered_hooks);
     let test = builder.build(&server).await?;
+    let marker_path = test.workspace_path(marker);
 
-    if marker.exists() {
-        fs::remove_file(&marker).context("remove leftover pre tool use marker")?;
+    if marker_path.exists() {
+        fs::remove_file(&marker_path).context("remove leftover pre tool use marker")?;
     }
 
     test.submit_turn_with_permission_profile(
@@ -2078,7 +2079,7 @@ async fn blocked_pre_tool_use_records_additional_context_for_shell_command() -> 
         "blocked tool output should still surface the hook reason",
     );
     assert!(
-        !marker.exists(),
+        !marker_path.exists(),
         "blocked command should not create marker file"
     );
 
