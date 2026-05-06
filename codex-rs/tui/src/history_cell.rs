@@ -2076,6 +2076,32 @@ impl DynamicToolCallCell {
 }
 
 impl HistoryCell for DynamicToolCallCell {
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let header_text = if self.success.is_some() {
+            "Called"
+        } else {
+            "Calling"
+        };
+        let mut lines = vec![Line::from(format!(
+            "{header_text} {}",
+            format_dynamic_tool_invocation(&self.tool, &self.arguments)
+        ))];
+
+        let preview = match (&self.error, &self.content_items) {
+            (Some(error), _) => Some(format!("Error: {error}")),
+            (None, Some(content_items)) => dynamic_tool_preview(content_items),
+            (None, None) => None,
+        };
+        if let Some(preview) = preview {
+            let detail_text = format_and_truncate_tool_result(
+                &preview,
+                TOOL_CALL_MAX_LINES,
+                RAW_TOOL_OUTPUT_WIDTH,
+            );
+            lines.extend(raw_lines_from_source(&detail_text));
+        }
+        lines
+    }
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let bullet = match self.success {
@@ -2234,6 +2260,37 @@ impl ComputerUseCallCell {
 }
 
 impl HistoryCell for ComputerUseCallCell {
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let header_text = if self.success.is_some() {
+            "Used computer"
+        } else {
+            "Using computer"
+        };
+        let mut lines = vec![Line::from(format!(
+            "{header_text} {}",
+            format_computer_use_invocation(
+                &self.adapter,
+                self.environment_id.as_deref(),
+                &self.tool,
+                &self.arguments,
+            )
+        ))];
+
+        let preview = match (&self.error, &self.content_items) {
+            (Some(error), _) => Some(format!("Error: {error}")),
+            (None, Some(content_items)) => computer_use_preview(content_items),
+            (None, None) => None,
+        };
+        if let Some(preview) = preview {
+            let detail_text = format_and_truncate_tool_result(
+                &preview,
+                TOOL_CALL_MAX_LINES,
+                RAW_TOOL_OUTPUT_WIDTH,
+            );
+            lines.extend(raw_lines_from_source(&detail_text));
+        }
+        lines
+    }
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let bullet = match self.success {

@@ -112,8 +112,10 @@ use uuid::Uuid;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+use codex_login::AuthConfig;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
+use codex_login::enforce_login_restrictions;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
 
@@ -2167,6 +2169,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2179,6 +2182,7 @@ mod tests {
                         id: "plan-1".to_string(),
                         text: "ship it".to_string(),
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
