@@ -5618,10 +5618,9 @@ async fn make_goal_session_and_context_with_rx() -> (
     tempfile::TempDir,
 ) {
     let codex_home = tempfile::tempdir().expect("create temp dir");
-    let (session, turn_context, rx) = make_session_and_context_with_auth_config_home_and_rx(
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
-        codex_home.path(),
         |config| {
             config
                 .features
