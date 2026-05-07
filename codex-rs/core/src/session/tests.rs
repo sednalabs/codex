@@ -6687,7 +6687,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
             .expect("serialize expected context item")
     );
     session.ensure_rollout_materialized().await;
-    session.flush_rollout().await;
+    session.flush_rollout().await.expect("flush rollout");
 
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
         .await
@@ -6803,7 +6803,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_full_rei
         .record_context_updates_and_set_reference_context_item(&turn_context)
         .await;
     session.ensure_rollout_materialized().await;
-    session.flush_rollout().await;
+    session.flush_rollout().await.expect("flush rollout");
 
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
         .await

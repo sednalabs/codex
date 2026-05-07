@@ -188,8 +188,7 @@ impl CodexThread {
 
     #[doc(hidden)]
     pub async fn flush_rollout(&self) -> std::io::Result<()> {
-        self.codex.session.flush_rollout().await;
-        Ok(())
+        self.codex.session.flush_rollout().await
     }
 
     pub async fn submit_with_trace(
@@ -381,7 +380,7 @@ impl CodexThread {
             .session
             .record_conversation_items(turn_context.as_ref(), &items)
             .await;
-        self.codex.session.flush_rollout().await;
+        self.codex.session.flush_rollout().await?;
         Ok(())
     }
 
