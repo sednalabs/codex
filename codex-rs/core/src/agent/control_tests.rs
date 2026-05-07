@@ -123,7 +123,7 @@ impl AgentControlHarness {
             config.model_provider.clone(),
             config.codex_home.to_path_buf(),
             std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-            None,
+            /*state_db*/ None,
         );
         let control = manager.agent_control();
         Self {
@@ -1610,7 +1610,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        None,
+        /*state_db*/ None,
     );
     let control = manager.agent_control();
     let harness = AgentControlHarness {
