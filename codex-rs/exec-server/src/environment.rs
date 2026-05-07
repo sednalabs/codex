@@ -7,6 +7,7 @@ use crate::ExecutorFileSystem;
 use crate::HttpClient;
 use crate::client::LazyRemoteExecServerClient;
 use crate::client::http_client::ReqwestHttpClient;
+use crate::client_api::ExecServerTransportParams;
 use crate::environment_provider::DefaultEnvironmentProvider;
 use crate::environment_provider::EnvironmentProvider;
 use crate::environment_provider::normalize_exec_server_url;
@@ -274,7 +275,9 @@ impl Environment {
         exec_server_url: String,
         local_runtime_paths: Option<ExecServerRuntimePaths>,
     ) -> Self {
-        let client = LazyRemoteExecServerClient::new(exec_server_url.clone());
+        let client = LazyRemoteExecServerClient::new(ExecServerTransportParams::WebSocketUrl(
+            exec_server_url.clone(),
+        ));
         let exec_backend: Arc<dyn ExecBackend> = Arc::new(RemoteProcess::new(client.clone()));
         let filesystem: Arc<dyn ExecutorFileSystem> =
             Arc::new(RemoteFileSystem::new(client.clone()));
