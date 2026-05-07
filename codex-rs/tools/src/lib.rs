@@ -1,6 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod android_tool;
 mod code_mode;
 mod dynamic_tool;
 mod image_detail;
@@ -13,6 +14,10 @@ mod tool_definition;
 mod tool_discovery;
 mod tool_spec;
 
+pub use android_tool::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
+pub use android_tool::ANDROID_OBSERVE_TOOL_NAME;
+pub use android_tool::ANDROID_STEP_TOOL_NAME;
+pub use android_tool::canonical_android_dynamic_tool;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;

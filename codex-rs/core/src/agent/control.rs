@@ -1744,7 +1744,7 @@ impl AgentControl {
             let closed_children = state_db_ctx
                 .list_thread_spawn_children_with_status(
                     parent_thread_id,
-                    DirectionalThreadSpawnEdgeStatus::Closed,
+                    codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
                 )
                 .await
                 .map_err(|err| {

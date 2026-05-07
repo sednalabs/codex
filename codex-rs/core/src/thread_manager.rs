@@ -16,7 +16,6 @@ use crate::session::INITIAL_SUBMIT_ID;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
-use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -205,11 +204,10 @@ pub(crate) struct ThreadManagerState {
     mcp_manager: Arc<McpManager>,
     thread_store: Arc<dyn ThreadStore>,
     state_db: StateDbHandle,
-    agent_graph_store: Arc<dyn AgentGraphStore>,
+    agent_graph_store: Arc<LocalAgentGraphStore>,
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
-    state_db: Option<StateDbHandle>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -240,7 +238,7 @@ pub fn thread_store_from_config(config: &Config, state_db: StateDbHandle) -> Arc
     }
 }
 
-pub fn agent_graph_store_from_state_db(state_db: StateDbHandle) -> Arc<dyn AgentGraphStore> {
+pub fn agent_graph_store_from_state_db(state_db: StateDbHandle) -> Arc<LocalAgentGraphStore> {
     Arc::new(LocalAgentGraphStore::new(state_db))
 }
 
@@ -271,7 +269,7 @@ impl ThreadManager {
         analytics_events_client: Option<AnalyticsEventsClient>,
         state_db: StateDbHandle,
         thread_store: Arc<dyn ThreadStore>,
-        agent_graph_store: Arc<dyn AgentGraphStore>,
+        agent_graph_store: Arc<LocalAgentGraphStore>,
         installation_id: String,
     ) -> Self {
         let codex_home = config.codex_home.clone();
@@ -303,7 +301,6 @@ impl ThreadManager {
                 session_source,
                 installation_id,
                 analytics_events_client,
-                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -599,7 +596,7 @@ impl ThreadManager {
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
             session_source,
-            thread_source,
+            None,
             options.dynamic_tools,
             options.persist_extended_history,
             options.metrics_service_name,
@@ -919,7 +916,7 @@ impl ThreadManagerState {
         self.state_db.clone()
     }
 
-    pub(crate) fn agent_graph_store(&self) -> Arc<dyn AgentGraphStore> {
+    pub(crate) fn agent_graph_store(&self) -> Arc<LocalAgentGraphStore> {
         self.agent_graph_store.clone()
     }
 

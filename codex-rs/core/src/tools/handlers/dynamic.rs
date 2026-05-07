@@ -208,7 +208,7 @@ impl ToolHandler for DynamicToolHandler {
             &mut body,
         );
         Ok(DynamicToolOutput {
-            tool_name: output_tool_name,
+            tool_name: self.tool_name.display(),
             output: FunctionToolOutput::from_content(body, Some(success)),
         })
     }

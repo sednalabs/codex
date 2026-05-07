@@ -14,6 +14,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v2;
 use crate::tools::handlers::multi_agents_spec::create_followup_task_tool;
+use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
