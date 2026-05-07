@@ -1101,6 +1101,7 @@ fn tracked_tool_item_id(item: &ThreadItem) -> Option<&str> {
         | ThreadItem::FileChange { id, .. }
         | ThreadItem::McpToolCall { id, .. }
         | ThreadItem::DynamicToolCall { id, .. }
+        | ThreadItem::ComputerUseCall { id, .. }
         | ThreadItem::CollabAgentToolCall { id, .. }
         | ThreadItem::WebSearch { id, .. }
         | ThreadItem::ImageGeneration { id, .. } => Some(id),

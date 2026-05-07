@@ -39,7 +39,7 @@ pub(super) async fn list_threads(
         SortDirection::Asc => codex_rollout::SortDirection::Asc,
         SortDirection::Desc => codex_rollout::SortDirection::Desc,
     };
-    let state_db = store.state_db().await;
+    let state_db = store.state_db();
     let rollout_config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
         sqlite_home: store.sqlite_home(),
