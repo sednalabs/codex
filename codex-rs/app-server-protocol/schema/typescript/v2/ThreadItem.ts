@@ -102,7 +102,7 @@ model: string | null,
  */
 reasoningEffort: ReasoningEffort | null,
 /**
- * Whether a wait call completed due to timeout.
+ * Whether the collab tool call ended because its wait budget elapsed.
  */
 timedOut: boolean,
 /**

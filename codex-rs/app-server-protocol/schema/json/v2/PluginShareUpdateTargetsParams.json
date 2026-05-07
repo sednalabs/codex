@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "PluginSharePrincipalType": {
       "enum": [
         "user",
@@ -15,23 +14,24 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         }
       },
       "required": [
-        "principalId",
-        "principalType"
+        "principalType",
+        "principalId"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "remotePluginId": {
       "type": "string"
     },
     "shareTargets": {
       "items": {
-        "$ref": "#/definitions/PluginShareTarget"
+        "$ref": "#/$defs/PluginShareTarget"
       },
       "type": "array"
     }

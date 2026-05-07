@@ -63,47 +63,8 @@
         }
       ]
     },
-    "DynamicToolCapability": {
-      "properties": {
-        "capabilityScope": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "family": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "leaseMode": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "mutationClass": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
     "DynamicToolSpec": {
       "properties": {
-        "capability": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DynamicToolCapability"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "deferLoading": {
           "type": "boolean"
         },
@@ -119,9 +80,6 @@
             "string",
             "null"
           ]
-        },
-        "persistOnResume": {
-          "type": "boolean"
         }
       },
       "required": [
@@ -344,7 +302,7 @@
     "threadSource": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSource"
+          "$ref": "#/$defs/ThreadSource"
         },
         {
           "type": "null"

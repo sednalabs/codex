@@ -389,7 +389,7 @@
         "shareContext": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareContext"
+              "$ref": "#/$defs/PluginShareContext"
             },
             {
               "type": "null"

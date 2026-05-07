@@ -1297,7 +1297,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1390,7 +1389,7 @@
           "type": "array"
         },
         "watchId": {
-          "description": "Watch identifier returned by `fs/watch`.",
+          "description": "Watch identifier previously provided to `fs/watch`.",
           "type": "string"
         }
       },
@@ -2089,7 +2088,6 @@
         }
       },
       "required": [
-        "completedAtMs",
         "item",
         "threadId",
         "turnId",
@@ -2098,7 +2096,7 @@
       "type": "object"
     },
     "ItemGuardianApprovalReviewCompletedNotification": {
-      "description": "[UNSTABLE] Temporary notification payload for guardian automatic approval\nreview. This shape is expected to change soon.\n\nTODO(ccunningham): Attach guardian review state to the reviewed tool item's\nlifecycle instead of sending separate standalone review notifications so the\napp-server API can persist and replay review state via `thread/read`.",
+      "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This\nshape is expected to change soon.",
       "properties": {
         "action": {
           "$ref": "#/$defs/GuardianApprovalReviewAction"
@@ -2138,7 +2136,7 @@
       "type": "object"
     },
     "ItemGuardianApprovalReviewStartedNotification": {
-      "description": "[UNSTABLE] Temporary notification payload for guardian automatic approval\nreview. This shape is expected to change soon.\n\nTODO(ccunningham): Attach guardian review state to the reviewed tool item's\nlifecycle instead of sending separate standalone review notifications so the\napp-server API can persist and replay review state via `thread/read`.",
+      "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This\nshape is expected to change soon.",
       "properties": {
         "action": {
           "$ref": "#/$defs/GuardianApprovalReviewAction"
@@ -2183,11 +2181,6 @@
           "format": "int64",
           "type": "integer"
         },
-        "startedAtMs": {
-          "description": "Unix timestamp (in milliseconds) when this item lifecycle started.",
-          "format": "int64",
-          "type": "integer"
-        },
         "threadId": {
           "type": "string"
         },
@@ -2197,7 +2190,6 @@
       },
       "required": [
         "item",
-        "startedAtMs",
         "threadId",
         "turnId",
         "startedAtMs"
@@ -2640,7 +2632,7 @@
           "type": "string"
         },
         "stderrCapReached": {
-          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the final stderr `process/outputDelta` notification.",
+          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the\nfinal stderr `process/outputDelta` notification.",
           "type": "boolean"
         },
         "stdout": {
@@ -2648,17 +2640,17 @@
           "type": "string"
         },
         "stdoutCapReached": {
-          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the final stdout `process/outputDelta` notification.",
+          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the\nfinal stdout `process/outputDelta` notification.",
           "type": "boolean"
         }
       },
       "required": [
-        "exitCode",
         "processHandle",
-        "stderr",
-        "stderrCapReached",
+        "exitCode",
         "stdout",
-        "stdoutCapReached"
+        "stdoutCapReached",
+        "stderr",
+        "stderrCapReached"
       ],
       "type": "object"
     },
@@ -2666,7 +2658,7 @@
       "description": "Base64-encoded output chunk emitted for a streaming `process/spawn` request.",
       "properties": {
         "capReached": {
-          "description": "True on the final streamed chunk for this stream when output was truncated by `outputBytesCap`.",
+          "description": "True on the final streamed chunk for this stream when output was\ntruncated by `outputBytesCap`.",
           "type": "boolean"
         },
         "deltaBase64": {
@@ -2678,19 +2670,15 @@
           "type": "string"
         },
         "stream": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ProcessOutputStream"
-            }
-          ],
+          "$ref": "#/$defs/ProcessOutputStream",
           "description": "Output stream this chunk belongs to."
         }
       },
       "required": [
-        "capReached",
-        "deltaBase64",
         "processHandle",
-        "stream"
+        "stream",
+        "deltaBase64",
+        "capReached"
       ],
       "type": "object"
     },
@@ -2698,17 +2686,13 @@
       "description": "Stream label for `process/outputDelta` notifications.",
       "oneOf": [
         {
+          "const": "stdout",
           "description": "stdout stream. PTY mode multiplexes terminal output here.",
-          "enum": [
-            "stdout"
-          ],
           "type": "string"
         },
         {
+          "const": "stderr",
           "description": "stderr stream.",
-          "enum": [
-            "stderr"
-          ],
           "type": "string"
         }
       ]
@@ -3898,7 +3882,7 @@
         "threadSource": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadSource"
+              "$ref": "#/$defs/ThreadSource"
             },
             {
               "type": "null"
@@ -3921,9 +3905,12 @@
       },
       "required": [
         "id",
-        "preview",
         "sessionId",
-        "source",
+        "preview",
+        "ephemeral",
+        "modelProvider",
+        "createdAt",
+        "updatedAt",
         "status",
         "cwd",
         "cliVersion",
@@ -4549,7 +4536,8 @@
               "description": "Current status of the collab tool call."
             },
             "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
+              "default": false,
+              "description": "Whether the collab tool call ended because its wait budget elapsed.",
               "type": "boolean"
             },
             "tool": {
@@ -4569,7 +4557,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -5160,11 +5147,7 @@
           "type": "array"
         },
         "itemsView": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TurnItemsView"
-            }
-          ],
+          "$ref": "#/$defs/TurnItemsView",
           "default": "full",
           "description": "Describes how much of `items` has been loaded for this turn."
         },
@@ -5253,24 +5236,18 @@
     "TurnItemsView": {
       "oneOf": [
         {
+          "const": "notLoaded",
           "description": "`items` was not loaded for this turn. The field is intentionally empty.",
-          "enum": [
-            "notLoaded"
-          ],
           "type": "string"
         },
         {
+          "const": "summary",
           "description": "`items` contains only a display summary for this turn.",
-          "enum": [
-            "summary"
-          ],
           "type": "string"
         },
         {
+          "const": "full",
           "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
-          "enum": [
-            "full"
-          ],
           "type": "string"
         }
       ]
@@ -6065,47 +6042,6 @@
     },
     {
       "description": "Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.",
-      "properties": {
-        "method": {
-          "enum": [
-            "process/outputDelta"
-          ],
-          "title": "Process/outputDeltaNotificationMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/definitions/ProcessOutputDeltaNotification"
-        }
-      },
-      "required": [
-        "method",
-        "params"
-      ],
-      "title": "Process/outputDeltaNotification",
-      "type": "object"
-    },
-    {
-      "description": "Final exit notification for a `process/spawn` session.",
-      "properties": {
-        "method": {
-          "enum": [
-            "process/exited"
-          ],
-          "title": "Process/exitedNotificationMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/definitions/ProcessExitedNotification"
-        }
-      },
-      "required": [
-        "method",
-        "params"
-      ],
-      "title": "Process/exitedNotification",
-      "type": "object"
-    },
-    {
       "properties": {
         "method": {
           "const": "process/outputDelta",

@@ -12,7 +12,6 @@ use schemars::Schema;
 use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 use ts_rs::TS;
 
 // Macro to declare a camelCased API v2 enum mirroring a core enum which

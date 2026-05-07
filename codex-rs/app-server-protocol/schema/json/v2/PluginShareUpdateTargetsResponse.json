@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "PluginSharePrincipal": {
       "properties": {
         "name": {
@@ -10,13 +9,13 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         }
       },
       "required": [
-        "name",
+        "principalType",
         "principalId",
-        "principalType"
+        "name"
       ],
       "type": "object"
     },
@@ -29,10 +28,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "principals": {
       "items": {
-        "$ref": "#/definitions/PluginSharePrincipal"
+        "$ref": "#/$defs/PluginSharePrincipal"
       },
       "type": "array"
     }

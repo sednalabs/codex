@@ -1018,7 +1018,8 @@
               "description": "Current status of the collab tool call."
             },
             "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
+              "default": false,
+              "description": "Whether the collab tool call ended because its wait budget elapsed.",
               "type": "boolean"
             },
             "tool": {
@@ -1038,7 +1039,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -1426,10 +1426,10 @@
     }
   },
   "required": [
-    "completedAtMs",
     "item",
     "threadId",
-    "turnId"
+    "turnId",
+    "completedAtMs"
   ],
   "title": "ItemCompletedNotification",
   "type": "object"

@@ -6,19 +6,14 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Created watch handle returned by `fs/watch`.",
+  "description": "Successful response for `fs/watch`.",
   "properties": {
     "path": {
       "$ref": "#/$defs/AbsolutePathBuf",
       "description": "Canonicalized path associated with the watch."
-    },
-    "watchId": {
-      "description": "Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.",
-      "type": "string"
     }
   },
   "required": [
-    "watchId",
     "path"
   ],
   "title": "FsWatchResponse",

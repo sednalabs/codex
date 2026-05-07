@@ -884,8 +884,10 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 }
 
 fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
-    let visible_models: Vec<&ModelPreset> =
-        models.iter().filter(|model| model.show_in_picker).collect();
+    let visible_models: Vec<&ModelPreset> = models
+        .iter()
+        .filter(|model| model.show_in_picker || model.upgrade.is_some())
+        .collect();
     if visible_models.is_empty() {
         return "No picker-visible model overrides are currently loaded.".to_string();
     }

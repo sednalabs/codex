@@ -131,74 +131,6 @@
         }
       ]
     },
-    "DynamicToolCapability": {
-      "properties": {
-        "capabilityScope": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "family": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "leaseMode": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "mutationClass": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "DynamicToolSpec": {
-      "properties": {
-        "capability": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DynamicToolCapability"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "deferLoading": {
-          "type": "boolean"
-        },
-        "description": {
-          "type": "string"
-        },
-        "inputSchema": true,
-        "name": {
-          "type": "string"
-        },
-        "namespace": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "persistOnResume": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "name",
-        "description",
-        "inputSchema"
-      ],
-      "type": "object"
-    },
     "FunctionCallOutputBody": {
       "anyOf": [
         {
@@ -895,22 +827,6 @@
                 "null"
               ]
             },
-            "type": {
-              "enum": [
-                "context_compaction"
-              ],
-              "title": "ContextCompactionResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "ContextCompactionResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
             "type": {
               "const": "context_compaction",
               "title": "ContextCompactionResponseItemType",

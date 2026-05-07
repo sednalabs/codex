@@ -665,7 +665,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1396,7 +1395,7 @@
         "threadSource": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadSource"
+              "$ref": "#/$defs/ThreadSource"
             },
             {
               "type": "null"
@@ -1419,12 +1418,16 @@
       },
       "required": [
         "id",
-        "preview",
         "sessionId",
-        "source",
+        "preview",
+        "ephemeral",
+        "modelProvider",
+        "createdAt",
+        "updatedAt",
         "status",
         "cwd",
         "cliVersion",
+        "source",
         "turns"
       ],
       "type": "object"
@@ -1937,7 +1940,8 @@
               "description": "Current status of the collab tool call."
             },
             "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
+              "default": false,
+              "description": "Whether the collab tool call ended because its wait budget elapsed.",
               "type": "boolean"
             },
             "tool": {
@@ -1957,7 +1961,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -2238,11 +2241,7 @@
           "type": "array"
         },
         "itemsView": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TurnItemsView"
-            }
-          ],
+          "$ref": "#/$defs/TurnItemsView",
           "default": "full",
           "description": "Describes how much of `items` has been loaded for this turn."
         },
@@ -2296,24 +2295,18 @@
     "TurnItemsView": {
       "oneOf": [
         {
+          "const": "notLoaded",
           "description": "`items` was not loaded for this turn. The field is intentionally empty.",
-          "enum": [
-            "notLoaded"
-          ],
           "type": "string"
         },
         {
+          "const": "summary",
           "description": "`items` contains only a display summary for this turn.",
-          "enum": [
-            "summary"
-          ],
           "type": "string"
         },
         {
+          "const": "full",
           "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
-          "enum": [
-            "full"
-          ],
           "type": "string"
         }
       ]

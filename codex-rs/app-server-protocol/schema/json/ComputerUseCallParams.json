@@ -5,29 +5,17 @@
       "type": "string"
     },
     "arguments": true,
-    "callId": {
-      "type": "string"
-    },
     "environmentId": {
       "type": [
         "string",
         "null"
       ]
     },
-    "threadId": {
-      "type": "string"
-    },
     "tool": {
-      "type": "string"
-    },
-    "turnId": {
       "type": "string"
     }
   },
   "required": [
-    "threadId",
-    "turnId",
-    "callId",
     "adapter",
     "tool",
     "arguments"
