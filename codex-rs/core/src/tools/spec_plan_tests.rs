@@ -1,11 +1,12 @@
 use super::*;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::request_user_input_spec::REQUEST_USER_INPUT_TOOL_NAME;
 use crate::tools::handlers::shell_spec::CommandToolOptions;
 use crate::tools::handlers::shell_spec::create_exec_command_tool;
-use crate::tools::spec_plan_types::ToolHandlerSpec;
+use crate::tools::registry::ToolRegistry;
 use crate::tools::spec_plan_types::ToolNamespace;
-use crate::tools::spec_plan_types::ToolRegistryPlanDeferredTool;
-use crate::tools::spec_plan_types::ToolRegistryPlanMcpTool;
+use crate::tools::spec_plan_types::ToolRegistryBuildDeferredTool;
+use crate::tools::spec_plan_types::ToolRegistryBuildMcpTool;
 use codex_app_server_protocol::AppInfo;
 use codex_features::Feature;
 use codex_features::Features;
@@ -29,10 +30,12 @@ use codex_tools::FreeformTool;
 use codex_tools::JsonSchema;
 use codex_tools::JsonSchemaPrimitiveType;
 use codex_tools::JsonSchemaType;
+use codex_tools::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ResponsesApiWebSearchFilters;
 use codex_tools::ResponsesApiWebSearchUserLocation;
+use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolName;
 use codex_tools::ToolsConfigParams;
@@ -1506,7 +1509,7 @@ fn namespace_specs_are_hidden_when_namespace_tools_are_disabled() {
     });
     tools_config.namespace_tools = false;
 
-    let (tools, handlers) = build_specs(
+    let (tools, registry) = build_specs(
         &tools_config,
         Some(HashMap::from([(
             ToolName::namespaced("mcp__sample__", "echo"),
@@ -1517,10 +1520,7 @@ fn namespace_specs_are_hidden_when_namespace_tools_are_disabled() {
     );
 
     assert_lacks_tool_name(&tools, "mcp__sample__");
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::namespaced("mcp__sample__", "echo"),
-        kind: ToolHandlerKind::Mcp,
-    }));
+    assert!(registry.has_handler(&ToolName::namespaced("mcp__sample__", "echo")));
 }
 
 #[test]
@@ -1678,7 +1678,7 @@ fn search_tool_description_lists_each_mcp_source_once() {
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
     });
 
-    let (tools, handlers) = build_specs(
+    let (tools, registry) = build_specs(
         &tools_config,
         Some(HashMap::from([
             (
@@ -1743,14 +1743,11 @@ fn search_tool_description_lists_each_mcp_source_once() {
     assert!(description.contains("- rmcp: Remote memory tools."));
     assert!(!description.contains("mcp__rmcp__echo"));
 
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::namespaced("mcp__codex_apps__calendar", "_create_event"),
-        kind: ToolHandlerKind::Mcp,
-    }));
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::namespaced("mcp__rmcp__", "echo"),
-        kind: ToolHandlerKind::Mcp,
-    }));
+    assert!(registry.has_handler(&ToolName::namespaced(
+        "mcp__codex_apps__calendar",
+        "_create_event",
+    )));
+    assert!(registry.has_handler(&ToolName::namespaced("mcp__rmcp__", "echo")));
 }
 
 #[test]
@@ -1844,7 +1841,7 @@ fn search_tool_is_hidden_when_only_deferred_namespace_tools_are_available() {
     });
     tools_config.namespace_tools = false;
 
-    let (tools, handlers) = build_specs(
+    let (tools, registry) = build_specs(
         &tools_config,
         /*mcp_tools*/ None,
         Some(vec![deferred_mcp_tool(
@@ -1858,10 +1855,7 @@ fn search_tool_is_hidden_when_only_deferred_namespace_tools_are_available() {
     );
 
     assert_lacks_tool_name(&tools, TOOL_SEARCH_TOOL_NAME);
-    assert!(!handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain(TOOL_SEARCH_TOOL_NAME),
-        kind: ToolHandlerKind::ToolSearch,
-    }));
+    assert!(!registry.has_handler(&ToolName::plain(TOOL_SEARCH_TOOL_NAME)));
 }
 
 #[test]
@@ -1909,7 +1903,7 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
         },
     ];
 
-    let (tools, handlers) = build_specs(
+    let (tools, registry) = build_specs(
         &tools_config,
         /*mcp_tools*/ None,
         /*deferred_mcp_tools*/ None,
@@ -1940,18 +1934,9 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
         let dynamic_tool = find_namespace_function_tool(&tools, "codex_app", tool_name);
         assert_eq!(dynamic_tool.defer_loading, Some(true));
     }
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain(TOOL_SEARCH_TOOL_NAME),
-        kind: ToolHandlerKind::ToolSearch,
-    }));
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::namespaced("codex_app", "automation_update"),
-        kind: ToolHandlerKind::DynamicTool,
-    }));
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::namespaced("codex_app", "automation_list"),
-        kind: ToolHandlerKind::DynamicTool,
-    }));
+    assert!(registry.has_handler(&ToolName::plain(TOOL_SEARCH_TOOL_NAME)));
+    assert!(registry.has_handler(&ToolName::namespaced("codex_app", "automation_update")));
+    assert!(registry.has_handler(&ToolName::namespaced("codex_app", "automation_list")));
 }
 
 #[test]
@@ -1992,7 +1977,7 @@ fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disab
         },
     ];
 
-    let (tools, handlers) = build_specs(
+    let (tools, registry) = build_specs(
         &tools_config,
         /*mcp_tools*/ None,
         /*deferred_mcp_tools*/ None,
@@ -2001,10 +1986,7 @@ fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disab
 
     assert_contains_tool_names(&tools, &[TOOL_SEARCH_TOOL_NAME, "plain_dynamic"]);
     assert_lacks_tool_name(&tools, "codex_app");
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain(TOOL_SEARCH_TOOL_NAME),
-        kind: ToolHandlerKind::ToolSearch,
-    }));
+    assert!(registry.has_handler(&ToolName::plain(TOOL_SEARCH_TOOL_NAME)));
 }
 
 #[test]
@@ -2136,17 +2118,14 @@ fn request_plugin_install_description_lists_discoverable_tools() {
         })),
     ];
 
-    let (tools, handlers) = build_specs_with_discoverable_tools(
+    let (tools, registry) = build_specs_with_discoverable_tools(
         &tools_config,
         /*mcp_tools*/ None,
         /*deferred_mcp_tools*/ None,
         Some(discoverable_tools),
         &[],
     );
-    assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME),
-        kind: ToolHandlerKind::RequestPluginInstall,
-    }));
+    assert!(registry.has_handler(&ToolName::plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME)));
 
     let request_plugin_install = find_tool(&tools, REQUEST_PLUGIN_INSTALL_TOOL_NAME);
     let ToolSpec::Function(ResponsesApiTool {
@@ -2507,9 +2486,9 @@ fn search_capable_model_info() -> ModelInfo {
 fn build_specs<'a>(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<ToolName, rmcp::model::Tool>>,
-    deferred_mcp_tools: Option<Vec<ToolRegistryPlanDeferredTool<'a>>>,
+    deferred_mcp_tools: Option<Vec<ToolRegistryBuildDeferredTool<'a>>>,
     dynamic_tools: &[DynamicToolSpec],
-) -> (Vec<ConfiguredToolSpec>, Vec<ToolHandlerSpec>) {
+) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
     build_specs_with_discoverable_tools(
         config,
         mcp_tools,
@@ -2522,10 +2501,10 @@ fn build_specs<'a>(
 fn build_specs_with_discoverable_tools<'a>(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<ToolName, rmcp::model::Tool>>,
-    deferred_mcp_tools: Option<Vec<ToolRegistryPlanDeferredTool<'a>>>,
+    deferred_mcp_tools: Option<Vec<ToolRegistryBuildDeferredTool<'a>>>,
     discoverable_tools: Option<Vec<DiscoverableTool>>,
     dynamic_tools: &[DynamicToolSpec],
-) -> (Vec<ConfiguredToolSpec>, Vec<ToolHandlerSpec>) {
+) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
     build_specs_with_optional_tool_namespaces(
         config,
         mcp_tools,
@@ -2539,23 +2518,23 @@ fn build_specs_with_discoverable_tools<'a>(
 fn build_specs_with_optional_tool_namespaces<'a>(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<ToolName, rmcp::model::Tool>>,
-    deferred_mcp_tools: Option<Vec<ToolRegistryPlanDeferredTool<'a>>>,
+    deferred_mcp_tools: Option<Vec<ToolRegistryBuildDeferredTool<'a>>>,
     tool_namespaces: Option<HashMap<String, ToolNamespace>>,
     discoverable_tools: Option<Vec<DiscoverableTool>>,
     dynamic_tools: &[DynamicToolSpec],
-) -> (Vec<ConfiguredToolSpec>, Vec<ToolHandlerSpec>) {
+) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
     let mcp_tool_inputs = mcp_tools.as_ref().map(|mcp_tools| {
         mcp_tools
             .iter()
-            .map(|(name, tool)| ToolRegistryPlanMcpTool {
+            .map(|(name, tool)| ToolRegistryBuildMcpTool {
                 name: name.clone(),
                 tool,
             })
             .collect::<Vec<_>>()
     });
-    let plan = build_tool_registry_plan(
+    let builder = build_tool_registry_builder(
         config,
-        ToolRegistryPlanParams {
+        ToolRegistryBuildParams {
             mcp_tools: mcp_tool_inputs.as_deref(),
             deferred_mcp_tools: deferred_mcp_tools.as_deref(),
             tool_namespaces: tool_namespaces.as_ref(),
@@ -2563,9 +2542,10 @@ fn build_specs_with_optional_tool_namespaces<'a>(
             dynamic_tools,
             default_agent_type_description: DEFAULT_AGENT_TYPE_DESCRIPTION,
             wait_agent_timeouts: wait_agent_timeout_options(),
+            tool_search_entries: &[],
         },
     );
-    (plan.specs, plan.handlers)
+    builder.build()
 }
 
 fn mcp_tool(name: &str, description: &str, input_schema: serde_json::Value) -> rmcp::model::Tool {
@@ -2678,8 +2658,8 @@ fn deferred_mcp_tool<'a>(
     server_name: &'a str,
     connector_name: Option<&'a str>,
     description: Option<&'a str>,
-) -> ToolRegistryPlanDeferredTool<'a> {
-    ToolRegistryPlanDeferredTool {
+) -> ToolRegistryBuildDeferredTool<'a> {
+    ToolRegistryBuildDeferredTool {
         name: ToolName::namespaced(tool_namespace, tool_name),
         server_name,
         connector_name,

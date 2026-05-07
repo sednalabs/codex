@@ -9491,6 +9491,8 @@
           "preToolUse",
           "permissionRequest",
           "postToolUse",
+          "preCompact",
+          "postCompact",
           "sessionStart",
           "userPromptSubmit",
           "stop"
@@ -10313,7 +10315,19 @@
             },
             "type": "array"
           },
+          "PostCompact": {
+            "items": {
+              "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
+            },
+            "type": "array"
+          },
           "PostToolUse": {
+            "items": {
+              "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
+            },
+            "type": "array"
+          },
+          "PreCompact": {
             "items": {
               "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
             },
@@ -10359,7 +10373,9 @@
         "required": [
           "PreToolUse",
           "PermissionRequest",
+          "PostCompact",
           "PostToolUse",
+          "PreCompact",
           "SessionStart",
           "UserPromptSubmit",
           "Stop"
@@ -11753,6 +11769,12 @@
               "null"
             ]
           },
+          "hooks": {
+            "items": {
+              "$ref": "#/definitions/v2/PluginHookSummary"
+            },
+            "type": "array"
+          },
           "marketplaceName": {
             "type": "string"
           },
@@ -11783,11 +11805,27 @@
           }
         },
         "required": [
+          "hooks",
           "marketplaceName",
           "summary",
           "skills",
           "apps",
           "mcpServers"
+        ],
+        "type": "object"
+      },
+      "PluginHookSummary": {
+        "properties": {
+          "eventName": {
+            "$ref": "#/definitions/v2/HookEventName"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventName",
+          "key"
         ],
         "type": "object"
       },

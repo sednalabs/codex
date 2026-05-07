@@ -1413,6 +1413,9 @@ pub enum EventMsg {
     /// List of voices supported by realtime conversation streams.
     RealtimeConversationListVoicesResponse(RealtimeConversationListVoicesResponseEvent),
 
+    /// Notification that skill data may have been updated and clients may want to reload.
+    SkillsUpdateAvailable,
+
     PlanUpdate(UpdatePlanArgs),
 
     TurnAborted(TurnAbortedEvent),
@@ -1466,6 +1469,8 @@ pub enum HookEventName {
     PreToolUse,
     PermissionRequest,
     PostToolUse,
+    PreCompact,
+    PostCompact,
     SessionStart,
     UserPromptSubmit,
     Stop,

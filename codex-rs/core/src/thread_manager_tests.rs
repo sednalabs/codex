@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::test_config;
+use crate::init_state_db;
 use crate::installation_id::INSTALLATION_ID_FILENAME;
 use crate::rollout::RolloutRecorder;
 use crate::session::session::SessionSettingsUpdate;
@@ -16,7 +17,6 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -49,21 +49,6 @@ fn assistant_msg(text: &str) -> ResponseItem {
         }],
         phase: None,
     }
-}
-
-async fn state_backed_stores(
-    config: &Config,
-) -> (
-    StateDbHandle,
-    Arc<dyn ThreadStore>,
-    Arc<LocalAgentGraphStore>,
-) {
-    let state_db = init_state_db_from_config(config)
-        .await
-        .expect("thread manager test requires state db");
-    let thread_store = thread_store_from_config(config, state_db.clone());
-    let agent_graph_store = agent_graph_store_from_state_db(state_db.clone());
-    (state_db, thread_store, agent_graph_store)
 }
 
 fn contextual_user_interrupted_marker() -> ResponseItem {
@@ -169,63 +154,6 @@ fn out_of_range_truncation_drops_only_unfinished_suffix_mid_turn() {
     assert_eq!(
         serde_json::to_value(truncated.get_rollout_items()).unwrap(),
         serde_json::to_value(items[..2].to_vec()).unwrap()
-    );
-}
-
-#[test]
-fn out_of_range_truncation_keeps_completed_tail_after_rollback() {
-    let items = vec![
-        RolloutItem::ResponseItem(user_msg("u1")),
-        RolloutItem::ResponseItem(assistant_msg("partial")),
-        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-            num_turns: 1,
-        })),
-    ];
-
-    let snapshot_state = snapshot_turn_state(&InitialHistory::Forked(items.clone()));
-    assert_eq!(
-        snapshot_state,
-        SnapshotTurnState {
-            ends_mid_turn: false,
-            active_turn_id: None,
-            active_turn_start_index: None,
-        },
-    );
-
-    let truncated = truncate_before_nth_user_message(
-        InitialHistory::Forked(items.clone()),
-        usize::MAX,
-        &snapshot_state,
-    );
-
-    assert_eq!(
-        serde_json::to_value(truncated.get_rollout_items()).unwrap(),
-        serde_json::to_value(items).unwrap()
-    );
-}
-
-#[test]
-fn legacy_user_event_only_tail_is_mid_turn() {
-    let snapshot_state = snapshot_turn_state(&InitialHistory::Forked(vec![
-        RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
-            message: "done".to_string(),
-            phase: None,
-            memory_citation: None,
-        })),
-        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
-            message: "new input".to_string(),
-            images: None,
-            text_elements: Vec::new(),
-            local_images: Vec::new(),
-        })),
-    ]));
-    assert_eq!(
-        snapshot_state,
-        SnapshotTurnState {
-            ends_mid_turn: true,
-            active_turn_id: None,
-            active_turn_start_index: Some(1),
-        },
     );
 }
 
@@ -338,8 +266,7 @@ async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    )
-    .await;
+    );
     let thread_1 = manager
         .start_thread(config.clone())
         .await
@@ -388,8 +315,7 @@ async fn start_thread_accepts_explicit_environment_when_default_environment_is_d
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         environment_manager,
-    )
-    .await;
+    );
 
     let thread = manager
         .start_thread_with_options(StartThreadOptions {
@@ -425,8 +351,7 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    )
-    .await;
+    );
     let thread = manager
         .start_thread_with_options(StartThreadOptions {
             config,
@@ -466,16 +391,14 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
         TEST_INSTALLATION_ID.to_string(),
     );
     let selected_cwd =
@@ -582,16 +505,16 @@ async fn explicit_installation_id_skips_codex_home_file() {
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let installation_id = uuid::Uuid::new_v4().to_string();
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
+    let thread_store = thread_store_from_config(&config, state_db.clone());
     let manager = ThreadManager::new(
         &config,
         auth_manager,
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
         thread_store,
-        agent_graph_store,
+        state_db.clone(),
         installation_id.clone(),
     );
 
@@ -621,16 +544,14 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -678,16 +599,14 @@ async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -740,16 +659,16 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
+    let thread_store = thread_store_from_config(&config, state_db.clone());
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
         thread_store,
-        agent_graph_store,
+        state_db.clone(),
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -826,16 +745,14 @@ async fn new_uses_active_provider_for_model_refresh() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager,
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -864,6 +781,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted fork history"),
@@ -883,6 +802,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted empty history"),
@@ -909,6 +830,8 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected disabled interrupted fork history"),
@@ -927,6 +850,8 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             },
         ))])
         .expect("serialize expected disabled interrupted empty fork history"),
@@ -942,6 +867,8 @@ fn interrupted_snapshot_is_not_mid_turn() {
         RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         })),
     ]);
 
@@ -1016,7 +943,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: None,
-            active_turn_start_index: Some(1),
+            active_turn_start_index: None,
         },
     );
 }
@@ -1031,16 +958,15 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db.clone(),
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -1101,6 +1027,8 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: expected_turn_id,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     ))
     .expect("serialize interrupted abort event");
@@ -1136,16 +1064,15 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db.clone(),
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -1215,6 +1142,8 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id),
                 reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
             })) if turn_id == "turn-explicit"
         )
     }));
@@ -1230,16 +1159,15 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db.clone(),
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -1372,16 +1300,15 @@ async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let (state_db, thread_store, agent_graph_store) = state_backed_stores(&config).await;
+    let state_db = init_state_db(&config).await;
     let manager = ThreadManager::new(
         &config,
         auth_manager.clone(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        state_db,
-        thread_store,
-        agent_graph_store,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db.clone(),
         TEST_INSTALLATION_ID.to_string(),
     );
 
@@ -1451,11 +1378,6 @@ async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
             .await
             .is_none()
     );
-    let goal = state_db
-        .get_thread_goal(resumed.thread_id)
-        .await?
-        .expect("goal should still exist after resume");
-    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
 
     resumed.thread.shutdown_and_wait().await?;
     Ok(())

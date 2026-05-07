@@ -19,8 +19,6 @@ use crate::session::turn::build_prompt;
 use crate::session::turn::built_tools;
 use crate::state_db_bridge::StateDbHandle;
 use crate::thread_manager::ThreadManager;
-use crate::thread_manager::agent_graph_store_from_state_db;
-use crate::thread_manager::init_state_db_from_config;
 use crate::thread_manager::thread_store_from_config;
 use codex_agent_graph_store::AgentGraphStore;
 
@@ -41,11 +39,7 @@ pub async fn build_prompt_input(
         config.codex_linux_sandbox_exe.clone(),
     )?;
 
-    let state_db = init_state_db_from_config(&config)
-        .await
-        .ok_or_else(|| std::io::Error::other("prompt debug requires state db"))?;
     let thread_store = thread_store_from_config(&config, state_db.clone());
-    let agent_graph_store = agent_graph_store_from_state_db(state_db.clone());
     let installation_id = resolve_installation_id(&config.codex_home).await?;
     let thread_manager = ThreadManager::new(
         &config,
@@ -53,9 +47,8 @@ pub async fn build_prompt_input(
         SessionSource::Exec,
         Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::new(local_runtime_paths)).await),
         /*analytics_events_client*/ None,
-        state_db,
         thread_store,
-        agent_graph_store,
+        state_db.clone(),
         installation_id,
     );
     let thread = thread_manager.start_thread(config).await?;

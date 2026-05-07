@@ -235,9 +235,21 @@
           },
           "type": "array"
         },
+        "PostCompact": {
+          "items": {
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
         "PostToolUse": {
           "items": {
             "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "PreCompact": {
+          "items": {
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
@@ -281,7 +293,9 @@
       "required": [
         "PreToolUse",
         "PermissionRequest",
+        "PostCompact",
         "PostToolUse",
+        "PreCompact",
         "SessionStart",
         "UserPromptSubmit",
         "Stop"
