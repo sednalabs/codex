@@ -193,7 +193,7 @@ impl ToolHandler for Handler {
                     sender_thread_id: session.conversation_id,
                     call_id,
                     completed_at_ms: now_unix_timestamp_ms(),
-                    agent_statuses,
+                    agent_statuses: build_wait_agent_statuses(&statuses_by_id, &receiver_agents),
                     statuses: statuses_by_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     pending_thread_ids: pending_ids.clone(),
