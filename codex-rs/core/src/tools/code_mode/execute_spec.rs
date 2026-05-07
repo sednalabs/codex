@@ -51,6 +51,8 @@ mod tests {
             kind: codex_code_mode::CodeModeToolKind::Function,
             input_schema: None,
             output_schema: None,
+            all_tools_module: None,
+            all_tools_name: None,
         }];
 
         assert_eq!(

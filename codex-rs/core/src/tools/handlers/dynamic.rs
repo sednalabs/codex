@@ -337,7 +337,8 @@ mod tests {
     #[tokio::test]
     async fn android_observe_is_non_mutating() {
         let (session, turn) = make_session_and_context().await;
-        let handler = DynamicToolHandler;
+        let handler =
+            DynamicToolHandler::new(codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen_and_ui"}).to_string(),
         };
@@ -376,7 +377,7 @@ mod tests {
                 }),
             }])
             .await;
-        let handler = DynamicToolHandler;
+        let handler = DynamicToolHandler::new(codex_tools::ToolName::plain("brokered_read"));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen"}).to_string(),
         };
@@ -415,7 +416,10 @@ mod tests {
                 }),
             }])
             .await;
-        let handler = DynamicToolHandler;
+        let handler = DynamicToolHandler::new(codex_tools::ToolName::namespaced(
+            "codex_app",
+            "brokered_read",
+        ));
         let payload = ToolPayload::Function {
             arguments: json!({"scope": "screen"}).to_string(),
         };
@@ -452,7 +456,8 @@ mod tests {
             source: ToolCallSource::Direct,
             payload: payload.clone(),
         };
-        let handler = DynamicToolHandler;
+        let handler =
+            DynamicToolHandler::new(codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME));
         let output = DynamicToolOutput {
             tool_name: ANDROID_OBSERVE_TOOL_NAME.to_string(),
             output: FunctionToolOutput {

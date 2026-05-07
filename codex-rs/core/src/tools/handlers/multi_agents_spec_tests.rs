@@ -56,6 +56,7 @@ fn upgradeable_hidden_model_preset() -> ModelPreset {
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         is_default: false,
+        service_tiers: Vec::new(),
         upgrade: Some(ModelUpgrade {
             id: "gpt-5.4".to_string(),
             reasoning_effort_mapping: None,

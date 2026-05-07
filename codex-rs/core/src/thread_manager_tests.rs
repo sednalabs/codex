@@ -55,7 +55,7 @@ async fn state_backed_stores(
 ) -> (
     StateDbHandle,
     Arc<dyn ThreadStore>,
-    Arc<dyn AgentGraphStore>,
+    Arc<LocalAgentGraphStore>,
 ) {
     let state_db = init_state_db_from_config(config)
         .await
