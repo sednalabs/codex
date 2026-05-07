@@ -19,6 +19,7 @@ use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError as V2TurnError;
 use crate::protocol::v2::TurnError;
+use crate::protocol::v2::TurnItemsView;
 use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
@@ -1240,6 +1241,7 @@ impl From<PendingTurn> for Turn {
         Self {
             id: value.id,
             items: value.items,
+            items_view: TurnItemsView::Full,
             error: value.error,
             status: value.status,
             started_at: value.started_at,
@@ -1254,6 +1256,7 @@ impl From<&PendingTurn> for Turn {
         Self {
             id: value.id.clone(),
             items: value.items.clone(),
+            items_view: TurnItemsView::Full,
             error: value.error.clone(),
             status: value.status.clone(),
             started_at: value.started_at,
@@ -1529,6 +1532,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: vec![
                     ThreadItem::UserMessage {
                         id: "item-1".into(),
@@ -2866,6 +2870,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: Vec::new(),
             }]
         );
@@ -3129,6 +3134,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: vec![ThreadItem::UserMessage {
                     id: "item-1".into(),
                     content: vec![UserInput::Text {

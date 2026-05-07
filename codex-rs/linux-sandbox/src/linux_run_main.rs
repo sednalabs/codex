@@ -25,6 +25,7 @@ use crate::launcher::exec_bwrap;
 use crate::launcher::preferred_bwrap_supports_argv0;
 use crate::proxy_routing::activate_proxy_routes_in_netns;
 use crate::proxy_routing::prepare_host_proxy_route_spec;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::NetworkSandboxPolicy;
@@ -333,6 +334,7 @@ fn run_bwrap_with_proc_fallback(
             file_system_sandbox_policy,
             network_mode,
         )
+        .unwrap_or_else(|err| exit_with_bwrap_build_error(err))
     {
         // Keep the retry silent so sandbox-internal diagnostics do not leak into the
         // child process stderr stream.
@@ -365,7 +367,8 @@ fn run_bwrap_with_proc_fallback(
         sandbox_policy_cwd,
         command_cwd,
         options,
-    );
+    )
+    .unwrap_or_else(|err| exit_with_bwrap_build_error(err));
     apply_inner_command_argv0(&mut bwrap_args.args);
     run_or_exec_bwrap(bwrap_args);
 }
@@ -389,24 +392,28 @@ fn build_bwrap_argv(
     sandbox_policy_cwd: &Path,
     command_cwd: &Path,
     options: BwrapOptions,
-) -> crate::bwrap::BwrapArgs {
+) -> CodexResult<crate::bwrap::BwrapArgs> {
     let bwrap_args = create_bwrap_command_args(
         inner,
         file_system_sandbox_policy,
         sandbox_policy_cwd,
         command_cwd,
         options,
-    )
-    .unwrap_or_else(|err| panic!("error building bubblewrap command: {err:?}"));
+    )?;
 
     let mut argv = vec!["bwrap".to_string()];
     argv.extend(bwrap_args.args);
-    crate::bwrap::BwrapArgs {
+    Ok(crate::bwrap::BwrapArgs {
         args: argv,
         preserved_files: bwrap_args.preserved_files,
         synthetic_mount_targets: bwrap_args.synthetic_mount_targets,
         protected_create_targets: bwrap_args.protected_create_targets,
-    }
+    })
+}
+
+fn exit_with_bwrap_build_error(err: codex_protocol::error::CodexErr) -> ! {
+    eprintln!("error building bubblewrap command: {err}");
+    std::process::exit(1);
 }
 
 fn apply_inner_command_argv0(argv: &mut Vec<String>) {
@@ -454,34 +461,15 @@ fn preflight_proc_mount_support(
     command_cwd: &Path,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
-) -> bool {
+) -> CodexResult<bool> {
     let preflight_argv = build_preflight_bwrap_argv(
         sandbox_policy_cwd,
         command_cwd,
         file_system_sandbox_policy,
         network_mode,
-        /*mount_proc*/ true,
-    );
-    let output = run_bwrap_in_child_capture_output(preflight_argv);
-    !is_proc_mount_failure(output.as_str())
-}
-
-fn preflight_network_namespace_support(
-    sandbox_policy_cwd: &Path,
-    command_cwd: &Path,
-    file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    network_mode: BwrapNetworkMode,
-    mount_proc: bool,
-) -> bool {
-    let preflight_argv = build_preflight_bwrap_argv(
-        sandbox_policy_cwd,
-        command_cwd,
-        file_system_sandbox_policy,
-        network_mode,
-        mount_proc,
-    );
-    let output = run_bwrap_in_child_capture_output(preflight_argv);
-    !is_loopback_setup_failure(output.as_str())
+    )?;
+    let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
+    Ok(!is_proc_mount_failure(stderr.as_str()))
 }
 
 fn build_preflight_bwrap_argv(
@@ -489,8 +477,7 @@ fn build_preflight_bwrap_argv(
     command_cwd: &Path,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
-    mount_proc: bool,
-) -> crate::bwrap::BwrapArgs {
+) -> CodexResult<crate::bwrap::BwrapArgs> {
     let preflight_command = vec![resolve_true_command()];
     build_bwrap_argv(
         preflight_command,
@@ -909,10 +896,7 @@ fn register_synthetic_mount_targets(
             .map(|target| {
                 let marker_dir = synthetic_mount_marker_dir(target.path());
                 fs::create_dir_all(&marker_dir).unwrap_or_else(|err| {
-                    panic!(
-                        "failed to create synthetic bubblewrap mount marker directory {}: {err}",
-                        marker_dir.display()
-                    )
+                    panic!("failed to create synthetic bubblewrap mount marker directory: {err}")
                 });
                 let target = if target.preserves_pre_existing_path()
                     && synthetic_mount_marker_dir_has_active_synthetic_owner(&marker_dir)
@@ -933,10 +917,7 @@ fn register_synthetic_mount_targets(
                 let marker_file = marker_dir.join(std::process::id().to_string());
                 fs::write(&marker_file, synthetic_mount_marker_contents(&target)).unwrap_or_else(
                     |err| {
-                        panic!(
-                            "failed to register synthetic bubblewrap mount target {}: {err}",
-                            target.path().display()
-                        )
+                        panic!("failed to register synthetic bubblewrap mount target marker: {err}")
                     },
                 );
                 SyntheticMountTargetRegistration {
@@ -958,17 +939,11 @@ fn register_protected_create_targets(
             .map(|target| {
                 let marker_dir = synthetic_mount_marker_dir(target.path());
                 fs::create_dir_all(&marker_dir).unwrap_or_else(|err| {
-                    panic!(
-                        "failed to create protected create marker directory {}: {err}",
-                        marker_dir.display()
-                    )
+                    panic!("failed to create protected create marker directory: {err}")
                 });
                 let marker_file = marker_dir.join(std::process::id().to_string());
                 fs::write(&marker_file, PROTECTED_CREATE_MARKER).unwrap_or_else(|err| {
-                    panic!(
-                        "failed to register protected create target {}: {err}",
-                        target.path().display()
-                    )
+                    panic!("failed to register protected create target marker: {err}")
                 });
                 ProtectedCreateTargetRegistration {
                     target: target.clone(),
@@ -993,10 +968,7 @@ fn synthetic_mount_marker_dir_has_active_synthetic_owner(marker_dir: &Path) -> b
         match fs::read(path) {
             Ok(contents) => contents == SYNTHETIC_MOUNT_MARKER_SYNTHETIC,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-            Err(err) => panic!(
-                "failed to read synthetic bubblewrap mount marker {}: {err}",
-                path.display()
-            ),
+            Err(err) => panic!("failed to read synthetic bubblewrap mount marker: {err}"),
         }
     })
 }
@@ -1012,17 +984,11 @@ fn synthetic_mount_marker_dir_has_active_process_matching(
     let entries = match fs::read_dir(marker_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(err) => panic!(
-            "failed to read synthetic bubblewrap mount marker directory {}: {err}",
-            marker_dir.display()
-        ),
+        Err(err) => panic!("failed to read synthetic bubblewrap mount marker directory: {err}"),
     };
     for entry in entries {
         let entry = entry.unwrap_or_else(|err| {
-            panic!(
-                "failed to read synthetic bubblewrap mount marker in {}: {err}",
-                marker_dir.display()
-            )
+            panic!("failed to read synthetic bubblewrap mount marker entry: {err}")
         });
         let path = entry.path();
         let Some(pid) = path
@@ -1036,10 +1002,9 @@ fn synthetic_mount_marker_dir_has_active_process_matching(
             match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => panic!(
-                    "failed to remove stale synthetic bubblewrap mount marker {}: {err}",
-                    path.display()
-                ),
+                Err(err) => {
+                    panic!("failed to remove stale synthetic bubblewrap mount marker: {err}")
+                }
             }
             continue;
         }
@@ -1057,10 +1022,9 @@ fn cleanup_synthetic_mount_targets(targets: &[SyntheticMountTargetRegistration])
             match fs::remove_file(&target.marker_file) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => panic!(
-                    "failed to unregister synthetic bubblewrap mount target {}: {err}",
-                    target.target.path().display()
-                ),
+                Err(err) => {
+                    panic!("failed to unregister synthetic bubblewrap mount target marker: {err}")
+                }
             }
         }
 
@@ -1073,10 +1037,9 @@ fn cleanup_synthetic_mount_targets(targets: &[SyntheticMountTargetRegistration])
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-                Err(err) => panic!(
-                    "failed to remove synthetic bubblewrap mount marker directory {}: {err}",
-                    target.marker_dir.display()
-                ),
+                Err(err) => {
+                    panic!("failed to remove synthetic bubblewrap mount marker directory: {err}")
+                }
             }
         }
     });
@@ -1088,10 +1051,7 @@ fn cleanup_protected_create_targets(targets: &[ProtectedCreateTargetRegistration
             match fs::remove_file(&target.marker_file) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => panic!(
-                    "failed to unregister protected create target {}: {err}",
-                    target.target.path().display()
-                ),
+                Err(err) => panic!("failed to unregister protected create target marker: {err}"),
             }
         }
 
@@ -1108,10 +1068,7 @@ fn cleanup_protected_create_targets(targets: &[ProtectedCreateTargetRegistration
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-                Err(err) => panic!(
-                    "failed to remove protected create marker directory {}: {err}",
-                    target.marker_dir.display()
-                ),
+                Err(err) => panic!("failed to remove protected create marker directory: {err}"),
             }
         }
         violation
@@ -1126,10 +1083,7 @@ fn remove_protected_create_target(target: &crate::bwrap::ProtectedCreateTarget) 
                 thread::sleep(Duration::from_millis(1));
             }
             Err(err) => {
-                panic!(
-                    "failed to remove protected create target {}: {err}",
-                    target.path().display()
-                );
+                panic!("failed to remove protected create target: {err}");
             }
         }
     }
@@ -1188,10 +1142,7 @@ fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
-        Err(err) => panic!(
-            "failed to inspect synthetic bubblewrap mount target {}: {err}",
-            path.display()
-        ),
+        Err(err) => panic!("failed to inspect synthetic bubblewrap mount target: {err}"),
     };
     if !target.should_remove_after_bwrap(&metadata) {
         return;
@@ -1200,19 +1151,13 @@ fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
         crate::bwrap::SyntheticMountTargetKind::EmptyFile => match fs::remove_file(path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => panic!(
-                "failed to remove synthetic bubblewrap mount target {}: {err}",
-                path.display()
-            ),
+            Err(err) => panic!("failed to remove synthetic bubblewrap mount target: {err}"),
         },
         crate::bwrap::SyntheticMountTargetKind::EmptyDirectory => match fs::remove_dir(path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-            Err(err) => panic!(
-                "failed to remove synthetic bubblewrap mount target {}: {err}",
-                path.display()
-            ),
+            Err(err) => panic!("failed to remove synthetic bubblewrap mount target: {err}"),
         },
     }
 }
@@ -1270,7 +1215,10 @@ fn synthetic_mount_marker_dir(path: &Path) -> PathBuf {
 }
 
 fn synthetic_mount_registry_root() -> PathBuf {
-    std::env::temp_dir().join("codex-bwrap-synthetic-mount-targets")
+    let effective_uid = unsafe { libc::geteuid() };
+    std::env::temp_dir().join(format!(
+        "codex-bwrap-synthetic-mount-targets-{effective_uid}"
+    ))
 }
 
 fn hash_path(path: &Path) -> u64 {

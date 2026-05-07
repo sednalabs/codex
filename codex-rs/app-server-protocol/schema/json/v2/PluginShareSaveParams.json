@@ -3,16 +3,66 @@
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
+    },
+    "PluginShareDiscoverability": {
+      "enum": [
+        "LISTED",
+        "UNLISTED",
+        "PRIVATE"
+      ],
+      "type": "string"
+    },
+    "PluginSharePrincipalType": {
+      "enum": [
+        "user",
+        "group",
+        "workspace"
+      ],
+      "type": "string"
+    },
+    "PluginShareTarget": {
+      "properties": {
+        "principalId": {
+          "type": "string"
+        },
+        "principalType": {
+          "$ref": "#/definitions/PluginSharePrincipalType"
+        }
+      },
+      "required": [
+        "principalId",
+        "principalType"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "discoverability": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PluginShareDiscoverability"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "pluginPath": {
       "$ref": "#/$defs/AbsolutePathBuf"
     },
     "remotePluginId": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "shareTargets": {
+      "items": {
+        "$ref": "#/definitions/PluginShareTarget"
+      },
+      "type": [
+        "array",
         "null"
       ]
     }

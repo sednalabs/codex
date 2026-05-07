@@ -106,7 +106,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::TokenCount(_)
-        | EventMsg::ThreadNameUpdated(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
@@ -165,12 +164,9 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::GetHistoryEntryResponse(_)
-        | EventMsg::McpListToolsResponse(_)
         | EventMsg::RealtimeConversationListVoicesResponse(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
-        | EventMsg::ListSkillsResponse(_)
         | EventMsg::WebSearchBegin(_)
         | EventMsg::PlanUpdate(_)
         | EventMsg::ShutdownComplete
@@ -183,7 +179,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::ImageGenerationBegin(_)
-        | EventMsg::SkillsUpdateAvailable
         | EventMsg::CollabAgentSpawnBegin(_)
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
