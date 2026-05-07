@@ -1938,6 +1938,7 @@ dependencies = [
  "codex-exec-server",
  "codex-feedback",
  "codex-protocol",
+ "codex-rollout",
  "codex-utils-rustls-provider",
  "futures",
  "pretty_assertions",
