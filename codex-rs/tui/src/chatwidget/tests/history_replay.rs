@@ -663,6 +663,7 @@ async fn replayed_compaction_item_start_restores_compaction_status() {
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
                 items: Vec::new(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: AppServerTurnStatus::InProgress,
                 error: None,
                 started_at: None,
