@@ -615,6 +615,15 @@ impl PluginRequestProcessor {
                         &visible_skills,
                         &outcome.plugin.disabled_skill_paths,
                     ),
+                    hooks: outcome
+                        .plugin
+                        .hooks
+                        .into_iter()
+                        .map(|hook| codex_app_server_protocol::PluginHookSummary {
+                            key: hook.key,
+                            event_name: hook.event_name.into(),
+                        })
+                        .collect(),
                     apps: app_summaries,
                     mcp_servers: outcome.plugin.mcp_server_names,
                 }
@@ -1490,6 +1499,7 @@ fn remote_plugin_detail_to_info(
                 enabled: skill.enabled,
             })
             .collect(),
+        hooks: Vec::new(),
         apps,
         mcp_servers: Vec::new(),
     }
