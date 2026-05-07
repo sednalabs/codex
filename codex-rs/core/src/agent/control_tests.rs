@@ -1009,7 +1009,8 @@ async fn spawn_agent_respects_max_threads_limit() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .await;
     let control = manager.agent_control();
 
     let _ = manager
@@ -1061,7 +1062,8 @@ async fn spawn_agent_releases_slot_after_shutdown() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .await;
     let control = manager.agent_control();
 
     let first_agent_id = control
@@ -1104,7 +1106,8 @@ async fn spawn_agent_limit_shared_across_clones() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .await;
     let control = manager.agent_control();
     let cloned = control.clone();
 
@@ -1149,7 +1152,8 @@ async fn resume_agent_respects_max_threads_limit() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .await;
     let control = manager.agent_control();
 
     let resumable_id = control
@@ -1205,7 +1209,8 @@ async fn resume_agent_releases_slot_after_resume_failure() {
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .await;
     let control = manager.agent_control();
 
     let _ = control
