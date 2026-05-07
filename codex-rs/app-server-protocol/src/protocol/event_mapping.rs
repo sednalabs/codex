@@ -518,12 +518,8 @@ mod tests {
     #[test]
     fn unsupported_event_returns_none_instead_of_panicking() {
         assert!(
-            item_event_to_server_notification(
-                EventMsg::SkillsUpdateAvailable,
-                "thread-1",
-                "turn-1",
-            )
-            .is_none()
+            item_event_to_server_notification(EventMsg::ShutdownComplete, "thread-1", "turn-1",)
+                .is_none()
         );
     }
 
