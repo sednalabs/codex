@@ -467,9 +467,29 @@ fn preflight_proc_mount_support(
         command_cwd,
         file_system_sandbox_policy,
         network_mode,
+        true,
     )?;
-    let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
-    Ok(!is_proc_mount_failure(stderr.as_str()))
+    let output = run_bwrap_in_child_capture_output(preflight_argv);
+    Ok(!is_proc_mount_failure(output.as_str()))
+}
+
+fn preflight_network_namespace_support(
+    sandbox_policy_cwd: &Path,
+    command_cwd: &Path,
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    network_mode: BwrapNetworkMode,
+    mount_proc: bool,
+) -> bool {
+    let preflight_argv = build_preflight_bwrap_argv(
+        sandbox_policy_cwd,
+        command_cwd,
+        file_system_sandbox_policy,
+        network_mode,
+        mount_proc,
+    )
+    .unwrap_or_else(|err| exit_with_bwrap_build_error(err));
+    let output = run_bwrap_in_child_capture_output(preflight_argv);
+    !is_loopback_setup_failure(output.as_str())
 }
 
 fn build_preflight_bwrap_argv(
@@ -477,6 +497,7 @@ fn build_preflight_bwrap_argv(
     command_cwd: &Path,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
+    mount_proc: bool,
 ) -> CodexResult<crate::bwrap::BwrapArgs> {
     let preflight_command = vec![resolve_true_command()];
     build_bwrap_argv(

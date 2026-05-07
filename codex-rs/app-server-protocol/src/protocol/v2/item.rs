@@ -308,6 +308,22 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    ComputerUseCall {
+        id: String,
+        environment_id: Option<String>,
+        adapter: String,
+        tool: String,
+        arguments: JsonValue,
+        status: ComputerUseCallStatus,
+        content_items: Option<Vec<ComputerUseCallOutputContentItem>>,
+        success: Option<bool>,
+        error: Option<String>,
+        /// The duration of the computer-use call in milliseconds.
+        #[ts(type = "number | null")]
+        duration_ms: Option<i64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
         /// Unique identifier for this collab tool call.
         id: String,
@@ -326,6 +342,9 @@ pub enum ThreadItem {
         model: Option<String>,
         /// Reasoning effort requested for the spawned agent, when applicable.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Whether the collab tool call ended because its wait budget elapsed.
+        #[serde(default)]
+        timed_out: bool,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -381,6 +400,7 @@ impl ThreadItem {
             | ThreadItem::FileChange { id, .. }
             | ThreadItem::McpToolCall { id, .. }
             | ThreadItem::DynamicToolCall { id, .. }
+            | ThreadItem::ComputerUseCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::WebSearch { id, .. }
             | ThreadItem::ImageView { id, .. }
@@ -988,6 +1008,15 @@ pub enum DynamicToolCallStatus {
     Failed,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallStatus {
+    InProgress,
+    Completed,
+    Failed,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1364,7 +1393,11 @@ pub enum DynamicToolCallOutputContentItem {
     #[serde(rename_all = "camelCase")]
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 impl From<DynamicToolCallOutputContentItem>
@@ -1373,9 +1406,40 @@ impl From<DynamicToolCallOutputContentItem>
     fn from(item: DynamicToolCallOutputContentItem) -> Self {
         match item {
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage { image_url }
+            DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
+                Self::InputImage { image_url, detail }
             }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallOutputContentItem {
+    #[serde(rename_all = "camelCase")]
+    InputText { text: String },
+    #[serde(rename_all = "camelCase")]
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+}
+
+impl From<codex_protocol::computer_use::ComputerUseOutputContentItem>
+    for ComputerUseCallOutputContentItem
+{
+    fn from(item: codex_protocol::computer_use::ComputerUseOutputContentItem) -> Self {
+        match item {
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            codex_protocol::computer_use::ComputerUseOutputContentItem::InputImage {
+                image_url,
+                detail,
+            } => Self::InputImage { image_url, detail },
         }
     }
 }
