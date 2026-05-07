@@ -80,8 +80,6 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     };
 
     let thread_req = mcp
@@ -159,9 +157,6 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
     };
 
     let expected = ComputerUseCallParams {
-        thread_id: thread_id.clone(),
-        turn_id: turn_id.clone(),
-        call_id: call_id.to_string(),
         environment_id: Some(codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string()),
         adapter: "android".to_string(),
         tool: tool_name.to_string(),
@@ -267,7 +262,6 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: "thread_resume_seed".to_string(),
             history: Some(resume_history),
-            dynamic_tools: Some(vec![android_observe_tool()]),
             ..Default::default()
         })
         .await?;
@@ -361,7 +355,6 @@ async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requ
     let resume_req = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
-            dynamic_tools: Some(vec![android_observe_tool()]),
             ..Default::default()
         })
         .await?;
@@ -454,7 +447,6 @@ async fn thread_fork_injects_native_android_tools_into_model_requests() -> Resul
     let fork_req = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: thread.id,
-            dynamic_tools: Some(vec![android_step_tool()]),
             ..Default::default()
         })
         .await?;
@@ -526,8 +518,6 @@ fn android_observe_tool() -> DynamicToolSpec {
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     }
 }
 
@@ -544,8 +534,6 @@ fn android_step_tool() -> DynamicToolSpec {
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     }
 }
 
