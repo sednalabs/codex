@@ -133,6 +133,10 @@ build:clippy --@rules_rust//rust/settings:clippy_flag=--deny=clippy::unwrap_used
 build:argument-comment-lint --aspects=//tools/argument-comment-lint:lint_aspect.bzl%rust_argument_comment_lint_aspect
 build:argument-comment-lint --output_groups=argument_comment_lint_checks
 build:argument-comment-lint --@rules_rust//rust/toolchain/channel=nightly
+# Keep this lane scoped to the custom argument-comment lints. The aspect appends
+# its own -D flags after normal rustc flags, so ordinary compiler warnings stay
+# out of this dedicated validation surface without weakening the custom checks.
+build:argument-comment-lint --@rules_rust//rust/settings:extra_rustc_flag=-Awarnings
 
 # Rearrange caches on Windows so they're on the same volume as the checkout.
 common:ci-windows --config=ci-bazel
