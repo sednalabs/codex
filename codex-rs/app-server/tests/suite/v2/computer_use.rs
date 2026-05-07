@@ -262,6 +262,7 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: "thread_resume_seed".to_string(),
             history: Some(resume_history),
+            dynamic_tools: Some(vec![android_observe_tool()]),
             ..Default::default()
         })
         .await?;
@@ -355,6 +356,7 @@ async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requ
     let resume_req = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
+            dynamic_tools: Some(vec![android_observe_tool()]),
             ..Default::default()
         })
         .await?;
@@ -447,6 +449,7 @@ async fn thread_fork_injects_native_android_tools_into_model_requests() -> Resul
     let fork_req = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: thread.id,
+            dynamic_tools: Some(vec![android_step_tool()]),
             ..Default::default()
         })
         .await?;

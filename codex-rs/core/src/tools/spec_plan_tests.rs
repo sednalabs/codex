@@ -382,6 +382,8 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
             create_send_message_tool(),
             create_wait_agent_tool_v2(wait_agent_timeout_options()),
             create_close_agent_tool_v2(),
+            create_list_agents_tool(),
+            create_inspect_agent_tree_tool(),
         ]
     } else {
         vec![
@@ -579,6 +581,7 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
             "wait_agent",
             "close_agent",
             "list_agents",
+            "inspect_agent_tree",
         ],
     );
 
@@ -655,9 +658,9 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
         panic!("wait_agent should be a function tool");
     };
     let (properties, required) = expect_object_schema(parameters);
-    assert!(!properties.contains_key("targets"));
+    assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert_eq!(required, None);
+    assert_eq!(required, Some(&vec!["targets".to_string()]));
     let output_schema = output_schema
         .as_ref()
         .expect("wait_agent should define output schema");
@@ -723,6 +726,7 @@ fn test_build_specs_multi_agent_v2_does_not_require_collab_feature() {
             "wait_agent",
             "close_agent",
             "list_agents",
+            "inspect_agent_tree",
         ],
     );
     assert_lacks_tool_name(&tools, "send_input");

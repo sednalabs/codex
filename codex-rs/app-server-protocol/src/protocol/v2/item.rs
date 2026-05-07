@@ -1417,6 +1417,7 @@ pub enum DynamicToolCallOutputContentItem {
     InputImage {
         image_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         detail: Option<String>,
     },
 }
@@ -1445,6 +1446,7 @@ pub enum ComputerUseCallOutputContentItem {
     InputImage {
         image_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         detail: Option<String>,
     },
 }

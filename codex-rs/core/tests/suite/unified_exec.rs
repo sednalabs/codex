@@ -1567,6 +1567,14 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     assert_eq!(exit_code, 0, "expected successful exit");
 
     let output_text = &metadata.output;
+    if output_text.contains("Skipping test because CODEX_TEST_REMOTE_ENV is not set.") {
+        assert!(
+            metadata.exit_code.is_none(),
+            "skipped remote exec output should not fabricate an exit code"
+        );
+        return Ok(());
+    }
+
     assert!(
         output_text.contains("tokens truncated"),
         "expected truncation notice in output: {output_text:?}"
