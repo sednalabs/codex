@@ -1605,11 +1605,8 @@ impl ThreadRequestProcessor {
             .unarchive_thread(StoreArchiveThreadParams { thread_id })
             .await
             .map_err(|err| thread_store_archive_error("unarchive", err))?;
-        let summary = summary_from_stored_thread(stored_thread, fallback_provider.as_str())
-            .ok_or_else(|| {
-                internal_error(format!("failed to read unarchived thread {thread_id}"))
-            })?;
-        let mut thread = summary_to_thread(summary, &self.config.cwd);
+        let (mut thread, _) =
+            thread_from_stored_thread(stored_thread, fallback_provider.as_str(), &self.config.cwd);
 
         thread.status = resolve_thread_status(
             self.thread_watch_manager
@@ -3215,12 +3212,7 @@ impl ThreadRequestProcessor {
         };
 
         let stored_thread = read_result?;
-        let summary =
-            summary_from_stored_thread(stored_thread, fallback_provider).ok_or_else(|| {
-                internal_error(
-                    "failed to load conversation summary: thread is missing rollout path",
-                )
-            })?;
+        let summary = summary_from_stored_thread(stored_thread, fallback_provider);
         Ok(GetConversationSummaryResponse { summary })
     }
 
@@ -3697,8 +3689,8 @@ pub(crate) fn thread_from_stored_thread(
 fn summary_from_stored_thread(
     thread: StoredThread,
     fallback_provider: &str,
-) -> Option<ConversationSummary> {
-    let path = thread.rollout_path?;
+) -> ConversationSummary {
+    let path = thread.rollout_path.unwrap_or_default();
     let source = with_thread_spawn_agent_metadata(
         thread.source,
         thread.agent_nickname.clone(),
@@ -3709,7 +3701,7 @@ fn summary_from_stored_thread(
         branch: git.branch,
         origin_url: git.repository_url,
     });
-    Some(ConversationSummary {
+    ConversationSummary {
         conversation_id: thread.thread_id,
         path,
         preview: thread.first_user_message.unwrap_or(thread.preview),
@@ -3734,7 +3726,7 @@ fn summary_from_stored_thread(
         cli_version: thread.cli_version,
         source,
         git_info,
-    })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
