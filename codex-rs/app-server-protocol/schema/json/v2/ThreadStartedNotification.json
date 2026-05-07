@@ -923,7 +923,6 @@
         "status",
         "cwd",
         "cliVersion",
-        "source",
         "turns"
       ],
       "type": "object"

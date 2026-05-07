@@ -109,7 +109,6 @@
         "handlerType",
         "timeoutSec",
         "sourcePath",
-        "timeoutSec",
         "trustStatus"
       ],
       "type": "object"
