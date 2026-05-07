@@ -1281,9 +1281,6 @@ pub enum EventMsg {
     /// Realtime session description protocol payload.
     RealtimeConversationSdp(RealtimeConversationSdpEvent),
 
-    /// List of voices supported by realtime conversation streams.
-    RealtimeConversationListVoicesResponse(RealtimeConversationListVoicesResponseEvent),
-
     /// Model routing changed from the requested model to a different model.
     ModelReroute(ModelRerouteEvent),
 
@@ -1604,11 +1601,6 @@ pub struct RealtimeConversationClosedEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct RealtimeConversationSdpEvent {
     pub sdp: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-pub struct RealtimeConversationListVoicesResponseEvent {
-    pub voices: RealtimeVoicesList,
 }
 
 impl From<CollabAgentSpawnBeginEvent> for EventMsg {
