@@ -616,9 +616,9 @@ impl ThreadManager {
             options.initial_history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
-            /*thread_source*/
+            /*session_source*/
             session_source,
-            None,
+            /*thread_source*/ None,
             options.dynamic_tools,
             options.persist_extended_history,
             options.metrics_service_name,
