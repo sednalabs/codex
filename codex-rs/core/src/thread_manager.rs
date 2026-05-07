@@ -16,6 +16,7 @@ use crate::session::INITIAL_SUBMIT_ID;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
+use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -379,6 +380,27 @@ impl ThreadManager {
         )
     }
 
+    pub(crate) fn with_models_provider_home_and_state_for_tests(
+        auth: CodexAuth,
+        provider: ModelProviderInfo,
+        codex_home: PathBuf,
+        environment_manager: Arc<EnvironmentManager>,
+        state_db: Option<StateDbHandle>,
+    ) -> Self {
+        let state_db = state_db.expect("test state db must be provided");
+        let skills_codex_home = AbsolutePathBuf::from_absolute_path_checked(&codex_home)
+            .unwrap_or_else(|err| panic!("test codex_home should be absolute: {err}"));
+        Self::with_models_provider_and_home_and_state_db_for_tests(
+            auth,
+            provider,
+            codex_home,
+            environment_manager,
+            state_db,
+            skills_codex_home,
+            "test-installation".to_string(),
+        )
+    }
+
     fn with_models_provider_and_home_and_state_db_for_tests(
         auth: CodexAuth,
         provider: ModelProviderInfo,
@@ -429,7 +451,6 @@ impl ThreadManager {
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
-                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -811,6 +832,7 @@ impl ThreadManager {
             config,
             history,
             thread_source,
+            Vec::new(),
             persist_extended_history,
             parent_trace,
         )
@@ -834,6 +856,7 @@ impl ThreadManager {
             snapshot,
             config,
             history,
+            thread_source,
             Vec::new(),
             persist_extended_history,
             parent_trace,
@@ -848,6 +871,7 @@ impl ThreadManager {
         snapshot: S,
         config: Config,
         history: InitialHistory,
+        thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,

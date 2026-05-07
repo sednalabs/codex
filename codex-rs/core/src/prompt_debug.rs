@@ -22,6 +22,7 @@ use crate::thread_manager::ThreadManager;
 use crate::thread_manager::agent_graph_store_from_state_db;
 use crate::thread_manager::init_state_db_from_config;
 use crate::thread_manager::thread_store_from_config;
+use codex_agent_graph_store::AgentGraphStore;
 
 /// Build the model-visible `input` list for a single debug turn.
 #[doc(hidden)]

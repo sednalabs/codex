@@ -120,6 +120,10 @@ impl ToolHandler for Handler {
                                     &receiver_agents,
                                 ),
                                 statuses,
+                                receiver_thread_ids: receiver_thread_ids.clone(),
+                                pending_thread_ids: receiver_thread_ids.clone(),
+                                completion_reason: CollabWaitingCompletionReason::Terminal,
+                                timed_out: false,
                             }
                             .into(),
                         )
@@ -191,6 +195,10 @@ impl ToolHandler for Handler {
                     completed_at_ms: now_unix_timestamp_ms(),
                     agent_statuses,
                     statuses: statuses_by_id,
+                    receiver_thread_ids: receiver_thread_ids.clone(),
+                    pending_thread_ids: pending_ids.clone(),
+                    completion_reason,
+                    timed_out,
                 }
                 .into(),
             )

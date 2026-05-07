@@ -13,6 +13,7 @@ use crate::state_db;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
+use codex_agent_graph_store::AgentGraphStore;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
