@@ -2153,6 +2153,10 @@ impl HistoryCell for DynamicToolCallCell {
         lines
     }
 
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.display_lines(u16::MAX))
+    }
+
     fn transcript_animation_tick(&self) -> Option<u64> {
         if !self.animations_enabled || self.success.is_some() {
             return None;
@@ -2313,6 +2317,10 @@ impl HistoryCell for ComputerUseCallCell {
         }
 
         lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.display_lines(u16::MAX))
     }
 
     fn transcript_animation_tick(&self) -> Option<u64> {

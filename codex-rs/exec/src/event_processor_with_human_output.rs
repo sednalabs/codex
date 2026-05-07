@@ -766,6 +766,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -813,6 +814,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -856,6 +858,7 @@ mod tests {
                 turn: Turn {
                     id: "turn-1".to_string(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -899,6 +902,7 @@ mod tests {
                 turn: Turn {
                     id: "turn-1".to_string(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Failed,
                     error: None,
                     started_at: None,
@@ -943,6 +947,7 @@ mod tests {
                 turn: Turn {
                     id: "turn-1".to_string(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Interrupted,
                     error: None,
                     started_at: None,

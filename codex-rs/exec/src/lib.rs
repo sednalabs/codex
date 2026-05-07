@@ -57,6 +57,8 @@ use codex_cloud_requirements::cloud_requirements_loader_for_storage;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
@@ -70,6 +72,8 @@ use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
 use codex_feedback::CodexFeedback;
 use codex_git_utils::get_git_repo_root;
+use codex_login::AuthConfig;
+use codex_login::enforce_login_restrictions;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
@@ -558,85 +562,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let default_cwd = config.cwd.to_path_buf();
     let default_approval_policy = config.permissions.approval_policy.value();
     let default_effort = config.model_reasoning_effort;
-
-    // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
-    // since the user is explicitly running in an externally sandboxed environment.
-    if !skip_git_repo_check
-        && !dangerously_bypass_approvals_and_sandbox
-        && get_git_repo_root(&default_cwd).is_none()
-    {
-        eprintln!("Not inside a trusted directory and --skip-git-repo-check was not specified.");
-        std::process::exit(1);
-    }
-
-    let mut request_ids = RequestIdSequencer::new();
-    let mut client = InProcessAppServerClient::start(in_process_start_args)
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
-        })?;
-
-    // Handle resume subcommand through existing `thread/list` + `thread/resume`
-    // APIs so exec no longer reaches into rollout storage directly.
-    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
-        command.as_ref()
-    {
-        if let Some(thread_id) =
-            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
-        {
-            let response: ThreadResumeResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadResume {
-                    request_id: request_ids.next(),
-                    params: thread_resume_params_from_config(&config, thread_id),
-                },
-                "thread/resume",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_resume_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
-        } else {
-            let response: ThreadStartResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadStart {
-                    request_id: request_ids.next(),
-                    params: thread_start_params_from_config(&config),
-                },
-                "thread/start",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_start_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
-        }
-    } else {
-        let response: ThreadStartResponse = send_request_with_response(
-            &client,
-            ClientRequest::ThreadStart {
-                request_id: request_ids.next(),
-                params: thread_start_params_from_config(&config),
-            },
-            "thread/start",
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        let session_configured = session_configured_from_thread_start_response(&response, &config)
-            .map_err(anyhow::Error::msg)?;
-        (session_configured.session_id, session_configured)
-    };
-
-    let primary_thread_id_for_span = primary_thread_id.to_string();
-    // Use the start/resume response as the authoritative bootstrap payload.
-    // Waiting for a later streamed `SessionConfigured` event adds up to 10s of
-    // avoidable startup latency on the in-process path.
-    let session_configured = fallback_session_configured;
-
-    exec_span.record("thread.id", primary_thread_id_for_span.as_str());
 
     let (initial_operation, prompt_summary) = match (command.as_ref(), prompt, images) {
         (Some(ExecCommand::Review(review_cli)), _, _) => {
@@ -1557,130 +1482,129 @@ async fn handle_server_request(
     error_seen: &mut bool,
 ) {
     let method = server_request_method_name(&request);
-    let handle_result = match request {
-        ServerRequest::McpServerElicitationRequest { request_id, .. } => {
-            // Exec auto-cancels elicitation instead of surfacing it
-            // interactively. Preserve that behavior for attached subagent
-            // threads too so we do not turn a cancel into a decline/error.
-            match canceled_mcp_server_elicitation_response() {
-                Ok(value) => {
-                    resolve_server_request(
-                        client,
-                        request_id,
-                        value,
-                        "mcpServer/elicitation/request",
-                    )
-                    .await
+    let handle_result =
+        match request {
+            ServerRequest::McpServerElicitationRequest { request_id, .. } => {
+                // Exec auto-cancels elicitation instead of surfacing it
+                // interactively. Preserve that behavior for attached subagent
+                // threads too so we do not turn a cancel into a decline/error.
+                match canceled_mcp_server_elicitation_response() {
+                    Ok(value) => {
+                        resolve_server_request(
+                            client,
+                            request_id,
+                            value,
+                            "mcpServer/elicitation/request",
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
                 }
-                Err(err) => Err(err),
             }
-        }
-        ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
-            reject_server_request(
+            ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "command execution approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::FileChangeRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "file change approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ToolRequestUserInput { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "request_user_input is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::DynamicToolCall { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "dynamic tool calls are not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ComputerUseCall { request_id, params } => reject_server_request(
                 client,
                 request_id,
                 &method,
                 format!(
-                    "command execution approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
+                    "computer-use calls are not supported in exec mode for adapter `{}` tool `{}`",
+                    params.adapter, params.tool
                 ),
             )
-            .await
-        }
-        ServerRequest::FileChangeRequestApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "file change approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ToolRequestUserInput { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "request_user_input is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::DynamicToolCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "dynamic tool calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ComputerUseCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "computer-use calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                "chatgpt auth token refresh is not supported in exec mode".to_string(),
-            )
-            .await
-        }
-        ServerRequest::ApplyPatchApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "apply_patch approval is not supported in exec mode for thread `{}`",
-                    params.conversation_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ExecCommandApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "exec command approval is not supported in exec mode for thread `{}`",
-                    params.conversation_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::PermissionsRequestApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "permissions approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-    };
+            .await,
+            ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    "chatgpt auth token refresh is not supported in exec mode".to_string(),
+                )
+                .await
+            }
+            ServerRequest::ApplyPatchApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "apply_patch approval is not supported in exec mode for thread `{}`",
+                        params.conversation_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ExecCommandApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "exec command approval is not supported in exec mode for thread `{}`",
+                        params.conversation_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::PermissionsRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "permissions approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+        };
 
     if let Err(err) = handle_result {
         *error_seen = true;
@@ -2151,6 +2075,7 @@ mod tests {
     fn turn_items_for_thread_returns_matching_turn_items() {
         let thread = AppServerThread {
             id: "thread-1".to_string(),
+            session_id: "session-1".to_string(),
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -2161,6 +2086,7 @@ mod tests {
             cwd: test_path_buf("/tmp/project").abs(),
             cli_version: "0.0.0-test".to_string(),
             source: codex_app_server_protocol::SessionSource::Exec,
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             forked_from_id: None,
@@ -2175,6 +2101,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2187,6 +2114,7 @@ mod tests {
                         id: "plan-1".to_string(),
                         text: "ship it".to_string(),
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2284,6 +2212,7 @@ mod tests {
         let response = ThreadStartResponse {
             thread: codex_app_server_protocol::Thread {
                 id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                session_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -2294,6 +2223,7 @@ mod tests {
                 cwd: test_path_buf("/tmp").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
+                thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
                 forked_from_id: None,
