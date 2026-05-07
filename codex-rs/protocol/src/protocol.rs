@@ -718,6 +718,14 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
+    /// Resolve a computer-use call request.
+    ComputerUseResponse {
+        /// Call id for the in-flight request.
+        id: String,
+        /// Tool output payload.
+        response: ComputerUseResponse,
+    },
+
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers { config: McpServerRefreshConfig },
 

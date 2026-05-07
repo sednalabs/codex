@@ -202,10 +202,7 @@ impl FsWatchManager {
             }
         });
 
-        Ok(FsWatchResponse {
-            watch_id,
-            path: params.path,
-        })
+        Ok(FsWatchResponse { path: params.path })
     }
 
     pub(crate) async fn unwatch(

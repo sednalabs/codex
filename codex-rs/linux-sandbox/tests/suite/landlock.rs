@@ -28,6 +28,12 @@ use tempfile::NamedTempFile;
 
 #[cfg(not(target_arch = "aarch64"))]
 const SHORT_TIMEOUT_MS: u64 = 5_000;
+
+const BWRAP_PERMISSION_ERR_SNIPPETS: &[&str] = &[
+    "Operation not permitted",
+    "Permission denied",
+    "Invalid argument",
+];
 #[cfg(target_arch = "aarch64")]
 const SHORT_TIMEOUT_MS: u64 = 5_000;
 

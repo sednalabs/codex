@@ -1040,6 +1040,8 @@ impl ThreadRequestProcessor {
                     description: tool.description,
                     input_schema: tool.input_schema,
                     defer_loading: tool.defer_loading,
+                    persist_on_resume: true,
+                    capability: None,
                 })
                 .collect()
         };

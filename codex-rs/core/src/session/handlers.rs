@@ -462,6 +462,10 @@ pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: Dy
     sess.notify_dynamic_tool_response(&id, response).await;
 }
 
+pub async fn computer_use_response(sess: &Arc<Session>, id: String, response: ComputerUseResponse) {
+    sess.notify_computer_use_response(&id, response).await;
+}
+
 pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerRefreshConfig) {
     let mut guard = sess.pending_mcp_server_refresh_config.lock().await;
     *guard = Some(refresh_config);
@@ -835,6 +839,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::DynamicToolResponse { id, response } => {
                     dynamic_tool_response(&sess, id, response).await;
+                    false
+                }
+                Op::ComputerUseResponse { id, response } => {
+                    computer_use_response(&sess, id, response).await;
                     false
                 }
                 Op::RefreshMcpServers { config } => {

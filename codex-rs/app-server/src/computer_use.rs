@@ -37,7 +37,7 @@ pub(crate) async fn on_call_response(
     let core_response = CoreComputerUseResponse {
         content_items: content_items
             .into_iter()
-            .map(codex_protocol::computer_use::ComputerUseOutputContentItem::from)
+            .map(|item| codex_protocol::computer_use::ComputerUseOutputContentItem::from(&item))
             .collect(),
         success,
         error,

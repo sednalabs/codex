@@ -74,7 +74,7 @@ pub async fn thread_manager_with_models_provider_and_home(
     .await
 }
 
-pub fn thread_manager_with_models_provider_home_and_state(
+pub async fn thread_manager_with_models_provider_home_and_state(
     auth: CodexAuth,
     provider: ModelProviderInfo,
     codex_home: PathBuf,
