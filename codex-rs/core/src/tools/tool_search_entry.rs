@@ -65,13 +65,11 @@ pub(crate) fn build_tool_search_entries(
 }
 
 fn is_native_computer_use_dynamic_tool(tool: &DynamicToolSpec) -> bool {
+    let name = tool.name.as_str();
     tool.namespace.is_none()
-        && matches!(
-            tool.name.as_str(),
-            ANDROID_OBSERVE_TOOL_NAME
-                | ANDROID_STEP_TOOL_NAME
-                | ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
-        )
+        && (name == ANDROID_OBSERVE_TOOL_NAME
+            || name == ANDROID_STEP_TOOL_NAME
+            || name == ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME)
 }
 
 pub(crate) fn build_tool_search_entries_for_config(

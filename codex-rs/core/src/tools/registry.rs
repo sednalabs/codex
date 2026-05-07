@@ -540,6 +540,13 @@ impl ToolRegistryBuilder {
         H: ToolHandler + 'static,
     {
         let name = handler.tool_name();
+        self.register_handler_with_name(name, handler);
+    }
+
+    pub fn register_handler_with_name<H>(&mut self, name: ToolName, handler: Arc<H>)
+    where
+        H: ToolHandler + 'static,
+    {
         let display_name = name.display();
         let handler: Arc<dyn AnyToolHandler> = handler;
         if self.handlers.insert(name, handler).is_some() {

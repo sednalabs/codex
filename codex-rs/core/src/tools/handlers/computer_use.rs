@@ -75,6 +75,10 @@ impl ToolOutput for ComputerUseOutput {
 impl ToolHandler for ComputerUseHandler {
     type Output = ComputerUseOutput;
 
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(ANDROID_OBSERVE_TOOL_NAME)
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }

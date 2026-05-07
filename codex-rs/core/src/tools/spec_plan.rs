@@ -60,6 +60,7 @@ use codex_tools::ToolSearchSource;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::ToolsConfig;
+use codex_tools::canonical_android_dynamic_tool;
 use codex_tools::coalesce_loadable_tool_specs;
 use codex_tools::collect_code_mode_exec_prompt_tool_definitions;
 use codex_tools::collect_request_plugin_install_entries;
