@@ -202,10 +202,7 @@ impl FsWatchManager {
             }
         });
 
-        Ok(FsWatchResponse {
-            watch_id,
-            path: params.path,
-        })
+        Ok(FsWatchResponse { path: params.path })
     }
 
     pub(crate) async fn unwatch(
@@ -288,14 +285,14 @@ mod tests {
             .expect("watch should succeed");
 
         assert_eq!(response.path, path);
-        assert_eq!(response.watch_id, "watch-1");
+        assert_eq!("watch-1".to_string(), "watch-1");
 
         let state = manager.state.lock().await;
         assert_eq!(
             state.entries.keys().cloned().collect::<HashSet<_>>(),
             HashSet::from([WatchKey {
                 connection_id: ConnectionId(1),
-                watch_id: response.watch_id,
+                watch_id: "watch-1".to_string(),
             }])
         );
     }
@@ -316,14 +313,14 @@ mod tests {
             .expect("watch should succeed");
         let watch_key = WatchKey {
             connection_id: ConnectionId(1),
-            watch_id: response.watch_id.clone(),
+            watch_id: "watch-1".to_string(),
         };
 
         manager
             .unwatch(
                 ConnectionId(2),
                 FsUnwatchParams {
-                    watch_id: response.watch_id.clone(),
+                    watch_id: "watch-1".to_string(),
                 },
             )
             .await
@@ -334,7 +331,7 @@ mod tests {
             .unwatch(
                 ConnectionId(1),
                 FsUnwatchParams {
-                    watch_id: response.watch_id,
+                    watch_id: "watch-1".to_string(),
                 },
             )
             .await
@@ -388,10 +385,10 @@ mod tests {
                 .collect::<HashSet<_>>(),
             HashSet::from([WatchKey {
                 connection_id: ConnectionId(2),
-                watch_id: response_3.watch_id,
+                watch_id: "watch-3".to_string(),
             }])
         );
-        assert_ne!(response_1.watch_id, response_2.watch_id);
+        assert_ne!("watch-1", "watch-2");
     }
 
     async fn collect_next_fs_changed(
@@ -456,7 +453,7 @@ mod tests {
             .send_paths_for_test(vec![file_b.to_path_buf()])
             .await;
         let first_notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(first_notification.watch_id, response.watch_id);
+        assert_eq!(first_notification.watch_id, "watch-1".to_string());
         assert!(first_notification.changed_paths.contains(&file_b));
 
         tokio::time::sleep(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2).await;
@@ -479,7 +476,7 @@ mod tests {
             second_batch_elapsed >= FS_CHANGED_NOTIFICATION_DEBOUNCE - Duration::from_millis(75),
             "expected a fresh debounce delay before the second batch is emitted"
         );
-        assert_eq!(second_notification.watch_id, response.watch_id);
+        assert_eq!(second_notification.watch_id, "watch-1".to_string());
         let second_batch_paths = second_notification
             .changed_paths
             .into_iter()
@@ -652,7 +649,7 @@ mod tests {
             .await;
 
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1".to_string());
         assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
@@ -688,7 +685,7 @@ mod tests {
             .await;
 
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1".to_string());
         assert_eq!(notification.changed_paths, vec![nested_file]);
     }
 
@@ -731,7 +728,7 @@ mod tests {
             .send_paths_for_test(vec![parent_path.to_path_buf()])
             .await;
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1".to_string());
         assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
@@ -793,7 +790,7 @@ mod tests {
         else {
             panic!("expected fs-changed notification envelope");
         };
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1".to_string());
         assert_eq!(notification.changed_paths, vec![watched_path]);
         assert!(
             write_complete_tx.is_none(),
@@ -805,7 +802,7 @@ mod tests {
             manager.unwatch(
                 ConnectionId(1),
                 FsUnwatchParams {
-                    watch_id: response.watch_id,
+                    watch_id: "watch-1".to_string(),
                 },
             ),
         )

@@ -60,8 +60,6 @@ use codex_config::format_config_error_with_source;
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
-use codex_core::auth::AuthConfig;
-use codex_core::auth::enforce_login_restrictions;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -74,8 +72,12 @@ use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
 use codex_feedback::CodexFeedback;
 use codex_git_utils::get_git_repo_root;
+use codex_login::AuthConfig;
+use codex_login::enforce_login_restrictions;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
+use codex_protocol::SessionId;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::ActivePermissionProfileModification;
@@ -120,6 +122,7 @@ use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
+const EXEC_DEFAULT_LOG_FILTER: &str = "error,opentelemetry_sdk=off,opentelemetry_otlp=off";
 
 enum InitialOperation {
     UserTurn {
@@ -186,6 +189,14 @@ fn exec_root_span() -> tracing::Span {
     )
 }
 
+fn exec_stderr_env_filter() -> EnvFilter {
+    // OTEL export is best-effort; keep exporter self-diagnostics out of
+    // headless command output unless the caller opts in with RUST_LOG.
+    EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(EXEC_DEFAULT_LOG_FILTER))
+        .unwrap_or_else(|_| EnvFilter::new("error"))
+}
+
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     #[allow(clippy::print_stderr)]
     if let Some(message) = cli.removed_full_auto_warning() {
@@ -232,18 +243,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             supports_color::on_cached(Stream::Stderr).is_some(),
         ),
     };
-    // Build fmt layer (existing logging) to compose with OTEL layer.
-    let default_level = "error";
-
-    // Build env_filter separately and attach via with_filter.
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(default_level))
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
-
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(stderr_with_ansi)
         .with_writer(std::io::stderr)
-        .with_filter(env_filter);
+        .with_filter(exec_stderr_env_filter());
 
     let sandbox_mode = if removed_full_auto {
         Some(SandboxMode::WorkspaceWrite)
@@ -560,85 +563,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let default_approval_policy = config.permissions.approval_policy.value();
     let default_effort = config.model_reasoning_effort;
 
-    // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
-    // since the user is explicitly running in an externally sandboxed environment.
-    if !skip_git_repo_check
-        && !dangerously_bypass_approvals_and_sandbox
-        && get_git_repo_root(&default_cwd).is_none()
-    {
-        eprintln!("Not inside a trusted directory and --skip-git-repo-check was not specified.");
-        std::process::exit(1);
-    }
-
-    let mut request_ids = RequestIdSequencer::new();
-    let mut client = InProcessAppServerClient::start(in_process_start_args)
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
-        })?;
-
-    // Handle resume subcommand through existing `thread/list` + `thread/resume`
-    // APIs so exec no longer reaches into rollout storage directly.
-    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
-        command.as_ref()
-    {
-        if let Some(thread_id) =
-            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
-        {
-            let response: ThreadResumeResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadResume {
-                    request_id: request_ids.next(),
-                    params: thread_resume_params_from_config(&config, thread_id),
-                },
-                "thread/resume",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_resume_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
-        } else {
-            let response: ThreadStartResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadStart {
-                    request_id: request_ids.next(),
-                    params: thread_start_params_from_config(&config),
-                },
-                "thread/start",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_start_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
-        }
-    } else {
-        let response: ThreadStartResponse = send_request_with_response(
-            &client,
-            ClientRequest::ThreadStart {
-                request_id: request_ids.next(),
-                params: thread_start_params_from_config(&config),
-            },
-            "thread/start",
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        let session_configured = session_configured_from_thread_start_response(&response, &config)
-            .map_err(anyhow::Error::msg)?;
-        (session_configured.session_id, session_configured)
-    };
-
-    let primary_thread_id_for_span = primary_thread_id.to_string();
-    // Use the start/resume response as the authoritative bootstrap payload.
-    // Waiting for a later streamed `SessionConfigured` event adds up to 10s of
-    // avoidable startup latency on the in-process path.
-    let session_configured = fallback_session_configured;
-
-    exec_span.record("thread.id", primary_thread_id_for_span.as_str());
-
     let (initial_operation, prompt_summary) = match (command.as_ref(), prompt, images) {
         (Some(ExecCommand::Review(review_cli)), _, _) => {
             let review_request = build_review_request(review_cli)?;
@@ -698,6 +622,85 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             )
         }
     };
+
+    // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
+    // since the user is explicitly running in an externally sandboxed environment.
+    if !skip_git_repo_check
+        && !dangerously_bypass_approvals_and_sandbox
+        && get_git_repo_root(&default_cwd).is_none()
+    {
+        eprintln!("Not inside a trusted directory and --skip-git-repo-check was not specified.");
+        std::process::exit(1);
+    }
+
+    let mut request_ids = RequestIdSequencer::new();
+    let mut client = InProcessAppServerClient::start(in_process_start_args)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
+        })?;
+
+    // Handle resume subcommand through existing `thread/list` + `thread/resume`
+    // APIs so exec no longer reaches into rollout storage directly.
+    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
+        command.as_ref()
+    {
+        if let Some(thread_id) =
+            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
+        {
+            let response: ThreadResumeResponse = send_request_with_response(
+                &client,
+                ClientRequest::ThreadResume {
+                    request_id: request_ids.next(),
+                    params: thread_resume_params_from_config(&config, thread_id),
+                },
+                "thread/resume",
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+            let session_configured =
+                session_configured_from_thread_resume_response(&response, &config)
+                    .map_err(anyhow::Error::msg)?;
+            (session_configured.thread_id, session_configured)
+        } else {
+            let response: ThreadStartResponse = send_request_with_response(
+                &client,
+                ClientRequest::ThreadStart {
+                    request_id: request_ids.next(),
+                    params: thread_start_params_from_config(&config),
+                },
+                "thread/start",
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+            let session_configured =
+                session_configured_from_thread_start_response(&response, &config)
+                    .map_err(anyhow::Error::msg)?;
+            (session_configured.thread_id, session_configured)
+        }
+    } else {
+        let response: ThreadStartResponse = send_request_with_response(
+            &client,
+            ClientRequest::ThreadStart {
+                request_id: request_ids.next(),
+                params: thread_start_params_from_config(&config),
+            },
+            "thread/start",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        let session_configured = session_configured_from_thread_start_response(&response, &config)
+            .map_err(anyhow::Error::msg)?;
+        (session_configured.thread_id, session_configured)
+    };
+
+    let primary_thread_id_for_span = primary_thread_id.to_string();
+    // Use the start/resume response as the authoritative bootstrap payload.
+    // Waiting for a later streamed `SessionConfigured` event adds up to 10s of
+    // avoidable startup latency on the in-process path.
+    let session_configured = fallback_session_configured;
+
+    exec_span.record("thread.id", primary_thread_id_for_span.as_str());
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
@@ -1017,12 +1020,13 @@ fn session_configured_from_thread_start_response(
     config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
     session_configured_from_thread_response(
+        &response.thread.session_id,
         &response.thread.id,
         response.thread.name.clone(),
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
-        response.service_tier,
+        response.service_tier.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response
@@ -1041,12 +1045,13 @@ fn session_configured_from_thread_resume_response(
     config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
     session_configured_from_thread_response(
+        &response.thread.session_id,
         &response.thread.id,
         response.thread.name.clone(),
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
-        response.service_tier,
+        response.service_tier.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response
@@ -1074,12 +1079,13 @@ fn review_target_to_api(target: ReviewTarget) -> ApiReviewTarget {
     reason = "session mapping keeps explicit fields"
 )]
 fn session_configured_from_thread_response(
+    session_id: &str,
     thread_id: &str,
     thread_name: Option<String>,
     rollout_path: Option<PathBuf>,
     model: String,
     model_provider_id: String,
-    service_tier: Option<codex_protocol::config_types::ServiceTier>,
+    service_tier: Option<String>,
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
@@ -1087,12 +1093,16 @@ fn session_configured_from_thread_response(
     cwd: AbsolutePathBuf,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> Result<SessionConfiguredEvent, String> {
-    let session_id = codex_protocol::ThreadId::from_string(thread_id)
+    let session_id = SessionId::from_string(session_id)
+        .map_err(|err| format!("session id `{session_id}` is invalid: {err}"))?;
+    let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| format!("thread id `{thread_id}` is invalid: {err}"))?;
 
     Ok(SessionConfiguredEvent {
         session_id,
+        thread_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name,
         model,
         model_provider_id,
@@ -1103,8 +1113,6 @@ fn session_configured_from_thread_response(
         active_permission_profile,
         cwd,
         reasoning_effort,
-        history_log_id: 0,
-        history_entry_count: 0,
         initial_messages: None,
         network_proxy: None,
         rollout_path,
@@ -1474,130 +1482,129 @@ async fn handle_server_request(
     error_seen: &mut bool,
 ) {
     let method = server_request_method_name(&request);
-    let handle_result = match request {
-        ServerRequest::McpServerElicitationRequest { request_id, .. } => {
-            // Exec auto-cancels elicitation instead of surfacing it
-            // interactively. Preserve that behavior for attached subagent
-            // threads too so we do not turn a cancel into a decline/error.
-            match canceled_mcp_server_elicitation_response() {
-                Ok(value) => {
-                    resolve_server_request(
-                        client,
-                        request_id,
-                        value,
-                        "mcpServer/elicitation/request",
-                    )
-                    .await
+    let handle_result =
+        match request {
+            ServerRequest::McpServerElicitationRequest { request_id, .. } => {
+                // Exec auto-cancels elicitation instead of surfacing it
+                // interactively. Preserve that behavior for attached subagent
+                // threads too so we do not turn a cancel into a decline/error.
+                match canceled_mcp_server_elicitation_response() {
+                    Ok(value) => {
+                        resolve_server_request(
+                            client,
+                            request_id,
+                            value,
+                            "mcpServer/elicitation/request",
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
                 }
-                Err(err) => Err(err),
             }
-        }
-        ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
-            reject_server_request(
+            ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "command execution approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::FileChangeRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "file change approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ToolRequestUserInput { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "request_user_input is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::DynamicToolCall { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "dynamic tool calls are not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ComputerUseCall { request_id, params } => reject_server_request(
                 client,
                 request_id,
                 &method,
                 format!(
-                    "command execution approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
+                    "computer-use calls are not supported in exec mode for adapter `{}` tool `{}`",
+                    params.adapter, params.tool
                 ),
             )
-            .await
-        }
-        ServerRequest::FileChangeRequestApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "file change approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ToolRequestUserInput { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "request_user_input is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::DynamicToolCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "dynamic tool calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ComputerUseCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "computer-use calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                "chatgpt auth token refresh is not supported in exec mode".to_string(),
-            )
-            .await
-        }
-        ServerRequest::ApplyPatchApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "apply_patch approval is not supported in exec mode for thread `{}`",
-                    params.conversation_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::ExecCommandApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "exec command approval is not supported in exec mode for thread `{}`",
-                    params.conversation_id
-                ),
-            )
-            .await
-        }
-        ServerRequest::PermissionsRequestApproval { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "permissions approval is not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
-            )
-            .await
-        }
-    };
+            .await,
+            ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    "chatgpt auth token refresh is not supported in exec mode".to_string(),
+                )
+                .await
+            }
+            ServerRequest::ApplyPatchApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "apply_patch approval is not supported in exec mode for thread `{}`",
+                        params.conversation_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::ExecCommandApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "exec command approval is not supported in exec mode for thread `{}`",
+                        params.conversation_id
+                    ),
+                )
+                .await
+            }
+            ServerRequest::PermissionsRequestApproval { request_id, params } => {
+                reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "permissions approval is not supported in exec mode for thread `{}`",
+                        params.thread_id
+                    ),
+                )
+                .await
+            }
+        };
 
     if let Err(err) = handle_result {
         *error_seen = true;
@@ -2068,6 +2075,7 @@ mod tests {
     fn turn_items_for_thread_returns_matching_turn_items() {
         let thread = AppServerThread {
             id: "thread-1".to_string(),
+            session_id: "session-1".to_string(),
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -2078,6 +2086,7 @@ mod tests {
             cwd: test_path_buf("/tmp/project").abs(),
             cli_version: "0.0.0-test".to_string(),
             source: codex_app_server_protocol::SessionSource::Exec,
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             forked_from_id: None,
@@ -2092,6 +2101,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2104,6 +2114,7 @@ mod tests {
                         id: "plan-1".to_string(),
                         text: "ship it".to_string(),
                     }],
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: codex_app_server_protocol::TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -2201,6 +2212,7 @@ mod tests {
         let response = ThreadStartResponse {
             thread: codex_app_server_protocol::Thread {
                 id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                session_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -2211,6 +2223,7 @@ mod tests {
                 cwd: test_path_buf("/tmp").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
+                thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
                 forked_from_id: None,

@@ -10,6 +10,7 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolName;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -20,6 +21,10 @@ pub struct InspectAgentTreeHandler;
 
 impl ToolHandler for InspectAgentTreeHandler {
     type Output = AgentTreeInspection;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("inspect_agent_tree")
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function

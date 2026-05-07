@@ -28,6 +28,7 @@ use std::sync::Once;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
+pub mod hooks;
 pub mod process;
 pub mod responses;
 pub mod streaming_sse;

@@ -139,6 +139,23 @@ fn write_home_skill(codex_home: &Path, dir: &str, name: &str, description: &str)
     Ok(())
 }
 
+async fn wait_for_spawned_thread_id(test: &TestCodex) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let ids = test.thread_manager.list_thread_ids().await;
+        if let Some(spawned_id) = ids
+            .iter()
+            .find(|id| **id != test.session_configured.thread_id)
+        {
+            return Ok(spawned_id.to_string());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for spawned thread id");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn wait_for_requests(
     mock: &core_test_support::responses::ResponseMock,
 ) -> Result<Vec<ResponsesRequest>> {

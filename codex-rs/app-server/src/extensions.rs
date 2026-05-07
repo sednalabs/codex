@@ -376,6 +376,8 @@ mod tests {
                 auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
                 availability: codex_app_server_protocol::PluginAvailability::Available,
                 interface: None,
+                share_context: None,
+                keywords: Vec::new(),
             },
             description: None,
             skills: vec![],

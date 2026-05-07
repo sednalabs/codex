@@ -2453,6 +2453,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         }],
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
         is_default: false,
         upgrade: None,
         show_in_picker,
@@ -2493,6 +2494,7 @@ async fn model_picker_shows_upgradeable_legacy_models_from_cache() {
         }],
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
         is_default: false,
         upgrade: upgrade_model.map(|target| codex_protocol::openai_models::ModelUpgrade {
             id: target.to_string(),
@@ -2720,6 +2722,7 @@ async fn single_reasoning_option_skips_selection() {
         supported_reasoning_efforts: single_effort,
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
         is_default: false,
         upgrade: None,
         show_in_picker: true,

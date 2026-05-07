@@ -427,7 +427,7 @@ impl EventProcessorWithJsonOutput {
 
     pub fn thread_started_event(session_configured: &SessionConfiguredEvent) -> ThreadEvent {
         ThreadEvent::ThreadStarted(ThreadStartedEvent {
-            thread_id: session_configured.session_id.to_string(),
+            thread_id: session_configured.thread_id.to_string(),
         })
     }
 
@@ -785,6 +785,7 @@ mod tests {
                 turn: codex_app_server_protocol::Turn {
                     id: "turn-1".to_string(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Failed,
                     error: Some(codex_app_server_protocol::TurnError {
                         message: "turn failed".to_string(),

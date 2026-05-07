@@ -669,9 +669,6 @@ mod tests {
             pending.note_server_request(&ServerRequest::ComputerUseCall {
                 request_id: AppServerRequestId::Integer(100),
                 params: codex_app_server_protocol::ComputerUseCallParams {
-                    thread_id: "thread-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    call_id: "computer-1".to_string(),
                     environment_id: Some("env-1".to_string()),
                     adapter: "android".to_string(),
                     tool: "android_observe".to_string(),

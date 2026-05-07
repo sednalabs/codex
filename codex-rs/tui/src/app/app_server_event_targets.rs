@@ -24,9 +24,11 @@ pub(super) fn server_request_thread_id(request: &ServerRequest) -> Option<Thread
         ServerRequest::DynamicToolCall { params, .. } => {
             ThreadId::from_string(&params.thread_id).ok()
         }
-        ServerRequest::ComputerUseCall { params, .. } => {
-            ThreadId::from_string(&params.thread_id).ok()
-        }
+        // Computer-use requests are routed through the request/response channel,
+        // but the current protocol payload is intentionally operation-scoped and
+        // does not carry a thread id. Treat it as globally targeted instead of
+        // guessing from tool-specific arguments.
+        ServerRequest::ComputerUseCall { .. } => None,
         ServerRequest::ChatgptAuthTokensRefresh { .. }
         | ServerRequest::ApplyPatchApproval { .. }
         | ServerRequest::ExecCommandApproval { .. } => None,

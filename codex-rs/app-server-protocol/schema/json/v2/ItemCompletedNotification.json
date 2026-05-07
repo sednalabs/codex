@@ -1426,10 +1426,10 @@
     }
   },
   "required": [
+    "completedAtMs",
     "item",
     "threadId",
-    "turnId",
-    "completedAtMs"
+    "turnId"
   ],
   "title": "ItemCompletedNotification",
   "type": "object"

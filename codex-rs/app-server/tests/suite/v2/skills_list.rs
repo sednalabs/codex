@@ -299,7 +299,10 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
     }
 
     let plugin_list_request_id = mcp
-        .send_plugin_list_request(PluginListParams { cwds: None })
+        .send_plugin_list_request(PluginListParams {
+            cwds: None,
+            marketplace_kinds: None,
+        })
         .await?;
     let plugin_list_response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -658,6 +661,27 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let initial_skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+            per_cwd_extra_user_roots: None,
+        })
+        .await?;
+    let initial_skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(initial_skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(initial_skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .any(|skill| { skill.name == "demo" && skill.description == "demo description" })
+    );
+
     let thread_start_request_id = mcp
         .send_thread_start_request(ThreadStartParams {
             model: None,
@@ -675,6 +699,7 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
             personality: None,
             ephemeral: None,
             session_start_source: None,
+            thread_source: None,
             dynamic_tools: None,
             environments: None,
             mock_experimental_field: None,
@@ -709,5 +734,25 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
     let notification: SkillsChangedNotification = serde_json::from_value(params)?;
 
     assert_eq!(notification, SkillsChangedNotification {});
+    let updated_skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: false,
+            per_cwd_extra_user_roots: None,
+        })
+        .await?;
+    let updated_skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(updated_skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(updated_skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .any(|skill| skill.name == "demo" && skill.description == "updated")
+    );
     Ok(())
 }

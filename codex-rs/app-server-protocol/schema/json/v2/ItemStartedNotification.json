@@ -1427,9 +1427,9 @@
   },
   "required": [
     "item",
+    "startedAtMs",
     "threadId",
-    "turnId",
-    "startedAtMs"
+    "turnId"
   ],
   "title": "ItemStartedNotification",
   "type": "object"

@@ -75,6 +75,10 @@ impl ToolOutput for ComputerUseOutput {
 impl ToolHandler for ComputerUseHandler {
     type Output = ComputerUseOutput;
 
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(ANDROID_OBSERVE_TOOL_NAME)
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -583,13 +587,13 @@ mod tests {
                     environment_id: "first".to_string(),
                     environment: first_environment,
                     cwd: cwd.clone(),
-                    shell: "bash".to_string(),
+                    shell: Some("bash".to_string()),
                 },
                 TurnEnvironment {
                     environment_id: "second".to_string(),
                     environment: second_environment,
                     cwd,
-                    shell: "bash".to_string(),
+                    shell: Some("bash".to_string()),
                 },
             ],
         };

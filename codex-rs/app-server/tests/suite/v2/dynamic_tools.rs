@@ -69,8 +69,6 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         description: "Demo dynamic tool".to_string(),
         input_schema: input_schema.clone(),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     };
 
     // Thread start injects dynamic tools into the thread's tool registry.
@@ -152,8 +150,6 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
             "additionalProperties": false,
         }),
         defer_loading: true,
-        persist_on_resume: true,
-        capability: None,
     };
 
     let thread_req = mcp
@@ -223,8 +219,6 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
             "additionalProperties": false,
         }),
         defer_loading: true,
-        persist_on_resume: true,
-        capability: None,
     };
 
     let thread_req = mcp
@@ -241,6 +235,46 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
     assert_eq!(error.error.code, -32600);
     assert!(error.error.message.contains("hidden_tool"));
     assert!(error.error.message.contains("namespace"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Result<()> {
+    let server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex.app".to_string()),
+        name: "lookup.ticket".to_string(),
+        description: "Invalid dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading: false,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool]),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("Responses API"));
+    assert!(error.error.message.contains("lookup.ticket"));
 
     Ok(())
 }
@@ -293,8 +327,6 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     };
 
     let thread_req = mcp
@@ -470,8 +502,6 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
     };
 
     let thread_req = mcp

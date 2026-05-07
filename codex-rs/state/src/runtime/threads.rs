@@ -13,6 +13,7 @@ SELECT
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
     threads.source,
+    threads.thread_source,
     threads.agent_nickname,
     threads.agent_role,
     threads.agent_path,
@@ -494,6 +495,7 @@ INSERT INTO threads (
     created_at_ms,
     updated_at_ms,
     source,
+    thread_source,
     agent_nickname,
     agent_role,
     agent_path,
@@ -513,7 +515,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -524,6 +526,11 @@ ON CONFLICT(id) DO NOTHING
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
         .bind(metadata.source.as_str())
+        .bind(
+            metadata
+                .thread_source
+                .map(codex_protocol::protocol::ThreadSource::as_str),
+        )
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
         .bind(metadata.agent_path.as_deref())
@@ -691,6 +698,7 @@ INSERT INTO threads (
     created_at_ms,
     updated_at_ms,
     source,
+    thread_source,
     agent_nickname,
     agent_role,
     agent_path,
@@ -710,7 +718,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -718,6 +726,7 @@ ON CONFLICT(id) DO UPDATE SET
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = excluded.updated_at_ms,
     source = excluded.source,
+    thread_source = excluded.thread_source,
     agent_nickname = excluded.agent_nickname,
     agent_role = excluded.agent_role,
     agent_path = excluded.agent_path,
@@ -745,6 +754,11 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
         .bind(metadata.source.as_str())
+        .bind(
+            metadata
+                .thread_source
+                .map(codex_protocol::protocol::ThreadSource::as_str),
+        )
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
         .bind(metadata.agent_path.as_deref())
@@ -975,6 +989,7 @@ SELECT
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
     threads.source,
+    threads.thread_source,
     threads.agent_nickname,
     threads.agent_role,
     threads.agent_path,
@@ -1384,6 +1399,7 @@ mod tests {
                 originator: String::new(),
                 cli_version: String::new(),
                 source: SessionSource::Cli,
+                thread_source: None,
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -1442,6 +1458,7 @@ mod tests {
                 originator: String::new(),
                 cli_version: String::new(),
                 source: SessionSource::Cli,
+                thread_source: None,
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -1475,90 +1492,6 @@ mod tests {
         assert_eq!(
             persisted.git_origin_url.as_deref(),
             Some("git@example.com:openai/codex.git")
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_rollout_items_persists_approval_mode_from_turn_context() {
-        let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("state db should initialize");
-        let thread_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000458").expect("valid thread id");
-        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
-        let builder = ThreadMetadataBuilder::new(
-            thread_id,
-            metadata.rollout_path.clone(),
-            metadata.created_at,
-            SessionSource::Cli,
-        );
-
-        let turn_context = TurnContextItem {
-            turn_id: Some("turn-1".to_string()),
-            trace_id: None,
-            cwd: codex_home.clone(),
-            current_date: None,
-            timezone: None,
-            approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            file_system_sandbox_policy: None,
-            network: None,
-            model: "gpt-5".to_string(),
-            personality: None,
-            collaboration_mode: None,
-            realtime_active: None,
-            effort: Some(ReasoningEffort::Medium),
-            summary: ReasoningSummary::Auto,
-            user_instructions: None,
-            developer_instructions: None,
-            final_output_json_schema: None,
-            truncation_policy: None,
-        };
-
-        runtime
-            .apply_rollout_items(
-                &builder,
-                &[RolloutItem::TurnContext(turn_context.clone())],
-                /*new_thread_memory_mode*/ None,
-                /*updated_at_override*/ None,
-            )
-            .await
-            .expect("apply_rollout_items should succeed");
-
-        let persisted = runtime
-            .get_thread(thread_id)
-            .await
-            .expect("thread should load")
-            .expect("thread should exist");
-        assert_eq!(
-            persisted.approval_mode,
-            enum_to_string(&AskForApproval::Never)
-        );
-
-        let turn_context = TurnContextItem {
-            approval_policy: AskForApproval::OnRequest,
-            ..turn_context
-        };
-        runtime
-            .apply_rollout_items(
-                &builder,
-                &[RolloutItem::TurnContext(turn_context)],
-                /*new_thread_memory_mode*/ None,
-                /*updated_at_override*/ None,
-            )
-            .await
-            .expect("second apply_rollout_items should succeed");
-
-        let updated = runtime
-            .get_thread(thread_id)
-            .await
-            .expect("thread should load")
-            .expect("thread should exist");
-        assert_eq!(
-            updated.approval_mode,
-            enum_to_string(&AskForApproval::OnRequest)
         );
     }
 

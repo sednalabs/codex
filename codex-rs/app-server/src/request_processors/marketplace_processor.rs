@@ -1,5 +1,4 @@
 use super::*;
-use crate::extensions::app_server_hooks;
 
 #[derive(Clone)]
 pub(crate) struct MarketplaceRequestProcessor {
@@ -106,7 +105,7 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceAddParams,
     ) -> Result<MarketplaceAddResponse, JSONRPCErrorError> {
-        let mut response = add_marketplace_to_codex_home(
+        add_marketplace_to_codex_home(
             self.config.codex_home.to_path_buf(),
             MarketplaceAddRequest {
                 source: params.source,
@@ -123,9 +122,7 @@ impl MarketplaceRequestProcessor {
         .map_err(|err| match err {
             MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
             MarketplaceAddError::Internal(message) => internal_error(message),
-        })?;
-        app_server_hooks().augment_marketplace_add_response(&mut response);
-        Ok(response)
+        })
     }
 
     async fn load_latest_config(
@@ -135,10 +132,6 @@ impl MarketplaceRequestProcessor {
         self.config_manager
             .load_latest_config(fallback_cwd)
             .await
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to reload config: {err}"),
-                data: None,
-            })
+            .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }
 }

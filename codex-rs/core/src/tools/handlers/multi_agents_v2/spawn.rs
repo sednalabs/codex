@@ -4,6 +4,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::agent::role::apply_role_to_config;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -13,6 +14,10 @@ pub(crate) struct Handler;
 
 impl ToolHandler for Handler {
     type Output = SpawnAgentResult;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("spawn_agent")
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function

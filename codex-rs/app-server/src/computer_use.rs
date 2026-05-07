@@ -37,7 +37,17 @@ pub(crate) async fn on_call_response(
     let core_response = CoreComputerUseResponse {
         content_items: content_items
             .into_iter()
-            .map(codex_protocol::computer_use::ComputerUseOutputContentItem::from)
+            .map(|item| match item {
+                ComputerUseCallOutputContentItem::InputText { text } => {
+                    codex_protocol::computer_use::ComputerUseOutputContentItem::InputText { text }
+                }
+                ComputerUseCallOutputContentItem::InputImage { image_url, detail } => {
+                    codex_protocol::computer_use::ComputerUseOutputContentItem::InputImage {
+                        image_url,
+                        detail,
+                    }
+                }
+            })
             .collect(),
         success,
         error,

@@ -9,6 +9,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_plugins::PluginSkillRoot;
 use tracing::info;
 use tracing::warn;
 
@@ -27,7 +28,7 @@ use codex_config::SkillsConfig;
 #[derive(Debug, Clone)]
 pub struct SkillsLoadInput {
     pub cwd: AbsolutePathBuf,
-    pub effective_skill_roots: Vec<AbsolutePathBuf>,
+    pub effective_skill_roots: Vec<PluginSkillRoot>,
     pub config_layer_stack: ConfigLayerStack,
     pub bundled_skills_enabled: bool,
 }
@@ -35,7 +36,7 @@ pub struct SkillsLoadInput {
 impl SkillsLoadInput {
     pub fn new(
         cwd: AbsolutePathBuf,
-        effective_skill_roots: Vec<AbsolutePathBuf>,
+        effective_skill_roots: Vec<PluginSkillRoot>,
         config_layer_stack: ConfigLayerStack,
         bundled_skills_enabled: bool,
     ) -> Self {
@@ -172,6 +173,7 @@ impl SkillsManager {
                         path,
                         scope: SkillScope::User,
                         file_system: Arc::clone(&fs),
+                        plugin_id: None,
                     }),
             );
         }
@@ -246,7 +248,7 @@ impl SkillsManager {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ConfigSkillsCacheKey {
-    roots: Vec<(AbsolutePathBuf, u8)>,
+    roots: Vec<(AbsolutePathBuf, u8, Option<String>)>,
     skill_config_rules: SkillConfigRules,
     preferred_user_skill_names: Vec<String>,
 }
@@ -294,7 +296,7 @@ fn config_skills_cache_key(
                     SkillScope::System => 2,
                     SkillScope::Admin => 3,
                 };
-                (root.path.clone(), scope_rank)
+                (root.path.clone(), scope_rank, root.plugin_id.clone())
             })
             .collect(),
         skill_config_rules: skill_config_rules.clone(),

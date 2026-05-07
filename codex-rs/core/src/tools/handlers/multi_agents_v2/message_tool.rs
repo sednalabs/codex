@@ -4,7 +4,6 @@
 //! resulting `InterAgentCommunication` should wake the target immediately.
 
 use super::*;
-use crate::tools::context::FunctionToolOutput;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::protocol::InterAgentCommunication;
 
@@ -88,43 +87,8 @@ pub(crate) async fn handle_message_string_tool(
     target: String,
     message: String,
 ) -> Result<MessageToolResult, FunctionCallError> {
-    handle_message_submission(
-        invocation,
-        mode,
-        target,
-        message_content(message)?,
-        /*interrupt*/ false,
-    )
-    .await
-}
-
-fn message_content_from_items(
-    tool_name: &str,
-    items: Vec<UserInput>,
-) -> Result<String, FunctionCallError> {
-    if items.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "Items can't be empty".to_string(),
-        ));
-    }
-    let mut text_segments = Vec::new();
-    for item in items {
-        match item {
-            UserInput::Text { text, .. } if !text.trim().is_empty() => text_segments.push(text),
-            UserInput::Text { .. } => {}
-            UserInput::Image { .. }
-            | UserInput::LocalImage { .. }
-            | UserInput::Skill { .. }
-            | UserInput::Mention { .. }
-            | _ => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "{tool_name} only supports text content in MultiAgentV2 for now"
-                )));
-            }
-        }
-    }
-
-    message_content(text_segments.join("\n"))
+    let prompt = message_content(message)?;
+    handle_message_submission(invocation, mode, target, prompt, /*interrupt*/ false).await
 }
 
 async fn handle_message_submission(
@@ -247,6 +211,24 @@ async fn handle_message_submission(
     let submission_id = result?;
 
     Ok(MessageToolResult { submission_id })
+}
+
+fn message_content_from_items(
+    tool_name: &str,
+    items: Vec<UserInput>,
+) -> Result<String, FunctionCallError> {
+    let mut parts = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            UserInput::Text { text, .. } => parts.push(text),
+            _ => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "{tool_name} only supports text items"
+                )));
+            }
+        }
+    }
+    message_content(parts.join("\n"))
 }
 
 pub(crate) async fn handle_message_items_tool(
