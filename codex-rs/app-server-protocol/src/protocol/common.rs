@@ -1656,7 +1656,6 @@ mod tests {
             params: v2::SkillsListParams {
                 cwds: Vec::new(),
                 force_reload: false,
-                per_cwd_extra_user_roots: None,
             },
         };
         assert_eq!(
