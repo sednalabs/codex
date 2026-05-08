@@ -16,6 +16,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::flat_tool_name;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
@@ -272,7 +273,7 @@ impl ToolRegistry {
         invocation: ToolInvocation,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
-        let display_name = tool_name.display();
+        let tool_name_flat = flat_tool_name(&tool_name);
         let call_id_owned = invocation.call_id.clone();
         let otel = invocation.turn.session_telemetry.clone();
         let payload_for_response = invocation.payload.clone();
@@ -325,7 +326,7 @@ impl ToolRegistry {
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 otel.tool_result_with_tags(
-                    &display_name,
+                    tool_name_flat.as_ref(),
                     &call_id_owned,
                     log_payload.as_ref(),
                     Duration::ZERO,
@@ -342,9 +343,9 @@ impl ToolRegistry {
         };
 
         if !handler.matches_kind(&invocation.payload) {
-            let message = format!("tool {display_name} invoked with incompatible payload");
+            let message = format!("tool {tool_name} invoked with incompatible payload");
             otel.tool_result_with_tags(
-                &display_name,
+                tool_name_flat.as_ref(),
                 &call_id_owned,
                 log_payload.as_ref(),
                 Duration::ZERO,
@@ -381,7 +382,7 @@ impl ToolRegistry {
         let started = Instant::now();
         let result = otel
             .log_tool_result_with_tags(
-                &display_name,
+                tool_name_flat.as_ref(),
                 &call_id_owned,
                 log_payload.as_ref(),
                 &metric_tags,
@@ -573,7 +574,6 @@ impl ToolRegistryBuilder {
 }
 
 fn unsupported_tool_call_message(payload: &ToolPayload, tool_name: &ToolName) -> String {
-    let tool_name = tool_name.display();
     match payload {
         ToolPayload::Custom { .. } => format!("unsupported custom tool call: {tool_name}"),
         _ => format!("unsupported call: {tool_name}"),
@@ -646,6 +646,8 @@ async fn dispatch_after_tool_use_hook(
     let session = invocation.session.as_ref();
     let turn = invocation.turn.as_ref();
     let tool_input = HookToolInput::from(&invocation.payload);
+    let tool_name = &invocation.tool_name;
+    let hook_tool_name = flat_tool_name(tool_name);
     let hook_outcomes = session
         .hooks()
         .dispatch(HookPayload {
@@ -657,7 +659,7 @@ async fn dispatch_after_tool_use_hook(
                 event: HookEventAfterToolUse {
                     turn_id: turn.sub_id.clone(),
                     call_id: invocation.call_id.clone(),
-                    tool_name: invocation.tool_name.display(),
+                    tool_name: hook_tool_name.into_owned(),
                     tool_kind: hook_tool_kind(&tool_input),
                     tool_input,
                     executed: dispatch.executed,
@@ -688,7 +690,7 @@ async fn dispatch_after_tool_use_hook(
             HookResult::FailedContinue(error) => {
                 warn!(
                     call_id = %invocation.call_id,
-                    tool_name = %invocation.tool_name.display(),
+                    tool_name = %invocation.tool_name,
                     hook_name = %hook_name,
                     error = %error,
                     "after_tool_use hook failed; continuing"
@@ -697,7 +699,7 @@ async fn dispatch_after_tool_use_hook(
             HookResult::FailedAbort(error) => {
                 warn!(
                     call_id = %invocation.call_id,
-                    tool_name = %invocation.tool_name.display(),
+                    tool_name = %invocation.tool_name,
                     hook_name = %hook_name,
                     error = %error,
                     "after_tool_use hook failed; aborting operation"
