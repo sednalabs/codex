@@ -2355,24 +2355,6 @@
             "type"
           ],
           "type": "object"
-        },
-        {
-          "properties": {
-            "endpoint": {
-              "type": "string"
-            },
-            "type": {
-              "enum": [
-                "remote"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "endpoint",
-            "type"
-          ],
-          "type": "object"
         }
       ]
     },
@@ -3931,10 +3913,6 @@
         }
       ],
       "description": "Experimental / do not use. Selects the thread store implementation."
-    },
-    "experimental_thread_store_endpoint": {
-      "description": "Experimental / do not use. When set, app-server uses a remote thread store at this endpoint instead of the local filesystem/SQLite store.",
-      "type": "string"
     },
     "experimental_use_freeform_apply_patch": {
       "type": "boolean"
