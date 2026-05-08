@@ -9007,9 +9007,19 @@
       ],
       "type": "object"
     },
+    "PluginShareUpdateDiscoverability": {
+      "enum": [
+        "UNLISTED",
+        "PRIVATE"
+      ],
+      "type": "string"
+    },
     "PluginShareUpdateTargetsParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "discoverability": {
+          "$ref": "#/definitions/PluginShareUpdateDiscoverability"
+        },
         "remotePluginId": {
           "type": "string"
         },
@@ -9021,6 +9031,7 @@
         }
       },
       "required": [
+        "discoverability",
         "remotePluginId",
         "shareTargets"
       ],
@@ -9030,6 +9041,9 @@
     "PluginShareUpdateTargetsResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "discoverability": {
+          "$ref": "#/definitions/PluginShareDiscoverability"
+        },
         "principals": {
           "items": {
             "$ref": "#/definitions/PluginSharePrincipal"
@@ -9038,6 +9052,7 @@
         }
       },
       "required": [
+        "discoverability",
         "principals"
       ],
       "title": "PluginShareUpdateTargetsResponse",

@@ -2936,6 +2936,7 @@ fn plugin_share_params_and_response_serialization_use_camel_case_fields() {
     assert_eq!(
         serde_json::to_value(PluginShareUpdateTargetsParams {
             remote_plugin_id: "plugins~Plugin_00000000000000000000000000000000".to_string(),
+            discoverability: PluginShareUpdateDiscoverability::Unlisted,
             share_targets: vec![PluginShareTarget {
                 principal_type: PluginSharePrincipalType::Group,
                 principal_id: "group-1".to_string(),
@@ -2944,6 +2945,7 @@ fn plugin_share_params_and_response_serialization_use_camel_case_fields() {
         .unwrap(),
         json!({
             "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+            "discoverability": "UNLISTED",
             "shareTargets": [{
                 "principalType": "group",
                 "principalId": "group-1",
@@ -2958,6 +2960,7 @@ fn plugin_share_params_and_response_serialization_use_camel_case_fields() {
                 principal_id: "user-1".to_string(),
                 name: "Gavin".to_string(),
             }],
+            discoverability: PluginShareDiscoverability::Unlisted,
         })
         .unwrap(),
         json!({
@@ -2966,6 +2969,7 @@ fn plugin_share_params_and_response_serialization_use_camel_case_fields() {
                 "principalId": "user-1",
                 "name": "Gavin",
             }],
+            "discoverability": "UNLISTED",
         }),
     );
 
