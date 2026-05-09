@@ -105,22 +105,20 @@ docs-only refresh commit that records this snapshot.
   reuse existing outputs while drifted or tampered artifacts are rejected.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
-- Because these downstream state migrations occupy slots that upstream did not
-  have at the time they were introduced, later upstream migrations may need to
-  be replayed into the next free downstream migration version while preserving
-  their SQL content. Current examples include upstream's device-key binding
-  table (`0028_device_key_bindings.sql` upstream, `0031_device_key_bindings.sql`
-  downstream) and upstream's thread-goals table (`0029_thread_goals.sql`
-  upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
-  already-shipped downstream `0028` through `0031` migration versions.
+- SQLx migration versions are part of the persisted state DB compatibility
+  contract. Preserve upstream migration versions and checksums exactly; do not
+  replay upstream SQL into a different downstream version. Sedna-only state
+  migrations use the reserved `9000+` range so upstream `0024+` migrations can
+  remain byte-for-byte compatible with upstream databases. The runtime contains
+  a guarded one-time repair for the previously shipped shifted `0024..0032`
+  Sedna history, but that repair path is compatibility debt, not a pattern for
+  future migrations.
 - Primary files:
   - `codex-rs/core/src/memories/phase2.rs`
   - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
   - `codex-rs/core/src/memories/tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
-  - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
-  - `codex-rs/state/migrations/0031_device_key_bindings.sql`
-  - `codex-rs/state/migrations/0032_thread_goals.sql`
+  - `codex-rs/state/migrations/9000_phase2_attestation_roots.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers

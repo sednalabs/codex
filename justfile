@@ -343,6 +343,12 @@ core-runtime-surface-smoke:
 core-state-spawn-lineage-contract-targeted:
     cargo test -p codex-state usage_spawn_lineage_matches_persisted_state_edge_for_child_thread -- --test-threads=1
 
+# Focused state migration compatibility slice for upstream/Sedna fork lineage.
+core-state-migration-compat-targeted:
+    cargo test -p codex-state migration_history_repair -- --test-threads=1
+    cargo test -p codex-state init_accepts_upstream_0_129_state_db -- --exact --test-threads=1
+    cargo test -p codex-state init_repairs_shifted_sedna_state_migration_history -- --exact --test-threads=1
+
 # Cross-repo ledger seam validation (agent-usage-ledger + Postgres).
 [no-cd]
 downstream-ledger-seam:
