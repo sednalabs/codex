@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-intent", default="")
     parser.add_argument("--profile-notes", default="")
     parser.add_argument("--lane-summary", default="")
+    parser.add_argument("--planner-fingerprint", default="")
     parser.add_argument("--planned-matrix-json", default="")
     parser.add_argument("--selected-lane-ids-json", default="")
     parser.add_argument("--explicit-lanes", default="")
@@ -620,6 +621,7 @@ def main() -> None:
             "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
             "lane_summary": args.lane_summary or "",
+            "planner_fingerprint": args.planner_fingerprint or "",
             "explicit_lanes_supplied": bool(explicit_lanes),
             "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
@@ -679,6 +681,28 @@ def main() -> None:
         "lanes": results,
         "cache_occupancy": load_optional_json(args.cache_occupancy_json),
         "summary": summary,
+        "ci_proof_v1": {
+            "schema_version": "ci-proof-v1",
+            "repository": args.repo,
+            "workflow_file": "sedna-heavy-tests.yml",
+            "lane": args.lane_set,
+            "planner_fingerprint": args.planner_fingerprint or "",
+            "head_sha": args.head_sha,
+            "event_policy": "pull_request_exact_head_lane_fingerprint",
+            "inputs_hash": args.planner_fingerprint or "",
+            "conclusion": summary["overall_conclusion"],
+            "run_id": args.run_id,
+            "run_url": args.run_url,
+            "evidence_key": ":".join(
+                [
+                    args.repo,
+                    "sedna-heavy-tests.yml",
+                    args.head_sha,
+                    args.lane_set,
+                    args.planner_fingerprint or "",
+                ]
+            ),
+        },
     }
 
     output_path = Path(args.output)
