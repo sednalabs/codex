@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crate::SkillInjections;
 use crate::SkillLoadOutcome;
@@ -116,6 +117,9 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+const CAPACITY_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
+const CAPACITY_RETRY_BACKOFF_CAP_ATTEMPT: u64 = 10;
 
 /// Takes a user message as input and runs a loop where, at each sampling request, the model
 /// replies with either:
@@ -1038,6 +1042,7 @@ async fn run_sampling_request(
         )
         .await;
     let mut retries = 0;
+    let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1081,6 +1086,29 @@ async fn run_sampling_request(
             }
             Err(err) => err,
         };
+
+        if matches!(&err, CodexErr::ServerOverloaded) {
+            capacity_retries += 1;
+            let delay = backoff(capacity_retries.min(CAPACITY_RETRY_BACKOFF_CAP_ATTEMPT))
+                .min(CAPACITY_RETRY_MAX_DELAY);
+            warn!(
+                "selected model is at capacity - retrying sampling request (attempt {capacity_retries} in {delay:?})...",
+            );
+            sess.notify_stream_error(
+                &turn_context,
+                format!(
+                    "Model at capacity; retrying in {}s (attempt {capacity_retries})",
+                    delay.as_secs().max(1)
+                ),
+                err,
+            )
+            .await;
+            tokio::select! {
+                _ = cancellation_token.cancelled() => return Err(CodexErr::TurnAborted),
+                _ = tokio::time::sleep(delay) => {}
+            }
+            continue;
+        }
 
         if !err.is_retryable() {
             return Err(err);
