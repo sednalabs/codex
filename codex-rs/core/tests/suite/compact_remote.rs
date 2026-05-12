@@ -775,6 +775,96 @@ async fn remote_compact_runs_automatically() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_remote_compact_retries_server_overloaded() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_shell_command_call("m1", "echo 'hi'"),
+            responses::ev_completed_with_tokens("resp-1", /*total_tokens*/ 100000000),
+        ]),
+    )
+    .await;
+    let responses_mock = mount_sse_once(
+        harness.server(),
+        responses::sse(vec![
+            responses::ev_assistant_message("m2", "AFTER_CAPACITY_COMPACT_REPLY"),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_response_sequence(
+        harness.server(),
+        vec![
+            ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "server_is_overloaded",
+                    "message": "Selected model is at capacity."
+                }
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "output": [
+                    {
+                        "type": "compaction",
+                        "encrypted_content": "REMOTE_COMPACTED_AFTER_CAPACITY"
+                    }
+                ]
+            })),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+
+    let stream_error = wait_for_event_match(&codex, |event| match event {
+        EventMsg::StreamError(error) => Some(error.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        stream_error
+            .message
+            .starts_with("Model at capacity; retrying in "),
+        "unexpected stream error message: {stream_error:?}"
+    );
+    let compacted = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ContextCompacted(_) => Some(true),
+        _ => None,
+    })
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    assert!(compacted);
+    assert_eq!(
+        compact_mock.requests().len(),
+        2,
+        "expected capacity failure then compact retry"
+    );
+    let follow_up_body = responses_mock.single_request().body_json().to_string();
+    assert!(follow_up_body.contains("REMOTE_COMPACTED_AFTER_CAPACITY"));
+
+    Ok(())
+}
+
 #[cfg_attr(target_os = "windows", ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_trims_function_call_history_to_fit_context_window() -> Result<()> {

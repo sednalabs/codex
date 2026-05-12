@@ -9,6 +9,7 @@ mod apply_patch;
 mod apps;
 mod arc_monitor;
 pub use codex_login as auth;
+mod capacity_retry;
 mod client;
 mod client_common;
 mod realtime_context;
