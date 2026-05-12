@@ -1054,6 +1054,12 @@ pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
     response_mock
 }
 
+pub async fn mount_sse_repeating(server: &MockServer, body: String) -> ResponseMock {
+    let (mock, response_mock) = base_mock();
+    mock.respond_with(sse_response(body)).mount(server).await;
+    response_mock
+}
+
 pub async fn mount_compact_json_once_match<M>(
     server: &MockServer,
     matcher: M,
@@ -1176,6 +1182,43 @@ pub async fn mount_compact_response_once(
     let (mock, response_mock) = compact_mock();
     mock.respond_with(response)
         .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_compact_response_sequence(
+    server: &MockServer,
+    responses: Vec<ResponseTemplate>,
+) -> ResponseMock {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    struct SeqResponder {
+        num_calls: AtomicUsize,
+        responses: Vec<ResponseTemplate>,
+    }
+
+    impl Respond for SeqResponder {
+        fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+            let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
+            self.responses
+                .get(call_num)
+                .unwrap_or_else(|| panic!("no compact response for {call_num}"))
+                .clone()
+        }
+    }
+
+    let num_calls = responses.len();
+    let responder = SeqResponder {
+        num_calls: AtomicUsize::new(0),
+        responses,
+    };
+
+    let (mock, response_mock) = compact_mock();
+    mock.respond_with(responder)
+        .up_to_n_times(num_calls as u64)
+        .expect(num_calls as u64)
         .mount(server)
         .await;
     response_mock

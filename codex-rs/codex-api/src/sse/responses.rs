@@ -893,6 +893,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_overloaded_error_is_retryable_by_turn_loop() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_capacity","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"server_is_overloaded","message":"Selected model is at capacity."}, "usage":null,"user":null,"metadata":{}}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Err(ApiError::ServerOverloaded)),
+            "unexpected event: {:?}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_down_error_is_retryable_by_turn_loop() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_slow_down","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"slow_down","message":"Selected model is temporarily busy."}, "usage":null,"user":null,"metadata":{}}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Err(ApiError::ServerOverloaded)),
+            "unexpected event: {:?}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
     async fn context_window_error_is_fatal() {
         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_5c66275b97b9baef1ed95550adb3b7ec13b17aafd1d2f11b","object":"response","created_at":1759510079,"status":"failed","background":false,"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."},"usage":null,"user":null,"metadata":{}}}"#;
 
