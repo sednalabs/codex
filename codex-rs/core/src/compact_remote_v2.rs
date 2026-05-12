@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::Prompt;
 use crate::ResponseStream;
+use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::compact::CompactionAnalyticsAttempt;
@@ -41,6 +42,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
@@ -50,6 +52,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         CompactionTrigger::Auto,
         reason,
         phase,
+        cancellation_token,
     )
     .await
 }
@@ -57,6 +60,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -74,6 +78,7 @@ pub(crate) async fn run_remote_compact_task(
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
         CompactionPhase::StandaloneTurn,
+        cancellation_token,
     )
     .await
 }
@@ -86,6 +91,7 @@ async fn run_remote_compact_task_inner(
     trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
@@ -101,6 +107,7 @@ async fn run_remote_compact_task_inner(
         turn_context,
         client_session,
         initial_context_injection,
+        cancellation_token,
     )
     .await;
     attempt
@@ -125,6 +132,7 @@ async fn run_remote_compact_task_inner_impl(
     turn_context: &Arc<TurnContext>,
     client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let context_compaction_item = ContextCompactionItem::new();
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
@@ -185,25 +193,62 @@ async fn run_remote_compact_task_inner_impl(
         "parallel_tool_calls": prompt.parallel_tool_calls,
     }));
 
+    let mut capacity_retries = 0;
     let compaction_output_result = if let Some(client_session) = client_session {
-        run_remote_compaction_request_v2(
-            sess,
-            turn_context,
-            client_session,
-            &prompt,
-            turn_metadata_header.as_deref(),
-        )
-        .await
+        loop {
+            match run_remote_compaction_request_v2(
+                sess,
+                turn_context,
+                client_session,
+                &prompt,
+                turn_metadata_header.as_deref(),
+            )
+            .await
+            {
+                Err(e @ CodexErr::ServerOverloaded) => {
+                    capacity_retries += 1;
+                    notify_and_wait_for_capacity_retry(
+                        sess.as_ref(),
+                        turn_context.as_ref(),
+                        cancellation_token,
+                        capacity_retries,
+                        "remote compaction request",
+                        e,
+                    )
+                    .await?;
+                    continue;
+                }
+                result => break result,
+            }
+        }
     } else {
         let mut owned_client_session = sess.services.model_client.new_session();
-        run_remote_compaction_request_v2(
-            sess,
-            turn_context,
-            &mut owned_client_session,
-            &prompt,
-            turn_metadata_header.as_deref(),
-        )
-        .await
+        loop {
+            match run_remote_compaction_request_v2(
+                sess,
+                turn_context,
+                &mut owned_client_session,
+                &prompt,
+                turn_metadata_header.as_deref(),
+            )
+            .await
+            {
+                Err(e @ CodexErr::ServerOverloaded) => {
+                    capacity_retries += 1;
+                    notify_and_wait_for_capacity_retry(
+                        sess.as_ref(),
+                        turn_context.as_ref(),
+                        cancellation_token,
+                        capacity_retries,
+                        "remote compaction request",
+                        e,
+                    )
+                    .await?;
+                    continue;
+                }
+                result => break result,
+            }
+        }
     };
 
     trace_attempt.record_result(compaction_output_result.as_ref().map(std::slice::from_ref));
