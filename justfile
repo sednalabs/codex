@@ -211,6 +211,9 @@ core-multi-agent-orchestration-targeted:
 # Focused blocking-wait slice covering direct unified-exec waits, agent waits,
 # app-server command execution completion ordering, and MCP task completion.
 blocking-waits-targeted:
+    cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
+    cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
