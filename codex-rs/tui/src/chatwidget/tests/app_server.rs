@@ -700,6 +700,59 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
 }
 
 #[tokio::test]
+async fn live_app_server_retrying_server_overloaded_error_keeps_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                message: "Model at capacity; retrying in 1s (attempt 1)".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                additional_details: Some(
+                    "Selected model is at capacity. Please try a different model.".to_string(),
+                ),
+            },
+            will_retry: true,
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(
+        status.header(),
+        "Model at capacity; retrying in 1s (attempt 1)"
+    );
+    assert_eq!(
+        status.details(),
+        Some("Selected model is at capacity. Please try a different model.")
+    );
+    assert!(chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
 async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
