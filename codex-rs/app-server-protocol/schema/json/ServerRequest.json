@@ -120,6 +120,9 @@
       ],
       "type": "object"
     },
+    "AttestationGenerateParams": {
+      "type": "object"
+    },
     "ChatgptAuthTokensRefreshParams": {
       "properties": {
         "previousAccountId": {
@@ -419,6 +422,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -427,6 +435,8 @@
         }
       },
       "required": [
+        "itemId",
+        "startedAtMs",
         "threadId",
         "turnId",
         "itemId"
@@ -629,6 +639,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -637,6 +652,8 @@
         }
       },
       "required": [
+        "itemId",
+        "startedAtMs",
         "threadId",
         "turnId",
         "itemId"
@@ -1589,6 +1606,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -1597,6 +1619,10 @@
         }
       },
       "required": [
+        "cwd",
+        "itemId",
+        "permissions",
+        "startedAtMs",
         "threadId",
         "turnId",
         "itemId",
@@ -1913,7 +1939,32 @@
       "type": "object"
     },
     {
-      "description": "DEPRECATED APIs below\nRequest to approve a patch.\nThis request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+      "description": "Generate a fresh upstream attestation result on demand.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "attestation/generate"
+          ],
+          "title": "Attestation/generateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AttestationGenerateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Attestation/generateRequest",
+      "type": "object"
+    },
+    {
+      "description": "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"

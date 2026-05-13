@@ -1872,6 +1872,8 @@
         "preToolUse",
         "permissionRequest",
         "postToolUse",
+        "preCompact",
+        "postCompact",
         "sessionStart",
         "userPromptSubmit",
         "stop"
@@ -2089,6 +2091,7 @@
         }
       },
       "required": [
+        "completedAtMs",
         "item",
         "threadId",
         "turnId",
@@ -2102,6 +2105,11 @@
         "action": {
           "$ref": "#/$defs/GuardianApprovalReviewAction"
         },
+        "completedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this review completed.",
+          "format": "int64",
+          "type": "integer"
+        },
         "decisionSource": {
           "$ref": "#/$defs/AutoReviewDecisionSource"
         },
@@ -2111,6 +2119,11 @@
         "reviewId": {
           "description": "Stable identifier for this review.",
           "type": "string"
+        },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this review started.",
+          "format": "int64",
+          "type": "integer"
         },
         "targetItemId": {
           "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
@@ -2127,12 +2140,14 @@
         }
       },
       "required": [
-        "threadId",
-        "turnId",
-        "reviewId",
+        "action",
+        "completedAtMs",
         "decisionSource",
         "review",
-        "action"
+        "reviewId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
       ],
       "type": "object"
     },
@@ -2149,6 +2164,11 @@
           "description": "Stable identifier for this review.",
           "type": "string"
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this review started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "targetItemId": {
           "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
           "type": [
@@ -2164,6 +2184,10 @@
         }
       },
       "required": [
+        "action",
+        "review",
+        "reviewId",
+        "startedAtMs",
         "threadId",
         "turnId",
         "reviewId",
@@ -2182,6 +2206,11 @@
           "format": "int64",
           "type": "integer"
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this item lifecycle started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -2191,6 +2220,7 @@
       },
       "required": [
         "item",
+        "startedAtMs",
         "threadId",
         "turnId",
         "startedAtMs"
@@ -2633,7 +2663,7 @@
           "type": "string"
         },
         "stderrCapReached": {
-          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the\nfinal stderr `process/outputDelta` notification.",
+          "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the final stderr `process/outputDelta` notification.",
           "type": "boolean"
         },
         "stdout": {
@@ -2641,17 +2671,17 @@
           "type": "string"
         },
         "stdoutCapReached": {
-          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the\nfinal stdout `process/outputDelta` notification.",
+          "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the final stdout `process/outputDelta` notification.",
           "type": "boolean"
         }
       },
       "required": [
-        "processHandle",
         "exitCode",
-        "stdout",
-        "stdoutCapReached",
+        "processHandle",
         "stderr",
-        "stderrCapReached"
+        "stderrCapReached",
+        "stdout",
+        "stdoutCapReached"
       ],
       "type": "object"
     },
@@ -2659,7 +2689,7 @@
       "description": "Base64-encoded output chunk emitted for a streaming `process/spawn` request.",
       "properties": {
         "capReached": {
-          "description": "True on the final streamed chunk for this stream when output was\ntruncated by `outputBytesCap`.",
+          "description": "True on the final streamed chunk for this stream when output was truncated by `outputBytesCap`.",
           "type": "boolean"
         },
         "deltaBase64": {
@@ -2671,15 +2701,19 @@
           "type": "string"
         },
         "stream": {
-          "$ref": "#/$defs/ProcessOutputStream",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProcessOutputStream"
+            }
+          ],
           "description": "Output stream this chunk belongs to."
         }
       },
       "required": [
-        "processHandle",
-        "stream",
+        "capReached",
         "deltaBase64",
-        "capReached"
+        "processHandle",
+        "stream"
       ],
       "type": "object"
     },
@@ -2687,13 +2721,17 @@
       "description": "Stream label for `process/outputDelta` notifications.",
       "oneOf": [
         {
-          "const": "stdout",
           "description": "stdout stream. PTY mode multiplexes terminal output here.",
+          "enum": [
+            "stdout"
+          ],
           "type": "string"
         },
         {
-          "const": "stderr",
           "description": "stderr stream.",
+          "enum": [
+            "stderr"
+          ],
           "type": "string"
         }
       ]
@@ -2991,7 +3029,7 @@
       "type": "string"
     },
     "RemoteControlStatusChangedNotification": {
-      "description": "Current remote-control connection status and environment id exposed to clients.",
+      "description": "Current remote-control connection status and remote identity exposed to clients.",
       "properties": {
         "environmentId": {
           "type": [
@@ -2999,11 +3037,15 @@
             "null"
           ]
         },
+        "installationId": {
+          "type": "string"
+        },
         "status": {
           "$ref": "#/$defs/RemoteControlConnectionStatus"
         }
       },
       "required": [
+        "installationId",
         "status"
       ],
       "type": "object"
@@ -3868,6 +3910,10 @@
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
         },
+        "sessionId": {
+          "description": "Session id shared by threads that belong to the same session tree.",
+          "type": "string"
+        },
         "source": {
           "$ref": "#/$defs/SessionSource",
           "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
@@ -3875,6 +3921,17 @@
         "status": {
           "$ref": "#/$defs/ThreadStatus",
           "description": "Current runtime status for the thread."
+        },
+        "threadSource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional analytics source classification for this thread."
         },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`\n(when `includeTurns` is true) responses.\nFor all other responses and notifications returning a Thread,\nthe turns field will be an empty list.",
@@ -3892,10 +3949,8 @@
       "required": [
         "id",
         "preview",
-        "ephemeral",
-        "modelProvider",
-        "createdAt",
-        "updatedAt",
+        "sessionId",
+        "source",
         "status",
         "cwd",
         "cliVersion",
@@ -4907,6 +4962,14 @@
       ],
       "type": "object"
     },
+    "ThreadSource": {
+      "enum": [
+        "user",
+        "subagent",
+        "memory_consolidation"
+      ],
+      "type": "string"
+    },
     "ThreadStartedNotification": {
       "properties": {
         "thread": {
@@ -5117,11 +5180,20 @@
           "type": "string"
         },
         "items": {
-          "description": "Only populated on a `thread/resume` or `thread/fork` response.\nFor all other responses and notifications returning a Turn,\nthe items field will be an empty list.",
+          "description": "Thread items currently included in this turn payload.",
           "items": {
             "$ref": "#/$defs/ThreadItem"
           },
           "type": "array"
+        },
+        "itemsView": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TurnItemsView"
+            }
+          ],
+          "default": "full",
+          "description": "Describes how much of `items` has been loaded for this turn."
         },
         "startedAt": {
           "description": "Unix timestamp (in seconds) when the turn started.",
@@ -5204,6 +5276,31 @@
         "message"
       ],
       "type": "object"
+    },
+    "TurnItemsView": {
+      "oneOf": [
+        {
+          "description": "`items` was not loaded for this turn. The field is intentionally empty.",
+          "enum": [
+            "notLoaded"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`items` contains only a display summary for this turn.",
+          "enum": [
+            "summary"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+          "enum": [
+            "full"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "TurnPlanStep": {
       "properties": {
@@ -5995,6 +6092,47 @@
     },
     {
       "description": "Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.",
+      "properties": {
+        "method": {
+          "enum": [
+            "process/outputDelta"
+          ],
+          "title": "Process/outputDeltaNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ProcessOutputDeltaNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Process/outputDeltaNotification",
+      "type": "object"
+    },
+    {
+      "description": "Final exit notification for a `process/spawn` session.",
+      "properties": {
+        "method": {
+          "enum": [
+            "process/exited"
+          ],
+          "title": "Process/exitedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ProcessExitedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Process/exitedNotification",
+      "type": "object"
+    },
+    {
       "properties": {
         "method": {
           "const": "process/outputDelta",

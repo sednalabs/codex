@@ -560,6 +560,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -568,6 +573,8 @@
     }
   },
   "required": [
+    "itemId",
+    "startedAtMs",
     "threadId",
     "turnId",
     "itemId"

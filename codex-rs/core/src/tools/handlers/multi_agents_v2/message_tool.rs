@@ -87,53 +87,8 @@ pub(crate) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
-) -> Result<MessageToolResult, FunctionCallError> {
-    handle_message_submission(
-        invocation,
-        mode,
-        target,
-        message_content(message)?,
-        /*interrupt*/ false,
-    )
-    .await
-}
-
-fn message_content_from_items(
-    tool_name: &str,
-    items: Vec<UserInput>,
-) -> Result<String, FunctionCallError> {
-    if items.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "Items can't be empty".to_string(),
-        ));
-    }
-    let mut text_segments = Vec::new();
-    for item in items {
-        match item {
-            UserInput::Text { text, .. } if !text.trim().is_empty() => text_segments.push(text),
-            UserInput::Text { .. } => {}
-            UserInput::Image { .. }
-            | UserInput::LocalImage { .. }
-            | UserInput::Skill { .. }
-            | UserInput::Mention { .. }
-            | _ => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "{tool_name} only supports text content in MultiAgentV2 for now"
-                )));
-            }
-        }
-    }
-
-    message_content(text_segments.join("\n"))
-}
-
-async fn handle_message_submission(
-    invocation: ToolInvocation,
-    mode: MessageDeliveryMode,
-    target: String,
-    prompt: String,
-    interrupt: bool,
-) -> Result<MessageToolResult, FunctionCallError> {
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    let prompt = message_content(message)?;
     let ToolInvocation {
         session,
         turn,

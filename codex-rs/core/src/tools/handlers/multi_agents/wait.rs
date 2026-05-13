@@ -1,9 +1,12 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_tools::ToolSpec;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
@@ -14,17 +17,26 @@ use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    options: WaitAgentTimeoutOptions,
+}
 
-impl ToolHandler for Handler {
+impl Handler {
+    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl ToolExecutor<ToolInvocation> for Handler {
     type Output = WaitAgentResult;
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("wait_agent")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(create_wait_agent_tool_v1(self.options))
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -102,22 +114,24 @@ impl ToolHandler for Handler {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
-                    let statuses =
-                        collect_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
-                    let pending_thread_ids =
-                        pending_wait_thread_ids(&receiver_thread_ids, &statuses);
-                    send_wait_end_event(
-                        session.as_ref(),
-                        turn.as_ref(),
-                        call_id.clone(),
-                        receiver_thread_ids.clone(),
-                        &receiver_agents,
-                        pending_thread_ids,
-                        CollabWaitingCompletionReason::Terminal,
-                        /*timed_out*/ false,
-                        statuses,
-                    )
-                    .await;
+                    let mut statuses = HashMap::with_capacity(1);
+                    statuses.insert(*id, session.services.agent_control.get_status(*id).await);
+                    session
+                        .send_event(
+                            &turn,
+                            CollabWaitingEndEvent {
+                                sender_thread_id: session.conversation_id,
+                                call_id: call_id.clone(),
+                                completed_at_ms: now_unix_timestamp_ms(),
+                                agent_statuses: build_wait_agent_statuses(
+                                    &statuses,
+                                    &receiver_agents,
+                                ),
+                                statuses,
+                            }
+                            .into(),
+                        )
+                        .await;
                     return Err(collab_agent_error(*id, err));
                 }
             }
@@ -176,20 +190,27 @@ impl ToolHandler for Handler {
             timed_out,
         };
 
-        send_wait_end_event(
-            session.as_ref(),
-            turn.as_ref(),
-            call_id,
-            receiver_thread_ids,
-            &receiver_agents,
-            pending_ids,
-            completion_reason,
-            timed_out,
-            statuses_by_id,
-        )
-        .await;
+        session
+            .send_event(
+                &turn,
+                CollabWaitingEndEvent {
+                    sender_thread_id: session.conversation_id,
+                    call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
+                    agent_statuses,
+                    statuses: statuses_by_id,
+                }
+                .into(),
+            )
+            .await;
 
         Ok(result)
+    }
+}
+
+impl ToolHandler for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
+use codex_core::shell::default_user_shell;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -54,7 +55,7 @@ fn assert_default_env_context(text: &str, cwd: &str) {
         "expected cwd in environment context: {text}"
     );
     assert!(
-        text.contains("<shell>bash</shell>"),
+        text.contains(&format!("<shell>{}</shell>", default_user_shell().name())),
         "expected shell in environment context: {text}"
     );
     assert!(
@@ -166,6 +167,23 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
+    let mut expected_tools_names = if cfg!(windows) {
+        vec!["shell_command"]
+    } else {
+        vec!["exec_command", "write_stdin"]
+    };
+    expected_tools_names.extend([
+        "update_plan",
+        "request_user_input",
+        "apply_patch",
+        "view_image",
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+        "web_search",
+    ]);
     let body0 = req1.single_request().body_json();
     let tool_names0 = tool_names(&body0);
 

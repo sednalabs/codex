@@ -1426,6 +1426,7 @@
     }
   },
   "required": [
+    "completedAtMs",
     "item",
     "threadId",
     "turnId",
