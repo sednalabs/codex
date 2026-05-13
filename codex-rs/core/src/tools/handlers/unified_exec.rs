@@ -7,6 +7,10 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
+use crate::unified_exec::MIN_YIELD_TIME_MS;
+use crate::unified_exec::UnifiedExecError;
+use crate::unified_exec::UnifiedExecProcessManager;
+use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::resolve_max_tokens;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
@@ -18,6 +22,7 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 
 const MAX_TERMINAL_WAIT_MS: u64 = 2 * 60 * 60 * 1_000;
+const APPROX_BYTES_PER_TOKEN: usize = 4;
 
 #[cfg(test)]
 use crate::tools::handlers::parse_arguments;
@@ -148,6 +153,10 @@ async fn complete_terminal_wait(
     let output_text = String::from_utf8_lossy(&response.raw_output);
     response.original_token_count = Some(approx_token_count(&output_text));
     Ok(response)
+}
+
+fn approx_token_count(text: &str) -> usize {
+    text.len().div_ceil(APPROX_BYTES_PER_TOKEN)
 }
 
 fn effective_max_output_tokens(

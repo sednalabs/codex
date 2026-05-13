@@ -127,6 +127,13 @@ impl ToolExecutor<ToolInvocation> for Handler {
                                     &statuses,
                                     &receiver_agents,
                                 ),
+                                receiver_thread_ids: receiver_thread_ids.clone(),
+                                pending_thread_ids: pending_wait_thread_ids(
+                                    &receiver_thread_ids,
+                                    &statuses,
+                                ),
+                                completion_reason: CollabWaitingCompletionReason::Terminal,
+                                timed_out: false,
                                 statuses,
                             }
                             .into(),
@@ -197,7 +204,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     sender_thread_id: session.conversation_id,
                     call_id,
                     completed_at_ms: now_unix_timestamp_ms(),
-                    agent_statuses,
+                    agent_statuses: build_wait_agent_statuses(&statuses_by_id, &receiver_agents),
+                    receiver_thread_ids,
+                    pending_thread_ids: pending_ids,
+                    completion_reason,
+                    timed_out,
                     statuses: statuses_by_id,
                 }
                 .into(),

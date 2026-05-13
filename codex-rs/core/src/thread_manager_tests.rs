@@ -19,6 +19,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;

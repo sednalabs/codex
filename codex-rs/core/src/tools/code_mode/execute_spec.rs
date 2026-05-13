@@ -47,6 +47,8 @@ mod tests {
         let enabled_tools = vec![codex_code_mode::ToolDefinition {
             name: "update_plan".to_string(),
             tool_name: ToolName::plain("update_plan"),
+            all_tools_name: None,
+            all_tools_module: None,
             description: "Update the plan".to_string(),
             kind: codex_code_mode::CodeModeToolKind::Function,
             input_schema: None,

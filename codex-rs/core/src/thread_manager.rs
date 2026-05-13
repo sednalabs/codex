@@ -905,7 +905,7 @@ impl ThreadManager {
             snapshot.into(),
             config,
             history,
-            thread_source,
+            None,
             persist_extended_history,
             parent_trace,
         )

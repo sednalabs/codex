@@ -180,6 +180,7 @@ async fn run_compact_task_inner_impl(
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)

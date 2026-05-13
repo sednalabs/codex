@@ -30,6 +30,7 @@ use codex_protocol::protocol::CollabCloseEndEvent;
 use codex_protocol::protocol::CollabResumeBeginEvent;
 use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;

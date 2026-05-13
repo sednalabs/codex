@@ -1132,6 +1132,10 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                     scopes: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
@@ -1277,6 +1281,10 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                     scopes: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
@@ -1447,6 +1455,8 @@ async fn tool_search_matches_dynamic_tools_by_name_description_namespace_and_sch
             "additionalProperties": false,
         }),
         defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let mut builder = test_codex().with_config(configure_search_capable_model);

@@ -197,12 +197,9 @@ fn find_tool<'a>(tools: &'a [ToolSpec], expected_name: &str) -> &'a ToolSpec {
         .unwrap_or_else(|| panic!("expected tool {expected_name}"))
 }
 
-fn find_function_tool<'a>(
-    tools: &'a [ConfiguredToolSpec],
-    expected_name: &str,
-) -> &'a ResponsesApiTool {
+fn find_function_tool<'a>(tools: &'a [ToolSpec], expected_name: &str) -> &'a ResponsesApiTool {
     let tool = find_tool(tools, expected_name);
-    let ToolSpec::Function(function) = &tool.spec else {
+    let ToolSpec::Function(function) = tool else {
         panic!("expected function tool {expected_name}");
     };
     function

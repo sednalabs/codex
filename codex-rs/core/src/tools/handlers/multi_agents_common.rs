@@ -32,11 +32,12 @@ use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
 use codex_tools::request_user_input_available_modes;
-use codex_tools::request_user_input_unavailable_message;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+
+use super::request_user_input_spec::request_user_input_unavailable_message;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;

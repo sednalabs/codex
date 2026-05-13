@@ -568,6 +568,13 @@ where
         .into_root_schema_for::<T>()
 }
 
+fn schema_from_json_literal(value: Value, context: &str) -> Schema {
+    match value.try_into() {
+        Ok(schema) => schema,
+        Err(err) => panic!("{context} should be valid: {err}"),
+    }
+}
+
 fn canonicalize_json(value: &Value) -> Value {
     canonicalize_json_with_key(/*key*/ None, value)
 }

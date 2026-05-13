@@ -838,6 +838,8 @@ mod tests {
                 enabled_tools: vec![ToolDefinition {
                     name: "echo".to_string(),
                     tool_name: ToolName::plain("echo"),
+                    all_tools_name: None,
+                    all_tools_module: None,
                     description: String::new(),
                     kind: CodeModeToolKind::Function,
                     input_schema: None,
@@ -892,6 +894,8 @@ await Promise.all([
                 enabled_tools: vec![ToolDefinition {
                     name: "echo".to_string(),
                     tool_name: ToolName::plain("echo"),
+                    all_tools_name: None,
+                    all_tools_module: None,
                     description: String::new(),
                     kind: CodeModeToolKind::Function,
                     input_schema: None,

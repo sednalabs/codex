@@ -7,7 +7,7 @@ use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
+use crate::agent::role::apply_role_to_spawn_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -97,9 +97,10 @@ async fn handle_spawn_agent(
             args.reasoning_effort,
         )
         .await?;
-        apply_role_to_config(&mut config, role_name)
+        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        spawn_model_selection_carry.apply_to_config(&mut config);
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
     apply_spawn_agent_overrides(&mut config, child_depth);
@@ -172,11 +173,11 @@ async fn handle_spawn_agent(
                 sender_thread_id: session.conversation_id,
                 new_thread_id,
                 new_agent_nickname,
-                new_agent_role,
+                new_agent_role: new_agent_role.clone(),
                 prompt,
-                model: effective_model,
+                model: effective_model.clone(),
                 reasoning_effort: effective_reasoning_effort,
-                status,
+                status: status.clone(),
             }
             .into(),
         )
@@ -192,6 +193,24 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
+        role: new_agent_role,
+        status,
+        requested_model: args.model.clone(),
+        requested_reasoning_effort: args.reasoning_effort,
+        effective_model: Some(effective_model.clone()),
+        requested_model_honored: args
+            .model
+            .as_ref()
+            .map(|requested_model| requested_model == &effective_model),
+        effective_reasoning_effort: Some(effective_reasoning_effort),
+        effective_model_provider_id: agent_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.model_provider_id.clone())
+            .unwrap_or_else(|| turn.config.model_provider_id.clone()),
+        identity_source: agent_snapshot
+            .as_ref()
+            .map(|_| SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string())
+            .unwrap_or_else(|| "spawn_result_metadata".to_string()),
     })
 }
 

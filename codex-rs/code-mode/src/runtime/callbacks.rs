@@ -64,7 +64,7 @@ pub(super) fn tool_callback(
     state.pending_tool_calls.insert(id.clone(), resolver);
     let _ = event_tx.send(RuntimeEvent::ToolCall {
         id,
-        name: tool_name,
+        name: tool_name.into(),
         kind: tool_kind,
         input,
     });

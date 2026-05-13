@@ -2365,7 +2365,7 @@ async fn wait_agent_emits_end_event_when_status_subscription_fails() {
     drop(manager);
 
     let agent_id = ThreadId::new();
-    let err = WaitAgentHandler
+    let err = WaitAgentHandler::default()
         .handle(invocation(
             session,
             turn,
@@ -2423,7 +2423,7 @@ async fn multi_agent_v2_wait_agent_rejects_empty_targets() {
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
-    SpawnAgentHandlerV2::default()
+    let err = WaitAgentHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -2449,7 +2449,7 @@ async fn multi_agent_v2_wait_agent_emits_end_event_when_status_subscription_fail
     drop(manager);
 
     let agent_id = ThreadId::new();
-    let err = WaitAgentHandlerV2
+    let err = WaitAgentHandlerV2::default()
         .handle(invocation(
             session,
             turn,

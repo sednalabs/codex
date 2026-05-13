@@ -17,6 +17,8 @@ fn search_info_uses_dynamic_tool_metadata_and_parameter_names() {
             }
         }),
         defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
     })
     .expect("dynamic handler should be created");
 
