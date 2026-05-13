@@ -313,6 +313,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -323,6 +324,7 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                timed_out,
                 agents_states,
             }),
             ThreadItem::EnteredReviewMode { review, .. } => {

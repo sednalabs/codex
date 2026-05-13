@@ -56,6 +56,8 @@ use codex_cloud_requirements::cloud_requirements_loader_for_storage;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
+use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
@@ -69,6 +71,8 @@ use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
 use codex_feedback::CodexFeedback;
 use codex_git_utils::get_git_repo_root;
+use codex_login::AuthConfig;
+use codex_login::enforce_login_restrictions;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
@@ -603,7 +607,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_resume_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
+            (session_configured.thread_id, session_configured)
         } else {
             let response: ThreadStartResponse = send_request_with_response(
                 &client,
@@ -618,7 +622,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_start_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
+            (session_configured.thread_id, session_configured)
         }
     } else {
         let response: ThreadStartResponse = send_request_with_response(
@@ -633,7 +637,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
         let session_configured = session_configured_from_thread_start_response(&response, &config)
             .map_err(anyhow::Error::msg)?;
-        (session_configured.session_id, session_configured)
+        (session_configured.thread_id, session_configured)
     };
 
     let primary_thread_id_for_span = primary_thread_id.to_string();
@@ -703,85 +707,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             )
         }
     };
-
-    // When --yolo (dangerously_bypass_approvals_and_sandbox) is set, also skip the git repo check
-    // since the user is explicitly running in an externally sandboxed environment.
-    if !skip_git_repo_check
-        && !dangerously_bypass_approvals_and_sandbox
-        && get_git_repo_root(&default_cwd).is_none()
-    {
-        eprintln!("Not inside a trusted directory and --skip-git-repo-check was not specified.");
-        std::process::exit(1);
-    }
-
-    let mut request_ids = RequestIdSequencer::new();
-    let mut client = InProcessAppServerClient::start(in_process_start_args)
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!("failed to initialize in-process app-server client: {err}")
-        })?;
-
-    // Handle resume subcommand through existing `thread/list` + `thread/resume`
-    // APIs so exec no longer reaches into rollout storage directly.
-    let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
-        command.as_ref()
-    {
-        if let Some(thread_id) =
-            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
-        {
-            let response: ThreadResumeResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadResume {
-                    request_id: request_ids.next(),
-                    params: thread_resume_params_from_config(&config, thread_id),
-                },
-                "thread/resume",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_resume_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.thread_id, session_configured)
-        } else {
-            let response: ThreadStartResponse = send_request_with_response(
-                &client,
-                ClientRequest::ThreadStart {
-                    request_id: request_ids.next(),
-                    params: thread_start_params_from_config(&config),
-                },
-                "thread/start",
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let session_configured =
-                session_configured_from_thread_start_response(&response, &config)
-                    .map_err(anyhow::Error::msg)?;
-            (session_configured.thread_id, session_configured)
-        }
-    } else {
-        let response: ThreadStartResponse = send_request_with_response(
-            &client,
-            ClientRequest::ThreadStart {
-                request_id: request_ids.next(),
-                params: thread_start_params_from_config(&config),
-            },
-            "thread/start",
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        let session_configured = session_configured_from_thread_start_response(&response, &config)
-            .map_err(anyhow::Error::msg)?;
-        (session_configured.thread_id, session_configured)
-    };
-
-    let primary_thread_id_for_span = primary_thread_id.to_string();
-    // Use the start/resume response as the authoritative bootstrap payload.
-    // Waiting for a later streamed `SessionConfigured` event adds up to 10s of
-    // avoidable startup latency on the in-process path.
-    let session_configured = fallback_session_configured;
-
-    exec_span.record("thread.id", primary_thread_id_for_span.as_str());
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
@@ -2166,6 +2091,7 @@ mod tests {
     fn turn_items_for_thread_returns_matching_turn_items() {
         let thread = AppServerThread {
             id: "thread-1".to_string(),
+            session_id: "session-1".to_string(),
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -2176,6 +2102,7 @@ mod tests {
             cwd: test_path_buf("/tmp/project").abs(),
             cli_version: "0.0.0-test".to_string(),
             source: codex_app_server_protocol::SessionSource::Exec,
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             forked_from_id: None,
@@ -2184,6 +2111,7 @@ mod tests {
             turns: vec![
                 codex_app_server_protocol::Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![AppServerThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
                         text: "hello".to_string(),
@@ -2198,6 +2126,7 @@ mod tests {
                 },
                 codex_app_server_protocol::Turn {
                     id: "turn-2".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![AppServerThreadItem::Plan {
                         id: "plan-1".to_string(),
                         text: "ship it".to_string(),
@@ -2299,6 +2228,7 @@ mod tests {
         let response = ThreadStartResponse {
             thread: codex_app_server_protocol::Thread {
                 id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                session_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -2309,6 +2239,7 @@ mod tests {
                 cwd: test_path_buf("/tmp").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
+                thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
                 forked_from_id: None,
