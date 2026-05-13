@@ -301,6 +301,28 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn core_dynamic_tools_from_api(
+    dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
+) -> Result<Vec<CoreDynamicToolSpec>, JSONRPCErrorError> {
+    let dynamic_tools = dynamic_tools.unwrap_or_default();
+    if dynamic_tools.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
+    Ok(dynamic_tools
+        .into_iter()
+        .map(|tool| CoreDynamicToolSpec {
+            namespace: tool.namespace,
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            defer_loading: tool.defer_loading,
+            persist_on_resume: tool.persist_on_resume,
+            capability: tool.capability,
+        })
+        .collect())
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -1038,22 +1060,7 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                })
-                .collect()
-        };
+        let core_dynamic_tools = core_dynamic_tools_from_api(dynamic_tools)?;
         let core_dynamic_tool_count = core_dynamic_tools.len();
         let create_thread_started_at = std::time::Instant::now();
         let NewThread {
@@ -2357,6 +2364,7 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history: _persist_extended_history,
         } = params;
@@ -2415,13 +2423,21 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match core_dynamic_tools_from_api(dynamic_tools) {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return Ok(());
+            }
+        };
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_with_tools(
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
@@ -2994,6 +3010,7 @@ impl ThreadRequestProcessor {
             developer_instructions,
             ephemeral,
             thread_source,
+            dynamic_tools,
             exclude_turns,
             persist_extended_history,
         } = params;
@@ -3068,6 +3085,7 @@ impl ThreadRequestProcessor {
 
         let fallback_model_provider = config.model_provider_id.clone();
         let instruction_sources = Self::instruction_sources_from_config(&config).await;
+        let core_dynamic_tools = core_dynamic_tools_from_api(dynamic_tools)?;
 
         let NewThread {
             thread_id,
@@ -3076,7 +3094,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_tools(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -3085,6 +3103,7 @@ impl ThreadRequestProcessor {
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
                 thread_source.map(Into::into),
+                core_dynamic_tools,
                 /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )

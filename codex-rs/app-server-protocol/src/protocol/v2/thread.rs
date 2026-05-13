@@ -14,6 +14,7 @@ use super::TurnItemsView;
 use super::shared::v2_enum_from_core;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::Personality;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
@@ -47,6 +48,11 @@ pub struct DynamicToolSpec {
     pub input_schema: JsonValue,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer_loading: bool,
+    #[serde(default = "default_dynamic_tool_persist_on_resume")]
+    pub persist_on_resume: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capability: Option<DynamicToolCapability>,
 }
 
 #[derive(Deserialize)]
@@ -57,7 +63,13 @@ struct DynamicToolSpecDe {
     description: String,
     input_schema: JsonValue,
     defer_loading: Option<bool>,
+    persist_on_resume: Option<bool>,
+    capability: Option<DynamicToolCapability>,
     expose_to_context: Option<bool>,
+}
+
+const fn default_dynamic_tool_persist_on_resume() -> bool {
+    true
 }
 
 impl<'de> Deserialize<'de> for DynamicToolSpec {
@@ -71,6 +83,8 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             description,
             input_schema,
             defer_loading,
+            persist_on_resume,
+            capability,
             expose_to_context,
         } = DynamicToolSpecDe::deserialize(deserializer)?;
 
@@ -81,6 +95,9 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             input_schema,
             defer_loading: defer_loading
                 .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
+            persist_on_resume: persist_on_resume
+                .unwrap_or(default_dynamic_tool_persist_on_resume()),
+            capability,
         })
     }
 }
@@ -287,6 +304,10 @@ pub struct ThreadResumeParams {
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    /// Optional client-supplied dynamic tools to install before the next turn.
+    #[experimental("thread/resume.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after resuming.
@@ -396,6 +417,10 @@ pub struct ThreadForkParams {
     /// Optional client-supplied analytics source classification for this forked thread.
     #[ts(optional = nullable)]
     pub thread_source: Option<ThreadSource>,
+    /// Optional client-supplied dynamic tools to install before the next turn.
+    #[experimental("thread/fork.dynamicTools")]
+    #[ts(optional = nullable)]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     /// When true, return only thread metadata and live fork state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after forking.

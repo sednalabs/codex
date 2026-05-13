@@ -3360,6 +3360,8 @@ fn dynamic_tool_spec_deserializes_defer_loading() {
                 }
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }
     );
 }

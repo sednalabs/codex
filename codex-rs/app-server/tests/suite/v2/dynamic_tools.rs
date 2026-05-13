@@ -265,6 +265,8 @@ async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Resu
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp

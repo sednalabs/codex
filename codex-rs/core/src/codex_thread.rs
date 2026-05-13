@@ -7,6 +7,7 @@ use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
+use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
@@ -251,6 +252,14 @@ impl CodexThread {
                 mcp_elicitations_auto_deny,
             )
             .await
+    }
+
+    /// Resolve a pending computer-use request without exposing broader session internals.
+    pub async fn notify_computer_use_response(&self, call_id: &str, response: ComputerUseResponse) {
+        self.codex
+            .session
+            .notify_computer_use_response(call_id, response)
+            .await;
     }
 
     /// Validate persistent turn context overrides without committing them.
