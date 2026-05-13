@@ -476,12 +476,3 @@ fn keymap_debug_hint_line() -> Line<'static> {
         " close".dim(),
     ])
 }
-
-fn keymap_debug_hint_line() -> Line<'static> {
-    Line::from(vec![
-        "enter".cyan(),
-        " start inspector · ".dim(),
-        "esc".cyan(),
-        " close".dim(),
-    ])
-}

@@ -432,7 +432,7 @@ async fn background_event_updates_status_header() {
     chat.set_status_header("Waiting for `vim`".to_string());
 
     assert!(chat.bottom_pane.status_indicator_visible());
-    assert_eq!(chat.current_status.header, "Waiting for `vim`");
+    assert_eq!(chat.status_state.current_status.header, "Waiting for `vim`");
     assert!(drain_insert_history(&mut rx).is_empty());
 }
 
@@ -451,6 +451,8 @@ async fn guardian_parallel_reviews_render_aggregate_status_snapshot() {
                 id: id.to_string(),
                 target_item_id: Some(format!("{id}-target")),
                 turn_id: "turn-1".to_string(),
+                started_at_ms: 0,
+                completed_at_ms: None,
                 status: GuardianAssessmentStatus::InProgress,
                 risk_level: None,
                 user_authorization: None,
@@ -483,6 +485,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
             id: "guardian-1".to_string(),
             target_item_id: Some("guardian-1-target".to_string()),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            completed_at_ms: None,
             status: GuardianAssessmentStatus::InProgress,
             risk_level: None,
             user_authorization: None,
@@ -501,6 +505,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
             id: "guardian-2".to_string(),
             target_item_id: Some("guardian-2-target".to_string()),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            completed_at_ms: None,
             status: GuardianAssessmentStatus::InProgress,
             risk_level: None,
             user_authorization: None,
@@ -519,6 +525,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
             id: "guardian-1".to_string(),
             target_item_id: Some("guardian-1-target".to_string()),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            completed_at_ms: Some(0),
             status: GuardianAssessmentStatus::Denied,
             risk_level: Some(GuardianRiskLevel::High),
             user_authorization: Some(GuardianUserAuthorization::Low),
@@ -532,9 +540,12 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
         }),
     });
 
-    assert_eq!(chat.current_status.header, "Reviewing approval request");
     assert_eq!(
-        chat.current_status.details,
+        chat.status_state.current_status.header,
+        "Reviewing approval request"
+    );
+    assert_eq!(
+        chat.status_state.current_status.details,
         Some("rm -rf '/tmp/guardian target 2'".to_string())
     );
 }

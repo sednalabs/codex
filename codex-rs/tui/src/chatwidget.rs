@@ -206,6 +206,23 @@ const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 const PET_SELECTION_LOADING_VIEW_ID: &str = "pet-selection-loading";
 const AMBIENT_PET_WRAP_GAP_COLUMNS: u16 = 2;
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
+const WEEKLY_PACE_ON_TRACK_EPSILON_PERCENT: f64 = 5.0;
+
+enum WeeklyPacingSignal {
+    OnPace,
+    Over { abs_delta_pct: i64 },
+    Under { abs_delta_pct: i64 },
+}
+
+impl WeeklyPacingSignal {
+    fn label(&self) -> String {
+        match self {
+            Self::OnPace => "on pace".to_string(),
+            Self::Over { abs_delta_pct } => format!("{abs_delta_pct}% over pace"),
+            Self::Under { abs_delta_pct } => format!("{abs_delta_pct}% under pace"),
+        }
+    }
+}
 
 /// Choose the keybinding used to edit the most-recently queued message.
 ///
@@ -2611,7 +2628,7 @@ impl ChatWidget {
         request: codex_protocol::computer_use::ComputerUseCallRequest,
     ) {
         self.flush_answer_stream_with_separator();
-        self.active_cell = Some(Box::new(history_cell::new_active_computer_use_call(
+        self.transcript.active_cell = Some(Box::new(history_cell::new_active_computer_use_call(
             request.call_id,
             request.environment_id,
             request.adapter,
@@ -2628,7 +2645,7 @@ impl ChatWidget {
         event: codex_protocol::protocol::ComputerUseCallResponseEvent,
     ) {
         let content_items = event.content_items.into_iter().map(Into::into).collect();
-        if let Some(mut cell) = self.active_cell.take() {
+        if let Some(mut cell) = self.transcript.active_cell.take() {
             if let Some(computer_use) = cell
                 .as_any_mut()
                 .downcast_mut::<history_cell::ComputerUseCallCell>()

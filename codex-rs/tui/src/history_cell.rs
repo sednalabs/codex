@@ -2233,6 +2233,19 @@ impl HistoryCell for DynamicToolCallCell {
         lines
     }
 
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let invocation = format_dynamic_tool_invocation(&self.tool, &self.arguments);
+        let mut lines = plain_lines([line_to_static(&invocation)]);
+        if let Some(error) = &self.error {
+            lines.push(Line::from(format!("Error: {error}")));
+        } else if let Some(content_items) = &self.content_items
+            && let Some(preview) = dynamic_tool_preview(content_items)
+        {
+            lines.extend(raw_lines_from_source(&preview));
+        }
+        lines
+    }
+
     fn transcript_animation_tick(&self) -> Option<u64> {
         if !self.animations_enabled || self.success.is_some() {
             return None;
@@ -2392,6 +2405,24 @@ impl HistoryCell for ComputerUseCallCell {
             lines.extend(prefix_lines(detail_lines, initial_prefix, "    ".into()));
         }
 
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let invocation = format_computer_use_invocation(
+            &self.adapter,
+            self.environment_id.as_deref(),
+            &self.tool,
+            &self.arguments,
+        );
+        let mut lines = plain_lines([line_to_static(&invocation)]);
+        if let Some(error) = &self.error {
+            lines.push(Line::from(format!("Error: {error}")));
+        } else if let Some(content_items) = &self.content_items
+            && let Some(preview) = computer_use_preview(content_items)
+        {
+            lines.extend(raw_lines_from_source(&preview));
+        }
         lines
     }
 

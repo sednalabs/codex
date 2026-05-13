@@ -761,6 +761,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
                         text: "final answer".to_string(),
@@ -808,6 +809,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
                         text: "final answer".to_string(),
@@ -856,6 +858,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
@@ -899,6 +902,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Failed,
                     error: None,
@@ -943,6 +947,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,

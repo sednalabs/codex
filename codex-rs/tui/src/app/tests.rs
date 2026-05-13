@@ -1304,6 +1304,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1315,6 +1316,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             agent_nickname: None,
             agent_role: None,
             is_closed: false,
+            ..AgentPickerThreadEntry::default()
         })
     );
 }
@@ -1339,6 +1341,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 prompt: Some("hello".to_string()),
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: HashMap::from([(
                     receiver_thread_id.to_string(),
                     codex_app_server_protocol::CollabAgentState {

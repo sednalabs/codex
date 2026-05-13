@@ -120,6 +120,15 @@ pub(crate) enum StatusLineItem {
     /// Total output tokens generated.
     TotalOutputTokens,
 
+    /// Session-tree total tokens used.
+    CombinedUsedTokens,
+
+    /// Session-tree input tokens consumed.
+    CombinedInputTokens,
+
+    /// Session-tree output tokens generated.
+    CombinedOutputTokens,
+
     /// Full thread UUID.
     #[strum(to_string = "thread-id", serialize = "session-id")]
     SessionId,
@@ -174,6 +183,15 @@ impl StatusLineItem {
             StatusLineItem::UsedTokens => "Total tokens used in session (omitted when zero)",
             StatusLineItem::TotalInputTokens => "Total input tokens used in session",
             StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
+            StatusLineItem::CombinedUsedTokens => {
+                "Total tokens used across the session tree (omitted when zero)"
+            }
+            StatusLineItem::CombinedInputTokens => {
+                "Total input tokens used across the session tree"
+            }
+            StatusLineItem::CombinedOutputTokens => {
+                "Total output tokens used across the session tree"
+            }
             StatusLineItem::SessionId => "Current thread identifier (omitted until thread starts)",
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
             StatusLineItem::RawOutput => "Whether raw scrollback mode is active",
