@@ -42,17 +42,20 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
             continue;
         }
         if feature.id == codex_features::Feature::NetworkProxy {
-            validation.properties.insert(
+            properties.insert(
                 feature.key.to_string(),
-                schema_gen.subschema_for::<codex_features::FeatureToml<
-                    codex_features::NetworkProxyConfigToml,
-                >>(),
+                schema_gen
+                    .subschema_for::<
+                        codex_features::FeatureToml<codex_features::NetworkProxyConfigToml>,
+                    >()
+                    .into(),
             );
             continue;
         }
-        validation
-            .properties
-            .insert(feature.key.to_string(), schema_gen.subschema_for::<bool>());
+        properties.insert(
+            feature.key.to_string(),
+            schema_gen.subschema_for::<bool>().into(),
+        );
     }
     for legacy_key in legacy_feature_keys() {
         properties.insert(
