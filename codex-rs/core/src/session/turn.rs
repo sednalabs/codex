@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use crate::SkillInjections;
 use crate::SkillLoadOutcome;
 use crate::build_skill_injections;
+use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -154,14 +155,20 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    let pre_sampling_compact =
-        match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
-            Ok(pre_sampling_compact) => pre_sampling_compact,
-            Err(_) => {
-                error!("Failed to run pre-sampling compact");
-                return None;
-            }
-        };
+    let pre_sampling_compact = match run_pre_sampling_compact(
+        &sess,
+        &turn_context,
+        &mut client_session,
+        &cancellation_token,
+    )
+    .await
+    {
+        Ok(pre_sampling_compact) => pre_sampling_compact,
+        Err(_) => {
+            error!("Failed to run pre-sampling compact");
+            return None;
+        }
+    };
     if pre_sampling_compact.reset_client_session {
         client_session.reset_websocket_session();
     }
@@ -492,6 +499,7 @@ pub(crate) async fn run_turn(
                         InitialContextInjection::BeforeLastUserMessage,
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
+                        &cancellation_token,
                     )
                     .await
                     {
@@ -719,6 +727,7 @@ async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<PreSamplingCompactResult> {
     let total_usage_tokens_before_compaction = sess.get_total_token_usage().await;
     let mut pre_sampling_compacted = maybe_run_previous_model_inline_compact(
@@ -726,6 +735,7 @@ async fn run_pre_sampling_compact(
         turn_context,
         client_session,
         total_usage_tokens_before_compaction,
+        cancellation_token,
     )
     .await?;
     let mut reset_client_session = pre_sampling_compacted;
@@ -743,6 +753,7 @@ async fn run_pre_sampling_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
         pre_sampling_compacted = true;
@@ -763,6 +774,7 @@ async fn maybe_run_previous_model_inline_compact(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
     total_usage_tokens: i64,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
@@ -794,6 +806,7 @@ async fn maybe_run_previous_model_inline_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
         return Ok(true);
@@ -808,6 +821,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     if should_use_remote_compact_task(turn_context.provider.info()) {
         if turn_context.features.enabled(Feature::RemoteCompactionV2) {
@@ -818,6 +832,7 @@ async fn run_auto_compact(
                 initial_context_injection,
                 reason,
                 phase,
+                cancellation_token,
             )
             .await?;
             return Ok(false);
@@ -828,6 +843,7 @@ async fn run_auto_compact(
             initial_context_injection,
             reason,
             phase,
+            cancellation_token,
         )
         .await?;
     } else {
@@ -837,6 +853,7 @@ async fn run_auto_compact(
             initial_context_injection,
             reason,
             phase,
+            cancellation_token,
         )
         .await?;
     }
@@ -1038,6 +1055,7 @@ async fn run_sampling_request(
         )
         .await;
     let mut retries = 0;
+    let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1081,6 +1099,20 @@ async fn run_sampling_request(
             }
             Err(err) => err,
         };
+
+        if matches!(&err, CodexErr::ServerOverloaded) {
+            capacity_retries += 1;
+            notify_and_wait_for_capacity_retry(
+                sess.as_ref(),
+                turn_context.as_ref(),
+                &cancellation_token,
+                capacity_retries,
+                "sampling request",
+                err,
+            )
+            .await?;
+            continue;
+        }
 
         if !err.is_retryable() {
             return Err(err);
