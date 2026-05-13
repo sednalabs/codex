@@ -19,7 +19,6 @@ use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
 use crate::computer_use::ComputerUseCallRequest;
 use crate::computer_use::ComputerUseOutputContentItem;
-use crate::computer_use::ComputerUseResponse;
 use crate::config_types::ApprovalsReviewer;
 use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
@@ -1403,9 +1402,6 @@ pub enum EventMsg {
     PatchApplyEnd(PatchApplyEndEvent),
 
     TurnDiff(TurnDiffEvent),
-
-    /// List of voices supported by realtime conversation streams.
-    RealtimeConversationListVoicesResponse(RealtimeConversationListVoicesResponseEvent),
 
     PlanUpdate(UpdatePlanArgs),
 
@@ -3351,11 +3347,6 @@ impl fmt::Display for McpAuthStatus {
         };
         f.write_str(text)
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-pub struct RealtimeConversationListVoicesResponseEvent {
-    pub voices: RealtimeVoicesList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]

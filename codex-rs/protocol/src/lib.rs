@@ -1,6 +1,7 @@
 pub mod account;
 mod agent_path;
 pub mod auth;
+pub mod computer_use;
 mod session_id;
 mod thread_id;
 mod tool_name;
