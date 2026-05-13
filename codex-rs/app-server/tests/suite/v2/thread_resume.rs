@@ -107,6 +107,10 @@ fn normalized_existing_path(path: impl AsRef<Path>) -> Result<PathBuf> {
     Ok(AbsolutePathBuf::from_absolute_path(path.as_ref().canonicalize()?)?.into_path_buf())
 }
 
+fn test_absolute_path(path: &str) -> AbsolutePathBuf {
+    AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
 async fn wait_for_responses_request_count(
     server: &wiremock::MockServer,
     expected_count: usize,

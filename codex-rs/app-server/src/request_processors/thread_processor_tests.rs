@@ -90,6 +90,8 @@ mod thread_processor_behavior_tests {
             description: "test".to_string(),
             input_schema: json!({"type": "null"}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid schema");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -104,6 +106,8 @@ mod thread_processor_behavior_tests {
             // Missing `type` is common; core sanitizes these to a supported schema.
             input_schema: json!({"properties": {}}),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
@@ -123,6 +127,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
@@ -140,6 +146,8 @@ mod thread_processor_behavior_tests {
                     "additionalProperties": false
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
             },
             ApiDynamicToolSpec {
                 namespace: Some("other_app".to_string()),
@@ -151,6 +159,8 @@ mod thread_processor_behavior_tests {
                     "additionalProperties": false
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
             },
         ];
         validate_dynamic_tools(&tools).expect("valid schema");
@@ -168,6 +178,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
     }
@@ -185,6 +197,8 @@ mod thread_processor_behavior_tests {
                     "additionalProperties": false
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
             },
             ApiDynamicToolSpec {
                 namespace: Some("codex_app".to_string()),
@@ -196,6 +210,8 @@ mod thread_processor_behavior_tests {
                     "additionalProperties": false
                 }),
                 defer_loading: true,
+                persist_on_resume: true,
+                capability: None,
             },
         ];
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
@@ -252,6 +268,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("empty namespace");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -270,6 +288,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -288,6 +308,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid name");
         assert!(err.contains("lookup.ticket"), "unexpected error: {err}");
@@ -309,6 +331,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("invalid namespace");
         assert!(err.contains("codex.app"), "unexpected error: {err}");
@@ -331,6 +355,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("name too long");
         assert!(err.contains("at most 128"), "unexpected error: {err}");
@@ -350,6 +376,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("namespace too long");
         assert!(err.contains("at most 64"), "unexpected error: {err}");
@@ -368,6 +396,8 @@ mod thread_processor_behavior_tests {
                 "additionalProperties": false
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         }];
         let err = validate_dynamic_tools(&tools).expect_err("reserved Responses namespace");
         assert!(err.contains("functions"), "unexpected error: {err}");
@@ -638,6 +668,7 @@ mod thread_processor_behavior_tests {
             base_instructions: None,
             developer_instructions: None,
             personality: None,
+            dynamic_tools: None,
             exclude_turns: false,
             persist_extended_history: false,
         };
