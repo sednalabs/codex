@@ -5,7 +5,7 @@ use crate::config::Config;
 use codex_config::McpServerConfig;
 use codex_core_plugins::PluginsManager;
 use codex_login::CodexAuth;
-pub use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::EffectiveMcpServer;
 use codex_mcp::ToolPluginProvenance;
 pub use codex_mcp::collect_mcp_snapshot_from_manager;
 use codex_mcp::configured_mcp_servers;
@@ -38,7 +38,7 @@ impl McpManager {
         &self,
         config: &Config,
         auth: Option<&CodexAuth>,
-    ) -> HashMap<String, McpServerConfig> {
+    ) -> HashMap<String, EffectiveMcpServer> {
         let mcp_config = config.to_mcp_config(self.plugins_manager.as_ref()).await;
         effective_mcp_servers(&mcp_config, auth)
     }

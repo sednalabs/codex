@@ -78,48 +78,6 @@ pub fn item_event_to_server_notification(
                 completed_at_ms: response.completed_at_ms,
             })
         }
-        EventMsg::ComputerUseCallResponse(response) => {
-            let status = if response.success {
-                ComputerUseCallStatus::Completed
-            } else {
-                ComputerUseCallStatus::Failed
-            };
-            let duration_ms = i64::try_from(response.duration.as_millis()).ok();
-            let item = ThreadItem::ComputerUseCall {
-                id: response.call_id,
-                environment_id: response.environment_id,
-                adapter: response.adapter,
-                tool: response.tool,
-                arguments: response.arguments,
-                status,
-                content_items: Some(
-                    response
-                        .content_items
-                        .into_iter()
-                        .map(|item| match item {
-                            CoreComputerUseOutputContentItem::InputText { text } => {
-                                ComputerUseCallOutputContentItem::InputText { text }
-                            }
-                            CoreComputerUseOutputContentItem::InputImage { image_url, detail } => {
-                                ComputerUseCallOutputContentItem::InputImage { image_url, detail }
-                            }
-                        })
-                        .collect(),
-                ),
-                success: Some(response.success),
-                error: response.error,
-                duration_ms,
-            };
-            ServerNotification::ItemCompleted(ItemCompletedNotification {
-                thread_id,
-                turn_id: response.turn_id,
-                item,
-                // The computer-use core response event does not currently carry
-                // completion wall-clock metadata. Preserve the v2 notification
-                // shape without inventing a timestamp.
-                completed_at_ms: 0,
-            })
-        }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,

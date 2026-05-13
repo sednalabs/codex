@@ -102,8 +102,9 @@ pub(super) async fn spawn_review_thread(
     let per_turn_config = Arc::new(per_turn_config);
     let review_turn_id = sub_id.to_string();
     let turn_metadata_state = Arc::new(TurnMetadataState::new(
-        sess.conversation_id.to_string(),
-        &session_source,
+        sess.session_id().to_string(),
+        sess.thread_id().to_string(),
+        parent_turn_context.thread_source,
         review_turn_id.clone(),
         parent_turn_context.cwd.clone(),
         &parent_turn_context.permission_profile,
@@ -123,6 +124,7 @@ pub(super) async fn spawn_review_thread(
         reasoning_effort,
         reasoning_summary,
         session_source,
+        thread_source: parent_turn_context.thread_source,
         environments: parent_turn_context.environments.clone(),
         tools_config,
         features: parent_turn_context.features.clone(),
@@ -144,7 +146,6 @@ pub(super) async fn spawn_review_thread(
         final_output_json_schema: None,
         codex_self_exe: parent_turn_context.codex_self_exe.clone(),
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
-        tool_call_gate: Arc::new(ReadinessFlag::new()),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
         truncation_policy: model_info.truncation_policy.into(),
         turn_metadata_state,

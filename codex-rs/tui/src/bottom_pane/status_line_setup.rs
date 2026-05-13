@@ -12,9 +12,11 @@
 //! - Model information (name, reasoning level)
 //! - Directory paths (current dir, project root)
 //! - Git information (branch name)
+//! - Permissions profile
+//! - Approval mode
 //! - Context usage (remaining %, used %, window size)
 //! - Usage limits (5-hour, weekly)
-//! - Session info (thread title, ID, tokens used)
+//! - Session info (thread title, thread ID, tokens used)
 //! - Application version
 
 use ratatui::buffer::Buffer;
@@ -46,7 +48,7 @@ const STATUS_LINE_USE_THEME_COLORS_ITEM_ID: &str = "status-line-use-theme-colors
 /// Some items are conditionally displayed based on availability:
 /// - Git-related items only show when in a git repository
 /// - Context/limit items only show when data is available from the API
-/// - Session ID only shows after a session has started
+/// - Thread ID only shows after a session has started
 #[derive(EnumIter, EnumString, Display, Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 #[strum(serialize_all = "kebab_case")]
 pub(crate) enum StatusLineItem {
@@ -81,6 +83,13 @@ pub(crate) enum StatusLineItem {
     #[strum(to_string = "run-state", serialize = "status")]
     Status,
 
+    /// Active permission profile or sandbox summary.
+    Permissions,
+
+    /// Active command approval mode.
+    #[strum(to_string = "approval-mode", serialize = "approval")]
+    ApprovalMode,
+
     /// Percentage of context window remaining.
     ContextRemaining,
 
@@ -111,20 +120,15 @@ pub(crate) enum StatusLineItem {
     /// Total output tokens generated.
     TotalOutputTokens,
 
-    /// Combined total tokens used across the current session tree.
-    CombinedUsedTokens,
-
-    /// Combined input tokens consumed across the current session tree.
-    CombinedInputTokens,
-
-    /// Combined output tokens generated across the current session tree.
-    CombinedOutputTokens,
-
-    /// Full session UUID.
+    /// Full thread UUID.
+    #[strum(to_string = "thread-id", serialize = "session-id")]
     SessionId,
 
     /// Whether Fast mode is currently active.
     FastMode,
+
+    /// Whether raw scrollback mode is currently active.
+    RawOutput,
 
     /// Current thread title (if set by user).
     ThreadTitle,
@@ -149,6 +153,8 @@ impl StatusLineItem {
                 "Committed branch changes against the default branch (omitted when unavailable)"
             }
             StatusLineItem::Status => "Compact session run-state text (Ready, Working, Thinking)",
+            StatusLineItem::Permissions => "Active permission profile or sandbox mode",
+            StatusLineItem::ApprovalMode => "Active command approval mode",
             StatusLineItem::ContextRemaining => {
                 "Percentage of context window remaining (omitted when unknown)"
             }
@@ -168,20 +174,12 @@ impl StatusLineItem {
             StatusLineItem::UsedTokens => "Total tokens used in session (omitted when zero)",
             StatusLineItem::TotalInputTokens => "Total input tokens used in session",
             StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
-            StatusLineItem::CombinedUsedTokens => {
-                "Combined total tokens used in the main-thread view; active thread usage in sub-agent views"
-            }
-            StatusLineItem::CombinedInputTokens => {
-                "Combined input tokens used in the main-thread view; active thread usage in sub-agent views"
-            }
-            StatusLineItem::CombinedOutputTokens => {
-                "Combined output tokens used in the main-thread view; active thread usage in sub-agent views"
-            }
-            StatusLineItem::SessionId => {
-                "Current session identifier (omitted until session starts)"
-            }
+            StatusLineItem::SessionId => "Current thread identifier (omitted until thread starts)",
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
-            StatusLineItem::ThreadTitle => "Current thread title (omitted when unavailable)",
+            StatusLineItem::RawOutput => "Whether raw scrollback mode is active",
+            StatusLineItem::ThreadTitle => {
+                "Current thread title, or thread identifier when unnamed"
+            }
             StatusLineItem::TaskProgress => {
                 "Latest task progress from update_plan (omitted until available)"
             }
@@ -198,6 +196,8 @@ impl StatusLineItem {
             StatusLineItem::PullRequestNumber => StatusSurfacePreviewItem::PullRequestNumber,
             StatusLineItem::BranchChanges => StatusSurfacePreviewItem::BranchChanges,
             StatusLineItem::Status => StatusSurfacePreviewItem::Status,
+            StatusLineItem::Permissions => StatusSurfacePreviewItem::Permissions,
+            StatusLineItem::ApprovalMode => StatusSurfacePreviewItem::ApprovalMode,
             StatusLineItem::ContextRemaining => StatusSurfacePreviewItem::ContextRemaining,
             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
@@ -212,6 +212,7 @@ impl StatusLineItem {
             StatusLineItem::CombinedOutputTokens => StatusSurfacePreviewItem::TotalOutputTokens,
             StatusLineItem::SessionId => StatusSurfacePreviewItem::SessionId,
             StatusLineItem::FastMode => StatusSurfacePreviewItem::FastMode,
+            StatusLineItem::RawOutput => StatusSurfacePreviewItem::RawOutput,
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
         }

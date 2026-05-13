@@ -108,15 +108,6 @@ struct AgentControlHarness {
 impl AgentControlHarness {
     async fn new() -> Self {
         let (home, config) = test_config().await;
-        Self::from_config(home, config).await
-    }
-
-    async fn new_with_harness_overrides(harness_overrides: ConfigOverrides) -> Self {
-        let (home, config) = test_config_with_harness_overrides(harness_overrides).await;
-        Self::from_config(home, config).await
-    }
-
-    async fn from_config(home: TempDir, config: Config) -> Self {
         let state_db = init_state_db(&config).await;
         let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
             CodexAuth::from_api_key("dummy"),

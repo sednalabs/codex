@@ -47,7 +47,9 @@ impl StatusLineAccent {
             | StatusLineItem::CombinedOutputTokens => Self::Usage,
             StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => Self::Limit,
             StatusLineItem::CodexVersion | StatusLineItem::SessionId => Self::Metadata,
-            StatusLineItem::FastMode => Self::Mode,
+            StatusLineItem::FastMode | StatusLineItem::RawOutput => Self::Mode,
+            StatusLineItem::Permissions => Self::Mode,
+            StatusLineItem::ApprovalMode => Self::Mode,
             StatusLineItem::ThreadTitle => Self::Thread,
             StatusLineItem::TaskProgress => Self::Progress,
         }

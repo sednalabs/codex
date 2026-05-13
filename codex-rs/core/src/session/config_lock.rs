@@ -94,13 +94,73 @@ fn save_session_resolved_fields(sc: &SessionConfiguration, lock_config: &mut Con
     lock_config.model = Some(sc.collaboration_mode.model().to_string());
     lock_config.model_reasoning_effort = sc.collaboration_mode.reasoning_effort();
     lock_config.model_reasoning_summary = sc.model_reasoning_summary;
-    lock_config.service_tier = sc.service_tier;
+    lock_config.service_tier = sc.service_tier.clone();
     lock_config.instructions = Some(sc.base_instructions.clone());
     lock_config.developer_instructions = sc.developer_instructions.clone();
     lock_config.compact_prompt = sc.compact_prompt.clone();
     lock_config.personality = sc.personality;
     lock_config.approval_policy = Some(sc.approval_policy.value());
     lock_config.approvals_reviewer = Some(sc.approvals_reviewer);
+}
+
+/// Saves values stored on `Config` after higher-level resolution,
+/// normalization, defaulting, or feature materialization.
+///
+/// Persist the resolved representation so replay compares against the behavior
+/// Codex actually ran with, not only the user-authored TOML inputs.
+fn save_config_resolved_fields(
+    config: &Config,
+    lock_config: &mut ConfigToml,
+) -> anyhow::Result<()> {
+    lock_config.web_search = Some(config.web_search_mode.value());
+    lock_config.model_provider = Some(config.model_provider_id.clone());
+    lock_config.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort;
+    lock_config.model_verbosity = config.model_verbosity;
+    lock_config.include_permissions_instructions = Some(config.include_permissions_instructions);
+    lock_config.include_apps_instructions = Some(config.include_apps_instructions);
+    lock_config.include_collaboration_mode_instructions =
+        Some(config.include_collaboration_mode_instructions);
+    lock_config.include_environment_context = Some(config.include_environment_context);
+    lock_config.background_terminal_max_timeout = Some(config.background_terminal_max_timeout);
+
+    // Feature aliases and feature configs need to be written in their resolved
+    // form; otherwise replay can drift when a legacy key maps to the same
+    // runtime feature.
+    let features = lock_config
+        .features
+        .get_or_insert_with(FeaturesToml::default);
+    features.materialize_resolved_enabled(config.features.get());
+    let mut multi_agent_v2: MultiAgentV2ConfigToml =
+        resolved_config_to_toml(&config.multi_agent_v2, "features.multi_agent_v2")?;
+    multi_agent_v2.enabled = Some(config.features.enabled(Feature::MultiAgentV2));
+    features.multi_agent_v2 = Some(FeatureToml::Config(multi_agent_v2));
+    features.apps_mcp_path_override = Some(FeatureToml::Config(AppsMcpPathOverrideConfigToml {
+        enabled: Some(config.features.enabled(Feature::AppsMcpPathOverride)),
+        path: config.apps_mcp_path_override.clone(),
+    }));
+    lock_config.memories = Some(resolved_config_to_toml::<MemoriesToml>(
+        &config.memories,
+        "memories",
+    )?);
+
+    let agents = lock_config.agents.get_or_insert_with(Default::default);
+    // Multi-agent v2 owns thread fanout through its feature config. Preserve
+    // the legacy agents.max_threads setting only when v2 is disabled.
+    agents.max_threads = if config.features.enabled(Feature::MultiAgentV2) {
+        None
+    } else {
+        config.agent_max_threads
+    };
+    agents.max_depth = Some(config.agent_max_depth);
+    agents.job_max_runtime_seconds = config.agent_job_max_runtime_seconds;
+    agents.interrupt_message = Some(config.agent_interrupt_message_enabled);
+
+    lock_config
+        .skills
+        .get_or_insert_with(Default::default)
+        .include_instructions = Some(config.include_skill_instructions);
+
+    Ok(())
 }
 
 fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {
@@ -199,7 +259,7 @@ mod tests {
         sc.base_instructions = "catalog instructions".to_string();
         sc.developer_instructions = Some("catalog developer instructions".to_string());
         sc.compact_prompt = Some("catalog compact prompt".to_string());
-        sc.service_tier = Some(codex_protocol::config_types::ServiceTier::Flex);
+        sc.service_tier = Some("flex".to_string());
 
         let lockfile = sc.to_config_lockfile_toml().expect("lock should serialize");
         let lock = &lockfile.config;

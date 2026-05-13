@@ -5,10 +5,9 @@ use codex_protocol::computer_use::ComputerUseCallRequest;
 #[cfg(test)]
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
-#[cfg(test)]
-use codex_protocol::protocol::ComputerUseCallResponseEvent;
-#[cfg(test)]
-use std::time::Duration;
+use codex_utils_string::truncate_middle_chars;
+
+const PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EventPersistenceMode {
@@ -27,6 +26,43 @@ pub fn is_persisted_rollout_item(item: &RolloutItem, mode: EventPersistenceMode)
         RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {
             true
         }
+    }
+}
+
+/// Return the canonical rollout items that should be persisted for a live append.
+pub fn persisted_rollout_items(
+    items: &[RolloutItem],
+    mode: EventPersistenceMode,
+) -> Vec<RolloutItem> {
+    let mut persisted = Vec::new();
+    for item in items {
+        if is_persisted_rollout_item(item, mode) {
+            persisted.push(sanitize_rollout_item_for_persistence(item.clone(), mode));
+        }
+    }
+    persisted
+}
+
+fn sanitize_rollout_item_for_persistence(
+    item: RolloutItem,
+    mode: EventPersistenceMode,
+) -> RolloutItem {
+    if mode != EventPersistenceMode::Extended {
+        return item;
+    }
+
+    match item {
+        RolloutItem::EventMsg(EventMsg::ExecCommandEnd(mut event)) => {
+            event.aggregated_output = truncate_middle_chars(
+                &event.aggregated_output,
+                PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES,
+            );
+            event.stdout.clear();
+            event.stderr.clear();
+            event.formatted_output.clear();
+            RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event))
+        }
+        _ => item,
     }
 }
 
@@ -106,7 +142,7 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::TokenCount(_)
-        | EventMsg::ThreadNameUpdated(_)
+        | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
@@ -151,7 +187,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)
@@ -165,12 +200,9 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::GetHistoryEntryResponse(_)
-        | EventMsg::McpListToolsResponse(_)
         | EventMsg::RealtimeConversationListVoicesResponse(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
-        | EventMsg::ListSkillsResponse(_)
         | EventMsg::WebSearchBegin(_)
         | EventMsg::PlanUpdate(_)
         | EventMsg::ShutdownComplete
@@ -183,7 +215,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::ImageGenerationBegin(_)
-        | EventMsg::SkillsUpdateAvailable
         | EventMsg::CollabAgentSpawnBegin(_)
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)

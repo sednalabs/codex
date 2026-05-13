@@ -1,72 +1,34 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_agent_targets;
-use crate::agent::status::is_final;
-use crate::session::session::Session;
+use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
-use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::CollabAgentRef;
-use codex_protocol::protocol::CollabWaitingCompletionReason;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
+use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
-pub(crate) struct Handler;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WakeSource {
-    TargetCompletion,
-    Mailbox,
-    Timeout,
+#[derive(Default)]
+pub(crate) struct Handler {
+    options: WaitAgentTimeoutOptions,
 }
 
-impl WakeSource {
-    fn completion_reason(self) -> CollabWaitingCompletionReason {
-        match self {
-            WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
-            WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
-            WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
-        }
+impl Handler {
+    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
+        Self { options }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CompletionRule {
-    return_when: ReturnWhen,
-}
-
-impl CompletionRule {
-    fn new(return_when: ReturnWhen) -> Self {
-        Self { return_when }
-    }
-
-    fn is_satisfied(
-        self,
-        statuses: &HashMap<ThreadId, AgentStatus>,
-        receiver_thread_ids: &[ThreadId],
-    ) -> bool {
-        match self.return_when {
-            ReturnWhen::Any => !statuses.is_empty(),
-            ReturnWhen::All => receiver_thread_ids
-                .iter()
-                .all(|id| statuses.get(id).is_some_and(is_final)),
-        }
-    }
-}
-
-impl ToolHandler for Handler {
+impl ToolExecutor<ToolInvocation> for Handler {
     type Output = WaitAgentResult;
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("wait_agent")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(create_wait_agent_tool_v2(self.options))
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -132,17 +94,23 @@ impl ToolHandler for Handler {
             )
             .await;
 
-        let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
-        let mut final_statuses = HashMap::new();
-        for id in &receiver_thread_ids {
-            match session.services.agent_control.subscribe_status(*id).await {
-                Ok(rx) => {
-                    let status = rx.borrow().clone();
-                    if is_final(&status) {
-                        final_statuses.insert(*id, status);
-                    } else {
-                        status_rxs.push((*id, rx));
-                    }
+        let timed_out = if session.has_pending_mailbox_items().await {
+            false
+        } else {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+            !wait_for_mailbox_change(&mut mailbox_seq_rx, deadline).await
+        };
+        let result = WaitAgentResult::from_timed_out(timed_out);
+
+        session
+            .send_event(
+                &turn,
+                CollabWaitingEndEvent {
+                    sender_thread_id: session.conversation_id,
+                    call_id,
+                    completed_at_ms: now_unix_timestamp_ms(),
+                    agent_statuses: Vec::new(),
+                    statuses: HashMap::new(),
                 }
                 Err(CodexErr::ThreadNotFound(_)) => {
                     final_statuses.insert(*id, AgentStatus::NotFound);
@@ -230,6 +198,12 @@ impl ToolHandler for Handler {
         .await;
 
         Ok(result)
+    }
+}
+
+impl ToolHandler for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 

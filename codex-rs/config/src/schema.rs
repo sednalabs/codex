@@ -41,10 +41,18 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
             );
             continue;
         }
-        properties.insert(
-            feature.key.to_string(),
-            schema_gen.subschema_for::<bool>().into(),
-        );
+        if feature.id == codex_features::Feature::NetworkProxy {
+            validation.properties.insert(
+                feature.key.to_string(),
+                schema_gen.subschema_for::<codex_features::FeatureToml<
+                    codex_features::NetworkProxyConfigToml,
+                >>(),
+            );
+            continue;
+        }
+        validation
+            .properties
+            .insert(feature.key.to_string(), schema_gen.subschema_for::<bool>());
     }
     for legacy_key in legacy_feature_keys() {
         properties.insert(
