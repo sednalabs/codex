@@ -3306,6 +3306,7 @@ fn dynamic_tool_response_serializes_text_and_image_content_items() {
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
             },
         ],
         success: true,

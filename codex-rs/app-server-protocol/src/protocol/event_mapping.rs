@@ -7,8 +7,6 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
-use crate::protocol::v2::ComputerUseCallOutputContentItem;
-use crate::protocol::v2::ComputerUseCallStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -20,7 +18,6 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
-use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
@@ -518,12 +515,8 @@ mod tests {
     #[test]
     fn unsupported_event_returns_none_instead_of_panicking() {
         assert!(
-            item_event_to_server_notification(
-                EventMsg::SkillsUpdateAvailable,
-                "thread-1",
-                "turn-1",
-            )
-            .is_none()
+            item_event_to_server_notification(EventMsg::ShutdownComplete, "thread-1", "turn-1",)
+                .is_none()
         );
     }
 
