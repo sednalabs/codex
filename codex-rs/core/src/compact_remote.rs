@@ -190,6 +190,9 @@ async fn run_remote_compact_task_inner_impl(
                 &compaction_trace,
             )
             .or_else(|err| async {
+                if matches!(&err, CodexErr::ServerOverloaded) {
+                    return Err(err);
+                }
                 let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
                 let compact_request_log_data =
                     build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
