@@ -1,12 +1,20 @@
 use anyhow::Context;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
+use codex_config::types::MemoriesToml;
+use codex_features::AppsMcpPathOverrideConfigToml;
+use codex_features::Feature;
+use codex_features::FeatureToml;
+use codex_features::FeaturesToml;
+use codex_features::MultiAgentV2ConfigToml;
 use codex_protocol::ThreadId;
 
+use crate::config::Config;
 use crate::config::template_interpolation::materialized_config_toml;
 use crate::config_lock::ConfigLockReplayOptions;
 use crate::config_lock::clear_config_lock_debug_controls;
 use crate::config_lock::config_lockfile;
+use crate::config_lock::toml_round_trip;
 use crate::config_lock::validate_config_lock_replay;
 
 use super::SessionConfiguration;
@@ -161,6 +169,16 @@ fn save_config_resolved_fields(
         .include_instructions = Some(config.include_skill_instructions);
 
     Ok(())
+}
+
+fn resolved_config_to_toml<Toml>(
+    value: &impl serde::Serialize,
+    label: &'static str,
+) -> anyhow::Result<Toml>
+where
+    Toml: serde::de::DeserializeOwned + serde::Serialize,
+{
+    toml_round_trip(value, label).map_err(anyhow::Error::from)
 }
 
 fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {

@@ -118,8 +118,13 @@ async fn run_remote_compact_task_inner(
             return Err(CodexErr::TurnAborted);
         }
     }
-    let result =
-        run_remote_compact_task_inner_impl(sess, turn_context, initial_context_injection).await;
+    let result = run_remote_compact_task_inner_impl(
+        sess,
+        turn_context,
+        initial_context_injection,
+        cancellation_token,
+    )
+    .await;
     let status = compaction_status_from_result(&result);
     let error = result.as_ref().err().map(ToString::to_string);
     if result.is_ok() {

@@ -698,7 +698,8 @@ async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_reuses_context_compaction_for_followups() -> Result<()> {
+async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_merge_guard()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -806,8 +807,8 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_accepts_additional_output_items_before_context_compaction() -> Result<()>
-{
+async fn remote_compact_v2_accepts_additional_output_items_before_context_compaction_duplicate_merge_guard()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(

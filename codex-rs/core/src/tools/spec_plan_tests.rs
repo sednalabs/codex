@@ -2715,6 +2715,47 @@ fn find_namespace_function_tool<'a>(
         .unwrap_or_else(|| panic!("expected tool {expected_namespace}{expected_name} in namespace"))
 }
 
+fn assert_code_mode_description(
+    description: &str,
+    expected_intro: &str,
+    expected_name: &str,
+    expected_args_name: &str,
+    expected_arg_fields: &[&str],
+    expected_output_fields: &[&str],
+) {
+    assert!(description.contains(expected_intro));
+    assert_code_mode_declaration_fields(
+        description,
+        expected_name,
+        expected_args_name,
+        expected_arg_fields,
+        expected_output_fields,
+    );
+}
+
+fn assert_code_mode_declaration_fields(
+    description: &str,
+    expected_name: &str,
+    expected_args_name: &str,
+    expected_arg_fields: &[&str],
+    expected_output_fields: &[&str],
+) {
+    assert!(description.contains(expected_name));
+    assert!(description.contains(expected_args_name));
+    for field in expected_arg_fields {
+        assert!(
+            description.contains(field),
+            "expected description to contain arg field `{field}`"
+        );
+    }
+    for field in expected_output_fields {
+        assert!(
+            description.contains(field),
+            "expected description to contain output field `{field}`"
+        );
+    }
+}
+
 fn namespace_function_names(tools: &[ToolSpec], expected_namespace: &str) -> Vec<String> {
     let namespace_tool = find_tool(tools, expected_namespace);
     let ToolSpec::Namespace(namespace) = namespace_tool else {

@@ -114,10 +114,7 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
             can_request_original_image_detail(&turn.model_info),
             &mut body,
         );
-        Ok(DynamicToolOutput {
-            tool_name: output_tool_name,
-            output: FunctionToolOutput::from_content(body, Some(success)),
-        })
+        Ok(FunctionToolOutput::from_content(body, Some(success)))
     }
 }
 

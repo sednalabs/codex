@@ -32,7 +32,7 @@ pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
                         let tool_name =
                             ToolName::namespaced(namespace.name.clone(), tool.name.clone());
                         let (all_tools_name, all_tools_module) =
-                            all_tools_metadata_for_name(&tool_name.display());
+                            all_tools_metadata_for_tool_name(&tool_name);
                         let definition = CodeModeToolDefinition {
                             name: code_mode_name_for_tool_name(&tool_name),
                             tool_name,
@@ -136,7 +136,7 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
                 ResponsesApiNamespaceTool::Function(tool) => {
                     let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
                     let (all_tools_name, all_tools_module) =
-                        all_tools_metadata_for_name(&tool_name.display());
+                        all_tools_metadata_for_tool_name(&tool_name);
                     CodeModeToolDefinition {
                         name: code_mode_name_for_tool_name(&tool_name),
                         tool_name,
@@ -155,6 +155,10 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::WebSearch { .. } => Vec::new(),
     }
+}
+
+fn all_tools_metadata_for_tool_name(tool_name: &ToolName) -> (Option<String>, Option<String>) {
+    all_tools_metadata_for_name(&code_mode_name_for_tool_name(tool_name))
 }
 
 fn all_tools_metadata_for_name(tool_name: &str) -> (Option<String>, Option<String>) {

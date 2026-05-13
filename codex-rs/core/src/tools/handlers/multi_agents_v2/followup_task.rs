@@ -3,14 +3,13 @@ use super::message_tool::MessageDeliveryMode;
 use super::message_tool::MessageToolResult;
 use super::message_tool::handle_message_string_tool;
 use super::*;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::create_followup_task_tool;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
 impl ToolExecutor<ToolInvocation> for Handler {
-    type Output = FunctionToolOutput;
+    type Output = MessageToolResult;
 
     fn tool_name(&self) -> ToolName {
         ToolName::plain("followup_task")

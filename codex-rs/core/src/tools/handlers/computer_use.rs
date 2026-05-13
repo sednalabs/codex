@@ -11,8 +11,8 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
+use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::computer_use::ComputerUseResponse;
@@ -25,7 +25,6 @@ use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ToolName;
 use serde_json::Value;
 use serde_json::json;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -72,22 +71,74 @@ impl ToolOutput for ComputerUseOutput {
     }
 }
 
-impl ToolHandler for ComputerUseHandler {
-    type Output = ComputerUseOutput;
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-
+impl ComputerUseHandler {
     async fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
         invocation.tool_name.name != ANDROID_OBSERVE_TOOL_NAME
     }
+}
 
+impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
+    type Output = ComputerUseOutput;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("computer_use")
+    }
+
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+        let ToolInvocation {
+            session,
+            turn,
+            call_id,
+            tool_name,
+            payload,
+            ..
+        } = invocation;
+
+        let arguments = match payload {
+            ToolPayload::Function { arguments } => arguments,
+            _ => {
+                return Err(FunctionCallError::RespondToModel(
+                    "computer-use handler received unsupported payload".to_string(),
+                ));
+            }
+        };
+
+        let args: Value = parse_arguments(&arguments)?;
+        let output_tool_name = tool_name.to_string();
+        let response_timeout = computer_use_timeout_for_tool(&tool_name.name);
+        let response = request_computer_use(
+            &session,
+            turn.as_ref(),
+            call_id,
+            tool_name,
+            args,
+            response_timeout,
+        )
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "computer-use call was cancelled before receiving a response".to_string(),
+            )
+        })?;
+
+        let (mut body, success) = computer_use_response_content_for_model(response);
+        sanitize_original_image_detail(
+            can_request_original_image_detail(&turn.model_info),
+            &mut body,
+        );
+        Ok(ComputerUseOutput {
+            tool_name: output_tool_name,
+            output: FunctionToolOutput::from_content(body, Some(success)),
+        })
+    }
+}
+
+impl ToolHandler for ComputerUseHandler {
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
         };
-        let tool_name = invocation.tool_name.display();
+        let tool_name = invocation.tool_name.to_string();
         Some(PreToolUsePayload {
             tool_name: HookToolName::new(tool_name.clone()),
             tool_input: json!({ "command": computer_use_command(&tool_name, arguments) }),
@@ -143,54 +194,6 @@ impl ToolHandler for ComputerUseHandler {
                 tool_response: result.code_mode_result(payload),
             }),
         }
-    }
-
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            call_id,
-            tool_name,
-            payload,
-            ..
-        } = invocation;
-
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "computer-use handler received unsupported payload".to_string(),
-                ));
-            }
-        };
-
-        let args: Value = parse_arguments(&arguments)?;
-        let output_tool_name = tool_name.display();
-        let response_timeout = computer_use_timeout_for_tool(&tool_name.name);
-        let response = request_computer_use(
-            &session,
-            turn.as_ref(),
-            call_id,
-            tool_name,
-            args,
-            response_timeout,
-        )
-        .await
-        .ok_or_else(|| {
-            FunctionCallError::RespondToModel(
-                "computer-use call was cancelled before receiving a response".to_string(),
-            )
-        })?;
-
-        let (mut body, success) = computer_use_response_content_for_model(response);
-        sanitize_original_image_detail(
-            can_request_original_image_detail(&turn.model_info),
-            &mut body,
-        );
-        Ok(ComputerUseOutput {
-            tool_name: output_tool_name,
-            output: FunctionToolOutput::from_content(body, Some(success)),
-        })
     }
 }
 
@@ -583,13 +586,13 @@ mod tests {
                     environment_id: "first".to_string(),
                     environment: first_environment,
                     cwd: cwd.clone(),
-                    shell: "bash".to_string(),
+                    shell: Some("bash".to_string()),
                 },
                 TurnEnvironment {
                     environment_id: "second".to_string(),
                     environment: second_environment,
                     cwd,
-                    shell: "bash".to_string(),
+                    shell: Some("bash".to_string()),
                 },
             ],
         };

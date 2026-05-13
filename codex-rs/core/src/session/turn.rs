@@ -156,14 +156,20 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    let pre_sampling_compact =
-        match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
-            Ok(pre_sampling_compact) => pre_sampling_compact,
-            Err(_) => {
-                error!("Failed to run pre-sampling compact");
-                return None;
-            }
-        };
+    let pre_sampling_compact = match run_pre_sampling_compact(
+        &sess,
+        &turn_context,
+        &mut client_session,
+        &cancellation_token,
+    )
+    .await
+    {
+        Ok(pre_sampling_compact) => pre_sampling_compact,
+        Err(_) => {
+            error!("Failed to run pre-sampling compact");
+            return None;
+        }
+    };
     if pre_sampling_compact.reset_client_session {
         client_session.reset_websocket_session();
     }
@@ -724,6 +730,7 @@ async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<PreSamplingCompactResult> {
     let total_usage_tokens_before_compaction = sess.get_total_token_usage().await;
     let mut pre_sampling_compacted = maybe_run_previous_model_inline_compact(
@@ -817,6 +824,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     if should_use_remote_compact_task(turn_context.provider.info()) {
         if turn_context.features.enabled(Feature::RemoteCompactionV2) {

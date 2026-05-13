@@ -14,6 +14,7 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_utils_output_truncation::approx_token_count;
@@ -52,7 +53,7 @@ async fn run_unified_exec(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<ExecCommandToolOutput, FunctionCallError> {
-    UnifiedExecHandler
+    ExecCommandHandler::default()
         .handle(invocation(session, turn, tool_name, function_payload(args)))
         .await
 }

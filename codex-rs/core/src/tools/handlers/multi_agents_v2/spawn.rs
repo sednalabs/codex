@@ -4,7 +4,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
+use crate::agent::role::apply_role_to_spawn_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -94,9 +94,10 @@ async fn handle_spawn_agent(
             args.reasoning_effort,
         )
         .await?;
-        apply_role_to_config(&mut config, role_name)
+        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        spawn_model_selection_carry.apply_to_config(&mut config);
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
     apply_spawn_agent_overrides(&mut config, child_depth);
@@ -193,7 +194,7 @@ async fn handle_spawn_agent(
                 new_agent_nickname,
                 new_agent_role,
                 prompt,
-                model: effective_model,
+                model: effective_model.clone(),
                 reasoning_effort: effective_reasoning_effort,
                 status,
             }
@@ -215,11 +216,32 @@ async fn handle_spawn_agent(
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     if hide_agent_metadata {
-        Ok(SpawnAgentResult::HiddenMetadata { task_name })
+        Ok(SpawnAgentResult {
+            agent_id: None,
+            task_name,
+            nickname: None,
+            requested_model: args.model.clone(),
+            requested_reasoning_effort: args.reasoning_effort,
+            effective_model: Some(effective_model.clone()),
+            requested_model_honored: args
+                .model
+                .as_ref()
+                .map(|requested_model| requested_model == &effective_model),
+            effective_reasoning_effort: Some(effective_reasoning_effort),
+        })
     } else {
-        Ok(SpawnAgentResult::WithNickname {
+        Ok(SpawnAgentResult {
+            agent_id: new_thread_id.map(|thread_id| thread_id.to_string()),
             task_name,
             nickname,
+            requested_model: args.model.clone(),
+            requested_reasoning_effort: args.reasoning_effort,
+            effective_model: Some(effective_model.clone()),
+            requested_model_honored: args
+                .model
+                .as_ref()
+                .map(|requested_model| requested_model == &effective_model),
+            effective_reasoning_effort: Some(effective_reasoning_effort),
         })
     }
 }

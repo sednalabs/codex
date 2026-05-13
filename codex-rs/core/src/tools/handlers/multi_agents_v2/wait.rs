@@ -28,6 +28,47 @@ impl Handler {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeSource {
+    TargetCompletion,
+    Mailbox,
+    Timeout,
+}
+
+impl WakeSource {
+    fn completion_reason(self) -> CollabWaitingCompletionReason {
+        match self {
+            WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
+            WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
+            WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompletionRule {
+    return_when: ReturnWhen,
+}
+
+impl CompletionRule {
+    fn new(return_when: ReturnWhen) -> Self {
+        Self { return_when }
+    }
+
+    fn is_satisfied(
+        self,
+        statuses: &HashMap<ThreadId, AgentStatus>,
+        receiver_thread_ids: &[ThreadId],
+    ) -> bool {
+        match self.return_when {
+            ReturnWhen::Any => !statuses.is_empty(),
+            ReturnWhen::All => receiver_thread_ids
+                .iter()
+                .all(|id| statuses.get(id).is_some_and(is_final)),
+        }
+    }
+}
+
 impl ToolExecutor<ToolInvocation> for Handler {
     type Output = WaitAgentResult;
 

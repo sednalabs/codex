@@ -39,7 +39,12 @@ impl SessionTask for CompactTask {
             {
                 crate::compact_remote_v2::run_remote_compact_task(session.clone(), ctx).await
             } else {
-                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+                crate::compact_remote::run_remote_compact_task(
+                    session.clone(),
+                    ctx,
+                    &cancellation_token,
+                )
+                .await
             }
         } else {
             session.services.session_telemetry.counter(

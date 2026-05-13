@@ -352,7 +352,9 @@ impl TurnToolCounts {
             ThreadItem::CommandExecution { .. } => self.shell_command += 1,
             ThreadItem::FileChange { .. } => self.file_change += 1,
             ThreadItem::McpToolCall { .. } => self.mcp_tool_call += 1,
-            ThreadItem::DynamicToolCall { .. } => self.dynamic_tool_call += 1,
+            ThreadItem::DynamicToolCall { .. } | ThreadItem::ComputerUseCall { .. } => {
+                self.dynamic_tool_call += 1;
+            }
             ThreadItem::CollabAgentToolCall { .. } => self.subagent_tool_call += 1,
             ThreadItem::WebSearch { .. } => self.web_search += 1,
             ThreadItem::ImageGeneration { .. } => self.image_generation += 1,
@@ -1590,6 +1592,7 @@ fn tracked_tool_item_id(item: &ThreadItem) -> Option<&str> {
         | ThreadItem::AgentMessage { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
+        | ThreadItem::ComputerUseCall { .. }
         | ThreadItem::ImageView { .. }
         | ThreadItem::EnteredReviewMode { .. }
         | ThreadItem::ExitedReviewMode { .. }

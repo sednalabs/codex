@@ -55,6 +55,7 @@ fn upgradeable_hidden_model_preset() -> ModelPreset {
         }],
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
         is_default: false,
         upgrade: Some(ModelUpgrade {
             id: "gpt-5.4".to_string(),
@@ -160,7 +161,7 @@ fn spawn_agent_tool_v1_exposes_runtime_metadata_fields() {
         output_schema,
         ..
     }) = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
-        available_models: &[model_preset("visible", /*show_in_picker*/ true)],
+        available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
         include_usage_hint: false,

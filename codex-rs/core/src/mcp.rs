@@ -7,7 +7,6 @@ use codex_core_plugins::PluginsManager;
 use codex_login::CodexAuth;
 use codex_mcp::EffectiveMcpServer;
 use codex_mcp::ToolPluginProvenance;
-pub use codex_mcp::collect_mcp_snapshot_from_manager;
 use codex_mcp::configured_mcp_servers;
 use codex_mcp::effective_mcp_servers;
 use codex_mcp::tool_plugin_provenance as collect_tool_plugin_provenance;
