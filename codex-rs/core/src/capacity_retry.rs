@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn capacity_retry_delay_is_capped() {
-        assert!(capacity_retry_delay(1) <= CAPACITY_RETRY_MAX_DELAY);
+        assert!(capacity_retry_delay(/*attempt*/ 1) <= CAPACITY_RETRY_MAX_DELAY);
         assert!(
             capacity_retry_delay(CAPACITY_RETRY_BACKOFF_CAP_ATTEMPT + 50)
                 <= CAPACITY_RETRY_MAX_DELAY
