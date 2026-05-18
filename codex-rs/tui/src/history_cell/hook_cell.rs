@@ -12,6 +12,7 @@
 //! 4. Completed runs only persist when they have output or a non-success status.
 use super::HistoryCell;
 use super::plain_lines;
+use crate::history_cell::HistoryRenderMode;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
@@ -341,6 +342,13 @@ impl HistoryCell for HookCell {
         self.display_lines(width)
     }
 
+    fn transcript_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
+        match mode {
+            HistoryRenderMode::Rich => self.rich_transcript_lines(width),
+            HistoryRenderMode::Raw => self.raw_lines(),
+        }
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
     }
@@ -357,6 +365,45 @@ impl HistoryCell for HookCell {
             .find_map(|run| run.state.start_time())?
             .elapsed();
         Some(elapsed.as_millis() as u64 / 600)
+    }
+}
+
+impl HookCell {
+    fn rich_transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut running_group: Option<RunningHookGroup> = None;
+        for run in &self.runs {
+            if !run.state.should_render() {
+                continue;
+            }
+
+            let Some(key) = run.running_group_key() else {
+                if let Some(group) = running_group.take() {
+                    push_running_hook_group(&mut lines, &group, self.animations_enabled);
+                }
+                push_hook_line_separator(&mut lines);
+                run.push_rich_transcript_lines(&mut lines, self.animations_enabled);
+                continue;
+            };
+
+            if let Some(group) = running_group.as_mut()
+                && group.key == key
+            {
+                group.count += 1;
+                group.start_time = earliest_instant(group.start_time, run.state.start_time());
+                continue;
+            }
+
+            if let Some(group) =
+                running_group.replace(RunningHookGroup::new(key, run.state.start_time()))
+            {
+                push_running_hook_group(&mut lines, &group, self.animations_enabled);
+            }
+        }
+        if let Some(group) = running_group {
+            push_running_hook_group(&mut lines, &group, self.animations_enabled);
+        }
+        lines
     }
 }
 
@@ -447,6 +494,52 @@ impl HookRunCell {
                     // explicit so warnings/stops/errors remain easy to scan in history.
                     lines
                         .push(format!("  {}{}", hook_output_prefix(entry.kind), entry.text).into());
+                }
+            }
+            HookRunState::PendingReveal { .. } => {}
+        }
+    }
+
+    fn push_rich_transcript_lines(&self, lines: &mut Vec<Line<'static>>, animations_enabled: bool) {
+        let label = hook_event_label(self.event_name);
+        match &self.state {
+            HookRunState::VisibleRunning { start_time, .. }
+            | HookRunState::QuietLinger { start_time, .. } => {
+                let hook_text = format!("Running {label} hook");
+                push_running_hook_header(
+                    lines,
+                    &hook_text,
+                    Some(*start_time),
+                    self.status_message.as_deref(),
+                    animations_enabled,
+                );
+            }
+            HookRunState::Completed { status, entries } => {
+                let status_text = format!("{status:?}").to_lowercase();
+                let bullet = hook_completed_bullet(*status, entries);
+                lines.push(
+                    vec![
+                        bullet,
+                        " ".into(),
+                        format!("{label} hook ({status_text})").into(),
+                    ]
+                    .into(),
+                );
+                for entry in entries {
+                    if entry.kind == HookOutputEntryKind::Context {
+                        let line_count = entry.text.lines().count().max(1);
+                        let label = if line_count == 1 { "line" } else { "lines" };
+                        lines.push(
+                            format!(
+                                "  hook context: [collapsed in rich transcript; {line_count} {label}]"
+                            )
+                            .into(),
+                        );
+                    } else {
+                        lines.push(
+                            format!("  {}{}", hook_output_prefix(entry.kind), entry.text).into(),
+                        );
+                    }
                 }
             }
             HookRunState::PendingReveal { .. } => {}
@@ -801,6 +894,58 @@ mod tests {
         assert_eq!(
             rendered,
             vec!["Running PostToolUse hook: checking output policy".to_string()]
+        );
+    }
+
+    #[test]
+    fn rich_transcript_collapses_hook_context_but_raw_keeps_it() {
+        let mut run = hook_run_summary("hook-1");
+        run.status = HookRunStatus::Completed;
+        run.status_message = None;
+        run.entries = vec![
+            HookOutputEntry {
+                kind: HookOutputEntryKind::Context,
+                text: "line one\nline two".to_string(),
+            },
+            HookOutputEntry {
+                kind: HookOutputEntryKind::Warning,
+                text: "stay visible".to_string(),
+            },
+        ];
+        let cell = HookCell::new_completed(run, /*animations_enabled*/ false);
+
+        let rich = cell
+            .transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Rich)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let raw = cell
+            .transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rich.iter()
+                .any(|line| line.contains("collapsed in rich transcript"))
+        );
+        assert!(
+            rich.iter()
+                .any(|line| line.contains("warning: stay visible"))
+        );
+        assert!(
+            raw.iter()
+                .any(|line| line.contains("hook context: line one"))
         );
     }
 

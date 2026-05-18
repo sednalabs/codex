@@ -219,6 +219,8 @@ pub(crate) struct PagerKeymap {
     pub(crate) jump_bottom: Vec<KeyBinding>,
     pub(crate) close: Vec<KeyBinding>,
     pub(crate) close_transcript: Vec<KeyBinding>,
+    pub(crate) previous_user_prompt: Vec<KeyBinding>,
+    pub(crate) next_user_prompt: Vec<KeyBinding>,
 }
 
 /// Generic list picker keybindings shared across popup list views.
@@ -733,6 +735,8 @@ impl RuntimeKeymap {
             jump_bottom: resolve_local!(keymap, defaults, pager, jump_bottom),
             close: resolve_local!(keymap, defaults, pager, close),
             close_transcript: resolve_local!(keymap, defaults, pager, close_transcript),
+            previous_user_prompt: resolve_local!(keymap, defaults, pager, previous_user_prompt),
+            next_user_prompt: resolve_local!(keymap, defaults, pager, next_user_prompt),
         };
 
         let approval = ApprovalKeymap {
@@ -1070,6 +1074,8 @@ impl RuntimeKeymap {
                 jump_bottom: default_bindings![plain(KeyCode::End)],
                 close: default_bindings![plain(KeyCode::Char('q')), ctrl(KeyCode::Char('c'))],
                 close_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
+                previous_user_prompt: default_bindings![alt(KeyCode::Up)],
+                next_user_prompt: default_bindings![alt(KeyCode::Down)],
             },
             list: ListKeymap {
                 move_up: default_bindings![
@@ -1532,6 +1538,11 @@ impl RuntimeKeymap {
                 ("jump_bottom", self.pager.jump_bottom.as_slice()),
                 ("close", self.pager.close.as_slice()),
                 ("close_transcript", self.pager.close_transcript.as_slice()),
+                (
+                    "previous_user_prompt",
+                    self.pager.previous_user_prompt.as_slice(),
+                ),
+                ("next_user_prompt", self.pager.next_user_prompt.as_slice()),
             ],
         )?;
 
@@ -1548,6 +1559,11 @@ impl RuntimeKeymap {
                 ("jump_bottom", self.pager.jump_bottom.as_slice()),
                 ("close", self.pager.close.as_slice()),
                 ("close_transcript", self.pager.close_transcript.as_slice()),
+                (
+                    "previous_user_prompt",
+                    self.pager.previous_user_prompt.as_slice(),
+                ),
+                ("next_user_prompt", self.pager.next_user_prompt.as_slice()),
             ],
             TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
             [],
