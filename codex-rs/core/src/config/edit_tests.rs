@@ -1,5 +1,6 @@
 use super::*;
 use codex_config::types::AppToolApproval;
+use codex_config::types::McpServerOAuthConfig;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::SessionPickerViewMode;
@@ -940,10 +941,7 @@ fn blocking_replace_mcp_servers_round_trips() {
             enabled_tools: Some(vec!["one".to_string(), "two".to_string()]),
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },
@@ -973,10 +971,9 @@ fn blocking_replace_mcp_servers_round_trips() {
             enabled_tools: None,
             disabled_tools: Some(vec!["forbidden".to_string()]),
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: Some(McpServerOAuthConfig {
+                client_id: Some("eci-prd-pub-codex-123".to_string()),
+            }),
             oauth_resource: Some("https://resource.example.com".to_string()),
             tools: HashMap::new(),
         },
@@ -1001,6 +998,9 @@ oauth_resource = \"https://resource.example.com\"
 
 [mcp_servers.http.http_headers]
 Z-Header = \"z\"
+
+[mcp_servers.http.oauth]
+client_id = \"eci-prd-pub-codex-123\"
 
 [mcp_servers.stdio]
 command = \"cmd\"
@@ -1043,10 +1043,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::from([(
                 "search".to_string(),
@@ -1111,10 +1108,7 @@ foo = { command = "cmd" }
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },
@@ -1169,10 +1163,7 @@ foo = { command = "cmd" } # keep me
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },
@@ -1226,10 +1217,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },
@@ -1284,10 +1272,7 @@ foo = { command = "cmd" }
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },

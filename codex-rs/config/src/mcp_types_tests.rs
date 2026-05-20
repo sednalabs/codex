@@ -284,6 +284,26 @@ fn deserialize_streamable_http_server_config_with_oauth_resource() {
 }
 
 #[test]
+fn deserialize_streamable_http_server_config_with_oauth_client_id() {
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            url = "https://example.com/mcp"
+
+            [oauth]
+            client_id = "eci-prd-pub-codex-123"
+        "#,
+    )
+    .expect("should deserialize http config with oauth client id");
+
+    assert_eq!(
+        cfg.oauth,
+        Some(McpServerOAuthConfig {
+            client_id: Some("eci-prd-pub-codex-123".to_string()),
+        })
+    );
+}
+
+#[test]
 fn deserialize_server_config_with_tool_filters() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
@@ -296,42 +316,6 @@ fn deserialize_server_config_with_tool_filters() {
 
     assert_eq!(cfg.enabled_tools, Some(vec!["allowed".to_string()]));
     assert_eq!(cfg.disabled_tools, Some(vec!["blocked".to_string()]));
-}
-
-#[test]
-fn deserialize_server_config_with_elicitation_and_policy_flags() {
-    let cfg: McpServerConfig = toml::from_str(
-        r#"
-            command = "echo"
-            enable_elicitation = true
-            read_only = true
-            strict_tool_classification = true
-            require_approval_for_mutating = true
-        "#,
-    )
-    .expect("should deserialize policy flags");
-
-    assert!(cfg.enable_elicitation);
-    assert!(cfg.read_only);
-    assert!(cfg.strict_tool_classification);
-    assert!(cfg.require_approval_for_mutating);
-}
-
-#[test]
-fn deserialize_rejects_mutation_approval_without_elicitation() {
-    let err = toml::from_str::<McpServerConfig>(
-        r#"
-            command = "echo"
-            require_approval_for_mutating = true
-        "#,
-    )
-    .expect_err("should reject invalid policy combination");
-
-    assert!(
-        err.to_string()
-            .contains("require_approval_for_mutating requires enable_elicitation=true"),
-        "unexpected error: {err}"
-    );
 }
 
 #[test]
@@ -429,10 +413,7 @@ fn deserialize_ignores_unknown_server_fields() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         }
@@ -478,6 +459,19 @@ fn deserialize_rejects_headers_for_stdio() {
         "#,
     )
     .expect_err("should reject env_http_headers for stdio transport");
+
+    let err = toml::from_str::<McpServerConfig>(
+        r#"
+            command = "echo"
+            oauth = { client_id = "eci-prd-pub-codex-123" }
+        "#,
+    )
+    .expect_err("should reject oauth for stdio transport");
+
+    assert!(
+        err.to_string().contains("oauth is not supported for stdio"),
+        "unexpected error: {err}"
+    );
 
     let err = toml::from_str::<McpServerConfig>(
         r#"

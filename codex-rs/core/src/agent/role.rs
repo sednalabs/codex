@@ -14,7 +14,6 @@ use crate::config::Config;
 use crate::config::ConfigOverrides;
 use crate::config::agent_roles::parse_agent_role_file_contents;
 use crate::config::deserialize_config_toml_with_base;
-use anyhow::anyhow;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerStack;
@@ -34,6 +33,7 @@ use toml::Value as TomlValue;
 
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
+const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct RoleActiveProfileFieldUpdates {
@@ -53,6 +53,7 @@ struct RoleLayerConfig {
 struct RolePreservationPolicy {
     preserve_current_profile: bool,
     preserve_current_provider: bool,
+    preserve_current_service_tier: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -179,6 +180,7 @@ impl RolePreservationPolicy {
             preserve_current_profile,
             preserve_current_provider: preserve_current_profile
                 && !active_profile_updates.model_provider,
+            preserve_current_service_tier: role_layer_toml.get("service_tier").is_none(),
         }
     }
 }
@@ -458,6 +460,9 @@ mod reload {
             model_provider: preservation_policy
                 .preserve_current_provider
                 .then(|| config.model_provider_id.clone()),
+            service_tier: preservation_policy
+                .preserve_current_service_tier
+                .then(|| config.service_tier.clone()),
             config_profile: preservation_policy
                 .preserve_current_profile
                 .then(|| config.active_profile.clone())
@@ -475,16 +480,23 @@ mod reload {
 /// the caller's current `profile` and `model_provider` remain sticky runtime choices unless the
 /// role explicitly sets `profile`, explicitly sets `model_provider`, or rewrites the active
 /// profile's `model_provider` in place.
-#[cfg(test)]
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    if resolve_role_config(config, role_name).is_none() {
+        return Err(format!("unknown agent_type '{role_name}'"));
+    }
     let Some(RoleLayerConfig {
         role_config,
         role_layer_toml,
-    }) = load_role_layer_config(config, role_name).await?
+    }) = load_role_layer_config(config, role_name)
+        .await
+        .map_err(|err| {
+            tracing::warn!("failed to apply role to config: {err}");
+            AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+        })?
     else {
         return Ok(());
     };
@@ -584,8 +596,11 @@ pub(crate) mod spawn_tool_spec {
                     let reasoning_effort = role_toml
                         .get("model_reasoning_effort")
                         .and_then(TomlValue::as_str);
+                    let service_tier = role_toml
+                        .get("service_tier")
+                        .and_then(TomlValue::as_str);
 
-                    match (model, reasoning_effort) {
+                    let model_and_reasoning_note = match (model, reasoning_effort) {
                         (Some(model), Some(reasoning_effort)) => format!(
                             "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
                         ),
@@ -600,7 +615,15 @@ pub(crate) mod spawn_tool_spec {
                             )
                         }
                         (None, None) => String::new(),
-                    }
+                    };
+                    let service_tier_note = service_tier
+                        .map(|service_tier| {
+                            format!(
+                                "\n- This role's service tier is set to `{service_tier}`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
+                            )
+                        })
+                        .unwrap_or_default();
+                    format!("{model_and_reasoning_note}{service_tier_note}")
                 })
                 .unwrap_or_default();
             format!("{name}: {{\n{description}{locked_settings_note}\n}}")

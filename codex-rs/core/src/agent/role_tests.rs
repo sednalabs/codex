@@ -6,6 +6,7 @@ use crate::skills_load_input_from_config;
 use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::test_support::PathExt;
@@ -74,60 +75,34 @@ async fn apply_role_returns_error_for_unknown_role() {
 }
 
 #[tokio::test]
-async fn apply_explorer_role_preserves_model_settings_and_adds_session_flags_layer() {
+#[ignore = "No role requiring it for now"]
+async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before_layers = session_flags_layer_count(&config);
-    config.model = Some("gpt-5.4".to_string());
+
+    apply_role_to_config(&mut config, Some("explorer"))
+        .await
+        .expect("explorer role should apply");
+
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+}
+
+#[tokio::test]
+async fn apply_empty_explorer_role_preserves_current_model_and_reasoning_effort() {
+    let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let before_layers = session_flags_layer_count(&config);
+    config.model = Some("gpt-5.4-mini".to_string());
     config.model_reasoning_effort = Some(ReasoningEffort::High);
 
     apply_role_to_config(&mut config, Some("explorer"))
         .await
         .expect("explorer role should apply");
 
-    assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
-    assert_eq!(session_flags_layer_count(&config), before_layers + 1);
-}
-
-#[tokio::test]
-async fn apply_explorer_role_preserves_current_provider() {
-    let home = TempDir::new().expect("create temp dir");
-    tokio::fs::write(
-        home.path().join(CONFIG_TOML_FILE),
-        r#"
-[model_providers.base-provider]
-name = "Base Provider"
-base_url = "https://base.example.com/v1"
-env_key = "BASE_PROVIDER_API_KEY"
-wire_api = "responses"
-
-[profiles.base-profile]
-model_provider = "base-provider"
-"#,
-    )
-    .await
-    .expect("write config.toml");
-    let mut config = ConfigBuilder::default()
-        .codex_home(home.path().to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            config_profile: Some("base-profile".to_string()),
-            ..Default::default()
-        })
-        .fallback_cwd(Some(home.path().to_path_buf()))
-        .build()
-        .await
-        .expect("load config");
-    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
-
-    apply_role_to_config(&mut config, Some("explorer"))
-        .await
-        .expect("explorer role should apply");
-
-    assert_eq!(config.model_provider_id, "base-provider");
-    assert_eq!(
-        config.model_provider.base_url.as_deref(),
-        Some("https://runtime.example.com/v1")
-    );
+    assert_eq!(session_flags_layer_count(&config), before_layers);
 }
 
 #[tokio::test]
@@ -146,10 +121,7 @@ async fn apply_role_returns_unavailable_for_missing_user_role_file() {
         .await
         .expect_err("missing role file should fail");
 
-    assert!(
-        err.contains("failed to read config for agent type 'custom'"),
-        "unexpected error: {err}"
-    );
+    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
 }
 
 #[tokio::test]
@@ -169,10 +141,7 @@ async fn apply_role_returns_unavailable_for_invalid_user_role_toml() {
         .await
         .expect_err("invalid role file should fail");
 
-    assert!(
-        err.contains("failed to parse config for agent type 'custom'"),
-        "unexpected error: {err}"
-    );
+    assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
 }
 
 #[tokio::test]
@@ -243,6 +212,66 @@ async fn apply_role_preserves_unspecified_keys() {
     assert_eq!(
         config.main_execve_wrapper_exe,
         Some(PathBuf::from("/tmp/codex-execve-wrapper"))
+    );
+}
+
+#[tokio::test]
+async fn apply_role_reports_explicit_service_tier() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "tiered-role.toml",
+        r#"developer_instructions = "Stay focused"
+service_tier = "priority"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(
+        config.service_tier,
+        Some(ServiceTier::Fast.request_value().to_string())
+    );
+}
+
+#[tokio::test]
+async fn apply_role_preserves_existing_service_tier_without_override() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    let role_path = write_role_config(
+        &home,
+        "default-tier-role.toml",
+        r#"developer_instructions = "Stay focused"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(
+        config.service_tier,
+        Some(ServiceTier::Fast.request_value().to_string())
     );
 }
 
@@ -542,125 +571,6 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
-async fn apply_role_to_spawn_config_preserves_current_model_settings_when_role_does_not_own_them() {
-    let home = TempDir::new().expect("create temp dir");
-    tokio::fs::write(
-        home.path().join(CONFIG_TOML_FILE),
-        r#"
-[profiles.base-profile]
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-model_reasoning_summary = "detailed"
-model_verbosity = "high"
-"#,
-    )
-    .await
-    .expect("write config.toml");
-    let mut config = ConfigBuilder::default()
-        .codex_home(home.path().to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            config_profile: Some("base-profile".to_string()),
-            ..Default::default()
-        })
-        .fallback_cwd(Some(home.path().to_path_buf()))
-        .build()
-        .await
-        .expect("load config");
-    config.model = Some("gpt-5.1-codex-mini".to_string());
-    config.model_reasoning_effort = Some(ReasoningEffort::Low);
-    config.model_reasoning_summary = Some(ReasoningSummary::None);
-    config.model_verbosity = Some(Verbosity::Low);
-    config.model_provider.base_url = Some("https://runtime.example.com/v1".to_string());
-    let role_path = write_role_config(
-        &home,
-        "preserve-current-model.toml",
-        r#"developer_instructions = "Stay focused""#,
-    )
-    .await;
-    config.agent_roles.insert(
-        "custom".to_string(),
-        AgentRoleConfig {
-            description: None,
-            config_file: Some(role_path),
-            nickname_candidates: None,
-        },
-    );
-
-    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
-        .await
-        .expect("custom role should apply");
-    spawn_model_selection_carry.apply_to_config(&mut config);
-
-    assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
-    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
-    assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
-    assert_eq!(config.model_verbosity, Some(Verbosity::Low));
-    assert_eq!(
-        config.model_provider.base_url.as_deref(),
-        Some("https://runtime.example.com/v1")
-    );
-}
-
-#[tokio::test]
-async fn apply_role_to_spawn_config_keeps_role_owned_model_settings_authoritative() {
-    let home = TempDir::new().expect("create temp dir");
-    tokio::fs::write(
-        home.path().join(CONFIG_TOML_FILE),
-        r#"
-[profiles.base-profile]
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-model_reasoning_summary = "detailed"
-model_verbosity = "high"
-"#,
-    )
-    .await
-    .expect("write config.toml");
-    let mut config = ConfigBuilder::default()
-        .codex_home(home.path().to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            config_profile: Some("base-profile".to_string()),
-            ..Default::default()
-        })
-        .fallback_cwd(Some(home.path().to_path_buf()))
-        .build()
-        .await
-        .expect("load config");
-    let role_path = write_role_config(
-        &home,
-        "top-level-model-role.toml",
-        r#"
-developer_instructions = "Stay focused"
-model = "gpt-5.1-codex-mini"
-model_reasoning_effort = "low"
-model_reasoning_summary = "none"
-model_verbosity = "low"
-"#,
-    )
-    .await;
-    config.agent_roles.insert(
-        "custom".to_string(),
-        AgentRoleConfig {
-            description: None,
-            config_file: Some(role_path),
-            nickname_candidates: None,
-        },
-    );
-
-    let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, Some("custom"))
-        .await
-        .expect("custom role should apply");
-    spawn_model_selection_carry.apply_to_config(&mut config);
-
-    assert_eq!(config.active_profile.as_deref(), Some("base-profile"));
-    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
-    assert_eq!(config.model_reasoning_summary, Some(ReasoningSummary::None));
-    assert_eq!(config.model_verbosity, Some(Verbosity::Low));
-}
-
-#[tokio::test]
 #[cfg(not(windows))]
 async fn apply_role_does_not_materialize_default_sandbox_workspace_write_fields() {
     use codex_protocol::protocol::SandboxPolicy;
@@ -918,28 +828,28 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 }
 
 #[test]
-fn built_in_wait_roles_are_exposed_and_have_embedded_configs() {
-    let built_in_roles = built_in::configs();
-    assert!(built_in_roles.contains_key("awaiter"));
-    assert!(built_in_roles.contains_key("terminal-babysitter"));
+fn spawn_tool_spec_marks_role_locked_service_tier() {
+    let tempdir = TempDir::new().expect("create temp dir");
+    let role_path = tempdir.path().join("tiered.toml");
+    fs::write(
+        &role_path,
+        "developer_instructions = \"Stay fast\"\nservice_tier = \"priority\"\n",
+    )
+    .expect("write role config");
+    let user_defined_roles = BTreeMap::from([(
+        "tiered".to_string(),
+        AgentRoleConfig {
+            description: Some("Stay fast.".to_string()),
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    )]);
 
-    let spec = spawn_tool_spec::build(&BTreeMap::new());
-    assert!(spec.contains("awaiter: {"));
-    assert!(spec.contains("terminal-babysitter: {"));
-    assert!(spec.contains("Use `awaiter` for a pure delegated wait"));
-    assert!(spec.contains("Use `terminal-babysitter` for monitored waits"));
+    let spec = spawn_tool_spec::build(&user_defined_roles);
 
-    assert!(built_in::config_file_contents(Path::new("explorer.toml")).is_some());
-    assert!(built_in::config_file_contents(Path::new("awaiter.toml")).is_some());
-    assert!(built_in::config_file_contents(Path::new("terminal-babysitter.toml")).is_some());
-}
-
-#[test]
-fn spawn_tool_spec_does_not_mark_built_in_explorer_with_locked_settings() {
-    let spec = spawn_tool_spec::build(&BTreeMap::new());
-
-    assert!(spec.contains("Explorers are fast and authoritative."));
-    assert!(!spec.contains("This role's reasoning effort is set to `medium`"));
+    assert!(spec.contains(
+        "Stay fast.\n- This role's service tier is set to `priority`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
+    ));
 }
 
 #[test]

@@ -8,9 +8,8 @@ use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
-    type Output = MessageToolResult;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain("send_message")
     }
@@ -19,7 +18,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         Some(create_send_message_tool())
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendMessageArgs = parse_arguments(&arguments)?;
         handle_message_items_tool(
@@ -30,10 +32,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
             args.interrupt,
         )
         .await
+        .map(boxed_tool_output)
     }
 }
 
-impl ToolHandler for Handler {
+impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

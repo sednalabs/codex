@@ -151,6 +151,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
             server_config.scopes.clone(),
             oauth_config.discovered_scopes.clone(),
         );
+        let oauth_client_id = server_config.oauth_client_id();
         let first_attempt = perform_oauth_login(
             &name,
             &oauth_config.url,
@@ -158,6 +159,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
             oauth_config.http_headers.clone(),
             oauth_config.env_http_headers.clone(),
             &resolved_scopes.scopes,
+            oauth_client_id,
             server_config.oauth_resource.as_deref(),
             config.mcp_oauth_callback_port,
             config.mcp_oauth_callback_url.as_deref(),
@@ -173,6 +175,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
                     oauth_config.http_headers,
                     oauth_config.env_http_headers,
                     &[],
+                    oauth_client_id,
                     server_config.oauth_resource.as_deref(),
                     config.mcp_oauth_callback_port,
                     config.mcp_oauth_callback_url.as_deref(),
@@ -373,6 +376,7 @@ fn mcp_dependency_to_server_config(
             read_only: false,
             strict_tool_classification: false,
             require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         });
@@ -406,6 +410,7 @@ fn mcp_dependency_to_server_config(
             read_only: false,
             strict_tool_classification: false,
             require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         });

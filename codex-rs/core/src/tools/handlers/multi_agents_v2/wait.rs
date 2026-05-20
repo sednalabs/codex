@@ -69,9 +69,8 @@ impl CompletionRule {
     }
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
-    type Output = WaitAgentResult;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain("wait_agent")
     }
@@ -80,7 +79,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         Some(create_wait_agent_tool_v2(self.options))
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -113,21 +115,36 @@ impl ToolExecutor<ToolInvocation> for Handler {
             });
         }
 
-        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let min_timeout_ms = turn
             .config
             .multi_agent_v2
             .min_wait_timeout_ms
             .clamp(1, MAX_WAIT_TIMEOUT_MS);
-        let timeout_ms = match timeout_ms {
-            ms if ms <= 0 => {
-                return Err(FunctionCallError::RespondToModel(
-                    "timeout_ms must be greater than zero".to_owned(),
-                ));
+        let max_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .max_wait_timeout_ms
+            .clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+        let default_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .default_wait_timeout_ms
+            .clamp(min_timeout_ms, max_timeout_ms);
+        let timeout_ms = match args.timeout_ms {
+            Some(ms) if ms < min_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at least {min_timeout_ms}"
+                )));
             }
-            ms => ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS),
+            Some(ms) if ms > max_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at most {max_timeout_ms}"
+                )));
+            }
+            Some(ms) => ms,
+            None => default_timeout_ms,
         };
-        let mut mailbox_seq_rx = session.subscribe_mailbox_seq();
+        let mut mailbox_rx = session.input_queue.subscribe_mailbox().await;
 
         session
             .send_event(
@@ -193,7 +210,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
         } else {
             wait_for_wake_source(
                 session.clone(),
-                &mut mailbox_seq_rx,
+                &mut mailbox_rx,
                 status_rxs,
                 &receiver_thread_ids,
                 completion_rule,
@@ -240,11 +257,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
         )
         .await;
 
-        Ok(result)
+        Ok(boxed_tool_output(result))
     }
 }
 
-impl ToolHandler for Handler {
+impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
@@ -286,7 +303,7 @@ async fn ready_wake_source(
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
-    } else if session.has_pending_mailbox_items().await {
+    } else if session.input_queue.has_pending_mailbox_items().await {
         Some(WakeSource::Mailbox)
     } else {
         None
@@ -369,7 +386,7 @@ async fn wait_for_final_status(
 
 async fn wait_for_wake_source(
     session: std::sync::Arc<Session>,
-    mailbox_seq_rx: &mut tokio::sync::watch::Receiver<u64>,
+    mailbox_rx: &mut tokio::sync::watch::Receiver<()>,
     status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
     receiver_thread_ids: &[ThreadId],
     completion_rule: CompletionRule,
@@ -400,7 +417,7 @@ async fn wait_for_wake_source(
                     None => {}
                 }
             }
-            mailbox_changed = mailbox_seq_rx.changed() => {
+            mailbox_changed = mailbox_rx.changed() => {
                 if mailbox_changed.is_ok() {
                     return WakeSource::Mailbox;
                 }

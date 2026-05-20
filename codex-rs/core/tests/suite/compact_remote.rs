@@ -326,6 +326,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -342,6 +343,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -357,11 +359,11 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         Some("Bearer Access Token")
     );
     assert_eq!(
-        compact_request.header("session_id").as_deref(),
+        compact_request.header("session-id").as_deref(),
         Some(session_id.as_str())
     );
     assert_eq!(
-        compact_request.header("thread_id").as_deref(),
+        compact_request.header("thread-id").as_deref(),
         Some(thread_id.as_str())
     );
     let compact_body = compact_request.body_json();
@@ -479,10 +481,9 @@ async fn assert_remote_manual_compact_request_parity(
                 responses::ev_completed("turn-three-final-response"),
             ]),
             responses::sse(vec![
-                responses::ev_local_shell_call(
-                    "turn-four-local-shell",
-                    "completed",
-                    vec!["/bin/echo", "TURN_FOUR_LOCAL_SHELL"],
+                responses::ev_shell_command_call(
+                    "turn-four-shell-command",
+                    "echo TURN_FOUR_LOCAL_SHELL",
                 ),
                 responses::ev_completed("turn-four-local-shell-response"),
             ]),
@@ -517,6 +518,7 @@ async fn assert_remote_manual_compact_request_parity(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -536,6 +538,7 @@ async fn assert_remote_manual_compact_request_parity(
             ],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -549,6 +552,7 @@ async fn assert_remote_manual_compact_request_parity(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -557,7 +561,10 @@ async fn assert_remote_manual_compact_request_parity(
         .submit(Op::UserInput {
             environments: None,
             items: vec![
-                UserInput::Image { image_url },
+                UserInput::Image {
+                    image_url,
+                    detail: None,
+                },
                 UserInput::Text {
                     text: "TURN_FOUR_IMAGE_USER".to_string(),
                     text_elements: Vec::new(),
@@ -565,6 +572,7 @@ async fn assert_remote_manual_compact_request_parity(
             ],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -578,6 +586,7 @@ async fn assert_remote_manual_compact_request_parity(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -589,7 +598,7 @@ async fn assert_remote_manual_compact_request_parity(
     assert_eq!(
         response_requests.len(),
         7,
-        "expected five turns with one unsupported tool continuation and one local shell continuation"
+        "expected five turns with one unsupported tool continuation and one shell command continuation"
     );
     assert_eq!(
         compact_mock.requests().len(),
@@ -698,8 +707,7 @@ async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_merge_guard()
--> Result<()> {
+async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -723,7 +731,7 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
                 serde_json::json!({
                     "type": "response.output_item.done",
                     "item": {
-                        "type": "context_compaction",
+                        "type": "compaction",
                         "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
                     }
                 }),
@@ -746,6 +754,7 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -762,6 +771,7 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -780,8 +790,8 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
     assert_eq!(compact_request.path(), "/v1/responses");
     let compact_body = compact_request.body_json().to_string();
     assert!(
-        compact_body.contains("\"type\":\"context_compaction\""),
-        "expected v2 compaction request to include the context_compaction trigger item"
+        compact_body.contains("\"type\":\"compaction_trigger\""),
+        "expected v2 compaction request to include the compaction_trigger item"
     );
     assert!(
         !compact_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
@@ -791,12 +801,12 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
     let follow_up_request = response_requests.last().expect("follow-up request missing");
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(
-        follow_up_body.contains("\"type\":\"context_compaction\""),
-        "expected follow-up request to preserve the v2 context_compaction item"
+        follow_up_body.contains("\"type\":\"compaction\""),
+        "expected follow-up request to preserve the compaction item"
     );
     assert!(
         follow_up_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
-        "expected follow-up request to include the context compaction payload"
+        "expected follow-up request to include the compaction payload"
     );
     assert!(
         follow_up_body.contains("hello remote compact"),
@@ -807,8 +817,7 @@ async fn remote_compact_v2_reuses_context_compaction_for_followups_duplicate_mer
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_accepts_additional_output_items_before_context_compaction_duplicate_merge_guard()
--> Result<()> {
+async fn remote_compact_v2_accepts_additional_output_items_before_compaction() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -833,7 +842,7 @@ async fn remote_compact_v2_accepts_additional_output_items_before_context_compac
                 serde_json::json!({
                     "type": "response.output_item.done",
                     "item": {
-                        "type": "context_compaction",
+                        "type": "compaction",
                         "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
                     }
                 }),
@@ -856,6 +865,7 @@ async fn remote_compact_v2_accepts_additional_output_items_before_context_compac
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -872,6 +882,7 @@ async fn remote_compact_v2_accepts_additional_output_items_before_context_compac
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -880,209 +891,12 @@ async fn remote_compact_v2_accepts_additional_output_items_before_context_compac
     let follow_up_request = response_requests.last().expect("follow-up request missing");
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(
-        follow_up_body.contains("\"type\":\"context_compaction\""),
-        "expected follow-up request to preserve the v2 context_compaction item"
+        follow_up_body.contains("\"type\":\"compaction\""),
+        "expected follow-up request to preserve the compaction item"
     );
     assert!(
         follow_up_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
-        "expected follow-up request to include the context compaction payload"
-    );
-    assert!(
-        !follow_up_body.contains("IGNORED_COMPACT_REPLY"),
-        "expected follow-up request to ignore unrelated output items from the compaction stream"
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_reuses_context_compaction_for_followups() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let harness = TestCodexHarness::with_builder(
-        test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(|config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
-            }),
-    )
-    .await?;
-    let codex = harness.test().codex.clone();
-
-    let responses_mock = responses::mount_sse_sequence(
-        harness.server(),
-        vec![
-            responses::sse(vec![
-                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
-                responses::ev_completed("resp-1"),
-            ]),
-            responses::sse(vec![
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "item": {
-                        "type": "context_compaction",
-                        "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
-                    }
-                }),
-                responses::ev_completed("resp-compact"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
-                responses::ev_completed("resp-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "hello remote compact".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await?;
-    wait_for_turn_complete(&codex).await;
-
-    codex.submit(Op::Compact).await?;
-    wait_for_turn_complete(&codex).await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "after compact".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await?;
-    wait_for_turn_complete(&codex).await;
-
-    let response_requests = responses_mock.requests();
-    let compact_request = &response_requests[1];
-    assert!(
-        compact_request
-            .header("x-codex-beta-features")
-            .as_deref()
-            .is_some_and(|value| value
-                .split(',')
-                .any(|feature| feature == "remote_compaction_v2")),
-        "expected compact request to advertise the remote_compaction_v2 beta feature"
-    );
-    assert_eq!(compact_request.path(), "/v1/responses");
-    let compact_body = compact_request.body_json().to_string();
-    assert!(
-        compact_body.contains("\"type\":\"context_compaction\""),
-        "expected v2 compaction request to include the context_compaction trigger item"
-    );
-    assert!(
-        !compact_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
-        "expected v2 compaction trigger item to omit encrypted_content"
-    );
-
-    let follow_up_request = response_requests.last().expect("follow-up request missing");
-    let follow_up_body = follow_up_request.body_json().to_string();
-    assert!(
-        follow_up_body.contains("\"type\":\"context_compaction\""),
-        "expected follow-up request to preserve the v2 context_compaction item"
-    );
-    assert!(
-        follow_up_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
-        "expected follow-up request to include the context compaction payload"
-    );
-    assert!(
-        follow_up_body.contains("hello remote compact"),
-        "expected v2 follow-up request to preserve retained original user messages"
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_accepts_additional_output_items_before_context_compaction() -> Result<()>
-{
-    skip_if_no_network!(Ok(()));
-
-    let harness = TestCodexHarness::with_builder(
-        test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(|config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
-            }),
-    )
-    .await?;
-    let codex = harness.test().codex.clone();
-
-    let responses_mock = responses::mount_sse_sequence(
-        harness.server(),
-        vec![
-            responses::sse(vec![
-                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
-                responses::ev_completed("resp-1"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("m-compact-noise", "IGNORED_COMPACT_REPLY"),
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "item": {
-                        "type": "context_compaction",
-                        "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
-                    }
-                }),
-                responses::ev_completed("resp-compact"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
-                responses::ev_completed("resp-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "hello remote compact".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await?;
-    wait_for_turn_complete(&codex).await;
-
-    codex.submit(Op::Compact).await?;
-    wait_for_turn_complete(&codex).await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "after compact".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await?;
-    wait_for_turn_complete(&codex).await;
-
-    let response_requests = responses_mock.requests();
-    let follow_up_request = response_requests.last().expect("follow-up request missing");
-    let follow_up_body = follow_up_request.body_json().to_string();
-    assert!(
-        follow_up_body.contains("\"type\":\"context_compaction\""),
-        "expected follow-up request to preserve the v2 context_compaction item"
-    );
-    assert!(
-        follow_up_body.contains("ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"),
-        "expected follow-up request to include the context compaction payload"
+        "expected follow-up request to include the compaction payload"
     );
     assert!(
         !follow_up_body.contains("IGNORED_COMPACT_REPLY"),
@@ -1113,8 +927,6 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
             description: "Hidden until discovered.".to_string(),
             input_schema: input_schema.clone(),
             defer_loading: true,
-            persist_on_resume: true,
-            capability: None,
         },
         DynamicToolSpec {
             namespace: Some("codex_app".to_string()),
@@ -1122,8 +934,6 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
             description: "Visible immediately.".to_string(),
             input_schema,
             defer_loading: false,
-            persist_on_resume: true,
-            capability: None,
         },
     ];
     let new_thread = test
@@ -1163,6 +973,7 @@ async fn remote_compact_filters_deferred_dynamic_tools() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -1234,6 +1045,7 @@ async fn remote_compact_runs_automatically() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -1248,96 +1060,17 @@ async fn remote_compact_runs_automatically() -> Result<()> {
     assert_eq!(
         compact_mock
             .single_request()
-            .header("session_id")
+            .header("session-id")
             .as_deref(),
         Some(session_id.as_str())
     );
     assert_eq!(
-        compact_mock.single_request().header("thread_id").as_deref(),
+        compact_mock.single_request().header("thread-id").as_deref(),
         Some(thread_id.as_str())
     );
     let follow_up_request = responses_mock.single_request();
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(follow_up_body.contains("REMOTE_COMPACTED_SUMMARY"));
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_remote_compact_retries_server_overloaded() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-    )
-    .await?;
-    let codex = harness.test().codex.clone();
-
-    mount_sse_once(
-        harness.server(),
-        sse(vec![
-            responses::ev_shell_command_call("m1", "echo 'hi'"),
-            responses::ev_completed_with_tokens("resp-1", /*total_tokens*/ 100000000),
-        ]),
-    )
-    .await;
-    let responses_mock = mount_sse_once(
-        harness.server(),
-        responses::sse(vec![
-            responses::ev_assistant_message("m2", "AFTER_CAPACITY_COMPACT_REPLY"),
-            responses::ev_completed("resp-2"),
-        ]),
-    )
-    .await;
-
-    let compact_mock = responses::mount_compact_response_sequence(
-        harness.server(),
-        vec![
-            ResponseTemplate::new(503).set_body_json(serde_json::json!({
-                "error": {
-                    "code": "server_is_overloaded",
-                    "message": "Selected model is at capacity."
-                }
-            })),
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "output": [
-                    {
-                        "type": "compaction",
-                        "encrypted_content": "REMOTE_COMPACTED_AFTER_CAPACITY"
-                    }
-                ]
-            })),
-        ],
-    )
-    .await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "hello remote compact".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await?;
-
-    let compacted = wait_for_event_match(&codex, |event| match event {
-        EventMsg::ContextCompacted(_) => Some(true),
-        _ => None,
-    })
-    .await;
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-
-    assert!(compacted);
-    assert_eq!(
-        compact_mock.requests().len(),
-        2,
-        "expected capacity failure then compact retry"
-    );
-    let follow_up_body = responses_mock.single_request().body_json().to_string();
-    assert!(follow_up_body.contains("REMOTE_COMPACTED_AFTER_CAPACITY"));
 
     Ok(())
 }
@@ -1393,6 +1126,7 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1406,6 +1140,7 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1523,6 +1258,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1536,6 +1272,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1555,6 +1292,7 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1654,6 +1392,7 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -1667,6 +1406,7 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -1760,6 +1500,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&baseline_codex, |event| {
@@ -1776,6 +1517,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&baseline_codex, |event| {
@@ -1811,7 +1553,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
     let override_base_instructions = format!(
         "{}\nREMOTE_BASE_INSTRUCTIONS_OVERRIDE {}",
         baseline_compact_request.instructions_text(),
-        "x".repeat(4_000)
+        "x".repeat(8_000)
     );
     let override_context_window = baseline_payload_tokens.saturating_add(500);
     let pretrim_override_estimate =
@@ -1866,6 +1608,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&override_codex, |event| {
@@ -1882,6 +1625,7 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&override_codex, |event| {
@@ -1952,6 +1696,7 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -2032,6 +1777,7 @@ async fn remote_manual_compact_failure_emits_task_error_event() -> Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -2115,6 +1861,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2257,6 +2004,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2274,6 +2022,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2298,6 +2047,7 @@ async fn remote_compact_and_resume_refresh_stale_developer_instructions() -> Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&resumed.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2393,6 +2143,7 @@ async fn remote_compact_refreshes_stale_developer_instructions_without_resume() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2409,6 +2160,7 @@ async fn remote_compact_refreshes_stale_developer_instructions_without_resume() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2480,6 +2232,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_sta
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2493,6 +2246,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_sta
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2559,6 +2313,7 @@ async fn remote_request_uses_custom_experimental_realtime_start_instructions() -
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2619,6 +2374,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_end
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2634,6 +2390,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_end
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2708,6 +2465,7 @@ async fn snapshot_request_shape_remote_manual_compact_restates_realtime_start() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2724,6 +2482,7 @@ async fn snapshot_request_shape_remote_manual_compact_restates_realtime_start() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2806,6 +2565,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2821,6 +2581,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2911,6 +2672,7 @@ async fn snapshot_request_shape_remote_compact_resume_restates_realtime_end() ->
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -2940,6 +2702,7 @@ async fn snapshot_request_shape_remote_compact_resume_restates_realtime_end() ->
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&resumed.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3010,22 +2773,14 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
 
     for user in ["USER_ONE", "USER_TWO", "USER_THREE"] {
         if user == "USER_THREE" {
-            codex
-                .submit(Op::OverrideTurnContext {
+            core_test_support::submit_thread_settings(
+                &codex,
+                codex_protocol::protocol::ThreadSettingsOverrides {
                     cwd: Some(PathBuf::from(PRETURN_CONTEXT_DIFF_CWD)),
-                    approval_policy: None,
-                    approvals_reviewer: None,
-                    sandbox_policy: None,
-                    permission_profile: None,
-                    windows_sandbox_level: None,
-                    model: None,
-                    effort: None,
-                    summary: None,
-                    service_tier: None,
-                    collaboration_mode: None,
-                    personality: None,
-                })
-                .await?;
+                    ..Default::default()
+                },
+            )
+            .await?;
         }
         codex
             .submit(Op::UserInput {
@@ -3036,6 +2791,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
                 }],
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             })
             .await?;
         wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3122,26 +2878,19 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(next_model.to_string()),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
+            ..Default::default()
+        },
+    )
+    .await?;
     codex
         .submit(Op::UserInput {
             environments: None,
@@ -3151,6 +2900,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3269,6 +3019,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3282,6 +3033,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     let error_message = wait_for_event_match(&codex, |event| match event {
@@ -3366,6 +3118,7 @@ async fn snapshot_request_shape_remote_mid_turn_continuation_compaction() -> Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3443,6 +3196,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_summary_only_reinject
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3528,6 +3282,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3544,6 +3299,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3625,6 +3381,7 @@ async fn snapshot_request_shape_remote_manual_compact_without_previous_user_mess
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

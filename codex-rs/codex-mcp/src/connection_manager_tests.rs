@@ -108,7 +108,87 @@ fn is_code_mode_compatible_tool_name(name: &ToolName) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 #[test]
-fn elicitation_reject_policy_defaults_to_prompting() {
+fn declared_openai_file_fields_treat_names_literally() {
+    let meta = serde_json::json!({
+        "openai/fileParams": ["file", "input_file", "attachments"]
+    });
+    let meta = meta.as_object().expect("meta object");
+
+    assert_eq!(
+        declared_openai_file_input_param_names(Some(meta)),
+        vec![
+            "file".to_string(),
+            "input_file".to_string(),
+            "attachments".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn tool_with_model_visible_input_schema_masks_file_params() {
+    let mut tool = create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "upload").tool;
+    tool.input_schema = Arc::new(
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "object",
+                    "description": "Original file payload."
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "object"}
+                }
+            }
+        })
+        .as_object()
+        .expect("object")
+        .clone(),
+    );
+    tool.meta = Some(Meta(
+        serde_json::json!({
+            "openai/fileParams": ["file", "files"]
+        })
+        .as_object()
+        .expect("object")
+        .clone(),
+    ));
+
+    let tool = tool_with_model_visible_input_schema(&tool);
+
+    assert_eq!(
+        *tool.input_schema,
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Original file payload. This parameter expects an absolute local file path. If you want to upload a file, provide the absolute path to that file here."
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "This parameter expects an absolute local file path. If you want to upload a file, provide the absolute path to that file here."
+                }
+            }
+        })
+        .as_object()
+        .expect("object")
+        .clone()
+    );
+}
+
+#[test]
+fn tool_with_model_visible_input_schema_leaves_tools_without_file_params_unchanged() {
+    let original_tool = create_test_tool("custom", "upload").tool;
+
+    let tool = tool_with_model_visible_input_schema(&original_tool);
+
+    assert_eq!(tool, original_tool);
+}
+
+#[test]
+fn elicitation_granular_policy_defaults_to_prompting() {
     assert!(!elicitation_is_rejected_by_policy(
         AskForApproval::OnFailure
     ));
@@ -120,27 +200,18 @@ fn elicitation_reject_policy_defaults_to_prompting() {
     ));
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
         GranularApprovalConfig {
-            sandbox_approval: false,
-            rules: false,
-            skill_approval: false,
-            request_permissions: false,
+            sandbox_approval: true,
+            rules: true,
+            skill_approval: true,
+            request_permissions: true,
             mcp_elicitations: false,
         }
     )));
 }
 
 #[test]
-fn elicitation_reject_policy_respects_never_and_reject_config() {
+fn elicitation_granular_policy_respects_never_and_config() {
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Never));
-    assert!(!elicitation_is_rejected_by_policy(
-        AskForApproval::Granular(GranularApprovalConfig {
-            sandbox_approval: false,
-            rules: false,
-            skill_approval: false,
-            request_permissions: false,
-            mcp_elicitations: true,
-        })
-    ));
     assert!(elicitation_is_rejected_by_policy(AskForApproval::Granular(
         GranularApprovalConfig {
             sandbox_approval: true,
@@ -309,7 +380,9 @@ fn test_normalize_tools_sanitizes_invalid_characters() {
     // The callable parts are sanitized for model-visible tool calls, but the raw
     // MCP name is preserved for the actual MCP call.
     assert_eq!(tool.server_name, "server.one");
-    assert_eq!(tool.callable_name, "tool.two-three");
+    assert_eq!(tool.callable_namespace, "mcp__server_one__");
+    assert_eq!(tool.callable_name, "tool_two_three");
+    assert_eq!(tool.tool.name, "tool.two-three");
 
     assert!(
         is_code_mode_compatible_tool_name(&model_name),
@@ -523,8 +596,8 @@ fn codex_apps_tools_cache_filters_disallowed_connectors() {
         create_test_tool_with_connector(
             CODEX_APPS_MCP_SERVER_NAME,
             "blocked_tool",
-            "connector_openai_hidden",
-            Some("Hidden"),
+            "connector_2b0a9009c9c64bf9933a3dae3f2b1254",
+            Some("Blocked"),
         ),
         create_test_tool_with_connector(
             CODEX_APPS_MCP_SERVER_NAME,
@@ -774,6 +847,112 @@ async fn list_all_tools_adds_server_metadata_to_cached_tools() {
     assert_eq!(tool.server_origin.as_deref(), Some("https://docs.example"));
 }
 
+#[tokio::test]
+async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
+    let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
+    let (tx_event, rx_event) = async_channel::unbounded();
+    drop(rx_event);
+    let codex_home = tempdir().expect("tempdir");
+    let mcp_servers = HashMap::from([
+        (
+            "stdio".to_string(),
+            EffectiveMcpServer::configured(McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "echo".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                experimental_environment: None,
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            }),
+        ),
+        (
+            "http".to_string(),
+            EffectiveMcpServer::configured(McpServerConfig {
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "http://127.0.0.1:1".to_string(),
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                experimental_environment: None,
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            }),
+        ),
+    ]);
+
+    let (manager, cancel_token) = McpConnectionManager::new(
+        &mcp_servers,
+        OAuthCredentialsStoreMode::default(),
+        HashMap::new(),
+        &approval_policy,
+        String::new(),
+        tx_event,
+        PermissionProfile::default(),
+        McpRuntimeEnvironment::new(
+            /*environment*/ None,
+            /*local_environment*/ None,
+            PathBuf::from("/tmp"),
+        ),
+        codex_home.path().to_path_buf(),
+        CodexAppsToolsCacheKey {
+            account_id: None,
+            chatgpt_user_id: None,
+            is_workspace_account: false,
+        },
+        /*host_owned_codex_apps_enabled*/ false,
+        ElicitationCapability::default(),
+        ToolPluginProvenance::default(),
+        /*auth*/ None,
+        /*elicitation_reviewer*/ None,
+    )
+    .await;
+
+    assert!(manager.clients.contains_key("stdio"));
+    assert!(manager.clients.contains_key("http"));
+    assert!(
+        !manager
+            .wait_for_server_ready("stdio", Duration::from_millis(10))
+            .await
+    );
+    let failures = manager
+        .required_startup_failures(&["stdio".to_string()])
+        .await;
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].server, "stdio");
+    assert_eq!(
+        failures[0].error,
+        "local stdio MCP server `stdio` requires a local environment"
+    );
+    cancel_token.cancel();
+}
+
 #[test]
 fn elicitation_capability_uses_2025_06_18_shape_for_form_only_support() {
     let capability = Some(ElicitationCapability::default());
@@ -820,10 +999,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         }),
@@ -876,10 +1052,7 @@ fn mcp_init_error_display_reports_generic_errors() {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            enable_elicitation: false,
-            read_only: false,
-            strict_tool_classification: false,
-            require_approval_for_mutating: false,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         }),

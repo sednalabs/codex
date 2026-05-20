@@ -21,12 +21,16 @@
     "installationId": {
       "type": "string"
     },
+    "serverName": {
+      "type": "string"
+    },
     "status": {
       "$ref": "#/$defs/RemoteControlConnectionStatus"
     }
   },
   "required": [
     "installationId",
+    "serverName",
     "status"
   ],
   "title": "RemoteControlStatusChangedNotification",

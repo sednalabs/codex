@@ -1,62 +1,24 @@
 use super::*;
-use crate::function_tool::FunctionCallError;
+use crate::shell::ShellType;
 use crate::shell::default_user_shell;
 use codex_tools::UnifiedExecShellMode;
 use codex_tools::ZshForkConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_output_truncation::TruncationPolicy;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
 use crate::session::tests::make_session_and_context;
-use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
-use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
+use crate::tools::registry::CoreToolRuntime;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use codex_utils_output_truncation::approx_token_count;
 use tokio::sync::Mutex;
-use tokio::time::Duration;
-use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 
-fn invocation(
-    session: Arc<crate::session::session::Session>,
-    turn: Arc<TurnContext>,
-    tool_name: &str,
-    payload: ToolPayload,
-) -> ToolInvocation {
-    ToolInvocation {
-        session,
-        turn,
-        cancellation_token: CancellationToken::new(),
-        tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
-        call_id: "call-unified-exec-test".to_string(),
-        tool_name: codex_tools::ToolName::plain(tool_name),
-        source: ToolCallSource::Direct,
-        payload,
-    }
-}
-
-fn function_payload(args: serde_json::Value) -> ToolPayload {
-    ToolPayload::Function {
-        arguments: args.to_string(),
-    }
-}
-
-async fn run_unified_exec(
-    session: Arc<crate::session::session::Session>,
-    turn: Arc<TurnContext>,
-    tool_name: &str,
-    args: serde_json::Value,
-) -> Result<ExecCommandToolOutput, FunctionCallError> {
-    ExecCommandHandler::default()
-        .handle(invocation(session, turn, tool_name, function_payload(args)))
-        .await
-}
+const TEST_TRUNCATION_POLICY: TruncationPolicy = TruncationPolicy::Tokens(10_000);
 
 async fn invocation_for_payload(
     tool_name: &str,
@@ -84,13 +46,14 @@ fn test_get_command_uses_default_shell_when_unspecified() -> anyhow::Result<()> 
 
     assert!(args.shell.is_none());
 
-    let command = get_command(
+    let resolved = get_command(
         &args,
         Arc::new(default_user_shell()),
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
     .map_err(anyhow::Error::msg)?;
+    let command = resolved.command;
 
     assert_eq!(command.len(), 3);
     assert_eq!(command[2], "echo hello");
@@ -105,13 +68,14 @@ fn test_get_command_respects_explicit_bash_shell() -> anyhow::Result<()> {
 
     assert_eq!(args.shell.as_deref(), Some("/bin/bash"));
 
-    let command = get_command(
+    let resolved = get_command(
         &args,
         Arc::new(default_user_shell()),
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
     .map_err(anyhow::Error::msg)?;
+    let command = resolved.command;
 
     assert_eq!(command.last(), Some(&"echo hello".to_string()));
     if command
@@ -125,21 +89,37 @@ fn test_get_command_respects_explicit_bash_shell() -> anyhow::Result<()> {
 
 #[test]
 fn test_get_command_respects_explicit_powershell_shell() -> anyhow::Result<()> {
-    let json = r#"{"cmd": "echo hello", "shell": "powershell"}"#;
+    let temp_dir = tempfile::tempdir()?;
+    let powershell_path = temp_dir.path().join(if cfg!(windows) {
+        "powershell.exe"
+    } else {
+        "powershell"
+    });
+    std::fs::write(&powershell_path, "")?;
+    let json = serde_json::json!({
+        "cmd": "echo hello",
+        "shell": powershell_path,
+    })
+    .to_string();
 
-    let args: ExecCommandArgs = parse_arguments(json)?;
+    let args: ExecCommandArgs = parse_arguments(&json)?;
 
-    assert_eq!(args.shell.as_deref(), Some("powershell"));
+    assert_eq!(
+        args.shell.as_deref(),
+        Some(powershell_path.to_string_lossy().as_ref())
+    );
 
-    let command = get_command(
+    let resolved = get_command(
         &args,
         Arc::new(default_user_shell()),
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
     .map_err(anyhow::Error::msg)?;
+    let command = resolved.command;
 
     assert_eq!(command[2], "echo hello");
+    assert_eq!(resolved.shell_type, ShellType::PowerShell);
     Ok(())
 }
 
@@ -151,13 +131,14 @@ fn test_get_command_respects_explicit_cmd_shell() -> anyhow::Result<()> {
 
     assert_eq!(args.shell.as_deref(), Some("cmd"));
 
-    let command = get_command(
+    let resolved = get_command(
         &args,
         Arc::new(default_user_shell()),
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
     .map_err(anyhow::Error::msg)?;
+    let command = resolved.command;
 
     assert_eq!(command[2], "echo hello");
     Ok(())
@@ -201,7 +182,7 @@ fn test_get_command_ignores_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
         })?,
     });
 
-    let command = get_command(
+    let resolved = get_command(
         &args,
         Arc::new(default_user_shell()),
         &shell_mode,
@@ -210,13 +191,14 @@ fn test_get_command_ignores_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
     .map_err(anyhow::Error::msg)?;
 
     assert_eq!(
-        command,
+        resolved.command,
         vec![
             shell_zsh_path.to_string_lossy().to_string(),
             "-lc".to_string(),
             "echo hello".to_string()
         ]
     );
+    assert_eq!(resolved.shell_type, ShellType::Zsh);
     Ok(())
 }
 
@@ -279,6 +261,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
         chunk_id: "chunk-1".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"three".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),
@@ -308,6 +291,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completi
         chunk_id: "chunk-1".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"three".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),
@@ -338,6 +322,7 @@ async fn exec_command_post_tool_use_payload_skips_running_sessions() {
         chunk_id: "chunk-1".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"three".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: Some(45),
         exit_code: None,
@@ -363,6 +348,7 @@ async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_comman
         chunk_id: "chunk-2".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"finished\n".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),
@@ -393,6 +379,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
         chunk_id: "chunk-a".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"alpha\n".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),
@@ -404,6 +391,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
         chunk_id: "chunk-b".to_string(),
         wall_time: std::time::Duration::from_millis(498),
         raw_output: b"beta\n".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),

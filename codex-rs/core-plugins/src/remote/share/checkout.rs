@@ -1,3 +1,4 @@
+use super::super::REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME;
 use super::super::REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME;
 use super::super::REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME;
 use super::super::RemotePluginCatalogError;
@@ -84,6 +85,7 @@ pub async fn checkout_remote_plugin_share(
             &plugin_name,
             detail.release_version.as_deref(),
             detail.bundle_download_url.as_deref(),
+            /*app_manifest*/ None,
         )
         .map_err(|err| {
             RemotePluginCatalogError::UnexpectedResponse(format!(
@@ -162,7 +164,8 @@ pub async fn checkout_remote_plugin_share(
 fn is_checkout_supported_share_marketplace(marketplace_name: &str) -> bool {
     matches!(
         marketplace_name,
-        REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME
+        REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME
+            | REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME
             | REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME
     )
 }
