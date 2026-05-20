@@ -379,6 +379,7 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
@@ -444,6 +445,7 @@ async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_pa
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
@@ -529,6 +531,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
@@ -1324,6 +1327,7 @@ fn store_history_items() -> Vec<RolloutItem> {
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         },
     ))]
 }

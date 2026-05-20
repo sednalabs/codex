@@ -5,25 +5,23 @@ use crate::AgentJobItemCreateParams;
 use crate::AgentJobItemStatus;
 use crate::AgentJobProgress;
 use crate::AgentJobStatus;
+use crate::GOALS_DB_FILENAME;
 use crate::LOGS_DB_FILENAME;
-use crate::LOGS_DB_VERSION;
 use crate::LogEntry;
 use crate::LogQuery;
 use crate::LogRow;
 use crate::STATE_DB_FILENAME;
-use crate::STATE_DB_VERSION;
 use crate::SortKey;
 use crate::ThreadMetadata;
 use crate::ThreadMetadataBuilder;
 use crate::ThreadsPage;
 use crate::USAGE_DB_FILENAME;
-use crate::USAGE_DB_VERSION;
 use crate::apply_rollout_item;
-use crate::migrations::USAGE_MIGRATOR;
+use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
 use crate::migrations::runtime_state_migrator;
+use crate::migrations::runtime_usage_migrator;
 use crate::model::AgentJobRow;
-use crate::model::ThreadGoalRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -72,6 +70,7 @@ mod test_support;
 mod threads;
 pub mod usage;
 
+pub use goals::GoalStore;
 pub use goals::ThreadGoalAccountingMode;
 pub use goals::ThreadGoalAccountingOutcome;
 pub use goals::ThreadGoalUpdate;
@@ -87,6 +86,65 @@ pub use threads::ThreadFilterOptions;
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 
+const STATE_DB_CURRENT_FILENAME: &str = "state_5.sqlite";
+const LOGS_DB_CURRENT_FILENAME: &str = "logs_2.sqlite";
+const USAGE_DB_CURRENT_FILENAME: &str = "usage_1.sqlite";
+
+#[derive(Clone, Copy)]
+struct RuntimeDbSpec {
+    label: &'static str,
+    filename: &'static str,
+    kind: DbKind,
+    open_phase: &'static str,
+    migrate_phase: &'static str,
+}
+
+impl RuntimeDbSpec {
+    fn path(self, codex_home: &Path) -> PathBuf {
+        codex_home.join(self.filename)
+    }
+}
+
+const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "state DB",
+    filename: STATE_DB_CURRENT_FILENAME,
+    kind: DbKind::State,
+    open_phase: "open_state",
+    migrate_phase: "migrate_state",
+};
+
+const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "log DB",
+    filename: LOGS_DB_CURRENT_FILENAME,
+    kind: DbKind::Logs,
+    open_phase: "open_logs",
+    migrate_phase: "migrate_logs",
+};
+
+const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "goals DB",
+    filename: GOALS_DB_FILENAME,
+    kind: DbKind::Goals,
+    open_phase: "open_goals",
+    migrate_phase: "migrate_goals",
+};
+
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_CURRENT_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 4] = [STATE_DB, LOGS_DB, GOALS_DB, USAGE_DB];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeDbPath {
+    pub label: &'static str,
+    pub path: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct StateRuntime {
     codex_home: PathBuf,
@@ -94,6 +152,7 @@ pub struct StateRuntime {
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
     usage_pool: Arc<sqlx::SqlitePool>,
+    thread_goals: GoalStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
@@ -147,9 +206,12 @@ impl StateRuntime {
         remove_legacy_db_files(&codex_home, usage_name.as_str(), USAGE_DB_FILENAME, "usage").await;
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
-        let state_path = state_db_path(codex_home.as_path());
-        let logs_path = logs_db_path(codex_home.as_path());
-        let usage_path = usage_db_path(codex_home.as_path());
+        let usage_migrator = runtime_usage_migrator();
+        let goals_migrator = runtime_goals_migrator();
+        let state_path = STATE_DB.path(codex_home.as_path());
+        let logs_path = LOGS_DB.path(codex_home.as_path());
+        let goals_path = GOALS_DB.path(codex_home.as_path());
+        let usage_path = USAGE_DB.path(codex_home.as_path());
         let pool = match open_state_sqlite(&state_path, &state_migrator, telemetry_override).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -165,8 +227,16 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let goals_pool =
+            match open_goals_sqlite(&goals_path, &goals_migrator, telemetry_override).await {
+                Ok(db) => Arc::new(db),
+                Err(err) => {
+                    warn!("failed to open goals db at {}: {err}", goals_path.display());
+                    return Err(err);
+                }
+            };
         let usage_pool =
-            match open_usage_sqlite(&usage_path, &USAGE_MIGRATOR, telemetry_override).await {
+            match open_usage_sqlite(&usage_path, &usage_migrator, telemetry_override).await {
                 Ok(db) => Arc::new(db),
                 Err(err) => {
                     warn!("failed to open usage db at {}: {err}", usage_path.display());
@@ -199,6 +269,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis_result?;
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
+            thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             pool,
             logs_pool,
             usage_pool,
@@ -217,6 +288,10 @@ impl StateRuntime {
 
     pub fn usage_pool(&self) -> Arc<SqlitePool> {
         Arc::clone(&self.usage_pool)
+    }
+
+    pub fn thread_goals(&self) -> &GoalStore {
+        &self.thread_goals
     }
 }
 
@@ -238,15 +313,7 @@ async fn open_state_sqlite(
     // New state DBs should use incremental auto-vacuum, but retrofitting an
     // existing DB requires a full VACUUM. Do not attempt that during process
     // startup: it is maintenance work that can contend with foreground writers.
-    open_sqlite(
-        path,
-        migrator,
-        DbKind::State,
-        "open_state",
-        "migrate_state",
-        telemetry_override,
-    )
-    .await
+    open_sqlite(path, migrator, STATE_DB, telemetry_override).await
 }
 
 async fn open_logs_sqlite(
@@ -254,15 +321,15 @@ async fn open_logs_sqlite(
     migrator: &Migrator,
     telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
-    open_sqlite(
-        path,
-        migrator,
-        DbKind::Logs,
-        "open_logs",
-        "migrate_logs",
-        telemetry_override,
-    )
-    .await
+    open_sqlite(path, migrator, LOGS_DB, telemetry_override).await
+}
+
+async fn open_goals_sqlite(
+    path: &Path,
+    migrator: &Migrator,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    open_sqlite(path, migrator, GOALS_DB, telemetry_override).await
 }
 
 async fn open_usage_sqlite(
@@ -270,23 +337,13 @@ async fn open_usage_sqlite(
     migrator: &Migrator,
     telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
-    open_sqlite(
-        path,
-        migrator,
-        DbKind::Usage,
-        "open_usage",
-        "migrate_usage",
-        telemetry_override,
-    )
-    .await
+    open_sqlite(path, migrator, USAGE_DB, telemetry_override).await
 }
 
 async fn open_sqlite(
     path: &Path,
     migrator: &Migrator,
-    db: DbKind,
-    open_phase: &'static str,
-    migrate_phase: &'static str,
+    spec: RuntimeDbSpec,
     telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
     let options = base_sqlite_options(path).auto_vacuum(SqliteAutoVacuum::Incremental);
@@ -298,8 +355,8 @@ async fn open_sqlite(
         .map_err(anyhow::Error::from);
     crate::telemetry::record_init_result(
         telemetry_override,
-        db,
-        open_phase,
+        spec.kind,
+        spec.open_phase,
         started.elapsed(),
         &pool_result,
     );
@@ -308,8 +365,8 @@ async fn open_sqlite(
     let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
     crate::telemetry::record_init_result(
         telemetry_override,
-        db,
-        migrate_phase,
+        spec.kind,
+        spec.migrate_phase,
         started.elapsed(),
         &migrate_result,
     );
@@ -335,32 +392,64 @@ ON CONFLICT(id) DO NOTHING
     Ok(())
 }
 
-fn db_filename(base_name: &str, version: u32) -> String {
-    format!("{base_name}_{version}.sqlite")
-}
-
 pub fn state_db_filename() -> String {
-    db_filename(STATE_DB_FILENAME, STATE_DB_VERSION)
+    STATE_DB.filename.to_string()
 }
 
 pub fn state_db_path(codex_home: &Path) -> PathBuf {
-    codex_home.join(state_db_filename())
+    STATE_DB.path(codex_home)
 }
 
 pub fn logs_db_filename() -> String {
-    db_filename(LOGS_DB_FILENAME, LOGS_DB_VERSION)
+    LOGS_DB.filename.to_string()
 }
 
 pub fn logs_db_path(codex_home: &Path) -> PathBuf {
-    codex_home.join(logs_db_filename())
+    LOGS_DB.path(codex_home)
+}
+
+pub fn goals_db_filename() -> String {
+    GOALS_DB.filename.to_string()
+}
+
+pub fn goals_db_path(codex_home: &Path) -> PathBuf {
+    GOALS_DB.path(codex_home)
+}
+
+pub fn runtime_db_paths(codex_home: &Path) -> Vec<RuntimeDbPath> {
+    RUNTIME_DBS
+        .iter()
+        .map(|spec| RuntimeDbPath {
+            label: spec.label,
+            path: spec.path(codex_home),
+        })
+        .collect()
+}
+
+/// Run SQLite's built-in integrity check against an existing database file.
+pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .log_statements(LevelFilter::Off);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let rows = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+        .fetch_all(&pool)
+        .await?;
+    pool.close().await;
+    Ok(rows)
 }
 
 pub fn usage_db_filename() -> String {
-    db_filename(USAGE_DB_FILENAME, USAGE_DB_VERSION)
+    USAGE_DB.filename.to_string()
 }
 
 pub fn usage_db_path(codex_home: &Path) -> PathBuf {
-    codex_home.join(usage_db_filename())
+    USAGE_DB.path(codex_home)
 }
 
 async fn remove_legacy_db_files(
@@ -452,6 +541,7 @@ mod tests {
     use super::logs_db_filename;
     use super::open_state_sqlite;
     use super::runtime_state_migrator;
+    use super::sqlite_integrity_check;
     use super::state_db_path;
     use super::test_support::unique_temp_dir;
     use super::usage_db_filename;
@@ -532,6 +622,34 @@ mod tests {
         )
         .await
         .expect("open sqlite pool")
+    }
+
+    #[tokio::test]
+    async fn sqlite_integrity_check_reports_ok_for_valid_db() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open sqlite db");
+        sqlx::query("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("create sample table");
+        pool.close().await;
+
+        let result = sqlite_integrity_check(&path)
+            .await
+            .expect("integrity check should run");
+
+        assert_eq!(result, vec!["ok".to_string()]);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
@@ -744,6 +862,8 @@ mod tests {
             "migrate_state",
             "open_logs",
             "migrate_logs",
+            "open_goals",
+            "migrate_goals",
             "open_usage",
             "migrate_usage",
             "ensure_backfill_state",

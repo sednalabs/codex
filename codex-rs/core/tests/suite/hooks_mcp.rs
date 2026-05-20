@@ -197,6 +197,7 @@ fn insert_rmcp_test_server(config: &mut Config, command: String, approval_mode: 
             strict_tool_classification: false,
             require_approval_for_mutating: false,
             scopes: None,
+            oauth: None,
             oauth_resource: None,
             tools: HashMap::new(),
         },

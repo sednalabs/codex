@@ -189,7 +189,6 @@ fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {
     lock_config.profiles.clear();
     clear_config_lock_debug_controls(lock_config);
     lock_config.model_instructions_file = None;
-    lock_config.experimental_instructions_file = None;
     lock_config.experimental_compact_prompt_file = None;
     lock_config.model_catalog_json = None;
     lock_config.sandbox_mode = None;
@@ -197,7 +196,6 @@ fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {
     lock_config.default_permissions = None;
     lock_config.permissions = None;
     lock_config.experimental_use_unified_exec_tool = None;
-    lock_config.experimental_use_freeform_apply_patch = None;
 }
 
 #[cfg(test)]
@@ -259,6 +257,8 @@ mod tests {
                 enabled: Some(false),
                 max_concurrent_threads_per_session: Some(_),
                 min_wait_timeout_ms: Some(_),
+                max_wait_timeout_ms: Some(_),
+                default_wait_timeout_ms: Some(_),
                 usage_hint_enabled: Some(_),
                 hide_spawn_agent_metadata: Some(_),
                 ..

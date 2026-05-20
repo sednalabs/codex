@@ -1,6 +1,8 @@
 //! App-level orchestration tests for the TUI.
 
 mod model_catalog;
+mod session_summary;
+mod startup;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
@@ -26,6 +28,7 @@ use crate::app_command::AppCommand as Op;
 use crate::diff_model::FileChange;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
+use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::TerminalResizeReflowMaxRows;
 use codex_app_server_protocol::AdditionalFileSystemPermissions;
 use codex_app_server_protocol::AdditionalNetworkPermissions;
@@ -71,8 +74,6 @@ use codex_app_server_protocol::UserInput as AppServerUserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
-use codex_protocol::computer_use::ComputerUseCallRequest;
-use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -81,7 +82,6 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -108,23 +108,6 @@ fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
 }
 
-fn upsert_agent_navigation_for_test(
-    app: &mut App,
-    thread_id: ThreadId,
-    agent_nickname: Option<String>,
-    agent_role: Option<String>,
-    is_closed: bool,
-) {
-    app.agent_navigation.upsert(
-        thread_id,
-        agent_nickname,
-        agent_role,
-        is_closed,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
-}
-
 #[tokio::test]
 async fn handle_mcp_inventory_result_clears_committed_loading_cell() {
     let mut app = make_test_app().await;
@@ -145,183 +128,6 @@ async fn handle_mcp_inventory_result_clears_committed_loading_cell() {
     );
 
     assert_eq!(app.transcript_cells.len(), 0);
-}
-
-#[test]
-fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
-    assert_eq!(
-        App::should_wait_for_initial_session(&SessionSelection::StartFresh),
-        true
-    );
-    assert_eq!(
-        App::should_wait_for_initial_session(&SessionSelection::Exit),
-        true
-    );
-    assert_eq!(
-        App::should_wait_for_initial_session(&SessionSelection::Resume(
-            crate::resume_picker::SessionTarget {
-                path: Some(PathBuf::from("/tmp/restore")),
-                thread_id: ThreadId::new(),
-            }
-        )),
-        false
-    );
-    assert_eq!(
-        App::should_wait_for_initial_session(&SessionSelection::Fork(
-            crate::resume_picker::SessionTarget {
-                path: Some(PathBuf::from("/tmp/fork")),
-                thread_id: ThreadId::new(),
-            }
-        )),
-        false
-    );
-}
-
-#[test]
-fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
-    let resume = SessionSelection::Resume(crate::resume_picker::SessionTarget {
-        path: Some(PathBuf::from("/tmp/restore")),
-        thread_id: ThreadId::new(),
-    });
-    let fork = SessionSelection::Fork(crate::resume_picker::SessionTarget {
-        path: Some(PathBuf::from("/tmp/fork")),
-        thread_id: ThreadId::new(),
-    });
-    let no_images: Vec<PathBuf> = Vec::new();
-    let initial_images = vec![PathBuf::from("/tmp/image.png")];
-
-    assert!(App::should_prompt_for_paused_goal_after_startup_resume(
-        &resume, &None, &no_images
-    ));
-    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
-        &resume,
-        &Some("continue from here".to_string()),
-        &no_images
-    ));
-    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
-        &resume,
-        &None,
-        &initial_images
-    ));
-    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
-        &SessionSelection::StartFresh,
-        &None,
-        &no_images
-    ));
-    assert!(!App::should_prompt_for_paused_goal_after_startup_resume(
-        &fork, &None, &no_images
-    ));
-}
-
-#[test]
-fn startup_waiting_gate_holds_active_thread_events_until_primary_thread_configured() {
-    let mut wait_for_initial_session =
-        App::should_wait_for_initial_session(&SessionSelection::StartFresh);
-    assert_eq!(wait_for_initial_session, true);
-    assert_eq!(
-        App::should_handle_active_thread_events(
-            wait_for_initial_session,
-            /*has_active_thread_receiver*/ true
-        ),
-        false
-    );
-
-    assert_eq!(
-        App::should_stop_waiting_for_initial_session(
-            wait_for_initial_session,
-            /*primary_thread_id*/ None
-        ),
-        false
-    );
-    if App::should_stop_waiting_for_initial_session(wait_for_initial_session, Some(ThreadId::new()))
-    {
-        wait_for_initial_session = false;
-    }
-    assert_eq!(wait_for_initial_session, false);
-
-    assert_eq!(
-        App::should_handle_active_thread_events(
-            wait_for_initial_session,
-            /*has_active_thread_receiver*/ true
-        ),
-        true
-    );
-}
-
-#[test]
-fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
-    let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
-        crate::resume_picker::SessionTarget {
-            path: Some(PathBuf::from("/tmp/restore")),
-            thread_id: ThreadId::new(),
-        },
-    ));
-    assert_eq!(
-        App::should_handle_active_thread_events(
-            wait_for_resume,
-            /*has_active_thread_receiver*/ true
-        ),
-        true
-    );
-    let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
-        crate::resume_picker::SessionTarget {
-            path: Some(PathBuf::from("/tmp/fork")),
-            thread_id: ThreadId::new(),
-        },
-    ));
-    assert_eq!(
-        App::should_handle_active_thread_events(
-            wait_for_fork,
-            /*has_active_thread_receiver*/ true
-        ),
-        true
-    );
-}
-
-#[tokio::test]
-async fn ignore_same_thread_resume_reports_noop_for_current_thread() {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let thread_id = ThreadId::new();
-    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
-    app.chat_widget.handle_thread_session(session.clone());
-    app.thread_event_channels.insert(
-        thread_id,
-        ThreadEventChannel::new_with_session(THREAD_EVENT_CHANNEL_CAPACITY, session, Vec::new()),
-    );
-    app.activate_thread_channel(thread_id).await;
-    while app_event_rx.try_recv().is_ok() {}
-
-    let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
-        path: Some(test_path_buf("/tmp/project")),
-        thread_id,
-    });
-
-    assert!(ignored);
-    let cell = match app_event_rx.try_recv() {
-        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
-        other => panic!("expected info message after same-thread resume, saw {other:?}"),
-    };
-    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
-    assert!(rendered.contains(&format!(
-        "Already viewing {}.",
-        test_path_display("/tmp/project")
-    )));
-}
-
-#[tokio::test]
-async fn ignore_same_thread_resume_allows_reattaching_displayed_inactive_thread() {
-    let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
-    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
-    app.chat_widget.handle_thread_session(session);
-
-    let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
-        path: Some(test_path_buf("/tmp/project")),
-        thread_id,
-    });
-
-    assert!(!ignored);
-    assert!(app.transcript_cells.is_empty());
 }
 
 #[test]
@@ -459,7 +265,6 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
     let model = crate::legacy_core::test_support::get_model_offline(config.model.as_deref());
     app.chat_widget = ChatWidget::new_with_app_event(ChatWidgetInit {
         config,
-        environment_manager: app.environment_manager.clone(),
         frame_requester: crate::tui::FrameRequester::test_dummy(),
         app_event_tx: app.app_event_tx.clone(),
         workspace_command_runner: None,
@@ -1304,7 +1109,6 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1316,7 +1120,6 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             agent_nickname: None,
             agent_role: None,
             is_closed: false,
-            ..AgentPickerThreadEntry::default()
         })
     );
 }
@@ -1341,7 +1144,6 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 prompt: Some("hello".to_string()),
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::from([(
                     receiver_thread_id.to_string(),
                     codex_app_server_protocol::CollabAgentState {
@@ -1377,7 +1179,6 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             agent_nickname: None,
             agent_role: None,
             is_closed: true,
-            ..AgentPickerThreadEntry::default()
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -1395,8 +1196,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
     let thread_id = ThreadId::new();
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -1412,7 +1212,6 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
-            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1427,8 +1226,7 @@ async fn open_agent_picker_prunes_terminal_metadata_only_threads() -> Result<()>
     .await
     .expect("embedded app server");
     let thread_id = ThreadId::new();
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1453,8 +1251,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
     let thread_id = ThreadId::new();
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -1469,7 +1266,6 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
-            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1508,7 +1304,6 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: false,
-                ..AgentPickerThreadEntry::default()
             })
         );
         Ok(())
@@ -1542,8 +1337,6 @@ fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
         );
 
         let err = app
@@ -1584,8 +1377,6 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
         );
 
         let err = app
@@ -1606,8 +1397,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1616,8 +1406,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
 
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
 
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1639,8 +1428,7 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     .await
     .expect("embedded app server");
     let thread_id = ThreadId::new();
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
@@ -1852,7 +1640,18 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             .config_ref()
             .permissions
             .permission_profile(),
-        auto_review.permission_profile
+        &auto_review.permission_profile()
+    );
+    assert_eq!(
+        app.config.permissions.active_permission_profile(),
+        Some(auto_review.active_permission_profile.clone())
+    );
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .permissions
+            .active_permission_profile(),
+        Some(auto_review.active_permission_profile.clone())
     );
     assert_eq!(
         app.chat_widget.config_ref().approvals_reviewer,
@@ -1861,7 +1660,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
     assert_eq!(app.runtime_approval_policy_override, None);
     assert_eq!(
         app.runtime_permission_profile_override,
-        Some(auto_review.permission_profile.clone())
+        Some(auto_review.permission_profile())
     );
     assert_eq!(
         op_rx.try_recv(),
@@ -1869,7 +1668,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             cwd: None,
             approval_policy: Some(auto_review.approval_policy),
             approvals_reviewer: Some(auto_review.approvals_reviewer),
-            permission_profile: Some(auto_review.permission_profile.clone()),
+            active_permission_profile: Some(auto_review.active_permission_profile.clone()),
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -1931,7 +1730,9 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
     app.chat_widget
         .set_approval_policy(AskForApproval::OnRequest);
     app.chat_widget
-        .set_permission_profile(PermissionProfile::workspace_write())?;
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::legacy(
+            PermissionProfile::workspace_write(),
+        ))?;
 
     app.update_feature_flags(vec![(Feature::GuardianApproval, false)])
         .await;
@@ -1959,7 +1760,7 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
             cwd: None,
             approval_policy: None,
             approvals_reviewer: Some(ApprovalsReviewer::User),
-            permission_profile: None,
+            active_permission_profile: None,
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -2029,7 +1830,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             .config_ref()
             .permissions
             .permission_profile(),
-        auto_review.permission_profile
+        &auto_review.permission_profile()
     );
     assert_eq!(
         op_rx.try_recv(),
@@ -2037,7 +1838,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             cwd: None,
             approval_policy: Some(auto_review.approval_policy),
             approvals_reviewer: Some(auto_review.approvals_reviewer),
-            permission_profile: Some(auto_review.permission_profile.clone()),
+            active_permission_profile: Some(auto_review.active_permission_profile.clone()),
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -2094,7 +1895,7 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
             cwd: None,
             approval_policy: None,
             approvals_reviewer: Some(ApprovalsReviewer::User),
-            permission_profile: None,
+            active_permission_profile: None,
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -2153,7 +1954,7 @@ async fn update_feature_flags_enabling_guardian_in_profile_sets_profile_auto_rev
             cwd: None,
             approval_policy: Some(auto_review.approval_policy),
             approvals_reviewer: Some(auto_review.approvals_reviewer),
-            permission_profile: Some(auto_review.permission_profile.clone()),
+            active_permission_profile: Some(auto_review.active_permission_profile.clone()),
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -2240,7 +2041,7 @@ guardian_approval = true
             cwd: None,
             approval_policy: None,
             approvals_reviewer: Some(ApprovalsReviewer::User),
-            permission_profile: None,
+            active_permission_profile: None,
             windows_sandbox_level: None,
             model: None,
             effort: None,
@@ -2388,8 +2189,7 @@ async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
     }
     app.thread_event_channels
         .insert(agent_thread_id, agent_channel);
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2432,8 +2232,7 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
             Vec::new(),
         ),
     );
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2592,8 +2391,7 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
             Vec::new(),
         ),
     );
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -2967,8 +2765,7 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
             Vec::new(),
         ),
     );
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         agent_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -3012,10 +2809,13 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
     let agent_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let shared_root = test_path_buf("/tmp/shared").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone(), shared_root.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
 
     app.primary_thread_id = Some(main_thread_id);
@@ -3087,6 +2887,10 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     assert_eq!(session.model_provider_id, "agent-provider");
     assert_eq!(session.approval_policy, primary_session.approval_policy);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
+    assert_eq!(
+        session.runtime_workspace_roots,
+        vec![test_path_buf("/tmp/agent").abs(), shared_root]
+    );
     assert_eq!(session.rollout_path, Some(rollout_path));
     assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
@@ -3094,7 +2898,6 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: false,
-            ..AgentPickerThreadEntry::default()
         })
     );
 
@@ -3109,10 +2912,12 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
         ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
     let agent_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
 
     app.primary_thread_id = Some(main_thread_id);
@@ -3179,10 +2984,12 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000401").expect("valid thread");
     let read_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
     app.primary_session_configured = Some(primary_session);
 
@@ -3214,11 +3021,16 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
 
     assert_eq!(session.thread_id, read_thread_id);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
+    assert_eq!(
+        session.runtime_workspace_roots,
+        vec![test_path_buf("/tmp/read").abs()]
+    );
     let expected_permission_profile = app
         .chat_widget
         .config_ref()
         .permissions
-        .permission_profile();
+        .permission_profile()
+        .clone();
     assert_eq!(
         session.permission_profile, expected_permission_profile,
         "thread/read does not return fresh server permissions; the fallback profile must use the \
@@ -3340,7 +3152,9 @@ async fn side_fork_config_inherits_parent_thread_runtime_settings() {
     app.chat_widget
         .set_approval_policy(AskForApproval::OnRequest);
     app.chat_widget
-        .set_permission_profile(parent_permission_profile.clone())
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::legacy(
+            parent_permission_profile.clone(),
+        ))
         .expect("test permission profile should be accepted");
     app.chat_widget
         .set_approvals_reviewer(ApprovalsReviewer::AutoReview);
@@ -3361,7 +3175,7 @@ async fn side_fork_config_inherits_parent_thread_runtime_settings() {
             Some(ReasoningEffortConfig::High),
             Some(parent_service_tier),
             AskForApproval::OnRequest.to_core(),
-            parent_permission_profile,
+            &parent_permission_profile,
             ApprovalsReviewer::AutoReview,
         )
     );
@@ -3385,7 +3199,9 @@ async fn side_start_block_message_tracks_open_side_conversation() {
 
     assert_eq!(
         app.side_start_block_message(),
-        Some("A side conversation is already open. Press Esc to return before starting another.")
+        Some(
+            "A side conversation is already open. Press Ctrl+C to return before starting another."
+        )
     );
 
     app.side_threads.remove(&side_thread_id);
@@ -3690,8 +3506,6 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
         );
 
         assert!(
@@ -3708,36 +3522,38 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
 
 #[tokio::test]
 async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Result<()> {
-    let mut app = make_test_app().await;
-    let mut app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    let parent_thread_id = ThreadId::new();
-    let side_thread_id = ThreadId::new();
-    app.active_thread_id = Some(side_thread_id);
-    app.side_threads
-        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
-    upsert_agent_navigation_for_test(
-        &mut app,
-        side_thread_id,
-        Some("Side".to_string()),
-        Some("side".to_string()),
-        /*is_closed*/ false,
-    );
-
-    assert!(
-        !app.discard_side_thread(&mut app_server, side_thread_id)
-            .await
-    );
-
-    assert_eq!(app.active_thread_id, Some(side_thread_id));
-    assert_eq!(
+    Box::pin(async {
+        let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+        let parent_thread_id = ThreadId::new();
+        let side_thread_id = ThreadId::new();
+        app.active_thread_id = Some(side_thread_id);
         app.side_threads
-            .get(&side_thread_id)
-            .map(|state| state.parent_thread_id),
-        Some(parent_thread_id)
-    );
-    assert!(app.agent_navigation.get(&side_thread_id).is_some());
-    Ok(())
+            .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+        app.agent_navigation.upsert(
+            side_thread_id,
+            Some("Side".to_string()),
+            Some("side".to_string()),
+            /*is_closed*/ false,
+        );
+
+        assert!(
+            !app.discard_side_thread(&mut app_server, side_thread_id)
+                .await
+        );
+
+        assert_eq!(app.active_thread_id, Some(side_thread_id));
+        assert_eq!(
+            app.side_threads
+                .get(&side_thread_id)
+                .map(|state| state.parent_thread_id),
+            Some(parent_thread_id)
+        );
+        assert!(app.agent_navigation.get(&side_thread_id).is_some());
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
@@ -3750,8 +3566,7 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
     app.thread_event_channels
         .insert(side_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         side_thread_id,
         Some("Side".to_string()),
         Some("side".to_string()),
@@ -3903,6 +3718,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: Some(ReasoningEffortConfig::High),
             message_history: None,
@@ -4031,6 +3847,7 @@ async fn make_test_app() -> App {
         active_profile: None,
         cli_kv_overrides: Vec::new(),
         harness_overrides: ConfigOverrides::default(),
+        loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
         runtime_approval_policy_override: None,
         runtime_permission_profile_override: None,
         file_search,
@@ -4050,7 +3867,7 @@ async fn make_test_app() -> App {
         feedback: codex_feedback::CodexFeedback::new(),
         feedback_audience: FeedbackAudience::External,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-        remote_app_server_endpoint: None,
+        app_server_target: crate::AppServerTarget::Embedded,
         pending_update_action: None,
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
@@ -4093,6 +3910,7 @@ async fn make_test_app_with_channels() -> (
             active_profile: None,
             cli_kv_overrides: Vec::new(),
             harness_overrides: ConfigOverrides::default(),
+            loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
             runtime_approval_policy_override: None,
             runtime_permission_profile_override: None,
             file_search,
@@ -4112,7 +3930,7 @@ async fn make_test_app_with_channels() -> (
             feedback: codex_feedback::CodexFeedback::new(),
             feedback_audience: FeedbackAudience::External,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            remote_app_server_endpoint: None,
+            app_server_target: crate::AppServerTarget::Embedded,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -4149,6 +3967,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
         cwd: cwd.abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
         message_history: None,
@@ -4724,6 +4543,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4787,6 +4607,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4879,6 +4700,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4920,7 +4742,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
     assert!(items.iter().any(|item| {
         matches!(
             item,
-            UserInput::Image { url } if url == &data_image_url
+            UserInput::Image { url, .. } if url == &data_image_url
         )
     }));
 }
@@ -5010,8 +4832,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread");
-    upsert_agent_navigation_for_test(
-        &mut app,
+    app.agent_navigation.upsert(
         receiver_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
@@ -5020,7 +4841,6 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         config: app.config.clone(),
-        environment_manager: app.environment_manager.clone(),
         frame_requester: crate::tui::FrameRequester::test_dummy(),
         app_event_tx: app.app_event_tx.clone(),
         workspace_command_runner: None,
@@ -5064,7 +4884,6 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             prompt: None,
                             model: None,
                             reasoning_effort: None,
-                            timed_out: false,
                             agents_states: HashMap::new(),
                         },
                     },
@@ -5116,6 +4935,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     )];
     let resumed_session = ThreadSessionState {
         cwd: test_path_buf("/tmp/refreshed").abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         ..initial_session.clone()
     };
@@ -5208,83 +5028,6 @@ async fn queued_rollback_syncs_overlay_and_clears_deferred_history() {
 }
 
 #[tokio::test]
-async fn native_android_computer_use_events_render_in_transcript_and_overlay() {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    app.overlay = Some(Overlay::new_transcript(
-        app.transcript_cells.clone(),
-        app.keymap.pager.clone(),
-    ));
-
-    let request = ComputerUseCallRequest {
-        call_id: "android-call-1".to_string(),
-        turn_id: "turn-1".to_string(),
-        environment_id: Some("emulator-5554".to_string()),
-        adapter: "android".to_string(),
-        tool: "android_observe".to_string(),
-        arguments: serde_json::json!({
-            "scope": "screen_and_ui",
-        }),
-    };
-
-    app.chat_widget
-        .handle_computer_use_begin_now(request.clone());
-    let active_transcript = lines_to_single_string(
-        &app.chat_widget
-            .active_cell_transcript_lines(/*width*/ 120)
-            .expect("active computer-use cell transcript"),
-    );
-    assert!(active_transcript.contains("Using computer"));
-    assert!(
-        active_transcript
-            .contains(r#"android[emulator-5554].android_observe {"scope":"screen_and_ui"}"#)
-    );
-
-    app.chat_widget
-        .handle_computer_use_end_now(ComputerUseCallResponseEvent {
-            call_id: request.call_id,
-            turn_id: request.turn_id,
-            environment_id: request.environment_id,
-            adapter: request.adapter,
-            tool: request.tool,
-            arguments: request.arguments,
-            content_items: vec![ComputerUseOutputContentItem::InputText {
-                text: "Solar Gravity Lab foregrounded; JD(TDB) 2451545.25000".to_string(),
-            }],
-            success: true,
-            error: None,
-            duration: std::time::Duration::from_millis(42),
-        });
-
-    let AppEvent::InsertHistoryCell(cell) = app_event_rx
-        .try_recv()
-        .expect("completed computer-use cell should be inserted")
-    else {
-        panic!("expected completed computer-use history cell");
-    };
-
-    let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 120));
-    assert!(transcript.contains("Used computer"));
-    assert!(
-        transcript.contains(r#"android[emulator-5554].android_observe {"scope":"screen_and_ui"}"#)
-    );
-    assert!(transcript.contains("Solar Gravity Lab foregrounded"));
-
-    let cell: Arc<dyn HistoryCell> = cell.into();
-    if let Some(Overlay::Transcript(transcript_overlay)) = &mut app.overlay {
-        transcript_overlay.insert_cell(cell.clone());
-    } else {
-        panic!("expected transcript overlay");
-    }
-    app.transcript_cells.push(cell);
-
-    let overlay_cell_count = match app.overlay.as_ref() {
-        Some(Overlay::Transcript(t)) => t.committed_cell_count(),
-        _ => panic!("expected transcript overlay"),
-    };
-    assert_eq!(overlay_cell_count, app.transcript_cells.len());
-}
-
-#[tokio::test]
 async fn thread_rollback_response_discards_queued_active_thread_events() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -5357,6 +5100,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -5478,6 +5222,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -5544,88 +5289,48 @@ async fn backtrack_esc_does_not_steal_empty_vim_insert_escape() {
 }
 
 #[tokio::test]
-async fn session_summary_skips_when_no_usage_or_resume_hint() {
-    assert!(
-        session_summary(
-            TokenUsage::default(),
-            /*thread_id*/ None,
-            /*thread_name*/ None,
-            /*rollout_path*/ None,
-        )
-        .is_none()
-    );
+async fn side_conversations_reject_backtrack_esc_without_stealing_vim_insert_escape() {
+    let mut app = make_test_app().await;
+    let esc = crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, KeyModifiers::NONE);
+
+    app.chat_widget
+        .set_side_conversation_active(/*active*/ true);
+    assert!(app.chat_widget.composer_is_empty());
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(app.should_reject_side_backtrack_esc(esc));
+
+    app.chat_widget.toggle_vim_mode_and_notify();
+    app.chat_widget
+        .handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            KeyModifiers::NONE,
+        ));
+
+    assert!(app.chat_widget.should_handle_vim_insert_escape(esc));
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(!app.should_reject_side_backtrack_esc(esc));
 }
 
 #[tokio::test]
-async fn session_summary_skips_resume_hint_until_rollout_exists() {
-    let usage = TokenUsage::default();
-    let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
-    let temp_dir = tempdir().expect("temp dir");
-    let rollout_path = temp_dir.path().join("rollout.jsonl");
+async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.backtrack.primed = true;
 
-    assert!(
-        session_summary(
-            usage,
-            Some(conversation),
-            /*thread_name*/ None,
-            Some(&rollout_path),
-        )
-        .is_none()
-    );
-}
+    app.reject_side_backtrack_esc();
 
-#[tokio::test]
-async fn session_summary_includes_resume_hint_for_persisted_rollout() {
-    let usage = TokenUsage {
-        input_tokens: 10,
-        output_tokens: 2,
-        total_tokens: 12,
-        ..Default::default()
+    assert!(!app.backtrack.primed);
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
     };
-    let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
-    let temp_dir = tempdir().expect("temp dir");
-    let rollout_path = temp_dir.path().join("rollout.jsonl");
-    std::fs::write(&rollout_path, "{}\n").expect("write rollout");
-
-    let summary = session_summary(
-        usage,
-        Some(conversation),
-        /*thread_name*/ None,
-        Some(&rollout_path),
-    )
-    .expect("summary");
-    assert_eq!(
-        summary.usage_line,
-        Some("Token usage: total=12 input=10 output=2".to_string())
-    );
-    assert_eq!(
-        summary.resume_command,
-        Some("codex resume 123e4567-e89b-12d3-a456-426614174000".to_string())
-    );
-}
-
-#[tokio::test]
-async fn session_summary_uses_id_even_when_thread_has_name() {
-    let usage = TokenUsage {
-        input_tokens: 10,
-        output_tokens: 2,
-        total_tokens: 12,
-        ..Default::default()
-    };
-    let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
-    let temp_dir = tempdir().expect("temp dir");
-    let rollout_path = temp_dir.path().join("rollout.jsonl");
-    std::fs::write(&rollout_path, "{}\n").expect("write rollout");
-
-    let summary = session_summary(
-        usage,
-        Some(conversation),
-        Some("my-session".to_string()),
-        Some(&rollout_path),
-    )
-    .expect("summary");
-    assert_eq!(
-        summary.resume_command,
-        Some("codex resume 123e4567-e89b-12d3-a456-426614174000".to_string())
+    let rendered = cell
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_app_snapshot!(
+        "side_backtrack_rejection_reports_unavailable_message",
+        rendered
     );
 }

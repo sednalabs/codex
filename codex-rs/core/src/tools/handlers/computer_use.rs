@@ -7,12 +7,13 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::computer_use::ComputerUseResponse;
@@ -77,14 +78,16 @@ impl ComputerUseHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
-    type Output = ComputerUseOutput;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain("computer_use")
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -126,14 +129,14 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
             can_request_original_image_detail(&turn.model_info),
             &mut body,
         );
-        Ok(ComputerUseOutput {
+        Ok(boxed_tool_output(ComputerUseOutput {
             tool_name: output_tool_name,
             output: FunctionToolOutput::from_content(body, Some(success)),
-        })
+        }))
     }
 }
 
-impl ToolHandler for ComputerUseHandler {
+impl CoreToolRuntime for ComputerUseHandler {
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
@@ -148,7 +151,7 @@ impl ToolHandler for ComputerUseHandler {
     fn post_tool_use_payload(
         &self,
         invocation: &ToolInvocation,
-        result: &Self::Output,
+        result: &dyn ToolOutput,
     ) -> Option<PostToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
@@ -392,7 +395,7 @@ mod tests {
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
-    use crate::tools::registry::ToolHandler;
+    use crate::tools::registry::CoreToolRuntime;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
     use codex_protocol::computer_use::ComputerUseResponse;

@@ -3,7 +3,6 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
-use codex_protocol::dynamic_tools::DynamicToolCapability;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -114,13 +113,6 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "city": { "type": "string" } }
             }),
             defer_loading: true,
-            persist_on_resume: true,
-            capability: Some(DynamicToolCapability {
-                family: Some("android".to_string()),
-                capability_scope: Some("environment".to_string()),
-                mutation_class: Some("read_only".to_string()),
-                lease_mode: Some("shared_read".to_string()),
-            }),
         },
         DynamicToolSpec {
             namespace: None,
@@ -132,8 +124,6 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "zip": { "type": "string" } }
             }),
             defer_loading: false,
-            persist_on_resume: true,
-            capability: None,
         },
     ];
     let dynamic_tools_for_hook = dynamic_tools.clone();
@@ -178,6 +168,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                         images: None,
                         local_images: Vec::new(),
                         text_elements: Vec::new(),
+                        ..Default::default()
                     })),
                 },
             ];
@@ -396,10 +387,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
+                oauth: None,
                 oauth_resource: None,
                 tools: HashMap::new(),
             },
@@ -417,24 +405,29 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
         turn_permission_fields(PermissionProfile::read_only(), cwd.as_path());
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "call the rmcp echo tool".to_string(),
                 text_elements: Vec::new(),
             }],
+            environments: None,
             final_output_json_schema: None,
-            cwd,
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy,
-            permission_profile,
-            model: test.session_configured.model.clone(),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
+            responsesapi_client_metadata: None,
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                cwd: Some(cwd),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
         })
         .await?;
     wait_for_event(&test.codex, |event| {

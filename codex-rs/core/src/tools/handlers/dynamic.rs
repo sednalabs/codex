@@ -7,9 +7,11 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
+use crate::tools::registry::ToolExposure;
 use crate::tools::tool_search_entry::ToolSearchInfo;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
@@ -35,6 +37,7 @@ use tracing::warn;
 pub struct DynamicToolHandler {
     tool_name: ToolName,
     spec: Option<ToolSpec>,
+    exposure: ToolExposure,
     search_text: String,
 }
 
@@ -53,14 +56,18 @@ impl DynamicToolHandler {
         Some(Self {
             tool_name,
             spec: Some(spec),
+            exposure: if tool.defer_loading {
+                ToolExposure::Deferred
+            } else {
+                ToolExposure::Direct
+            },
             search_text: build_dynamic_search_text(tool),
         })
     }
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
-    type Output = FunctionToolOutput;
-
     fn tool_name(&self) -> ToolName {
         self.tool_name.clone()
     }
@@ -69,7 +76,14 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         self.spec.clone()
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -114,21 +128,14 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
             can_request_original_image_detail(&turn.model_info),
             &mut body,
         );
-        Ok(FunctionToolOutput::from_content(body, Some(success)))
+        Ok(boxed_tool_output(FunctionToolOutput::from_content(
+            body,
+            Some(success),
+        )))
     }
 }
 
-fn dynamic_tool_command(tool_name: &str, arguments: &str) -> String {
-    match serde_json::from_str::<Value>(arguments) {
-        Ok(arguments) => format!(
-            "{tool_name} {}",
-            serde_json::to_string(&arguments).unwrap_or_else(|_| arguments.to_string())
-        ),
-        Err(_) => format!("{tool_name} {arguments}"),
-    }
-}
-
-impl ToolHandler for DynamicToolHandler {
+impl CoreToolRuntime for DynamicToolHandler {
     fn search_info(&self) -> Option<ToolSearchInfo> {
         ToolSearchInfo::from_spec(
             self.search_text.clone(),

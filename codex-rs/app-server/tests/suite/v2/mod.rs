@@ -30,6 +30,7 @@ mod memory_reset;
 mod model_list;
 mod model_provider_capabilities_read;
 mod output_schema;
+mod permission_profile_list;
 mod plan_item;
 mod plugin_install;
 mod plugin_list;
@@ -39,6 +40,7 @@ mod plugin_uninstall;
 mod process_exec;
 mod rate_limits;
 mod realtime_conversation;
+mod remote_control;
 #[cfg(debug_assertions)]
 mod remote_thread_store;
 mod request_permissions;

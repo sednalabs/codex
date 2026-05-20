@@ -1,6 +1,6 @@
 use rmcp::model::JsonObject;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::generate::SchemaSettings;
 
 pub(crate) fn input_schema_for<T: JsonSchema>() -> JsonObject {
     schema_for::<T>(/*option_add_null_type*/ false)
@@ -14,12 +14,14 @@ fn schema_for<T: JsonSchema>(option_add_null_type: bool) -> JsonObject {
     let schema = SchemaSettings::draft2019_09()
         .with(|settings| {
             settings.inline_subschemas = true;
-            settings.option_add_null_type = option_add_null_type;
         })
         .into_generator()
         .into_root_schema_for::<T>();
-    let schema_value = serde_json::to_value(schema)
+    let mut schema_value = serde_json::to_value(schema)
         .unwrap_or_else(|err| panic!("generated tool schema should serialize: {err}"));
+    if !option_add_null_type {
+        strip_null_type_admissions(&mut schema_value);
+    }
     let serde_json::Value::Object(mut schema_object) = schema_value else {
         unreachable!("root tool schema must be an object");
     };
@@ -39,4 +41,84 @@ fn schema_for<T: JsonSchema>(option_add_null_type: bool) -> JsonObject {
         }
     }
     tool_schema
+}
+
+// Schemars 1.x always models `Option<T>` as accepting JSON null. Tool inputs
+// use omission for optional fields, while tool outputs keep explicit nulls.
+fn strip_null_type_admissions(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if object
+                .get("type")
+                .is_some_and(|value| value.as_str() == Some("null"))
+            {
+                object.remove("type");
+            }
+
+            let type_replacement =
+                if let Some(serde_json::Value::Array(types)) = object.get_mut("type") {
+                    types.retain(|value| value.as_str() != Some("null"));
+                    match types.as_slice() {
+                        [] => Some(None),
+                        [only] => Some(Some(only.clone())),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            if let Some(replacement) = type_replacement {
+                match replacement {
+                    Some(value) => {
+                        object.insert("type".to_string(), value);
+                    }
+                    None => {
+                        object.remove("type");
+                    }
+                }
+            }
+
+            if object.get("const").is_some_and(serde_json::Value::is_null) {
+                object.remove("const");
+            }
+
+            if let Some(serde_json::Value::Array(values)) = object.get_mut("enum") {
+                values.retain(|value| !value.is_null());
+                if values.is_empty() {
+                    object.remove("enum");
+                }
+            }
+
+            for key in ["anyOf", "oneOf"] {
+                if let Some(serde_json::Value::Array(schemas)) = object.get_mut(key) {
+                    schemas.retain(|schema| !is_null_only_schema(schema));
+                }
+            }
+
+            for value in object.values_mut() {
+                strip_null_type_admissions(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strip_null_type_admissions(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_null_only_schema(schema: &serde_json::Value) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+
+    object
+        .get("type")
+        .is_some_and(|value| value.as_str() == Some("null"))
+        || object.get("const").is_some_and(serde_json::Value::is_null)
+        || object.get("enum").is_some_and(|value| {
+            value
+                .as_array()
+                .is_some_and(|values| values.len() == 1 && values[0].is_null())
+        })
 }

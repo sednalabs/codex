@@ -4,8 +4,11 @@ use super::App;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
+use crate::android_computer_use_provider::AndroidComputerUseOutcome;
+use crate::android_computer_use_provider::handle_android_computer_use;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::app_event::ConnectorsSnapshot;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use codex_app_server_client::AppServerEvent;
@@ -106,6 +109,15 @@ impl App {
                 self.fetch_plugins_list(app_server_client, cwd);
                 return;
             }
+            ServerNotification::AppListUpdated(notification) => {
+                self.chat_widget.on_connectors_loaded(
+                    Ok(ConnectorsSnapshot {
+                        connectors: notification.data.clone(),
+                    }),
+                    /*is_final*/ false,
+                );
+                return;
+            }
             _ => {}
         }
 
@@ -144,6 +156,40 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if let ServerRequest::ComputerUseCall { request_id, params } = &request {
+            let request_id = request_id.clone();
+            match handle_android_computer_use(params).await {
+                AndroidComputerUseOutcome::Handled(response) => {
+                    let result = match serde_json::to_value(response) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::warn!("failed to serialize computer-use response: {err}");
+                            return;
+                        }
+                    };
+                    if let Err(err) = app_server_client
+                        .resolve_server_request(request_id, result)
+                        .await
+                    {
+                        tracing::warn!("failed to resolve computer-use request: {err}");
+                    }
+                }
+                AndroidComputerUseOutcome::Unavailable => {
+                    let message = format!(
+                        "No TUI computer-use provider is available for `{}`/`{}`.",
+                        params.adapter, params.tool
+                    );
+                    if let Err(err) = self
+                        .reject_app_server_request(app_server_client, request_id, message)
+                        .await
+                    {
+                        tracing::warn!("{err}");
+                    }
+                }
+            }
+            return;
+        }
+
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)

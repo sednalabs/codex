@@ -71,6 +71,13 @@
               "$ref": "#/$defs/AbsolutePathBuf",
               "description": "This is the path to the user's config.toml file, though it is not\nguaranteed to exist."
             },
+            "profile": {
+              "description": "Name of the selected profile-v2 config layered on top of the base user config, when this layer represents one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "user",
               "title": "UserConfigLayerSourceType",
