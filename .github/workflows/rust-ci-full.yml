@@ -20,9 +20,6 @@ permissions:
 env:
   RUST_CI_FULL_CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
   RUST_CI_FULL_SOURCE_EVENT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event || github.event_name }}
-
-# CI builds in debug (dev) for faster signal.
-env:
   # Cargo's libgit2 transport has been flaky on macOS when fetching git
   # dependencies with nested submodules. Use the system git CLI, which has
   # better network/proxy behavior and matches Cargo's own suggested fallback.
