@@ -4653,6 +4653,7 @@ async fn resumed_root_session_uses_thread_id_as_session_id() {
 
     assert_eq!(session.thread_id(), thread_id);
     assert_eq!(session.session_id(), SessionId::from(thread_id));
+    assert!(session.services.usage_logger.is_some());
 
     let event = rx_event.recv().await.expect("session configured event");
     let EventMsg::SessionConfigured(event) = event.msg else {

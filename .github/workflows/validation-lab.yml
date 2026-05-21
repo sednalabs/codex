@@ -190,6 +190,9 @@ jobs:
         id: meta
         shell: bash
         env:
+          LAB_HOST_REF: ${{ github.ref_name }}
+          LAB_CHECKOUT_REF: ${{ inputs.ref || github.sha }}
+          LAB_DISPLAY_REF: ${{ inputs.ref || github.ref_name }}
           LAB_PROFILE: ${{ inputs.profile }}
           LAB_LANE_SET: ${{ inputs.lane_set }}
           LAB_LANES: ${{ inputs.lanes }}
@@ -198,9 +201,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          host_ref='${{ github.ref_name }}'
-          checkout_ref='${{ inputs.ref || github.sha }}'
-          display_ref='${{ inputs.ref || github.ref_name }}'
+          host_ref="${LAB_HOST_REF}"
+          checkout_ref="${LAB_CHECKOUT_REF}"
+          display_ref="${LAB_DISPLAY_REF}"
           target_checkout="${GITHUB_WORKSPACE}/validation-target"
           catalog_path="${target_checkout}/.github/validation-lanes.json"
           catalog_args=()

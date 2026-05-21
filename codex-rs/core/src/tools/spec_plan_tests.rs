@@ -16,6 +16,8 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
+use codex_tools::ANDROID_STEP_TOOL_NAME;
 use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -299,6 +301,8 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
             "additionalProperties": false,
         }),
         defer_loading,
+        persist_on_resume: true,
+        capability: None,
     }
 }
 
@@ -385,6 +389,102 @@ async fn environment_count_controls_environment_backed_tools() {
         multiple_environments.visible_spec("view_image"),
         "environment_id"
     ));
+}
+
+#[tokio::test]
+async fn android_dynamic_tools_use_native_computer_use_runtime() {
+    let plan = probe_with(
+        |_| {},
+        ToolPlanInputs {
+            dynamic_tools: vec![
+                dynamic_tool(
+                    None,
+                    ANDROID_OBSERVE_TOOL_NAME,
+                    /*defer_loading*/ false,
+                ),
+                dynamic_tool(None, ANDROID_STEP_TOOL_NAME, /*defer_loading*/ false),
+            ],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&[ANDROID_OBSERVE_TOOL_NAME, ANDROID_STEP_TOOL_NAME]);
+    plan.assert_registered_contains(&[ANDROID_OBSERVE_TOOL_NAME, ANDROID_STEP_TOOL_NAME]);
+    assert_eq!(
+        plan.exposure(ANDROID_OBSERVE_TOOL_NAME),
+        ToolExposure::Direct
+    );
+
+    let ToolSpec::Function(observe_tool) = plan.visible_spec(ANDROID_OBSERVE_TOOL_NAME) else {
+        panic!("expected android observe to be a function tool");
+    };
+    assert_eq!(
+        observe_tool.description.as_str(),
+        "Capture the current Android screen as a model-visible screenshot, optionally with a compact UI digest."
+    );
+    assert!(
+        !observe_tool
+            .description
+            .contains("client-supplied observe description")
+    );
+}
+
+#[tokio::test]
+async fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
+    let plan = probe_with(
+        |_| {},
+        ToolPlanInputs {
+            dynamic_tools: vec![
+                dynamic_tool(
+                    None,
+                    ANDROID_OBSERVE_TOOL_NAME,
+                    /*defer_loading*/ false,
+                ),
+                dynamic_tool(
+                    None,
+                    ANDROID_OBSERVE_TOOL_NAME,
+                    /*defer_loading*/ false,
+                ),
+            ],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        plan.registered_names
+            .iter()
+            .filter(|name| name.as_str() == ANDROID_OBSERVE_TOOL_NAME)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                None,
+                ANDROID_OBSERVE_TOOL_NAME,
+                /*defer_loading*/ true,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["tool_search"]);
+    plan.assert_visible_lacks(&[ANDROID_OBSERVE_TOOL_NAME]);
+    plan.assert_registered_contains(&[ANDROID_OBSERVE_TOOL_NAME]);
+    assert_eq!(
+        plan.exposure(ANDROID_OBSERVE_TOOL_NAME),
+        ToolExposure::Deferred
+    );
 }
 
 #[tokio::test]

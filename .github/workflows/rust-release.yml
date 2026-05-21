@@ -561,7 +561,7 @@ jobs:
           python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
           # Do not install into the runner's system Python; macOS runners mark
           # the Homebrew Python as externally managed under PEP 668.
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install "build==1.5.0"
 
           stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
           wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"
@@ -820,7 +820,7 @@ jobs:
           esac
 
           python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install "build==1.5.0"
 
           stage_dir="${RUNNER_TEMP}/openai-codex-cli-bin-${{ matrix.target }}"
           wheel_dir="${GITHUB_WORKSPACE}/python-runtime-dist/${{ matrix.target }}"

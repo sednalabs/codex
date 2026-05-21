@@ -61,6 +61,10 @@ on:
         required: false
         type: string
         default: ""
+      display_ref:
+        required: false
+        type: string
+        default: ""
       install_nextest:
         required: false
         type: boolean
@@ -276,6 +280,7 @@ jobs:
         continue-on-error: true
         env:
           LANE_COMMAND: ${{ inputs.run_command }}
+          DISPLAY_REF: ${{ inputs.display_ref }}
         run: |
           set -euo pipefail
           command_file="${RUNNER_TEMP}/sedna-lane-command.sh"
