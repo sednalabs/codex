@@ -47,6 +47,10 @@ def load_catalog(path: Path | None = None) -> dict:
     return payload
 
 
+def catalog_repo_root(catalog_file: Path) -> Path:
+    return catalog_file.resolve().parent.parent
+
+
 def derive_summary_family(lane: dict) -> str:
     lane_id = str(lane.get("lane_id") or "")
     if "agent-picker" in lane_id:
@@ -92,6 +96,39 @@ def family_key_for_lane(lane: dict) -> tuple[str, str]:
         raise SystemExit(
             f"lane {lane_id} must define {missing} for validation planning"
         ) from exc
+
+
+def resolve_repo_relative_path(
+    repo_root: Path,
+    raw_path: str,
+    *,
+    label: str,
+    must_exist: bool = False,
+    must_be_file: bool = False,
+    must_be_dir: bool = False,
+) -> Path:
+    if not raw_path:
+        raise SystemExit(f"{label} must be a non-empty relative path within the repository root")
+    path = Path(raw_path)
+    if path.is_absolute():
+        raise SystemExit(f"{label} must be a relative path within the repository root")
+    if any(part == ".." for part in path.parts):
+        raise SystemExit(f"{label} must not contain '..' path segments")
+
+    repo_root = repo_root.resolve()
+    candidate = (repo_root / path).resolve()
+    try:
+        candidate.relative_to(repo_root)
+    except ValueError as exc:
+        raise SystemExit(f"{label} must stay within the repository root") from exc
+
+    if must_exist and not candidate.exists():
+        raise SystemExit(f"{label} not found: {candidate}")
+    if must_be_file and not candidate.is_file():
+        raise SystemExit(f"{label} must point to a file: {candidate}")
+    if must_be_dir and not candidate.is_dir():
+        raise SystemExit(f"{label} must point to a directory: {candidate}")
+    return candidate
 
 
 def normalize_catalog(catalog: dict) -> dict:
@@ -141,7 +178,8 @@ def normalize_catalog(catalog: dict) -> dict:
     return normalized
 
 
-def validate_catalog(catalog: dict) -> None:
+def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
+    repo_root = repo_root or catalog_path().resolve().parent.parent
     seen_lane_ids: set[str] = set()
     for lane in catalog["lanes"]:
         lane_id = lane["lane_id"]
@@ -172,10 +210,20 @@ def validate_catalog(catalog: dict) -> None:
         working_directory = lane.get("working_directory")
         if not isinstance(working_directory, str) or not working_directory:
             raise SystemExit(f"lane {lane_id} must set working_directory")
+        resolve_repo_relative_path(
+            repo_root,
+            working_directory,
+            label=f"lane {lane_id} working_directory",
+        )
 
         script_path = lane.get("script_path")
         if not isinstance(script_path, str) or not script_path:
             raise SystemExit(f"lane {lane_id} must set script_path")
+        resolve_repo_relative_path(
+            repo_root,
+            script_path,
+            label=f"lane {lane_id} script_path",
+        )
 
         script_args = lane.get("script_args")
         if not isinstance(script_args, list) or not all(
@@ -621,10 +669,9 @@ def summarize_lab_selection(
 
 
 def lab_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(
-        load_catalog(Path(args.catalog_path) if args.catalog_path else None)
-    )
-    validate_catalog(catalog)
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
@@ -751,8 +798,9 @@ def lab_plan(args: argparse.Namespace) -> None:
 
 
 def heavy_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(load_catalog())
-    validate_catalog(catalog)
+    catalog_file = catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     changed_files = json.loads(args.changed_files_json) if args.changed_files_json else []
     route_lanes = (

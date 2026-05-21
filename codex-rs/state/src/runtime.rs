@@ -277,7 +277,9 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
-        runtime.run_logs_startup_maintenance().await?;
+        if let Err(err) = runtime.run_logs_startup_maintenance().await {
+            warn!("logs startup maintenance failed; continuing runtime initialization: {err}");
+        }
         Ok(runtime)
     }
 

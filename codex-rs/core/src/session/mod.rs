@@ -1796,6 +1796,7 @@ impl Session {
         self.services
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
+        self.services.log_usage_event(&event).await;
         self.deliver_event_raw(event).await;
     }
 

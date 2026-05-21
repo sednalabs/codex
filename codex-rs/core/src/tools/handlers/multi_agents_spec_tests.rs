@@ -211,7 +211,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
 }
 
 #[test]
-fn send_message_tool_requires_message_and_has_no_output_schema() {
+fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schema() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
@@ -229,18 +229,44 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
         .as_ref()
         .expect("send_message should use object params");
     assert!(properties.contains_key("target"));
-    assert!(properties.contains_key("message"));
-    assert!(!properties.contains_key("interrupt"));
-    assert!(!properties.contains_key("items"));
+    assert!(properties.contains_key("items"));
+    assert!(properties.contains_key("interrupt"));
+    assert!(!properties.contains_key("message"));
     assert_eq!(
         properties
             .get("target")
             .and_then(|schema| schema.description.as_deref()),
         Some("Relative or canonical task name to message (from spawn_agent).")
     );
+    let item_schema = properties
+        .get("items")
+        .and_then(|schema| schema.items.as_deref())
+        .expect("send_message items should define an item schema");
+    assert_eq!(
+        item_schema.schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
+    );
+    let item_properties = item_schema
+        .properties
+        .as_ref()
+        .expect("send_message item schema should use object params");
+    assert_eq!(
+        item_properties
+            .get("type")
+            .and_then(|schema| schema.enum_values.as_ref()),
+        Some(&vec![json!("text")])
+    );
+    assert!(item_properties.contains_key("text"));
+    assert!(!item_properties.contains_key("image_url"));
+    assert!(!item_properties.contains_key("path"));
+    assert!(!item_properties.contains_key("name"));
+    assert_eq!(
+        item_schema.required.as_ref(),
+        Some(&vec!["type".to_string(), "text".to_string()])
+    );
     assert_eq!(
         parameters.required.as_ref(),
-        Some(&vec!["target".to_string(), "message".to_string()])
+        Some(&vec!["target".to_string(), "items".to_string()])
     );
     assert_eq!(output_schema, None);
 }

@@ -1,7 +1,8 @@
-//! Shared argument parsing and dispatch for the v2 text-only agent messaging tools.
+//! Shared argument parsing and dispatch for the v2 agent messaging tools.
 //!
-//! `send_message` and `assign_task` share the same submission path and differ only in whether the
-//! resulting `InterAgentCommunication` should wake the target immediately.
+//! `send_message` accepts text items plus optional interruption, while `followup_task`
+//! keeps the plain-text message path. Both share the same submission plumbing once the prompt is
+//! assembled.
 
 use super::*;
 use crate::tools::context::FunctionToolOutput;
@@ -81,7 +82,7 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
     Ok(message)
 }
 
-/// Handles the shared MultiAgentV2 plain-text message flow for both `send_message` and `followup_task`.
+/// Handles the shared MultiAgentV2 plain-text message flow for `followup_task`.
 pub(crate) async fn handle_message_string_tool(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,

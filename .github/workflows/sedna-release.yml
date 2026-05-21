@@ -629,8 +629,7 @@ jobs:
       group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
       cancel-in-progress: false
     permissions:
-      contents: write
-      id-token: write
+      actions: read
     steps:
       - name: Download Linux release artifacts
         uses: actions/download-artifact@v8

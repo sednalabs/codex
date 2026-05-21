@@ -1195,7 +1195,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             "send_message",
             function_payload(json!({
                 "target": "test_process",
-                "message": "continue"
+                "items": [{"type": "text", "text": "continue"}]
             })),
         ))
         .await
@@ -1391,7 +1391,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
             "send_message",
             function_payload(json!({
                 "target": "/root",
-                "message": "done"
+                "items": [{"type": "text", "text": "done"}]
             })),
         ))
         .await
@@ -1738,7 +1738,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
+async fn multi_agent_v2_send_message_rejects_non_text_items() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -1771,6 +1771,11 @@ async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
         .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker")
         .await
         .expect("worker should resolve");
+    let ops_before = manager
+        .captured_ops()
+        .iter()
+        .filter(|(id, _)| *id == agent_id)
+        .count();
     let invocation = invocation(
         session,
         turn,
@@ -1785,16 +1790,25 @@ async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
     );
 
     let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
-        panic!("legacy items field should be rejected in v2");
+        panic!("non-text items should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
-        panic!("legacy items field should surface as a model-facing error");
+        panic!("non-text items should surface as a model-facing error");
     };
-    assert!(message.contains("unknown field `items`"));
+    assert_eq!(
+        message,
+        "send_message only supports text content in MultiAgentV2 for now"
+    );
+    let ops_after = manager
+        .captured_ops()
+        .iter()
+        .filter(|(id, _)| *id == agent_id)
+        .count();
+    assert_eq!(ops_after, ops_before);
 }
 
 #[tokio::test]
-async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
+async fn multi_agent_v2_send_message_interrupts_target_when_requested() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -1834,28 +1848,23 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
         "send_message",
         function_payload(json!({
             "target": agent_id.to_string(),
-            "message": "continue",
+            "items": [{"type": "text", "text": "continue"}],
             "interrupt": true
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
-        panic!("send_message interrupt parameter should be rejected");
-    };
-    let FunctionCallError::RespondToModel(message) = err else {
-        panic!("expected model-facing parse error");
-    };
-    assert!(message.starts_with(
-        "failed to parse function arguments: unknown field `interrupt`, expected `target` or `message`"
-    ));
+    SendMessageHandlerV2
+        .handle(invocation)
+        .await
+        .expect("send_message should accept interrupt");
 
     let ops = manager.captured_ops();
     let ops_for_agent: Vec<&Op> = ops
         .iter()
         .filter_map(|(id, op)| (*id == agent_id).then_some(op))
         .collect();
-    assert!(!ops_for_agent.iter().any(|op| matches!(op, Op::Interrupt)));
-    assert!(!ops_for_agent.iter().any(|op| matches!(
+    assert!(ops_for_agent.iter().any(|op| matches!(op, Op::Interrupt)));
+    assert!(ops_for_agent.iter().any(|op| matches!(
         op,
         Op::InterAgentCommunication { communication }
             if communication.author == AgentPath::root()

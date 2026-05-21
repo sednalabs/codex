@@ -14,9 +14,12 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::registry::ToolExposure;
+use crate::tools::tool_search_entry::ToolSearchInfo;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::computer_use::ComputerUseResponse;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::ComputerUseCallResponseEvent;
@@ -24,6 +27,9 @@ use codex_protocol::protocol::EventMsg;
 use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
 use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchSourceInfo;
+use codex_tools::ToolSpec;
+use codex_tools::canonical_android_dynamic_tool;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
@@ -32,7 +38,12 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::warn;
 
-pub struct ComputerUseHandler;
+pub struct ComputerUseHandler {
+    tool_name: ToolName,
+    spec: ToolSpec,
+    exposure: ToolExposure,
+    search_text: String,
+}
 
 pub struct ComputerUseOutput {
     tool_name: String,
@@ -73,6 +84,31 @@ impl ToolOutput for ComputerUseOutput {
 }
 
 impl ComputerUseHandler {
+    pub fn from_dynamic_tool(tool: &DynamicToolSpec) -> Option<Self> {
+        let output_tool = canonical_android_dynamic_tool(tool)?;
+        let search_text = [
+            output_tool.name.clone(),
+            output_tool.name.replace('_', " "),
+            output_tool.description.clone(),
+        ]
+        .join(" ");
+        let tool_name = ToolName::plain(output_tool.name.clone());
+        Some(Self {
+            tool_name,
+            spec: ToolSpec::Function(output_tool),
+            exposure: if tool.defer_loading {
+                ToolExposure::Deferred
+            } else {
+                ToolExposure::Direct
+            },
+            search_text,
+        })
+    }
+
+    pub fn planned_tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
+
     async fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
         invocation.tool_name.name != ANDROID_OBSERVE_TOOL_NAME
     }
@@ -81,7 +117,15 @@ impl ComputerUseHandler {
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("computer_use")
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(self.spec.clone())
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
     }
 
     async fn handle(
@@ -137,6 +181,19 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
 }
 
 impl CoreToolRuntime for ComputerUseHandler {
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        ToolSearchInfo::from_spec(
+            self.search_text.clone(),
+            self.spec.clone(),
+            Some(ToolSearchSourceInfo {
+                name: "Native computer-use tools".to_string(),
+                description: Some(
+                    "Client-backed computer-use tools for the current environment.".to_string(),
+                ),
+            }),
+        )
+    }
+
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
@@ -399,6 +456,7 @@ mod tests {
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
     use codex_protocol::computer_use::ComputerUseResponse;
+    use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
     use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
@@ -411,6 +469,22 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
+
+    fn android_dynamic_tool(name: &str, defer_loading: bool) -> DynamicToolSpec {
+        DynamicToolSpec {
+            namespace: None,
+            name: name.to_string(),
+            description: format!("{name} dynamic tool"),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading,
+            persist_on_resume: true,
+            capability: None,
+        }
+    }
 
     #[test]
     fn computer_use_command_uses_compact_json_arguments() {
@@ -428,7 +502,11 @@ mod tests {
         let (session, turn) = make_session_and_context().await;
         let session = Arc::new(session);
         let turn = Arc::new(turn);
-        let handler = ComputerUseHandler;
+        let handler = ComputerUseHandler::from_dynamic_tool(&android_dynamic_tool(
+            ANDROID_OBSERVE_TOOL_NAME,
+            /*defer_loading*/ false,
+        ))
+        .expect("android observe should create a native computer-use handler");
 
         let observe_payload = ToolPayload::Function {
             arguments: json!({"scope": "screen_and_ui"}).to_string(),

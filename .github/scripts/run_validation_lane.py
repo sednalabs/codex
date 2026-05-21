@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from resolve_validation_plan import resolve_repo_relative_path
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -19,11 +21,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
-    cwd = (repo_root / args.working_directory).resolve()
-    script_path = (repo_root / args.script_path).resolve()
+    cwd = resolve_repo_relative_path(
+        repo_root,
+        args.working_directory,
+        label="validation lane working_directory",
+        must_be_dir=True,
+    )
+    script_path = resolve_repo_relative_path(
+        repo_root,
+        args.script_path,
+        label="validation lane script_path",
+        must_be_file=True,
+    )
     script_args = json.loads(args.script_args_json or '[]')
-    if not script_path.is_file():
-        raise SystemExit(f'validation lane script not found: {script_path}')
     if not isinstance(script_args, list) or not all(isinstance(item, str) for item in script_args):
         raise SystemExit('script args must decode to a JSON array of strings')
     proc = subprocess.run(['bash', str(script_path), *script_args], cwd=cwd)

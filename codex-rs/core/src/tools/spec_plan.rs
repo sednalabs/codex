@@ -4,6 +4,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
+use crate::tools::handlers::ComputerUseHandler;
 use crate::tools::handlers::CreateGoalHandler;
 use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::GetGoalHandler;
@@ -673,7 +674,16 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
 }
 
 fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let mut native_computer_use_tools = HashSet::<ToolName>::new();
     for tool in context.dynamic_tools {
+        if let Some(handler) = ComputerUseHandler::from_dynamic_tool(tool) {
+            let tool_name = handler.planned_tool_name();
+            if native_computer_use_tools.insert(tool_name) {
+                planned_tools.add_runtime(handler);
+            }
+            continue;
+        }
+
         let Some(handler) = DynamicToolHandler::new(tool) else {
             tracing::error!(
                 "Failed to convert dynamic tool {:?} to OpenAI tool",

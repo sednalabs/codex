@@ -128,6 +128,45 @@ def job_has_direct_release_create(job: dict[str, Any]) -> bool:
     )
 
 
+def job_uses_action(job: dict[str, Any], action: str) -> bool:
+    return any(
+        is_action_ref(step.get("uses"), action)
+        for step in job_steps(job)
+        if isinstance(step, dict)
+    )
+
+
+def job_release_create_uses_github_app_token(job: dict[str, Any]) -> bool:
+    token_step_ids = {
+        str(step.get("id"))
+        for step in job_steps(job)
+        if isinstance(step, dict)
+        and is_action_ref(step.get("uses"), "actions/create-github-app-token")
+        and isinstance(step.get("id"), str)
+        and str(step.get("id"))
+    }
+    if not token_step_ids:
+        return False
+
+    for step in job_steps(job):
+        if not isinstance(step, dict):
+            continue
+        if "gh release create" not in command_text(step):
+            continue
+        env = step.get("env")
+        if not isinstance(env, dict):
+            continue
+        for value in env.values():
+            if not isinstance(value, str):
+                continue
+            if any(
+                f"steps.{token_step_id}.outputs.token" in value
+                for token_step_id in token_step_ids
+            ):
+                return True
+    return False
+
+
 def job_environment_name(job: dict[str, Any]) -> str | None:
     environment = job.get("environment")
     if isinstance(environment, str):
@@ -191,21 +230,31 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                 continue
 
             permissions = job_permissions(job, payload)
+            uses_app_token = job_release_create_uses_github_app_token(job)
             if job_environment_name(job) != "release":
                 violations.append(
                     f"{relative_path}: job '{job_id}' creates a GitHub release without "
                     "the release environment."
                 )
-            if not grants_permission(permissions, "contents", "write"):
-                violations.append(
-                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
-                    "contents: write scoped to the publishing job."
-                )
-            if not grants_permission(permissions, "id-token", "write"):
-                violations.append(
-                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
-                    "id-token: write for release signing or provenance."
-                )
+            if uses_app_token:
+                if job_uses_action(job, "actions/download-artifact") and not grants_permission(
+                    permissions, "actions", "read"
+                ):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release with "
+                        "a GitHub App token without actions: read for artifact download."
+                    )
+            else:
+                if not grants_permission(permissions, "contents", "write"):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                        "contents: write scoped to the publishing job."
+                    )
+                if not grants_permission(permissions, "id-token", "write"):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                        "id-token: write for release signing or provenance."
+                    )
     return violations
 
 

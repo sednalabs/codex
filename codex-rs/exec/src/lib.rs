@@ -865,8 +865,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     error_seen = true;
                 }
 
-                maybe_backfill_turn_completed_items(&client, &mut request_ids, &mut notification)
+                if should_backfill_turn_completed_items(config.ephemeral, &notification) {
+                    maybe_backfill_turn_completed_items(
+                        &client,
+                        &mut request_ids,
+                        &mut notification,
+                    )
                     .await;
+                }
 
                 if should_process_notification(
                     &notification,
@@ -1190,6 +1196,20 @@ fn should_process_notification(
         }
         _ => false,
     }
+}
+
+fn should_backfill_turn_completed_items(
+    thread_is_ephemeral: bool,
+    notification: &ServerNotification,
+) -> bool {
+    if thread_is_ephemeral {
+        return false;
+    }
+
+    matches!(
+        notification,
+        ServerNotification::TurnCompleted(payload) if payload.turn.items.is_empty()
+    )
 }
 
 async fn maybe_backfill_turn_completed_items(

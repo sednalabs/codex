@@ -429,6 +429,36 @@ async fn warm_plugins_and_skills_for_session_init(
         .errors
 }
 
+async fn maybe_create_usage_logger(
+    state_db: Option<Arc<codex_state::StateRuntime>>,
+    thread_id: ThreadId,
+    session_source: SessionSource,
+    forked_from_id: Option<ThreadId>,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+) -> Option<Mutex<codex_state::UsageLogger>> {
+    let Some(state_db) = state_db else {
+        return None;
+    };
+
+    match codex_state::UsageLogger::try_new(
+        state_db,
+        thread_id,
+        session_source,
+        forked_from_id,
+        agent_nickname,
+        agent_role,
+    )
+    .await
+    {
+        Ok(logger) => Some(Mutex::new(logger)),
+        Err(err) => {
+            warn!("failed to initialize usage logger for thread {thread_id}: {err}");
+            None
+        }
+    }
+}
+
 impl Session {
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
@@ -839,6 +869,15 @@ impl Session {
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
             export_config_lock_if_configured(&session_configuration, thread_id).await?;
+            let usage_logger = maybe_create_usage_logger(
+                state_db_ctx.clone(),
+                thread_id,
+                session_configuration.session_source.clone(),
+                forked_from_id,
+                session_configuration.session_source.get_nickname(),
+                session_configuration.session_source.get_agent_role(),
+            )
+            .await;
             let state = SessionState::new(session_configuration.clone());
             let managed_network_requirements_configured = config
                 .config_layer_stack
@@ -997,7 +1036,7 @@ impl Session {
                     attestation_provider,
                 ),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(),
-                usage_logger: None,
+                usage_logger,
                 environment: environment_manager.default_environment(),
                 environment_manager,
             };

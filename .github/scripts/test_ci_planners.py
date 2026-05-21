@@ -819,6 +819,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             proc.stderr,
         )
 
+    def test_validation_catalog_rejects_absolute_and_traversal_paths(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(RESOLVE_VALIDATION_PLAN.load_catalog())
+
+        absolute_catalog = json.loads(json.dumps(catalog))
+        absolute_catalog["lanes"][0]["working_directory"] = "/tmp"
+        with self.assertRaisesRegex(
+            SystemExit,
+            "must be a relative path within the repository root",
+        ):
+            RESOLVE_VALIDATION_PLAN.validate_catalog(absolute_catalog, repo_root=REPO_ROOT)
+
+        traversal_catalog = json.loads(json.dumps(catalog))
+        traversal_catalog["lanes"][0]["script_path"] = "../escape.sh"
+        with self.assertRaisesRegex(
+            SystemExit,
+            "must not contain '..' path segments",
+        ):
+            RESOLVE_VALIDATION_PLAN.validate_catalog(traversal_catalog, repo_root=REPO_ROOT)
+
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -1065,6 +1084,104 @@ class ValidationPlanScriptTests(unittest.TestCase):
         run_script = compute_plan.get("run") or ""
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
         self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
+
+    def test_sedna_branch_build_uses_safe_ref_env_and_json_encoding(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "metadata",
+            "Compute preview version",
+        )
+        env = metadata_step.get("env") or {}
+        self.assertEqual(
+            env.get("CHECKOUT_REF"),
+            "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}",
+        )
+        self.assertEqual(
+            env.get("DISPLAY_REF"),
+            "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}",
+        )
+        run_script = metadata_step.get("run") or ""
+        self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
+        self.assertIn('branch_name="${DISPLAY_REF}"', run_script)
+        self.assertNotIn("checkout_ref='${{", run_script)
+
+        build_job = (payload.get("jobs") or {}).get("build") or {}
+        self.assertEqual(
+            (build_job.get("with") or {}).get("display_ref"),
+            "${{ needs.metadata.outputs.display_ref }}",
+        )
+        run_command = (build_job.get("with") or {}).get("run_command") or ""
+        self.assertIn('os.environ["DISPLAY_REF"]', run_command)
+        self.assertIn("json.dump(payload, sys.stdout, indent=2)", run_command)
+        self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", run_command)
+
+    def test_validation_lab_uses_safe_ref_env_for_checkout_and_display_refs(self) -> None:
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/validation-lab.yml",
+            "metadata",
+            "Compute validation-lab plan",
+        )
+        env = metadata_step.get("env") or {}
+        self.assertEqual(env.get("LAB_HOST_REF"), "${{ github.ref_name }}")
+        self.assertEqual(env.get("LAB_CHECKOUT_REF"), "${{ inputs.ref || github.sha }}")
+        self.assertEqual(env.get("LAB_DISPLAY_REF"), "${{ inputs.ref || github.ref_name }}")
+        run_script = metadata_step.get("run") or ""
+        self.assertIn('host_ref="${LAB_HOST_REF}"', run_script)
+        self.assertIn('checkout_ref="${LAB_CHECKOUT_REF}"', run_script)
+        self.assertIn('display_ref="${LAB_DISPLAY_REF}"', run_script)
+        self.assertNotIn("checkout_ref='${{", run_script)
+        self.assertNotIn("display_ref='${{", run_script)
+
+    def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml",
+            "metadata",
+            "Compute checkout ref",
+        )
+        env = metadata_step.get("env") or {}
+        self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.sha }}")
+        self.assertEqual(env.get("DISPLAY_REF"), "${{ github.ref_name }}")
+        self.assertEqual(env.get("INPUT_REF"), "${{ inputs.ref }}")
+        self.assertEqual(env.get("PR_HEAD_SHA"), "${{ github.event.pull_request.head.sha }}")
+        self.assertEqual(env.get("PR_HEAD_REF"), "${{ github.event.pull_request.head.ref }}")
+        self.assertEqual(env.get("REQUESTED_LANE"), "${{ inputs.lane }}")
+        self.assertEqual(env.get("INPUT_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
+        self.assertEqual(
+            env.get("INPUT_RUST_BATCHING_OVERRIDE"),
+            "${{ vars.SEDNA_HEAVY_RUST_BATCHING }}",
+        )
+        run_script = metadata_step.get("run") or ""
+        self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
+        self.assertIn('checkout_ref="${PR_HEAD_SHA}"', run_script)
+        self.assertIn('display_ref="${DISPLAY_REF}"', run_script)
+        self.assertIn('--requested-lane "${REQUESTED_LANE}"', run_script)
+        self.assertIn('--rust-batching "${INPUT_RUST_BATCHING}"', run_script)
+        self.assertIn('--rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}"', run_script)
+        self.assertIn('os.environ["REQUESTED_LANE"]', run_script)
+        self.assertNotIn('"requested_lane": "${{ inputs.lane }}"', run_script)
+
+    def test_rust_ci_full_nextest_platform_uses_versioned_tool_syntax(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
+        )
+        tool_values: list[str] = []
+        for job in (payload.get("jobs") or {}).values():
+            for step in (job or {}).get("steps") or []:
+                if step.get("uses") != "taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532":
+                    continue
+                with_section = step.get("with") or {}
+                self.assertNotIn("version", with_section)
+                tool_values.append(with_section.get("tool"))
+
+        self.assertEqual(
+            len(tool_values),
+            3,
+        )
+        self.assertCountEqual(
+            tool_values,
+            ["sccache@0.7.5", "nextest@0.9.103", "nextest@0.9.103"],
+        )
 
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3328,7 +3445,7 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(publish_job.get("environment"), "release")
         self.assertEqual(
             publish_job.get("permissions"),
-            {"contents": "write", "id-token": "write"},
+            {"actions": "read"},
         )
 
     def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
@@ -3394,6 +3511,7 @@ class HelperScriptTests(unittest.TestCase):
                 (named_steps[step_name].get("env") or {}).get("GH_TOKEN"),
                 "${{ steps.release_publisher_token.outputs.token }}",
             )
+        self.assertEqual(publish_job.get("permissions"), {"actions": "read"})
 
     def test_sedna_release_verifier_checks_staged_binary_version_in_dry_run(self) -> None:
         installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
@@ -3808,6 +3926,45 @@ jobs:
 
         self.assertEqual(violations, [])
 
+    def test_workflow_policy_accepts_app_token_release_create_with_read_only_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist
+      - id: release_publisher_token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: app-id
+          private-key: app-key
+          permission-actions: write
+          permission-contents: write
+      - run: gh release create "$TAG" dist/*
+        env:
+          GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
+
     def test_configure_sccache_restore_only_uses_read_only_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -3910,6 +4067,99 @@ jobs:
                 CHECK_MARKDOWN_LINKS.ROOT = original_root
 
         self.assertEqual(resolved, readme.resolve())
+
+
+class ValidationLaneRunnerTests(unittest.TestCase):
+    def test_runner_executes_valid_paths_and_rejects_escape_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            workdir = repo_root / "workdir"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            repo_root.mkdir(parents=True)
+            workdir.mkdir(parents=True)
+            script_dir.mkdir(parents=True)
+
+            script_path = script_dir / "capture_pwd.sh"
+            script_path.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "pwd > ../cwd.txt",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            valid = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--working-directory",
+                    "workdir",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/capture_pwd.sh",
+                    "--script-args-json",
+                    "[]",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertEqual(
+                (repo_root / "cwd.txt").read_text(encoding="utf-8").strip(),
+                str(workdir),
+            )
+
+            absolute_script = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--working-directory",
+                    "workdir",
+                    "--script-path",
+                    str(script_path),
+                    "--script-args-json",
+                    "[]",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(absolute_script.returncode, 0)
+            self.assertIn(
+                "must be a relative path within the repository root",
+                absolute_script.stderr,
+            )
+
+            traversal_cwd = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--working-directory",
+                    "../workdir",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/capture_pwd.sh",
+                    "--script-args-json",
+                    "[]",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(traversal_cwd.returncode, 0)
+            self.assertIn(
+                "must not contain '..' path segments",
+                traversal_cwd.stderr,
+            )
 
 
 class SednaReleaseVersionResolverTests(unittest.TestCase):
