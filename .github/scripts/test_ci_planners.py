@@ -2020,6 +2020,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
     def test_rust_ci_schedule_reuses_equivalent_same_sha_success(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        self.assertEqual(
+            payload.get("permissions"),
+            {
+                "actions": "read",
+                "contents": "read",
+                "checks": "read",
+                "pull-requests": "read",
+            },
+        )
         jobs = payload.get("jobs") or {}
         changed = jobs.get("changed") or {}
         outputs = changed.get("outputs") or {}
@@ -2838,6 +2847,22 @@ class RustCiModeScriptTests(unittest.TestCase):
         )
         self.assertEqual((checkout.get("with") or {}).get("fetch-depth"), "1")
 
+        previous_required_step = next(
+            step for step in steps if step.get("name") == "Check previous required result on follow-up head"
+        )
+        self.assertEqual(previous_required_step.get("uses"), "actions/github-script@v9")
+        self.assertIn("github.event.action == 'synchronize'", previous_required_step.get("if") or "")
+        previous_required_script = (
+            (previous_required_step.get("with") or {}).get("script") or ""
+        )
+        self.assertIn("github.rest.pulls.listCommits", previous_required_script)
+        self.assertIn("github.rest.checks.listForRef", previous_required_script)
+        self.assertIn("context.payload.before", previous_required_script)
+        self.assertIn("pullRequest?.before", previous_required_script)
+        self.assertIn("candidateShas.push(eventBefore)", previous_required_script)
+        self.assertIn("previous_green_sha", previous_required_script)
+        self.assertIn("Rust CI required gate", previous_required_script)
+
         metadata_step = next(
             step for step in steps if step.get("name") == "Resolve PR changed files via API"
         )
@@ -2845,6 +2870,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         metadata_script = ((metadata_step.get("with") or {}).get("script") or "")
         self.assertIn("github.paginate(github.rest.pulls.listFiles", metadata_script)
         self.assertIn("github.rest.repos.compareCommitsWithBasehead", metadata_script)
+        self.assertEqual(
+            (metadata_step.get("env") or {}).get("BEFORE_SHA"),
+            "${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}",
+        )
 
         fallback_step = next(
             step for step in steps if step.get("name") == "Fetch history for git diff fallback"
@@ -2853,15 +2882,72 @@ class RustCiModeScriptTests(unittest.TestCase):
             "steps.pr_diff.outputs.needs_git_fallback == 'true'",
             fallback_step.get("if") or "",
         )
+        fallback_run = fallback_step.get("run") or ""
+        self.assertIn(
+            "before_sha='${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}'",
+            fallback_run,
+        )
+        self.assertIn('git fetch --no-tags --depth=1 "${head_repo}" "${before_sha}"', fallback_run)
+        self.assertIn('"${before_sha}^{commit}"', fallback_run)
 
         detect_step = next(
             step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
         )
+        detect_env = detect_step.get("env") or {}
+        self.assertEqual(
+            detect_env.get("PREVIOUS_GREEN_REQUIRED"),
+            "${{ steps.previous_required.outputs.previous_green_required || 'false' }}",
+        )
+        self.assertEqual(
+            detect_env.get("COMPARISON_BEFORE_SHA"),
+            "${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}",
+        )
         detect_run = detect_step.get("run") or ""
+        self.assertIn('--before-sha "${COMPARISON_BEFORE_SHA}"', detect_run)
+        self.assertIn('--previous-green-required "${PREVIOUS_GREEN_REQUIRED}"', detect_run)
         self.assertIn("--primary-files-json", detect_run)
         self.assertIn("--primary-line-count", detect_run)
         self.assertIn("--latest-delta-files-json", detect_run)
         self.assertIn("--latest-delta-line-count", detect_run)
+
+    def test_rust_ci_results_gate_honors_selected_run_flags(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        jobs = payload.get("jobs") or {}
+        results_run = (
+            next(
+                step
+                for step in (jobs.get("results") or {}).get("steps") or []
+                if step.get("name") == "Summarize"
+            ).get("run")
+            or ""
+        )
+
+        self.assertIn("needs.changed.outputs.run_argument_comment_lint_package", results_run)
+        self.assertIn("needs.changed.outputs.run_argument_comment_lint_prebuilt", results_run)
+        self.assertIn("needs.changed.outputs.run_general", results_run)
+        self.assertIn("needs.changed.outputs.run_cargo_shear", results_run)
+        self.assertIn("needs.changed.outputs.run_incremental_validation", results_run)
+        self.assertIn("needs.changed.result", results_run)
+        self.assertIn("changed planner failed", results_run)
+        self.assertIn("needs.matrix_plan.result", results_run)
+        self.assertIn("matrix_plan failed", results_run)
+        self.assertIn("needs.planner_fixtures.result", results_run)
+        self.assertIn('"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'', results_run)
+        self.assertIn("planner_fixtures failed", results_run)
+        self.assertIn("incremental_validation failed", results_run)
+        no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[0]
+        self.assertIn("NEEDS_CHANGED_OUTPUTS_WORKFLOWS", no_relevant_gate)
+        self.assertIn("needs.changed.outputs.run_incremental_validation", no_relevant_gate)
+        self.assertNotIn(
+            'NEEDS_CHANGED_OUTPUTS_CODEX}" == \'true\' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'',
+            results_run,
+        )
+
+        argpkg_job = jobs.get("argument_comment_lint_package") or {}
+        self.assertEqual(
+            argpkg_job.get("if"),
+            "${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}",
+        )
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(
@@ -3151,6 +3237,19 @@ class RustCiModeScriptTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_docs_only_light_route_still_requires_incremental_gate(self) -> None:
+        outputs = self.run_rust_ci_mode(
+            event_action="opened",
+            head_files={"docs/native-computer-use.md": "docs\n"},
+        )
+
+        self.assertEqual(outputs["validation_mode"], "light_initial")
+        self.assertEqual(outputs["argument_comment_lint"], "false")
+        self.assertEqual(outputs["codex"], "false")
+        self.assertEqual(outputs["workflows"], "false")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(outputs["incremental_lanes"], "codex.downstream-docs-check")
 
     def test_skill_only_pr_is_irrelevant_to_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(
