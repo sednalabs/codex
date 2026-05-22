@@ -190,16 +190,6 @@
       },
       "type": "array"
     },
-    "responsesapiClientMetadata": {
-      "additionalProperties": {
-        "type": "string"
-      },
-      "description": "Optional turn-scoped Responses API client metadata.",
-      "type": [
-        "object",
-        "null"
-      ]
-    },
     "threadId": {
       "type": "string"
     }

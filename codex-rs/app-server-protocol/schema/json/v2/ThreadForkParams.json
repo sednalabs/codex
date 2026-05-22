@@ -194,21 +194,7 @@
         "null"
       ]
     },
-    "dynamicTools": {
-      "description": "Optional client-supplied dynamic tools to install before the next turn.",
-      "items": {
-        "$ref": "#/$defs/DynamicToolSpec"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
     "ephemeral": {
-      "type": "boolean"
-    },
-    "excludeTurns": {
-      "description": "When true, return only thread metadata and live fork state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after forking.",
       "type": "boolean"
     },
     "model": {
@@ -221,36 +207,6 @@
     "modelProvider": {
       "type": [
         "string",
-        "null"
-      ]
-    },
-    "path": {
-      "default": null,
-      "description": "[UNSTABLE] Specify the rollout path to fork from.\nIf specified, the thread_id param will be ignored.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "permissions": {
-      "description": "Named profile id for the forked thread. Cannot be combined with\n`sandbox`.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "persistExtendedHistory": {
-      "default": false,
-      "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-      "type": "boolean"
-    },
-    "runtimeWorkspaceRoots": {
-      "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
-      "items": {
-        "type": "string"
-      },
-      "type": [
-        "array",
         "null"
       ]
     },
