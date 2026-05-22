@@ -811,6 +811,12 @@
                 "null"
               ]
             },
+            "pluginId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "result": {
               "anyOf": [
                 {
@@ -1244,7 +1250,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ImageDetail"
+                  "$ref": "#/$defs/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -1273,7 +1279,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ImageDetail"
+                  "$ref": "#/$defs/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -1455,7 +1461,6 @@
     }
   },
   "required": [
-    "completedAtMs",
     "item",
     "threadId",
     "turnId",

@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ThreadRealtimeAudioChunk": {
+      "description": "EXPERIMENTAL - thread realtime audio chunk.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "numChannels": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampleRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "samplesPerChannel": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "sampleRate",
+        "numChannels"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EXPERIMENTAL - append audio input to thread realtime.",
+  "properties": {
+    "audio": {
+      "$ref": "#/$defs/ThreadRealtimeAudioChunk"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "audio"
+  ],
+  "title": "ThreadRealtimeAppendAudioParams",
+  "type": "object"
+}

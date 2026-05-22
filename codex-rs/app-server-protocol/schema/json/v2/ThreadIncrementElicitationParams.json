@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Parameters for `thread/increment_elicitation`.",
+  "properties": {
+    "threadId": {
+      "description": "Thread whose out-of-band elicitation counter should be incremented.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadIncrementElicitationParams",
+  "type": "object"
+}

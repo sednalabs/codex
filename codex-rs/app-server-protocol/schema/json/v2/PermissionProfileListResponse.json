@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "PermissionProfileSummary": {
       "properties": {
         "description": {
@@ -21,15 +20,16 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/PermissionProfileSummary"
+        "$ref": "#/$defs/PermissionProfileSummary"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
       "type": [
         "string",
         "null"

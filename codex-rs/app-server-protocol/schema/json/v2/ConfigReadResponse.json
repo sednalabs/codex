@@ -194,20 +194,16 @@
       ]
     },
     "AutoCompactTokenLimitScope": {
-      "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
+      "description": "Selects which part of the active context is charged against\n`model_auto_compact_token_limit`.",
       "oneOf": [
         {
+          "const": "total",
           "description": "Count the full active context against the limit.",
-          "enum": [
-            "total"
-          ],
           "type": "string"
         },
         {
+          "const": "body_after_prefix",
           "description": "Count sampled output and later growth after the carried window prefix.",
-          "enum": [
-            "body_after_prefix"
-          ],
           "type": "string"
         }
       ]
@@ -279,7 +275,7 @@
         "forced_chatgpt_workspace_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ForcedChatgptWorkspaceIds"
+              "$ref": "#/$defs/ForcedChatgptWorkspaceIds"
             },
             {
               "type": "null"
@@ -318,7 +314,7 @@
         "model_auto_compact_token_limit_scope": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AutoCompactTokenLimitScope"
+              "$ref": "#/$defs/AutoCompactTokenLimitScope"
             },
             {
               "type": "null"
@@ -527,7 +523,7 @@
               "description": "This is the path to the user's config.toml file, though it is not\nguaranteed to exist."
             },
             "profile": {
-              "description": "Name of the selected profile-v2 config layered on top of the base user config, when this layer represents one.",
+              "description": "Name of the selected profile-v2 config layered on top of the base\nuser config, when this layer represents one.",
               "type": [
                 "string",
                 "null"

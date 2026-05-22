@@ -121,6 +121,7 @@
           ]
         },
         "persistOnResume": {
+          "default": true,
           "type": "boolean"
         }
       },
@@ -130,61 +131,6 @@
         "inputSchema"
       ],
       "type": "object"
-    },
-    "PermissionProfileModificationParams": {
-      "oneOf": [
-        {
-          "description": "Additional concrete directory that should be writable.",
-          "properties": {
-            "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
-            },
-            "type": {
-              "const": "additionalWritableRoot",
-              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path"
-          ],
-          "title": "AdditionalWritableRootPermissionProfileModificationParams",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileSelectionParams": {
-      "oneOf": [
-        {
-          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "modifications": {
-              "items": {
-                "$ref": "#/$defs/PermissionProfileModificationParams"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "profile",
-              "title": "ProfilePermissionProfileSelectionParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id"
-          ],
-          "title": "ProfilePermissionProfileSelectionParams",
-          "type": "object"
-        }
-      ]
     },
     "Personality": {
       "enum": [
@@ -281,9 +227,40 @@
         "null"
       ]
     },
+    "dynamicTools": {
+      "items": {
+        "$ref": "#/$defs/DynamicToolSpec"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "environments": {
+      "description": "Optional sticky environments for this thread.\n\nOmitted selects the default environment when environment access is\nenabled. Empty disables environment access for turns that do not\nprovide a turn override. Non-empty selects the first environment as the\ncurrent turn environment.",
+      "items": {
+        "$ref": "#/$defs/TurnEnvironmentParams"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "ephemeral": {
       "type": [
         "boolean",
+        "null"
+      ]
+    },
+    "experimentalRawEvents": {
+      "default": false,
+      "description": "If true, opt into emitting raw Responses API items on the event stream.\nThis is for internal use only (e.g. Codex Cloud).",
+      "type": "boolean"
+    },
+    "mockExperimentalField": {
+      "description": "Test-only experimental field used to validate experimental gating and\nschema filtering behavior in a stable way.",
+      "type": [
+        "string",
         "null"
       ]
     },
@@ -299,6 +276,18 @@
         "null"
       ]
     },
+    "permissions": {
+      "description": "Named profile id for this thread. Cannot be combined with `sandbox`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "persistExtendedHistory": {
+      "default": false,
+      "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
+      "type": "boolean"
+    },
     "personality": {
       "anyOf": [
         {
@@ -307,6 +296,16 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "runtimeWorkspaceRoots": {
+      "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
       ]
     },
     "sandbox": {
@@ -344,7 +343,7 @@
     "threadSource": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSource"
+          "$ref": "#/$defs/ThreadSource"
         },
         {
           "type": "null"

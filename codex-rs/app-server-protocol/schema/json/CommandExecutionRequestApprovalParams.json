@@ -372,7 +372,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -484,10 +483,31 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "additionalPermissions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AdditionalPermissionProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional additional permissions requested for this command."
+    },
     "approvalId": {
       "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "availableDecisions": {
+      "description": "Ordered list of decisions the client may present for this prompt.",
+      "items": {
+        "$ref": "#/$defs/CommandExecutionApprovalDecision"
+      },
+      "type": [
+        "array",
         "null"
       ]
     },
@@ -573,11 +593,10 @@
     }
   },
   "required": [
-    "itemId",
-    "startedAtMs",
     "threadId",
     "turnId",
-    "itemId"
+    "itemId",
+    "startedAtMs"
   ],
   "title": "CommandExecutionRequestApprovalParams",
   "type": "object"

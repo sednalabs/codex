@@ -98,6 +98,13 @@
       ],
       "type": "object"
     },
+    "ImageDetail": {
+      "enum": [
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
@@ -112,61 +119,6 @@
         "enabled"
       ],
       "type": "string"
-    },
-    "PermissionProfileModificationParams": {
-      "oneOf": [
-        {
-          "description": "Additional concrete directory that should be writable.",
-          "properties": {
-            "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
-            },
-            "type": {
-              "const": "additionalWritableRoot",
-              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path"
-          ],
-          "title": "AdditionalWritableRootPermissionProfileModificationParams",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileSelectionParams": {
-      "oneOf": [
-        {
-          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "modifications": {
-              "items": {
-                "$ref": "#/$defs/PermissionProfileModificationParams"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "profile",
-              "title": "ProfilePermissionProfileSelectionParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id"
-          ],
-          "title": "ProfilePermissionProfileSelectionParams",
-          "type": "object"
-        }
-      ]
     },
     "Personality": {
       "enum": [
@@ -385,6 +337,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "type": {
               "const": "image",
               "title": "ImageUserInputType",
@@ -403,6 +366,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "path": {
               "type": "string"
             },
@@ -490,6 +464,17 @@
       ],
       "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
     },
+    "collaborationMode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CollaborationMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "EXPERIMENTAL - Set a pre-set collaboration mode.\nTakes precedence over model, reasoning_effort, and developer instructions if set.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means\n\"use the built-in instructions for the selected mode\"."
+    },
     "cwd": {
       "description": "Override the working directory for this turn and subsequent turns.",
       "type": [
@@ -508,6 +493,16 @@
       ],
       "description": "Override the reasoning effort for this turn and subsequent turns."
     },
+    "environments": {
+      "description": "Optional turn-scoped environments.\n\nOmitted uses the thread sticky environments. Empty disables\nenvironment access for this turn. Non-empty selects the first\nenvironment as the current turn environment for this turn.",
+      "items": {
+        "$ref": "#/$defs/TurnEnvironmentParams"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "input": {
       "items": {
         "$ref": "#/$defs/UserInput"
@@ -524,6 +519,13 @@
     "outputSchema": {
       "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
     },
+    "permissions": {
+      "description": "Select a named permissions profile id for this turn and subsequent\nturns. Cannot be combined with `sandboxPolicy`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "personality": {
       "anyOf": [
         {
@@ -534,6 +536,26 @@
         }
       ],
       "description": "Override the personality for this turn and subsequent turns."
+    },
+    "responsesapiClientMetadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Optional turn-scoped Responses API client metadata.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "runtimeWorkspaceRoots": {
+      "description": "Replace the thread's runtime workspace roots for this turn and\nsubsequent turns. Relative paths are resolved against the effective\ncwd for the turn.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "sandboxPolicy": {
       "anyOf": [

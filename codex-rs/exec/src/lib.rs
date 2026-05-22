@@ -228,7 +228,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         model: model_cli_arg,
         oss,
         oss_provider,
-        config_profile,
         config_profile_v2,
         sandbox_mode: sandbox_mode_cli_arg,
         dangerously_bypass_approvals_and_sandbox,
@@ -343,7 +342,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         let resolved = resolve_oss_provider(
             oss_provider.as_deref(),
             &config_toml,
-            config_profile.clone(),
+            /*config_profile*/ None,
         );
 
         if let Some(provider) = resolved {
@@ -373,7 +372,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let overrides = ConfigOverrides {
         model,
         review_model: None,
-        config_profile,
         // Default to never ask for approvals in headless mode. Feature flags can override.
         approval_policy: Some(AskForApproval::Never),
         approvals_reviewer: None,
@@ -384,6 +382,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         workspace_roots: None,
         model_provider: model_provider.clone(),
         service_tier: None,
+        config_profile: None,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),

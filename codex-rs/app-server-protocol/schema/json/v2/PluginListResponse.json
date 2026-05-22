@@ -246,7 +246,7 @@
         "discoverability": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareDiscoverability"
+              "$ref": "#/$defs/PluginShareDiscoverability"
             },
             {
               "type": "null"
@@ -266,7 +266,7 @@
         },
         "sharePrincipals": {
           "items": {
-            "$ref": "#/definitions/PluginSharePrincipal"
+            "$ref": "#/$defs/PluginSharePrincipal"
           },
           "type": [
             "array",
@@ -302,17 +302,17 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/definitions/PluginSharePrincipalRole"
+          "$ref": "#/$defs/PluginSharePrincipalRole"
         }
       },
       "required": [
-        "name",
-        "principalId",
         "principalType",
-        "role"
+        "principalId",
+        "role",
+        "name"
       ],
       "type": "object"
     },
@@ -465,7 +465,7 @@
         "shareContext": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareContext"
+              "$ref": "#/$defs/PluginShareContext"
             },
             {
               "type": "null"

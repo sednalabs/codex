@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WindowsSandboxReadiness": {
       "enum": [
         "ready",
@@ -10,9 +9,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "status": {
-      "$ref": "#/definitions/WindowsSandboxReadiness"
+      "$ref": "#/$defs/WindowsSandboxReadiness"
     }
   },
   "required": [

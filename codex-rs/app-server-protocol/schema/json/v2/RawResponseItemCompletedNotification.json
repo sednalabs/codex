@@ -136,16 +136,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "encrypted_content"
-              ],
+              "const": "encrypted_content",
               "title": "EncryptedContentFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "encrypted_content",
-            "type"
+            "type",
+            "encrypted_content"
           ],
           "title": "EncryptedContentFunctionCallOutputContentItem",
           "type": "object"
@@ -714,9 +712,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "compaction_trigger"
-              ],
+              "const": "compaction_trigger",
               "title": "CompactionTriggerResponseItemType",
               "type": "string"
             }
@@ -735,22 +731,6 @@
                 "null"
               ]
             },
-            "type": {
-              "enum": [
-                "context_compaction"
-              ],
-              "title": "ContextCompactionResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "ContextCompactionResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
             "type": {
               "const": "context_compaction",
               "title": "ContextCompactionResponseItemType",

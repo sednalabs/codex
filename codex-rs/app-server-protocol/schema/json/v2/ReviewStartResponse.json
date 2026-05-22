@@ -959,6 +959,12 @@
                 "null"
               ]
             },
+            "pluginId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "result": {
               "anyOf": [
                 {
@@ -1399,11 +1405,7 @@
           "type": "array"
         },
         "itemsView": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TurnItemsView"
-            }
-          ],
+          "$ref": "#/$defs/TurnItemsView",
           "default": "full",
           "description": "Describes how much of `items` has been loaded for this turn."
         },
@@ -1457,24 +1459,18 @@
     "TurnItemsView": {
       "oneOf": [
         {
+          "const": "notLoaded",
           "description": "`items` was not loaded for this turn. The field is intentionally empty.",
-          "enum": [
-            "notLoaded"
-          ],
           "type": "string"
         },
         {
+          "const": "summary",
           "description": "`items` contains only a display summary for this turn.",
-          "enum": [
-            "summary"
-          ],
           "type": "string"
         },
         {
+          "const": "full",
           "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
-          "enum": [
-            "full"
-          ],
           "type": "string"
         }
       ]
@@ -1521,7 +1517,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ImageDetail"
+                  "$ref": "#/$defs/ImageDetail"
                 },
                 {
                   "type": "null"
@@ -1550,7 +1546,7 @@
             "detail": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/ImageDetail"
+                  "$ref": "#/$defs/ImageDetail"
                 },
                 {
                   "type": "null"

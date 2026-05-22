@@ -31,11 +31,10 @@
     }
   },
   "required": [
-    "itemId",
-    "startedAtMs",
     "threadId",
     "turnId",
-    "itemId"
+    "itemId",
+    "startedAtMs"
   ],
   "title": "FileChangeRequestApprovalParams",
   "type": "object"

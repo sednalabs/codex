@@ -120,8 +120,8 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
         self.tool_name.clone()
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(self.spec.clone())
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
     }
 
     fn exposure(&self) -> ToolExposure {

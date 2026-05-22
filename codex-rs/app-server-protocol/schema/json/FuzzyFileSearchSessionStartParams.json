@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "roots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "sessionId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "sessionId",
+    "roots"
+  ],
+  "title": "FuzzyFileSearchSessionStartParams",
+  "type": "object"
+}
