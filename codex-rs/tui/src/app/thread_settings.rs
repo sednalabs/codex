@@ -3,13 +3,17 @@
 use super::App;
 use crate::app_command::AppCommand;
 use crate::app_server_session::AppServerSession;
+use crate::permission_compat::legacy_compatible_permission_profile;
 use crate::session_state::ThreadSessionState;
 use codex_app_server_protocol::ApprovalsReviewer as AppServerApprovalsReviewer;
+use codex_app_server_protocol::SandboxPolicy as AppServerSandboxPolicy;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
+use std::path::Path;
 
 impl App {
     pub(super) async fn sync_active_thread_model_setting(
@@ -101,7 +105,7 @@ impl App {
             cwd,
             approval_policy,
             approvals_reviewer,
-            permission_profile: _,
+            permission_profile,
             active_permission_profile,
             windows_sandbox_level: _,
             model,
@@ -114,15 +118,21 @@ impl App {
         else {
             return;
         };
+        let config = self.chat_widget.config_ref();
+        let permissions_cwd = cwd.as_deref().unwrap_or(config.cwd.as_path());
+        let (sandbox_policy, permissions) = thread_settings_permission_overrides(
+            permission_profile.as_ref(),
+            active_permission_profile.as_ref(),
+            permissions_cwd,
+        );
 
         let params = ThreadSettingsUpdateParams {
             thread_id: thread_id.to_string(),
             cwd: cwd.clone(),
             approval_policy: *approval_policy,
             approvals_reviewer: approvals_reviewer.map(AppServerApprovalsReviewer::from),
-            permissions: active_permission_profile
-                .as_ref()
-                .map(|profile| profile.id.clone()),
+            sandbox_policy,
+            permissions,
             model: model.clone(),
             effort: effort.unwrap_or_default(),
             summary: *summary,
@@ -167,6 +177,28 @@ impl App {
                 .add_error_message(format!("Failed to update thread settings: {err}"));
         }
     }
+}
+
+fn thread_settings_permission_overrides(
+    permission_profile: Option<&PermissionProfile>,
+    active_permission_profile: Option<&ActivePermissionProfile>,
+    cwd: &Path,
+) -> (Option<AppServerSandboxPolicy>, Option<String>) {
+    if let Some(active_permission_profile) = active_permission_profile {
+        return (None, Some(active_permission_profile.id.clone()));
+    }
+
+    let Some(permission_profile) = permission_profile else {
+        return (None, None);
+    };
+
+    let legacy_profile = legacy_compatible_permission_profile(permission_profile, cwd);
+    let sandbox_policy = legacy_profile
+        .to_legacy_sandbox_policy(cwd)
+        .unwrap_or_else(|err| {
+            unreachable!("legacy-compatible permissions must project to legacy policy: {err}")
+        });
+    (Some(AppServerSandboxPolicy::from(sandbox_policy)), None)
 }
 
 fn apply_thread_settings_to_session(session: &mut ThreadSessionState, settings: &ThreadSettings) {
