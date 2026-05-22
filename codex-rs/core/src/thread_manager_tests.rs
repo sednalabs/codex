@@ -206,6 +206,7 @@ fn legacy_user_event_only_tail_is_mid_turn() {
             images: None,
             text_elements: Vec::new(),
             local_images: Vec::new(),
+            ..Default::default()
         })),
     ]));
     assert_eq!(
