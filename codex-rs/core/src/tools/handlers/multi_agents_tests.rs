@@ -35,6 +35,7 @@ use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileSystemAccessMode;
 use codex_protocol::protocol::FileSystemPath;
@@ -56,7 +57,6 @@ use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1541,6 +1541,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
                 last_agent_message: Some("done".to_string()),
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1924,6 +1925,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: first_turn.sub_id.clone(),
                 last_agent_message: Some("first done".to_string()),
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1953,6 +1955,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: second_turn.sub_id.clone(),
                 last_agent_message: Some("second done".to_string()),
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2111,8 +2114,6 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(aborted_turn.sub_id.clone()),
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             }),
         )
         .await;
@@ -2941,13 +2942,12 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait woke due to mailbox activity.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3006,13 +3006,12 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait timed out.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3061,13 +3060,12 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait timed out.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3101,13 +3099,12 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait timed out.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3166,13 +3163,12 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait timed out.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3199,16 +3195,14 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait completed.");
+    assert_eq!(result.requested_ids, vec![id_a, id_b]);
+    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result,
-        wait::WaitAgentResult {
-            status: HashMap::from([
-                (id_a.to_string(), AgentStatus::NotFound),
-                (id_b.to_string(), AgentStatus::NotFound),
-            ]),
-            timed_out: false
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3239,13 +3233,14 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait timed out.");
+    assert_eq!(result.requested_ids, vec![agent_id]);
+    assert_eq!(result.pending_ids, vec![agent_id]);
     assert_eq!(
-        result,
-        wait::WaitAgentResult {
-            status: HashMap::new(),
-            timed_out: true
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
     assert_eq!(success, None);
 
     let _ = thread
@@ -3335,13 +3330,14 @@ async fn wait_agent_returns_final_status_without_timeout() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait completed.");
+    assert_eq!(result.requested_ids, vec![agent_id]);
+    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result,
-        wait::WaitAgentResult {
-            status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
-            timed_out: false
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3429,13 +3425,12 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     let (content, success) = expect_text_output(wait_output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait woke due to mailbox activity.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3510,13 +3505,12 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait woke due to mailbox activity.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3601,13 +3595,12 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait woke due to mailbox activity.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3689,13 +3682,12 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(result.message, "Wait woke due to mailbox activity.");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
     assert!(!content.contains("sensitive child output"));
     assert_eq!(success, None);
 }

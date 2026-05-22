@@ -1392,7 +1392,7 @@ async fn exec_command_wait_until_terminal_defers_provider_resume_until_exit() ->
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let test = builder.build_remote_aware(&server).await?;
+    let test = builder.build_with_remote_env(&server).await?;
 
     let call_id = "uexec-provider-gate";
     let args = json!({
@@ -1420,7 +1420,7 @@ async fn exec_command_wait_until_terminal_defers_provider_resume_until_exit() ->
     submit_unified_exec_turn(
         &test,
         "run provider-gated terminal wait test",
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 

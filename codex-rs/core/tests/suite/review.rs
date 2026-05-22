@@ -467,11 +467,8 @@ async fn review_uses_session_model_when_review_model_unset() {
 async fn review_uses_runtime_effort_after_model_override() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -480,23 +477,16 @@ async fn review_uses_runtime_effort_after_model_override() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.1-codex-mini".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {
@@ -539,11 +529,8 @@ async fn review_uses_runtime_effort_after_model_override() {
 async fn review_uses_runtime_effort_with_explicit_review_model() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -552,23 +539,16 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {
@@ -612,11 +592,8 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
 async fn review_clamps_runtime_effort_with_explicit_review_model() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -625,23 +602,16 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::XHigh)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {

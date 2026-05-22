@@ -113,6 +113,8 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "city": { "type": "string" } }
             }),
             defer_loading: true,
+            persist_on_resume: true,
+            capability: None,
         },
         DynamicToolSpec {
             namespace: None,
@@ -124,6 +126,8 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 "properties": { "zip": { "type": "string" } }
             }),
             defer_loading: false,
+            persist_on_resume: true,
+            capability: None,
         },
     ];
     let dynamic_tools_for_hook = dynamic_tools.clone();
@@ -386,6 +390,10 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
                 scopes: None,
                 oauth: None,
                 oauth_resource: None,
