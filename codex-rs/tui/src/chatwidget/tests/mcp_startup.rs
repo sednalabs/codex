@@ -1,6 +1,19 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+trait ChatWidgetCodexEventTestExt {
+    fn handle_codex_event(&mut self, event: Event);
+}
+
+impl ChatWidgetCodexEventTestExt for ChatWidget {
+    fn handle_codex_event(&mut self, event: Event) {
+        match event.msg {
+            EventMsg::GuardianAssessment(event) => self.on_guardian_assessment(event),
+            other => panic!("unsupported test event: {other:?}"),
+        }
+    }
+}
+
 fn notify_mcp_status(chat: &mut ChatWidget, name: &str, status: McpServerStartupState) {
     chat.handle_server_notification(
         ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
