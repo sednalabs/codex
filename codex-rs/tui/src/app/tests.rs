@@ -5396,10 +5396,11 @@ async fn interrupt_without_active_turn_is_treated_as_handled() {
 async fn override_turn_context_sends_thread_settings_update() {
     Box::pin(async {
         let mut app = make_test_app().await;
-        let mut app_server =
-            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
-                .await
-                .expect("embedded app server");
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
         let started = app_server
             .start_thread(app.chat_widget.config_ref())
             .await
@@ -5436,10 +5437,13 @@ async fn override_turn_context_sends_thread_settings_update() {
             Some(Personality::Pragmatic),
         );
 
-        let handled = app
-            .try_submit_active_thread_op_via_app_server(&mut app_server, thread_id, &op)
-            .await
-            .expect("settings update submission should not fail");
+        let handled = Box::pin(app.try_submit_active_thread_op_via_app_server(
+            &mut app_server,
+            thread_id,
+            &op,
+        ))
+        .await
+        .expect("settings update submission should not fail");
 
         assert_eq!(handled, true);
         assert_eq!(
@@ -5484,12 +5488,12 @@ async fn override_turn_context_sends_thread_settings_update() {
             Some(Personality::Pragmatic)
         );
 
-        app.handle_app_server_event(
+        Box::pin(app.handle_app_server_event(
             &app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(
                 ServerNotification::ThreadSettingsUpdated(notification),
             ),
-        )
+        ))
         .await;
         let updated_session = app
             .primary_session_configured
@@ -5533,10 +5537,11 @@ async fn override_turn_context_sends_thread_settings_update() {
 async fn override_turn_context_preserves_full_access_permissions_without_active_profile() {
     Box::pin(async {
         let mut app = make_test_app().await;
-        let mut app_server =
-            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
-                .await
-                .expect("embedded app server");
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
         let started = app_server
             .start_thread(app.chat_widget.config_ref())
             .await
@@ -5568,10 +5573,13 @@ async fn override_turn_context_preserves_full_access_permissions_without_active_
             /*personality*/ None,
         );
 
-        let handled = app
-            .try_submit_active_thread_op_via_app_server(&mut app_server, thread_id, &op)
-            .await
-            .expect("settings update submission should not fail");
+        let handled = Box::pin(app.try_submit_active_thread_op_via_app_server(
+            &mut app_server,
+            thread_id,
+            &op,
+        ))
+        .await
+        .expect("settings update submission should not fail");
 
         assert_eq!(handled, true);
         let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
@@ -5589,12 +5597,12 @@ async fn override_turn_context_preserves_full_access_permissions_without_active_
             ModeKind::Plan
         );
 
-        app.handle_app_server_event(
+        Box::pin(app.handle_app_server_event(
             &app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(
                 ServerNotification::ThreadSettingsUpdated(notification),
             ),
-        )
+        ))
         .await;
 
         let updated_session = app
