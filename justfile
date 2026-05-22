@@ -106,6 +106,7 @@ core-subagent-notification-visibility-targeted:
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
     cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::override_turn_context_preserves_full_access_permissions_without_active_profile --lib -- --exact --test-threads=1
 
 # Focused TUI config-refresh session-state persistence slice.
 tui-config-refresh-session-targeted:
@@ -336,6 +337,11 @@ core-context-serialization-targeted:
 core-attestation-targeted:
     cargo test -p codex-core consolidation_artifacts_ready_rejects_ --lib -- --test-threads=1
     cargo test -p codex-state global_phase2_attestation_requirement_is_root_scoped -- --exact --test-threads=1
+
+# Focused startup repair slice for state DBs with schema changes applied but
+# missing SQLx migration records.
+state-migration-repair-targeted:
+    cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:

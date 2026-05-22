@@ -922,6 +922,34 @@
       "needs_sccache": false
     },
     {
+      "lane_id": "codex.state-migration-repair-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry",
+        "startup-sync"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry",
+        "startup-sync"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "state-migration-repair-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
       "lane_id": "codex.code-mode-declaration-targeted",
       "groups": [
         "core"
