@@ -344,6 +344,35 @@ fn core_dynamic_tools_from_api(
         .collect())
 }
 
+fn dynamic_tools_require_thread_reload(dynamic_tools: Option<&[ApiDynamicToolSpec]>) -> bool {
+    dynamic_tools
+        .unwrap_or_default()
+        .iter()
+        .any(dynamic_tool_requires_thread_reload)
+}
+
+fn dynamic_tool_requires_thread_reload(tool: &ApiDynamicToolSpec) -> bool {
+    is_environment_scoped_dynamic_tool(tool) || is_legacy_native_android_dynamic_tool(tool)
+}
+
+fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.capability
+        .as_ref()
+        .and_then(|capability| capability.capability_scope.as_deref())
+        .is_some_and(|scope| scope.eq_ignore_ascii_case("environment"))
+}
+
+fn is_legacy_native_android_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.capability.is_none()
+        && tool.namespace.is_none()
+        && matches!(
+            tool.name.as_str(),
+            codex_tools::ANDROID_OBSERVE_TOOL_NAME
+                | codex_tools::ANDROID_STEP_TOOL_NAME
+                | codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
+        )
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -2776,6 +2805,8 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<bool, JSONRPCErrorError> {
+        let requested_tools_require_reload =
+            dynamic_tools_require_thread_reload(params.dynamic_tools.as_deref());
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
                 && self
@@ -2823,6 +2854,14 @@ impl ThreadRequestProcessor {
                     requested_path.display(),
                     active_path.display()
                 )));
+            }
+            if requested_tools_require_reload {
+                self.unload_loaded_thread_for_dynamic_tool_resume(
+                    existing_thread_id,
+                    existing_thread,
+                )
+                .await?;
+                return Ok(false);
             }
             let redact_resume_payloads =
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());
@@ -2911,6 +2950,51 @@ impl ThreadRequestProcessor {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    async fn unload_loaded_thread_for_dynamic_tool_resume(
+        &self,
+        thread_id: ThreadId,
+        thread: Arc<CodexThread>,
+    ) -> Result<(), JSONRPCErrorError> {
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let has_active_turn = {
+            let thread_state = thread_state.lock().await;
+            thread_state.active_turn_snapshot().is_some()
+        };
+        if has_active_turn {
+            return Err(invalid_request(format!(
+                "cannot reload thread {thread_id} with environment-scoped dynamic tools while it has an active turn"
+            )));
+        }
+
+        info!("thread {thread_id} is loaded; reloading to apply environment-scoped dynamic tools");
+        match wait_for_thread_shutdown(&thread).await {
+            ThreadShutdownResult::Complete => {}
+            ThreadShutdownResult::SubmitFailed => {
+                return Err(internal_error(format!(
+                    "failed to submit shutdown before reloading thread {thread_id} with environment-scoped dynamic tools"
+                )));
+            }
+            ThreadShutdownResult::TimedOut => {
+                return Err(internal_error(format!(
+                    "timed out shutting down thread {thread_id} before applying environment-scoped dynamic tools"
+                )));
+            }
+        }
+
+        self.thread_manager.remove_thread(&thread_id).await;
+        self.outgoing
+            .cancel_requests_for_thread(thread_id, /*error*/ None)
+            .await;
+        {
+            let mut thread_state = thread_state.lock().await;
+            thread_state.clear_listener();
+        }
+        self.thread_watch_manager
+            .remove_thread(&thread_id.to_string())
+            .await;
+        Ok(())
     }
 
     async fn resume_thread_from_history(
