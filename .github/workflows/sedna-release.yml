@@ -318,7 +318,7 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     concurrency:
       group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
       cancel-in-progress: false
