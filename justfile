@@ -106,7 +106,7 @@ core-subagent-notification-visibility-targeted:
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
     cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::override_turn_context_preserves_full_access_permissions_without_active_profile --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_settings::tests::permission_overrides_project_disabled_profile_without_active_profile --lib -- --exact --test-threads=1
 
 # Focused TUI config-refresh session-state persistence slice.
 tui-config-refresh-session-targeted:

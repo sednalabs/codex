@@ -239,3 +239,42 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.collaboration_mode.is_some()
         || params.personality.is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_app_server_protocol::SandboxPolicy as AppServerSandboxPolicy;
+    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+    use std::path::Path;
+
+    #[test]
+    fn permission_overrides_project_disabled_profile_without_active_profile() {
+        let (sandbox_policy, permissions) = thread_settings_permission_overrides(
+            Some(&PermissionProfile::Disabled),
+            /*active_permission_profile*/ None,
+            Path::new("/workspace/project"),
+        );
+
+        assert_eq!(
+            sandbox_policy,
+            Some(AppServerSandboxPolicy::DangerFullAccess)
+        );
+        assert_eq!(permissions, None);
+    }
+
+    #[test]
+    fn permission_overrides_prefer_active_profile_identity() {
+        let active_profile = ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE);
+        let (sandbox_policy, permissions) = thread_settings_permission_overrides(
+            Some(&PermissionProfile::Disabled),
+            Some(&active_profile),
+            Path::new("/workspace/project"),
+        );
+
+        assert_eq!(sandbox_policy, None);
+        assert_eq!(
+            permissions.as_deref(),
+            Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE)
+        );
+    }
+}
