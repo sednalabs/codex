@@ -19,8 +19,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::time::Duration;
-use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 const MAX_TERMINAL_WAIT_MS: u64 = 2 * 60 * 60 * 1_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
@@ -66,6 +65,16 @@ pub(crate) struct ExecCommandArgs {
     prefix_rule: Option<Vec<String>>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct TerminalWaitArgs {
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ExecCommandEnvironmentArgs {
     #[serde(default)]
@@ -92,60 +101,53 @@ fn default_wait_budget_ms() -> u64 {
     MAX_TERMINAL_WAIT_MS
 }
 
-fn resolve_wait_budget(max_wait_ms: Option<u64>) -> Duration {
-    Duration::from_millis(
-        max_wait_ms
-            .unwrap_or_else(default_wait_budget_ms)
-            .min(MAX_TERMINAL_WAIT_MS),
-    )
-}
-
-fn resolve_heartbeat_ms(heartbeat_interval_ms: Option<u64>, fallback_ms: u64) -> u64 {
+fn resolve_wait_window_ms(
+    max_wait_ms: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
+    fallback_ms: u64,
+) -> u64 {
     heartbeat_interval_ms
+        .or(max_wait_ms)
         .unwrap_or(fallback_ms)
         .max(MIN_YIELD_TIME_MS)
+        .min(default_wait_budget_ms())
 }
 
 async fn complete_terminal_wait(
     manager: &UnifiedExecProcessManager,
     initial_response: ExecCommandToolOutput,
-    max_wait_ms: Option<u64>,
-    heartbeat_interval_ms: Option<u64>,
+    terminal_wait: TerminalWaitArgs,
     fallback_yield_time_ms: u64,
+    cancellation_token: &CancellationToken,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     if initial_response.process_id.is_none() {
         return Ok(initial_response);
     }
 
-    let started = Instant::now();
-    let deadline = started + resolve_wait_budget(max_wait_ms);
-    let heartbeat_ms = resolve_heartbeat_ms(heartbeat_interval_ms, fallback_yield_time_ms);
+    let wait_window_ms = resolve_wait_window_ms(
+        terminal_wait.max_wait_ms,
+        terminal_wait.heartbeat_interval_ms,
+        fallback_yield_time_ms,
+    );
     let max_output_tokens = initial_response.max_output_tokens;
     let mut response = initial_response;
     let mut raw_output = std::mem::take(&mut response.raw_output);
     let mut wall_time = response.wall_time;
 
     while let Some(process_id) = response.process_id {
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
-
-        let remaining_ms = deadline
-            .saturating_duration_since(now)
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        let yield_time_ms = heartbeat_ms.min(remaining_ms);
-        response = manager
-            .write_stdin(WriteStdinRequest {
+        tokio::select! {
+            _ = cancellation_token.cancelled() => break,
+            result = manager.write_stdin(WriteStdinRequest {
                 process_id,
                 input: "",
-                yield_time_ms,
+                yield_time_ms: wait_window_ms,
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens,
                 truncation_policy: response.truncation_policy,
-            })
-            .await?;
+            }) => {
+                response = result?;
+            }
+        }
         wall_time += response.wall_time;
         raw_output.extend_from_slice(&response.raw_output);
     }

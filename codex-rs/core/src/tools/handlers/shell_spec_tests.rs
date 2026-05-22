@@ -64,14 +64,13 @@ fn exec_command_tool_matches_expected_spec() {
         (
             "wait_until_terminal".to_string(),
             JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+                "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to 7200000 ms.".to_string(),
             )),
         ),
         (
             "max_wait_ms".to_string(),
             JsonSchema::number(Some(
-                "Maximum total wait window for wait_until_terminal, in milliseconds."
-                    .to_string(),
+                "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
             )),
         ),
         (
@@ -141,13 +140,13 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "wait_until_terminal".to_string(),
             JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
+                "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to 7200000 ms.".to_string(),
             )),
         ),
         (
             "max_wait_ms".to_string(),
             JsonSchema::number(Some(
-                "Maximum total wait window for wait_until_terminal, in milliseconds.".to_string(),
+                "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
             )),
         ),
         (

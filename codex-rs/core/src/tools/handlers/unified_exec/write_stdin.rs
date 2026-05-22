@@ -15,6 +15,9 @@ use codex_tools::ToolSpec;
 use serde::Deserialize;
 
 use super::super::shell_spec::create_write_stdin_tool;
+use super::TerminalWaitArgs;
+use super::complete_terminal_wait;
+use super::effective_max_output_tokens;
 use super::post_unified_exec_tool_use_payload;
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +30,8 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(flatten)]
+    terminal_wait: TerminalWaitArgs,
 }
 
 pub struct WriteStdinHandler;
@@ -49,6 +54,7 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
             session,
             turn,
             payload,
+            cancellation_token,
             ..
         } = invocation;
 
@@ -62,6 +68,10 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        let max_output_tokens = Some(effective_max_output_tokens(
+            args.max_output_tokens,
+            turn.truncation_policy,
+        ));
         let response = session
             .services
             .unified_exec_manager
@@ -70,13 +80,30 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
                 input: &args.chars,
                 yield_time_ms: args.yield_time_ms,
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
-                max_output_tokens: args.max_output_tokens,
+                max_output_tokens,
                 truncation_policy: turn.truncation_policy,
             })
             .await
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
+        let response = if args.terminal_wait.wait_until_terminal {
+            complete_terminal_wait(
+                &session.services.unified_exec_manager,
+                response,
+                args.terminal_wait,
+                args.yield_time_ms,
+                &cancellation_token,
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "write_stdin failed while waiting: {err}"
+                ))
+            })?
+        } else {
+            response
+        };
 
         // Empty stdin is a background poll, so emit it only while there is
         // still a live process for the UI to wait on. Non-empty stdin is a real

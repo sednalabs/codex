@@ -1399,7 +1399,7 @@ async fn exec_command_wait_until_terminal_defers_provider_resume_until_exit() ->
         "cmd": "sleep 1; printf 'WAIT_UNTIL_TERMINAL_DONE\\n'",
         "yield_time_ms": 100,
         "wait_until_terminal": true,
-        "max_wait_ms": 5_000,
+        "max_wait_ms": 300,
         "heartbeat_interval_ms": 100,
     });
 
@@ -1473,6 +1473,142 @@ async fn exec_command_wait_until_terminal_defers_provider_resume_until_exit() ->
     );
     assert!(
         terminal.output.contains("WAIT_UNTIL_TERMINAL_DONE"),
+        "expected terminal output to be included in provider resume payload"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_stdin_wait_until_terminal_defers_provider_resume_until_exit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_remote_env(&server).await?;
+
+    let start_call_id = "uexec-wait-start";
+    let wait_call_id = "uexec-wait-stdin";
+    let start_args = serde_json::json!({
+        "cmd": "sleep 1; printf 'WRITE_STDIN_TERMINAL_DONE\\n'",
+        "yield_time_ms": 100,
+    });
+    let wait_args = serde_json::json!({
+        "session_id": 1000,
+        "chars": "",
+        "yield_time_ms": 100,
+        "wait_until_terminal": true,
+        "max_wait_ms": 300,
+        "heartbeat_interval_ms": 100,
+    });
+
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                start_call_id,
+                "exec_command",
+                &serde_json::to_string(&start_args)?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_function_call(
+                wait_call_id,
+                "write_stdin",
+                &serde_json::to_string(&wait_args)?,
+            ),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-3"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    let started = std::time::Instant::now();
+    submit_unified_exec_turn(
+        &test,
+        "run write_stdin provider-gated terminal wait test",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::ExecCommandBegin(event) => event.call_id == start_call_id,
+        _ => false,
+    })
+    .await;
+    let second_request_deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while request_log.requests().len() < 2 {
+        assert!(
+            std::time::Instant::now() < second_request_deadline,
+            "expected provider to request write_stdin after the initial command yielded"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    assert_eq!(
+        request_log.requests().len(),
+        2,
+        "write_stdin wait_until_terminal must not resume the provider while the process is still running"
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(900),
+        "write_stdin provider resume should be gated until terminal state; got {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
+        "write_stdin terminal wait test took unexpectedly long: {elapsed:?}"
+    );
+
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected start request, write_stdin wait request, and post-terminal provider resume"
+    );
+    let bodies = requests
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+
+    let outputs = collect_tool_outputs(&bodies)?;
+    let start_output = outputs
+        .get(start_call_id)
+        .expect("missing start exec_command output");
+    assert!(
+        start_output.process_id.is_some(),
+        "initial command should leave a resumable process"
+    );
+
+    let terminal = outputs
+        .get(wait_call_id)
+        .expect("missing write_stdin terminal wait tool output");
+    assert_eq!(terminal.exit_code, Some(0));
+    assert!(
+        terminal.process_id.is_none(),
+        "write_stdin terminal wait should not leave a resumable process after completion"
+    );
+    assert!(
+        terminal.output.contains("WRITE_STDIN_TERMINAL_DONE"),
         "expected terminal output to be included in provider resume payload"
     );
 
