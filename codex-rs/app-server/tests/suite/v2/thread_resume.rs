@@ -1556,6 +1556,8 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                     model_context_window: Some(200_000),
                 }),
                 rate_limits: None,
+                provider: None,
+                model_used: None,
             }))?,
         })
         .to_string(),
@@ -1565,8 +1567,6 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
             "payload": serde_json::to_value(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(interrupted_turn_id.to_string()),
                 reason: TurnAbortReason::Interrupted,
-                completed_at: None,
-                duration_ms: None,
             }))?,
         })
         .to_string(),
