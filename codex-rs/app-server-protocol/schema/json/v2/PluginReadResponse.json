@@ -46,6 +46,7 @@
         "sessionStart",
         "userPromptSubmit",
         "subagentStart",
+        "subagentStop",
         "stop"
       ],
       "type": "string"
@@ -88,7 +89,7 @@
         },
         "hooks": {
           "items": {
-            "$ref": "#/definitions/PluginHookSummary"
+            "$ref": "#/$defs/PluginHookSummary"
           },
           "type": "array"
         },
@@ -122,11 +123,10 @@
         }
       },
       "required": [
-        "apps",
-        "hooks",
         "marketplaceName",
         "summary",
         "skills",
+        "hooks",
         "apps",
         "mcpServers"
       ],
@@ -135,15 +135,15 @@
     "PluginHookSummary": {
       "properties": {
         "eventName": {
-          "$ref": "#/definitions/HookEventName"
+          "$ref": "#/$defs/HookEventName"
         },
         "key": {
           "type": "string"
         }
       },
       "required": [
-        "eventName",
-        "key"
+        "key",
+        "eventName"
       ],
       "type": "object"
     },
@@ -302,7 +302,7 @@
         "discoverability": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareDiscoverability"
+              "$ref": "#/$defs/PluginShareDiscoverability"
             },
             {
               "type": "null"
@@ -322,7 +322,7 @@
         },
         "sharePrincipals": {
           "items": {
-            "$ref": "#/definitions/PluginSharePrincipal"
+            "$ref": "#/$defs/PluginSharePrincipal"
           },
           "type": [
             "array",
@@ -358,17 +358,17 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/definitions/PluginSharePrincipalRole"
+          "$ref": "#/$defs/PluginSharePrincipalRole"
         }
       },
       "required": [
-        "name",
-        "principalId",
         "principalType",
-        "role"
+        "principalId",
+        "role",
+        "name"
       ],
       "type": "object"
     },
@@ -521,7 +521,7 @@
         "shareContext": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareContext"
+              "$ref": "#/$defs/PluginShareContext"
             },
             {
               "type": "null"

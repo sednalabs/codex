@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "value": {
+      "description": "Test-only payload field.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MockExperimentalMethodParams",
+  "type": "object"
+}

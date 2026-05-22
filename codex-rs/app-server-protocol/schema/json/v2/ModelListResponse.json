@@ -38,6 +38,14 @@
         "defaultReasoningEffort": {
           "$ref": "#/$defs/ReasoningEffort"
         },
+        "defaultServiceTier": {
+          "default": null,
+          "description": "Catalog default service tier id for this model, when one is configured.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "description": {
           "type": "string"
         },
@@ -69,7 +77,7 @@
         "serviceTiers": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/ModelServiceTier"
+            "$ref": "#/$defs/ModelServiceTier"
           },
           "type": "array"
         },
@@ -136,9 +144,9 @@
         }
       },
       "required": [
-        "description",
         "id",
-        "name"
+        "name",
+        "description"
       ],
       "type": "object"
     },

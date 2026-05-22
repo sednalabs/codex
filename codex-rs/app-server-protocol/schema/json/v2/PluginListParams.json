@@ -27,9 +27,9 @@
       ]
     },
     "marketplaceKinds": {
-      "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus the default remote catalog when enabled by feature flag.",
+      "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus\nthe default remote catalog when enabled by feature flag.",
       "items": {
-        "$ref": "#/definitions/PluginListMarketplaceKind"
+        "$ref": "#/$defs/PluginListMarketplaceKind"
       },
       "type": [
         "array",

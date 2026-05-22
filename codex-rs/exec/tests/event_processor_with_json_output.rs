@@ -591,6 +591,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 status: ApiMcpToolCallStatus::InProgress,
                 arguments: json!({ "key": "value" }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -608,6 +609,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 status: ApiMcpToolCallStatus::Completed,
                 arguments: json!({ "key": "value" }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: Vec::new(),
                     structured_content: None,
@@ -683,6 +685,7 @@ fn mcp_tool_call_failure_sets_failed_status() {
                 status: ApiMcpToolCallStatus::Failed,
                 arguments: json!({ "param": 42 }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "tool exploded".to_string(),
@@ -733,6 +736,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 status: ApiMcpToolCallStatus::InProgress,
                 arguments: serde_json::Value::Null,
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -750,6 +754,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 status: ApiMcpToolCallStatus::Completed,
                 arguments: serde_json::Value::Null,
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![json!({
                         "type": "text",

@@ -59,6 +59,17 @@
         }
       ]
     },
+    "ComputerUseRequirements": {
+      "properties": {
+        "allowLockedComputerUse": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ConfigRequirements": {
       "properties": {
         "allowManagedHooksOnly": {
@@ -85,6 +96,15 @@
             "null"
           ]
         },
+        "allowedPermissions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "allowedSandboxModes": {
           "items": {
             "$ref": "#/$defs/SandboxMode"
@@ -101,6 +121,16 @@
           "type": [
             "array",
             "null"
+          ]
+        },
+        "computerUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComputerUseRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "enforceResidency": {
@@ -249,7 +279,7 @@
         },
         "PostCompact": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
@@ -261,7 +291,7 @@
         },
         "PreCompact": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
@@ -278,6 +308,18 @@
           "type": "array"
         },
         "Stop": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "SubagentStart": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "SubagentStop": {
           "items": {
             "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
@@ -305,12 +347,13 @@
       "required": [
         "PreToolUse",
         "PermissionRequest",
-        "PostCompact",
         "PostToolUse",
         "PreCompact",
-        "PreToolUse",
+        "PostCompact",
         "SessionStart",
         "UserPromptSubmit",
+        "SubagentStart",
+        "SubagentStop",
         "Stop"
       ],
       "type": "object"

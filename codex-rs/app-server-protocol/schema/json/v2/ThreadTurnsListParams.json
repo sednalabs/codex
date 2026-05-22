@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "TurnItemsView": {
+      "oneOf": [
+        {
+          "const": "notLoaded",
+          "description": "`items` was not loaded for this turn. The field is intentionally empty.",
+          "type": "string"
+        },
+        {
+          "const": "summary",
+          "description": "`items` contains only a display summary for this turn.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cursor": {
+      "description": "Opaque cursor to pass to the next call to continue after the last turn.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "itemsView": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TurnItemsView"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How much item detail to include for each returned turn; defaults to summary."
+    },
+    "limit": {
+      "description": "Optional turn page size.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sortDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SortDirection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional turn pagination direction; defaults to descending."
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadTurnsListParams",
+  "type": "object"
+}
