@@ -230,6 +230,8 @@ fn stale_startup_thread_started_removes_local_routing_state() -> Result<()> {
                 /*agent_nickname*/ None,
                 /*agent_role*/ None,
                 /*is_closed*/ false,
+                /*created_at*/ None,
+                /*updated_at*/ None,
             );
             assert!(app.thread_event_channels.contains_key(&stale_thread_id));
             assert!(app.agent_navigation.get(&stale_thread_id).is_some());

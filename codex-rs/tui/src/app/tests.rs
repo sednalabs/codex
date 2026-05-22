@@ -1138,6 +1138,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 model: None,
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
+                timed_out: false,
             },
         }),
     ));
@@ -1148,6 +1149,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             agent_nickname: None,
             agent_role: None,
             is_closed: false,
+            ..AgentPickerThreadEntry::default()
         })
     );
 }
@@ -1179,6 +1181,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                         message: None,
                     },
                 )]),
+                timed_out: false,
             },
         }),
     ));
@@ -1207,6 +1210,7 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             agent_nickname: None,
             agent_role: None,
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -1229,6 +1233,8 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ true,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
@@ -1240,6 +1246,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1259,6 +1266,8 @@ async fn open_agent_picker_prunes_terminal_metadata_only_threads() -> Result<()>
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
@@ -1284,6 +1293,8 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
@@ -1294,6 +1305,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: true,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1332,6 +1344,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: false,
+                ..AgentPickerThreadEntry::default()
             })
         );
         Ok(())
@@ -1365,7 +1378,9 @@ fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-        );
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
         let err = app
             .attach_live_thread_for_selection(&mut app_server, thread_id)
@@ -1405,7 +1420,9 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-        );
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
         let err = app
             .attach_live_thread_for_selection(&mut app_server, thread_id)
@@ -1430,6 +1447,8 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ true,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
@@ -1439,6 +1458,8 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
     assert!(app.should_attach_live_thread_for_selection(thread_id));
 
@@ -1461,6 +1482,8 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     let is_available =
@@ -2327,6 +2350,8 @@ async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     app.refresh_pending_thread_approvals().await;
@@ -2370,6 +2395,8 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     app.enqueue_thread_request(
@@ -2529,6 +2556,8 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     app.enqueue_thread_request(
@@ -2903,6 +2932,8 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     app.enqueue_thread_request(
@@ -3031,6 +3062,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             is_closed: false,
+            ..AgentPickerThreadEntry::default()
         })
     );
 
@@ -3639,7 +3671,9 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-        );
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
         assert!(
             app.discard_side_thread(&mut app_server, side_thread_id)
@@ -3669,7 +3703,9 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-        );
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
         assert!(
             !app.discard_side_thread(&mut app_server, side_thread_id)
@@ -3704,6 +3740,8 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         Some("Side".to_string()),
         Some("side".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     app.discard_closed_side_thread(side_thread_id).await;
@@ -4982,6 +5020,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
@@ -5030,6 +5070,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             model: None,
                             reasoning_effort: None,
                             agents_states: HashMap::new(),
+                            timed_out: false,
                         },
                     },
                 ),

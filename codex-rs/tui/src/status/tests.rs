@@ -304,10 +304,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
     config.cwd = PathBuf::from("/workspace/tests").abs();
     config
         .permissions
-        .set_permission_profile_with_active_profile(
-            PermissionProfile::read_only(),
-            /*active_permission_profile*/ None,
-        )
+        .set_permission_profile(PermissionProfile::read_only())
         .expect("set permission profile");
 
     let thread_usage = TokenUsage {
@@ -742,7 +739,6 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
-        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
     let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
