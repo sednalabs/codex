@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -56,6 +58,9 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 )
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
+)
+DISPATCH_SEDNA_RELEASE = load_module(
+    "dispatch_sedna_release_module", SCRIPTS_DIR / "dispatch_sedna_release.py"
 )
 RESOLVE_SEDNA_RELEASE_VERSION = load_module(
     "resolve_sedna_release_version_module",
@@ -390,6 +395,124 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
             text=True,
         )
         return proc.stdout.strip()
+
+
+class DispatchSednaReleaseTests(unittest.TestCase):
+    def test_refresh_upstream_rust_tags_fetches_only_rust_release_tags(self) -> None:
+        with mock.patch.object(DISPATCH_SEDNA_RELEASE, "run_command") as run_command:
+            DISPATCH_SEDNA_RELEASE.refresh_upstream_rust_tags(
+                repo=Path("/repo"),
+                upstream_remote="upstream",
+                dry_run=False,
+            )
+
+        run_command.assert_called_once_with(
+            [
+                "git",
+                "-C",
+                "/repo",
+                "fetch",
+                "--no-tags",
+                "upstream",
+                "+refs/tags/rust-v*:refs/tags/rust-v*",
+            ],
+            dry_run=False,
+        )
+
+    def test_dispatch_release_uses_computed_release_metadata(self) -> None:
+        args = mock.Mock(
+            workflow="sedna-release.yml",
+            repo_slug="sednalabs/codex",
+            dispatch_ref="main",
+            channel="prerelease",
+            draft=False,
+            repo=Path("/repo"),
+            dry_run=True,
+        )
+        metadata = {
+            "release_tag": "v0.133.0-sedna.1+upstream.31",
+            "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+        }
+
+        with mock.patch.object(DISPATCH_SEDNA_RELEASE, "run_command") as run_command:
+            DISPATCH_SEDNA_RELEASE.dispatch_release(args, metadata)
+
+        run_command.assert_called_once_with(
+            [
+                "gh",
+                "workflow",
+                "run",
+                "sedna-release.yml",
+                "--repo",
+                "sednalabs/codex",
+                "--ref",
+                "main",
+                "-f",
+                "target_sha=d4b356a4c23ff606556dac7232353c80d2ce8deb",
+                "-f",
+                "channel=prerelease",
+                "-f",
+                "release_tag=v0.133.0-sedna.1+upstream.31",
+                "-f",
+                "draft=false",
+            ],
+            cwd=Path("/repo"),
+            dry_run=True,
+        )
+
+    def test_main_refreshes_tags_before_resolving_release_metadata(self) -> None:
+        events: list[str] = []
+        metadata = {
+            "release_tag": "v0.133.0-sedna.1+upstream.31",
+            "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+        }
+
+        def refresh_tags(**kwargs: object) -> None:
+            self.assertIs(kwargs["dry_run"], False)
+            events.append("refresh")
+
+        def resolve_metadata(_args: object) -> dict[str, object]:
+            self.assertEqual(events, ["refresh"])
+            events.append("resolve")
+            return metadata
+
+        def dispatch(_args: object, dispatch_metadata: dict[str, object]) -> None:
+            self.assertEqual(events, ["refresh", "resolve"])
+            self.assertEqual(dispatch_metadata, metadata)
+            events.append("dispatch")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "refresh_upstream_rust_tags",
+                    side_effect=refresh_tags,
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "resolve_release_metadata",
+                    side_effect=resolve_metadata,
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "dispatch_release",
+                    side_effect=dispatch,
+                ),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = DISPATCH_SEDNA_RELEASE.main(
+                        [
+                            "--repo",
+                            tmpdir,
+                            "--target-sha",
+                            "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+                            "--github-releases",
+                            "off",
+                        ]
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, ["refresh", "resolve", "dispatch"])
 
 
 class RouteSelectionTests(unittest.TestCase):
