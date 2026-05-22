@@ -1,6 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "EXPERIMENTAL - response for starting thread realtime.",
-  "title": "ThreadRealtimeStartResponse",
-  "type": "object"
-}

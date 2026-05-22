@@ -2233,18 +2233,6 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "activePermissionProfile": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ActivePermissionProfile"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "Named or implicit built-in profile that produced the active\npermissions, when known."
-    },
     "approvalPolicy": {
       "$ref": "#/$defs/AskForApproval"
     },
@@ -2278,14 +2266,6 @@
           "type": "null"
         }
       ]
-    },
-    "runtimeWorkspaceRoots": {
-      "default": [],
-      "description": "Thread-scoped runtime workspace roots used to materialize\n`:workspace_roots`.",
-      "items": {
-        "$ref": "#/$defs/AbsolutePathBuf"
-      },
-      "type": "array"
     },
     "sandbox": {
       "$ref": "#/$defs/SandboxPolicy",
