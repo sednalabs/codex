@@ -63,6 +63,7 @@ mod backfill;
 mod goals;
 mod logs;
 mod memories;
+mod migration_repair;
 mod phase2_attestation;
 mod remote_control;
 #[cfg(test)]
@@ -96,6 +97,7 @@ struct RuntimeDbSpec {
     filename: &'static str,
     kind: DbKind,
     open_phase: &'static str,
+    repair_phase: Option<&'static str>,
     migrate_phase: &'static str,
 }
 
@@ -110,6 +112,7 @@ const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: STATE_DB_CURRENT_FILENAME,
     kind: DbKind::State,
     open_phase: "open_state",
+    repair_phase: Some("repair_state_migrations"),
     migrate_phase: "migrate_state",
 };
 
@@ -118,6 +121,7 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: LOGS_DB_CURRENT_FILENAME,
     kind: DbKind::Logs,
     open_phase: "open_logs",
+    repair_phase: None,
     migrate_phase: "migrate_logs",
 };
 
@@ -126,6 +130,7 @@ const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: GOALS_DB_FILENAME,
     kind: DbKind::Goals,
     open_phase: "open_goals",
+    repair_phase: None,
     migrate_phase: "migrate_goals",
 };
 
@@ -134,6 +139,7 @@ const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: USAGE_DB_CURRENT_FILENAME,
     kind: DbKind::Usage,
     open_phase: "open_usage",
+    repair_phase: None,
     migrate_phase: "migrate_usage",
 };
 
@@ -363,6 +369,18 @@ async fn open_sqlite(
         &pool_result,
     );
     let pool = pool_result?;
+    if let Some(repair_phase) = spec.repair_phase {
+        let started = Instant::now();
+        let repair_result = migration_repair::repair_state_migrations(&pool, migrator).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            spec.kind,
+            repair_phase,
+            started.elapsed(),
+            &repair_result,
+        );
+        repair_result?;
+    }
     let started = Instant::now();
     let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
     crate::telemetry::record_init_result(
@@ -557,7 +575,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
+    use std::borrow::Cow;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::io;
@@ -701,6 +721,82 @@ mod tests {
         )
         .await
         .expect("runtime migrator should tolerate newer applied migrations");
+        tolerant_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn open_state_sqlite_marks_existing_thread_source_migration_applied() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        let partial_migrator = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .iter()
+                    .filter(|migration| migration.version <= 32)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: STATE_MIGRATOR.ignore_missing,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+        };
+        partial_migrator
+            .run(&pool)
+            .await
+            .expect("apply state schema before thread_source migration");
+        sqlx::query("ALTER TABLE threads ADD COLUMN thread_source TEXT")
+            .execute(&pool)
+            .await
+            .expect("simulate column applied without migration record");
+        pool.close().await;
+
+        let strict_pool = open_db_pool(state_path.as_path()).await;
+        let strict_err = STATE_MIGRATOR
+            .run(&strict_pool)
+            .await
+            .expect_err("strict migrator should try to add the existing column again");
+        assert!(strict_err.to_string().contains("duplicate column name"));
+        strict_pool.close().await;
+
+        let tolerant_migrator = runtime_state_migrator();
+        let tolerant_pool = open_state_sqlite(
+            state_path.as_path(),
+            &tolerant_migrator,
+            /*telemetry_override*/ None,
+        )
+        .await
+        .expect("runtime migrator should repair the missing migration record");
+
+        let applied: (String, bool, Vec<u8>) = sqlx::query_as(
+            "SELECT description, success, checksum FROM _sqlx_migrations WHERE version = 33",
+        )
+        .fetch_one(&tolerant_pool)
+        .await
+        .expect("migration 33 should be recorded");
+        let migration = tolerant_migrator
+            .iter()
+            .find(|migration| migration.version == 33)
+            .expect("embedded migration 33");
+        assert_eq!(
+            applied,
+            (
+                migration.description.to_string(),
+                true,
+                migration.checksum.as_ref().to_vec(),
+            )
+        );
         tolerant_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
