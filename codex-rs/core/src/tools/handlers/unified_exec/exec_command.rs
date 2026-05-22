@@ -100,6 +100,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             tracker,
             call_id,
             payload,
+            cancellation_token,
             ..
         } = invocation;
 
@@ -287,9 +288,13 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     complete_terminal_wait(
                         manager,
                         response,
-                        max_wait_ms,
-                        heartbeat_interval_ms,
+                        super::TerminalWaitArgs {
+                            wait_until_terminal,
+                            max_wait_ms,
+                            heartbeat_interval_ms,
+                        },
                         yield_time_ms,
+                        &cancellation_token,
                     )
                     .await
                     .map_err(|err| {
