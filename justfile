@@ -278,19 +278,25 @@ app-server-thread-cwd-targeted:
 app-server-computer-use-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
 
-# Focused native computer-use TUI projection slice for chat history and the
-# Ctrl+T transcript overlay.
+# Focused native computer-use TUI app-server request and provider routing slice.
 tui-native-computer-use-targeted:
-    cargo test --locked -p codex-tui app::tests::native_android_computer_use_events_render_in_transcript_and_overlay --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
 
-# Focused native Android tool registry slice for canonical schema conversion
+# Focused native computer-use tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
+    cargo test --locked -p codex-core-plugins bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
-    cargo test --locked -p codex-tools android_dynamic_tools_use_canonical_codex_tool_definitions --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-tools duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tools canonical_browser_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools browser_backend_schema_exposes_supported_provider_backends --lib -- --test-threads=1
+    cargo test --locked -p codex-tools native_computer_use_registry_classifies_android_and_browser_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-core duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --test-threads=1
+    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
+    cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
+    cargo test --locked -p codex-tui browser_provider_is_a_known_but_unavailable_adapter_until_backend_is_connected --lib -- --test-threads=1
+    cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]

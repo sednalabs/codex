@@ -93,6 +93,7 @@ mod approval_events;
 mod ascii_animation;
 #[cfg(not(target_os = "linux"))]
 mod audio_device;
+mod computer_use_provider;
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod audio_device {
