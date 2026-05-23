@@ -202,35 +202,43 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### Native Computer-Use And Android Tool Bridge
+### Native Computer-Use Adapter Bridge
 
-- Downstream promotes bare `android_observe`, `android_step`, and
-  `android_install_build_from_run` dynamic tools into first-party native
-  computer-use function tools with Codex-owned schemas.
-- Namespaced Android-like tools remain ordinary dynamic tools so
-  app-specific providers can keep their own tool surfaces without taking over
-  the native Codex contract.
+- Downstream promotes bare `android_observe`, `android_step`,
+  `android_install_build_from_run`, `browser_observe`, and `browser_step`
+  dynamic tools into first-party native computer-use function tools with
+  Codex-owned schemas.
+- Namespaced Android-like or browser-like tools remain ordinary dynamic tools
+  so app-specific providers can keep their own tool surfaces without taking
+  over the native Codex contract.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
-  cleanup, success/error projection, mutating classification, install-specific
-  timeout selection, and hook payload formatting.
+  cleanup, success/error projection, adapter selection, mutating
+  classification, install-specific timeout selection, and hook payload
+  formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
-  protocol events and snapshots.
-- Android screenshots are expected to reach the model as native image content
-  items. Provider artifact paths are kept for diagnostics, audit, or replay;
-  they are not the normal model-facing visual channel.
+  protocol events and snapshots. The TUI provider registry currently handles
+  Android and recognizes browser as a known unavailable provider until a real
+  browser bridge is connected.
+- Android screenshots and browser viewport captures are expected to reach the
+  model as native image content items. Provider artifact paths are kept for
+  diagnostics, audit, or replay; they are not the normal model-facing visual
+  channel.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
-- Runtime providers own Android sessions, screenshots, UI digests, input
-  execution, and provider-side build installation. Solar Gravity Lab is a
-  proving and consumer app, not the generic owner of Codex computer-use tooling.
+- Runtime providers own Android sessions, browser sessions, screenshots,
+  viewport capture, UI digests, input execution, and provider-side build
+  installation. Solar Gravity Lab is a proving and consumer app, not the
+  generic owner of Codex computer-use tooling.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/tools/src/android_tool.rs`
-  - `codex-rs/tools/src/tool_registry_plan.rs`
+  - `codex-rs/tools/src/browser_tool.rs`
+  - `codex-rs/tools/src/computer_use_tool.rs`
+  - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
   - `codex-rs/core/src/tools/tool_search_entry.rs`
   - `codex-rs/app-server/src/computer_use.rs`
@@ -239,7 +247,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
+  - `codex-rs/tui/src/computer_use_provider.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
   - `codex-rs/tui/src/history_cell.rs`
@@ -247,7 +257,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/rollout-trace/src/protocol_event.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
   - `codex-rs/tools/src/android_tool_tests.rs`
-  - `codex-rs/tools/src/tool_registry_plan_tests.rs`
+  - `codex-rs/tools/src/browser_tool_tests.rs`
+  - `codex-rs/tools/src/computer_use_tool_tests.rs`
   - `docs/native-computer-use.md`
 
 ### Review And History Accounting Alignment

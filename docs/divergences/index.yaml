@@ -570,15 +570,16 @@
       "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
     },
     {
-      "id": "codex-native-computer-use-android",
-      "title": "Native computer-use and Android tool bridge",
+      "id": "codex-native-computer-use-adapters",
+      "title": "Native computer-use adapter bridge",
       "status": "live",
       "category": "core-protocol",
       "surface_type": "agent-facing",
       "surface": [
         "native computer-use protocol events",
         "Android observe/step/install function tools",
-        "native Android image output",
+        "browser observe/step function tools",
+        "native screenshot and browser viewport image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
       ],
@@ -587,7 +588,9 @@
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/protocol/src/dynamic_tools.rs",
         "codex-rs/tools/src/android_tool.rs",
-        "codex-rs/tools/src/tool_registry_plan.rs",
+        "codex-rs/tools/src/browser_tool.rs",
+        "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/tool_search_entry.rs",
         "codex-rs/app-server/src/computer_use.rs",
@@ -596,7 +599,9 @@
         "codex-rs/app-server-protocol/src/protocol/v2.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
         "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
         "codex-rs/tui/src/history_cell.rs",
@@ -604,10 +609,11 @@
         "codex-rs/rollout-trace/src/protocol_event.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
-        "codex-rs/tools/src/tool_registry_plan_tests.rs",
+        "codex-rs/tools/src/browser_tool_tests.rs",
+        "codex-rs/tools/src/computer_use_tool_tests.rs",
         "docs/native-computer-use.md"
       ],
-      "behavior": "Bare android_observe, android_step, and android_install_build_from_run dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability and provider-side build installation.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, and browser_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, and provider-side build installation. The browser adapter is schema/dispatch-ready and currently reports unavailable in TUI until a real backend bridge is connected.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -619,9 +625,15 @@
         "thread_resume_injects_native_android_tools_into_model_requests",
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
         "thread_fork_injects_native_android_tools_into_model_requests",
-        "native_android_computer_use_events_render_in_transcript_and_overlay",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "android_dynamic_tools_use_canonical_codex_tool_definitions",
+        "canonical_browser_dynamic_tool_preserves_supported_browser_tool_names",
+        "browser_backend_schema_exposes_supported_provider_backends",
+        "native_computer_use_registry_classifies_android_and_browser_tools",
+        "browser_handler_uses_browser_adapter",
+        "browser_provider_is_a_known_but_unavailable_adapter_until_backend_is_connected",
+        "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
+        "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",
         "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
         "computer_use_call_times_out_and_unregisters_pending_response",
@@ -630,7 +642,7 @@
         "computer_use_call_response_is_tool_runtime_end"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Android screenshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
+      "notes": "Runtime provider capability is supplied by Android or browser tooling outside hot Codex core. Android screenshots and browser viewport captures should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
     },
     {
       "id": "codex-tui-session-surfaces",
