@@ -7,14 +7,14 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-04-28`
+Last reviewed: `2026-05-24`
 
 Review baseline:
 
-- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `upstream/main`: `7d47056ea42636271ac020b86347fbbef49490aa`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
-- `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+  `7d47056ea42636271ac020b86347fbbef49490aa`
+- `main` (`origin/main`): `0a7f085914ff8e3ede9895ca70a422eae4221cb9`
 
 | Surface | `upstream/main` | `main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |
@@ -23,9 +23,12 @@ Review baseline:
 | Bare `android_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as non-mutating | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Bare `android_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with batched `actions[]` and compatibility single-action fields | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Bare `android_install_build_from_run` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with a longer timeout for provider-side artifact download, install, launch, and post-install observation | yes | `codex.native-computer-use-tool-registry-targeted` |
-| Namespaced Android-like dynamic tools | Normal namespaced dynamic tools | Same as upstream-style dynamic tools; no native promotion for namespaced `android_observe` or `android_step` | no | `namespaced_android_dynamic_tool_names_remain_dynamic_tools` |
+| Bare `browser_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `browser`; treated as non-mutating; current TUI provider registry recognizes the adapter but returns unavailable until a browser backend bridge is connected | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
+| Bare `browser_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `browser`; treated as mutating, with batched `actions[]`, compatibility single-action fields, and `backend=auto|iab|chrome` | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
+| `browser-use@openai-bundled` tool suggestion | Not included in downstream allowlist before this carry | Discoverable alongside `chrome@openai-bundled` and `computer-use@openai-bundled` so tool suggestion can find the browser plugin family | yes | `bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable` |
+| Namespaced native-like dynamic tools | Normal namespaced dynamic tools | Same as upstream-style dynamic tools; no native promotion for namespaced `android_observe`, `android_step`, `browser_observe`, or `browser_step` | no | `namespaced_android_dynamic_tool_names_remain_dynamic_tools`; `canonical_browser_dynamic_tool_ignores_namespaced_tools` |
 | App-server computer-use bridge | No v2 `item/computerUse/call` native bridge | API v2 projects native computer-use requests into `ThreadItem::ComputerUseCall`, sends `item/computerUse/call` to capable clients, and forwards client responses back to the active turn | yes | `codex.app-server-computer-use-targeted`; `codex.app-server-protocol-test` |
-| Native Android screenshot output | No Codex-owned Android image-output contract | Screenshots should be returned to the model as native `inputImage` content; provider artifact paths are diagnostic/replay breadcrumbs rather than the model-facing visual channel | yes | `codex.tui-native-computer-use-targeted`; `codex.native-computer-use-tool-registry-targeted` |
+| Native screenshot/browser viewport output | No Codex-owned native image-output contract | Screenshots and browser viewport captures should be returned to the model as native `inputImage` content; provider artifact paths are diagnostic/replay breadcrumbs rather than the model-facing visual channel | yes | `codex.tui-native-computer-use-targeted`; `codex.native-computer-use-tool-registry-targeted` |
 | `spawn_agent` request semantics | Explicit `model` and `reasoning_effort` overrides are supported | Same base support, plus documented role-lock precedence for `model`, `model_provider`, `model_reasoning_effort`, `model_verbosity`, and `model_reasoning_summary`, with explicit guidance that active-profile/role overrides retain priority when they provide these fields. | yes | `spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role`; `spawn_agent_role_overrides_requested_model_and_reasoning_settings` |
 | `spawn_agent` response schema | `agent_id`, `nickname` | Full inventory item: `agent_id`, `nickname`, `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, `effective_model_provider_id` | yes | `codex.core-subagent-surface-targeted` |
 | `list_agents` | `MultiAgentV2` live inventory tool when the feature is enabled; path-scoped rows include `agent_name`, `agent_status`, and `last_task_message` | Always available on the downstream collab surface, using the upstream live handler shape for the cheap in-memory view in both v1 and v2, plus `has_active_subagents` and `active_subagent_count` so callers can notice when a row still owns active nested work | yes | `multi_agent_v2_list_agents_returns_completed_status_and_last_task_message`; `multi_agent_v2_list_agents_filters_by_relative_path_prefix`; `multi_agent_v2_list_agents_omits_closed_agents`; `multi_agent_v2_list_agents_flags_active_descendants`; `test_build_specs_collab_tools_enabled` |
@@ -53,12 +56,13 @@ Notes:
   compact nested inspection, stale-descendant visibility, and branch-focused
   filtering via `agent_roots`, rather than overloading `list_agents` with
   provenance-heavy output by default.
-- Native Android promotion is intentionally limited to bare `android_observe`,
-  `android_step`, and `android_install_build_from_run`. Runtime providers
-  supply Android capability, device execution, and provider-side build
-  installation, while Codex owns the canonical schema, native image-output
-  expectation, transcript events, app-server bridge, TUI projection, and
-  rollout trace semantics. See
+- Native promotion is intentionally limited to recognized bare tool names.
+  Runtime providers supply Android capability, browser capability, device or
+  browser execution, and provider-side build installation, while Codex owns the
+  canonical schema, native image-output expectation, adapter dispatch,
+  transcript events, app-server bridge, TUI projection, and rollout trace
+  semantics. The browser adapter is schema/dispatch-ready, but its provider
+  backend is not yet connected in the TUI client. See
   [`native-computer-use.md`](native-computer-use.md).
 - `apply_patch` and `js_repl` are included as control rows so future audits do
   not misclassify them as carry-only behavior.

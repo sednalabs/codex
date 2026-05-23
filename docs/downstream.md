@@ -80,7 +80,7 @@ docs-only refresh commit that records this snapshot.
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
-- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use and Android tool contract, including app-server, TUI, rollout, and validation boundaries.
+- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use adapter contract, including Android, browser, app-server, TUI, rollout, and validation boundaries.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -105,20 +105,22 @@ User-visible behavior:
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
-### Core + app-server: native computer-use and first-party Android bridge
+### Core + app-server: native computer-use adapter bridge
 
 Why:
-- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android observe/step as ordinary ad hoc dynamic tools.
-- Let Android providers supply runtime capability while Codex owns the canonical model-facing schema, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
-- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling.
+- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
+- Let runtime providers supply Android or browser capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
+- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
 User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
-- Namespaced Android-like tools remain normal dynamic tools.
+- Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the current TUI provider registry recognizes them but reports unavailable until a real browser backend bridge is connected.
+- Namespaced Android-like and browser-like tools remain normal dynamic tools.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
+- `browser_observe` is non-mutating; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `iab`, or `chrome`.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
-- Android screenshots are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
+- Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
