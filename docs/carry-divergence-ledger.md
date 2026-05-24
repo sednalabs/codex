@@ -219,9 +219,9 @@ docs-only refresh commit that records this snapshot.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
-  protocol events and snapshots. The TUI provider registry currently handles
-  Android and recognizes browser as a known unavailable provider until a real
-  browser bridge is connected.
+  protocol events and snapshots. The TUI provider registry handles Android and
+  routes browser calls to either a configured provider command or the built-in
+  Playwright provider for `backend=auto`.
 - Android screenshots and browser viewport captures are expected to reach the
   model as native image content items. Provider artifact paths are kept for
   diagnostics, audit, or replay; they are not the normal model-facing visual
@@ -247,6 +247,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
+  - `codex-rs/tui/src/browser_computer_use_provider.rs`
+  - `codex-rs/tui/src/browser_playwright_provider.mjs`
   - `codex-rs/tui/src/computer_use_provider.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
   - `codex-rs/tui/src/app/app_server_events.rs`

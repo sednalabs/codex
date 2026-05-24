@@ -1647,6 +1647,8 @@
         "codex-rs/tools/src/computer_use_tool_tests.rs",
         "codex-rs/tools/src/lib.rs",
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
@@ -1667,6 +1669,7 @@
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/computer_use_provider.rs"
       ]
     },

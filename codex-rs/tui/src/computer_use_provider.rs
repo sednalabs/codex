@@ -1,5 +1,7 @@
 use crate::android_computer_use_provider::AndroidComputerUseOutcome;
 use crate::android_computer_use_provider::handle_android_computer_use;
+use crate::browser_computer_use_provider::BrowserComputerUseOutcome;
+use crate::browser_computer_use_provider::handle_browser_computer_use;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
 
@@ -69,7 +71,12 @@ impl RegisteredComputerUseProvider {
                 }
                 AndroidComputerUseOutcome::Unavailable => ComputerUseProviderOutcome::Unavailable,
             },
-            Self::Browser => ComputerUseProviderOutcome::Unavailable,
+            Self::Browser => match handle_browser_computer_use(params).await {
+                BrowserComputerUseOutcome::Handled(response) => {
+                    ComputerUseProviderOutcome::Handled(response)
+                }
+                BrowserComputerUseOutcome::Unavailable => ComputerUseProviderOutcome::Unavailable,
+            },
         }
     }
 }
@@ -82,7 +89,7 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn browser_provider_is_a_known_but_unavailable_adapter_until_backend_is_connected() {
+    async fn browser_provider_requires_configured_backend() {
         let outcome = handle_computer_use(&ComputerUseCallParams {
             thread_id: "thread-1".to_string(),
             call_id: "call-browser-observe".to_string(),

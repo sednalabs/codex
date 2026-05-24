@@ -114,10 +114,11 @@ Why:
 
 User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
-- Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the current TUI provider registry recognizes them but reports unavailable until a real browser backend bridge is connected.
+- Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the current TUI provider registry routes them to a browser bridge when configured.
 - Namespaced Android-like and browser-like tools remain normal dynamic tools.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `iab`, or `chrome`.
+- The TUI browser bridge supports a built-in Playwright backend for `backend=auto` plus an operator-configured command provider for future in-app-browser, signed-in Chrome, remote, or hosted browser providers.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.

@@ -5,9 +5,9 @@ Codex fork. It is intentionally scoped to Codex-owned protocol, transcript,
 tool-registry, app-server, TUI, rollout, and validation behavior.
 
 Native runtime backends are supplied by external providers. Android is the
-first implemented provider. Browser is now a registered adapter and
-model-facing schema surface, but its TUI/app client backend bridge is not yet
-connected in this fork.
+first implemented provider. Browser is now a registered adapter with a TUI
+provider bridge that can either invoke an operator-configured command or use
+the built-in Playwright backend for `backend=auto`.
 
 ## Ownership Boundaries
 
@@ -49,8 +49,26 @@ Browser tools include a `backend` hint with `auto`, `iab`, and `chrome`
 values. `auto` lets the provider choose the best available browser backend.
 `iab` is intended for the Codex app in-app browser. `chrome` is intended for
 signed-in Chrome-extension-backed browser state. The hint is part of the
-provider contract; the current TUI provider registry recognizes the browser
-adapter but returns unavailable until a real browser bridge is connected.
+provider contract. The current TUI bridge handles `auto` through Playwright or
+forwards any backend to an operator-configured provider command. `iab` and
+`chrome` require such a provider command until a dedicated in-app-browser or
+Chrome-extension bridge is connected.
+
+The TUI bridge is intentionally pluggable:
+
+- `CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright` enables the embedded
+  Playwright bridge for `backend=auto`. The bridge launches a persistent
+  Chromium profile, executes bounded browser actions, and returns the viewport
+  screenshot as native `inputImage` content. This backend requires `node` and a
+  Playwright package that Node can resolve in the runtime environment.
+- `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
+  Codex sends `ComputerUseCallParams` JSON on stdin and expects a
+  `ComputerUseCallResponse` JSON object on stdout. This is the extension point
+  for future in-app-browser, signed-in Chrome, remote, or hosted browser
+  providers.
+- `~/.codex/browser-computer-use.json` may provide the same configuration with
+  `provider`, `command`, `node`, `timeout_secs`, `state_dir`, and `headless`
+  fields.
 
 The North Star is that screenshots are delivered to the model as native
 `inputImage` content items in the computer-use response. Provider artifact paths
@@ -261,6 +279,8 @@ contract.
 - `codex-rs/app-server-protocol/src/protocol/v2.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
+- `codex-rs/tui/src/browser_computer_use_provider.rs`
+- `codex-rs/tui/src/browser_playwright_provider.mjs`
 - `codex-rs/tui/src/computer_use_provider.rs`
 - `codex-rs/tui/src/app/app_server_adapter.rs`
 - `codex-rs/tui/src/app/app_server_events.rs`
