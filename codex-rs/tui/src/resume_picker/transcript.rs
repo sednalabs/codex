@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
+use crate::computer_use_display::ComputerUseDisplayState;
+use crate::computer_use_display::computer_use_action_label;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
@@ -189,8 +191,19 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
             status,
             ..
         } => {
+            let state = match status {
+                codex_app_server_protocol::ComputerUseCallStatus::InProgress => {
+                    ComputerUseDisplayState::InProgress
+                }
+                codex_app_server_protocol::ComputerUseCallStatus::Completed => {
+                    ComputerUseDisplayState::Completed
+                }
+                codex_app_server_protocol::ComputerUseCallStatus::Failed => {
+                    ComputerUseDisplayState::Failed
+                }
+            };
             vec![
-                format!("computer use: {adapter}/{tool} · {status:?}")
+                format!("{} · {tool}", computer_use_action_label(adapter, state))
                     .dim()
                     .into(),
             ]

@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
@@ -31,6 +33,8 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+use crate::exec_events::ComputerUseCallItem;
+use crate::exec_events::ComputerUseCallStatus as ExecComputerUseCallStatus;
 use crate::exec_events::DynamicToolCallItem;
 use crate::exec_events::DynamicToolCallStatus as ExecDynamicToolCallStatus;
 use crate::exec_events::ErrorItem;
@@ -255,6 +259,35 @@ impl EventProcessorWithJsonOutput {
                     },
                     preview: dynamic_tool_preview(content_items.as_deref().unwrap_or_default()),
                     success,
+                    duration_ms,
+                }),
+            }),
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                arguments,
+                content_items,
+                success,
+                error,
+                duration_ms,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
+                    adapter,
+                    tool,
+                    arguments,
+                    status: match status {
+                        ComputerUseCallStatus::InProgress => {
+                            ExecComputerUseCallStatus::InProgress
+                        }
+                        ComputerUseCallStatus::Completed => ExecComputerUseCallStatus::Completed,
+                        ComputerUseCallStatus::Failed => ExecComputerUseCallStatus::Failed,
+                    },
+                    preview: computer_use_preview(content_items.as_deref().unwrap_or_default()),
+                    success,
+                    error,
                     duration_ms,
                 }),
             }),
@@ -712,6 +745,27 @@ fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<St
     }
 
     (!preview.is_empty()).then_some(preview)
+}
+
+fn computer_use_preview(items: &[ComputerUseCallOutputContentItem]) -> Option<String> {
+    let mut parts = Vec::new();
+    for item in items {
+        match item {
+            ComputerUseCallOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+            ComputerUseCallOutputContentItem::InputImage { .. } => {
+                parts.push("<native screenshot>".to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
 }
 
 impl EventProcessor for EventProcessorWithJsonOutput {

@@ -343,7 +343,12 @@ Thread history reconstructs in-progress and completed computer-use items from
 protocol events, and app-server turn snapshots replay the same
 `ThreadItem::ComputerUseCall` shape on resume or thread reads. The TUI renders
 live and replayed computer-use cells, including fallback messaging when the TUI
-session has no native computer-use provider for the request.
+session has no native computer-use provider for the request. Completed calls use
+adapter-specific transcript labels such as `Used browser`, `Used computer`, or
+`Used Android emulator`; in-flight calls use the matching `Using ...` label.
+The visible transcript summarizes text output and records native screenshots as
+`<native screenshot>` without embedding screenshot data into the transcript
+text.
 
 For CLI/TUI sessions, a configured local browser provider also advertises the
 bare `browser_observe` and `browser_step` dynamic tools at thread start,
@@ -415,7 +420,8 @@ The focused lanes are:
   render as transcript-visible computer-use cells and can be inserted into the
   live `Ctrl+T` transcript overlay.
 - `codex.exec-native-computer-use-targeted`: configured browser dynamic-tool
-  advertisement and provider request handling in `codex exec`.
+  advertisement, provider request handling, and compact computer-use event
+  projection in `codex exec`.
 - `codex.native-computer-use-tool-registry-targeted`: canonical Android,
   browser, and desktop schema conversion, adapter classification, duplicate handling,
   deferred tool search, and core timeout cleanup.
