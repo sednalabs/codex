@@ -309,6 +309,7 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-core duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --test-threads=1
     cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
     cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
+    cargo test --locked -p codex-core thread_spawn_subagent_inherits_parent_dynamic_tools --lib -- --exact --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
     cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
     cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1

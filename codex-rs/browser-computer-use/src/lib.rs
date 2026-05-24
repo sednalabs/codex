@@ -30,6 +30,7 @@ const ENV_PLAYWRIGHT_EXECUTABLE_PATH: &str = "CODEX_BROWSER_PLAYWRIGHT_EXECUTABL
 const ENV_PLAYWRIGHT_CHANNEL: &str = "CODEX_BROWSER_PLAYWRIGHT_CHANNEL";
 const ENV_PLAYWRIGHT_DISPLAY: &str = "CODEX_BROWSER_PLAYWRIGHT_DISPLAY";
 const ENV_PLAYWRIGHT_CAPTURE_MODE: &str = "CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE";
+const ENV_PLAYWRIGHT_ISOLATION: &str = "CODEX_BROWSER_PLAYWRIGHT_ISOLATION";
 const ENV_PLAYWRIGHT_VIEWPORT_WIDTH: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH";
 const ENV_PLAYWRIGHT_VIEWPORT_HEIGHT: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT";
 const PROVIDER_COMMAND: &str = "command";
@@ -238,6 +239,11 @@ fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, S
     );
     push_env(
         &mut envs,
+        ENV_PLAYWRIGHT_ISOLATION,
+        config.isolation.clone(),
+    );
+    push_env(
+        &mut envs,
         ENV_PLAYWRIGHT_VIEWPORT_WIDTH,
         config.viewport_width.map(|width| width.to_string()),
     );
@@ -404,6 +410,10 @@ impl BrowserRuntimeConfig {
                         capture_mode: env.capture_mode.clone().or_else(|| {
                             file.as_ref().and_then(|config| config.capture_mode.clone())
                         }),
+                        isolation: env
+                            .isolation
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.isolation.clone())),
                         viewport_width: env
                             .viewport_width
                             .or_else(|| file.as_ref().and_then(|config| config.viewport_width)),
@@ -499,6 +509,7 @@ struct PlaywrightProviderConfig {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
+    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
 }
@@ -516,6 +527,7 @@ struct BrowserRuntimeConfigFile {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
+    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
     providers: Option<Vec<BrowserProviderConfigFile>>,
@@ -585,6 +597,7 @@ struct BrowserProviderConfigFile {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
+    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
     backends: Option<Vec<String>>,
@@ -646,6 +659,7 @@ impl BrowserProviderConfigFile {
                         .capture_mode
                         .clone()
                         .or_else(|| env.capture_mode.clone()),
+                    isolation: self.isolation.clone().or_else(|| env.isolation.clone()),
                     viewport_width: self.viewport_width.or(env.viewport_width),
                     viewport_height: self.viewport_height.or(env.viewport_height),
                 },
@@ -675,6 +689,7 @@ struct BrowserRuntimeEnv {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
+    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
 }
@@ -693,6 +708,7 @@ impl BrowserRuntimeEnv {
             channel: first_env(&[ENV_PLAYWRIGHT_CHANNEL]),
             display: first_env(&[ENV_PLAYWRIGHT_DISPLAY]),
             capture_mode: first_env(&[ENV_PLAYWRIGHT_CAPTURE_MODE]),
+            isolation: first_env(&[ENV_PLAYWRIGHT_ISOLATION]),
             viewport_width: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_WIDTH])
                 .and_then(|value| value.parse().ok()),
             viewport_height: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_HEIGHT])
@@ -883,6 +899,7 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
+                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
                 providers: Some(vec![
@@ -902,6 +919,7 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
+                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
                         backends: Some(vec!["chrome".to_string()]),
@@ -920,6 +938,7 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
+                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
                         backends: Some(vec![BACKEND_AUTO.to_string()]),
@@ -958,6 +977,7 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
+                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
                 providers: Some(vec![
@@ -974,6 +994,7 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
+                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
                         backends: None,
@@ -992,6 +1013,7 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
+                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
                         backends: None,
@@ -1027,6 +1049,7 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
+                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
                 providers: None,
@@ -1054,6 +1077,7 @@ mod tests {
             channel: None,
             display: Some(":99".to_string()),
             capture_mode: Some("viewport".to_string()),
+            isolation: Some("thread".to_string()),
             viewport_width: Some(1440),
             viewport_height: Some(1000),
         };
@@ -1080,6 +1104,7 @@ mod tests {
                     ENV_PLAYWRIGHT_CAPTURE_MODE.to_string(),
                     "viewport".to_string()
                 ),
+                (ENV_PLAYWRIGHT_ISOLATION.to_string(), "thread".to_string()),
                 (
                     ENV_PLAYWRIGHT_VIEWPORT_WIDTH.to_string(),
                     "1440".to_string()

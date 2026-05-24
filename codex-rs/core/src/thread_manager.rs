@@ -1216,6 +1216,12 @@ impl ThreadManagerState {
         environments: Vec<TurnEnvironmentSelection>,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
+        let dynamic_tools = if dynamic_tools.is_empty() {
+            self.inherited_dynamic_tools_for_session_source(&session_source)
+                .await
+        } else {
+            dynamic_tools
+        };
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
@@ -1284,6 +1290,29 @@ impl ThreadManagerState {
             }
         }
         Ok(new_thread)
+    }
+
+    async fn inherited_dynamic_tools_for_session_source(
+        &self,
+        session_source: &SessionSource,
+    ) -> Vec<codex_protocol::dynamic_tools::DynamicToolSpec> {
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) = session_source
+        else {
+            return Vec::new();
+        };
+
+        match self.get_thread(*parent_thread_id).await {
+            Ok(parent_thread) => parent_thread.dynamic_tools_snapshot().await,
+            Err(err) => {
+                tracing::warn!(
+                    parent_thread_id = %parent_thread_id,
+                    "failed to inherit dynamic tools for subagent: {err}"
+                );
+                Vec::new()
+            }
+        }
     }
 
     async fn finalize_thread_spawn(

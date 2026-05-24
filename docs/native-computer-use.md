@@ -100,12 +100,20 @@ the original single-provider configuration and a provider registry:
 - `~/.codex/browser-computer-use.json` may provide the same configuration with
   `provider`, `command`, `node`, `node_path`, `timeout_secs`, `state_dir`,
   `headless`, `executable_path`, `channel`, `display`, `capture_mode`,
+  `isolation`,
   `viewport_width`, and `viewport_height` fields.
 - `~/.codex/browser-computer-use.json` may also provide `providers[]` and
   `routing.fallback_order`. Each provider can declare an `id`, `provider`,
   `command`, `backends`, `platforms`, and provider-specific settings. Exact
   backend requests such as `chrome` or `iab` route only to providers that
   claim that backend; wildcard command providers can claim every backend.
+- The built-in Playwright provider defaults to `isolation: "thread"`, placing
+  each Codex thread or spawned agent in its own persistent browser profile under
+  `state_dir/profiles/`. Calls in the same thread reuse browser state, while
+  concurrent sidecars do not share a Chrome profile, lock, or restored URL.
+  Operators can set `isolation` to `shared`, `environment`, or `call` when a
+  single shared profile, selected environment scope, or per-call ephemerality is
+  the better runtime contract.
 
 Example command-provider configuration:
 
@@ -122,6 +130,7 @@ Example built-in Playwright configuration:
 {
   "provider": "playwright",
   "state_dir": "/path/to/browser-state",
+  "isolation": "thread",
   "headless": true,
   "timeout_secs": 120
 }
@@ -355,6 +364,11 @@ bare `browser_observe` and `browser_step` dynamic tools at thread start,
 resume, and fork time. The advertised tools are session-scoped and are not
 persisted blindly across resumes; each new TUI session re-checks local provider
 configuration before exposing native browser use to the model.
+Thread-spawned agents inherit the parent thread's advertised dynamic tools, so
+browser-capable sidecars can use the native `browser_observe` and
+`browser_step` surface instead of falling back to unrelated browser MCP
+adapters. Provider isolation still decides whether those sidecars share browser
+state with the parent or receive independent headed profiles.
 
 Transcript visibility depends on the native computer-use event path. Provider
 operations are expected to enter Codex as `ComputerUseCallRequest` and

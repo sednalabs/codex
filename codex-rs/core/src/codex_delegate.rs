@@ -88,7 +88,7 @@ pub(crate) async fn run_codex_thread_interactive(
         session_source: SessionSource::SubAgent(subagent_source.clone()),
         thread_source: Some(ThreadSource::Subagent),
         agent_control: parent_session.services.agent_control.clone(),
-        dynamic_tools: Vec::new(),
+        dynamic_tools: parent_ctx.dynamic_tools.clone(),
         persist_extended_history: false,
         metrics_service_name: None,
         inherited_shell_snapshot: None,
