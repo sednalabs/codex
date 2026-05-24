@@ -236,9 +236,14 @@ ownership boundary:
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app
   that owns that behavior.
-- Browser backend, in-app-browser, Chrome-extension, viewport capture, and
-  browser input execution changes should be validated in the browser provider
-  or client integration that owns that behavior.
+- Browser provider-selection, command-bridge, Playwright-shim, and native-image
+  guard changes inside `codex-rs/tui` should use the focused Codex TUI and
+  tool-registry lanes above. Also run `node --check` on the Playwright shim when
+  it changes.
+- Browser runtime work outside this repo, such as in-app-browser,
+  Chrome-extension, remote-browser, viewport capture, and browser input
+  execution providers, should be validated in the browser provider or client
+  integration that owns that behavior.
 - Solar Gravity Lab validation is appropriate when proving a consumer workflow,
   not when the question is the generic Codex computer-use contract.
 
