@@ -281,6 +281,7 @@ app-server-computer-use-targeted:
 # Focused native computer-use TUI app-server request and provider routing slice.
 tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui browser_computer_use_provider::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
@@ -295,7 +296,9 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
     cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
-    cargo test --locked -p codex-tui browser_provider_is_a_known_but_unavailable_adapter_until_backend_is_connected --lib -- --test-threads=1
+    cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
+    cargo test --locked -p codex-tui command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
+    cargo test --locked -p codex-tui browser_provider_response_preserves_native_image --lib -- --test-threads=1
     cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.

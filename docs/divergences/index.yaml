@@ -599,6 +599,8 @@
         "codex-rs/app-server-protocol/src/protocol/v2.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
         "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
@@ -613,7 +615,7 @@
         "codex-rs/tools/src/computer_use_tool_tests.rs",
         "docs/native-computer-use.md"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, and browser_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, and provider-side build installation. The browser adapter is schema/dispatch-ready and currently reports unavailable in TUI until a real backend bridge is connected.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, and browser_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, and provider-side build installation. The browser adapter has a TUI bridge that can call an operator-configured provider command or the built-in Playwright provider for backend=auto.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -631,7 +633,9 @@
         "browser_backend_schema_exposes_supported_provider_backends",
         "native_computer_use_registry_classifies_android_and_browser_tools",
         "browser_handler_uses_browser_adapter",
-        "browser_provider_is_a_known_but_unavailable_adapter_until_backend_is_connected",
+        "browser_provider_requires_configured_backend",
+        "command_provider_bridge_returns_native_image_response",
+        "browser_provider_response_preserves_native_image",
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
         "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",
