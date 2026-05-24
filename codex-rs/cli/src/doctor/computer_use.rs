@@ -1,0 +1,547 @@
+use std::path::Path;
+
+use codex_core::config::Config;
+use serde::Deserialize;
+
+use super::CheckStatus;
+use super::DoctorCheck;
+use super::DoctorIssue;
+use super::display_list;
+use super::env_var_present;
+use super::first_present_env;
+use super::stdio_command_resolves;
+
+const BROWSER_COMPUTER_USE_CONFIG_FILES: &[&str] =
+    &["browser-computer-use.json", "browser-dynamic-tools.json"];
+const BROWSER_COMPUTER_USE_ENV_VARS: &[&str] = &[
+    "CODEX_BROWSER_COMPUTER_USE_PROVIDER",
+    "CODEX_BROWSER_COMPUTER_USE_COMMAND",
+    "CODEX_BROWSER_COMPUTER_USE_NODE",
+    "CODEX_BROWSER_COMPUTER_USE_TIMEOUT_SECS",
+    "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR",
+    "CODEX_BROWSER_PLAYWRIGHT_HEADLESS",
+];
+const ANDROID_COMPUTER_USE_CONFIG_FILES: &[&str] = &[
+    "android-computer-use.json",
+    "android-dynamic-tools.json",
+    "solarlab-android-dynamic-tools.json",
+];
+const ANDROID_COMPUTER_USE_ENV_VARS: &[&str] = &[
+    "CODEX_ANDROID_MCP_URL",
+    "SOLARLAB_ANDROID_MCP_URL",
+    "CODEX_ANDROID_MCP_HOSTNAME",
+    "SOLARLAB_ANDROID_MCP_HOSTNAME",
+    "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
+    "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
+    "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
+    "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
+];
+const ANDROID_MCP_URL_ENV_VARS: &[&str] = &[
+    "CODEX_ANDROID_MCP_URL",
+    "SOLARLAB_ANDROID_MCP_URL",
+    "CODEX_ANDROID_MCP_HOSTNAME",
+    "SOLARLAB_ANDROID_MCP_HOSTNAME",
+];
+const ANDROID_CF_ACCESS_CLIENT_ID_ENV_VARS: &[&str] = &[
+    "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
+    "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
+];
+const ANDROID_CF_ACCESS_CLIENT_SECRET_ENV_VARS: &[&str] = &[
+    "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
+    "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
+];
+const PROVIDER_NONE: &str = "none";
+
+pub(super) fn check(config: &Config) -> DoctorCheck {
+    check_for_home(&config.codex_home)
+}
+
+pub(super) fn check_for_home(codex_home: &Path) -> DoctorCheck {
+    let mut details = Vec::new();
+    let mut issues = Vec::new();
+    let env_overrides = BROWSER_COMPUTER_USE_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|name| env_var_present(name))
+        .collect::<Vec<_>>();
+    details.push(format!(
+        "browser provider env overrides: {}",
+        display_list(&env_overrides)
+    ));
+
+    let mut configured_providers = Vec::new();
+    if browser_provider_configured_from_env() {
+        configured_providers.push("env".to_string());
+    }
+    let mut read_any_config = false;
+    for file_name in BROWSER_COMPUTER_USE_CONFIG_FILES {
+        let path = codex_home.join(file_name);
+        details.push(format!(
+            "browser provider config {file_name}: {}",
+            path.display()
+        ));
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                read_any_config = true;
+                match serde_json::from_str::<BrowserComputerUseDoctorConfig>(&contents) {
+                    Ok(parsed) => {
+                        let summary = parsed.provider_summaries();
+                        details.push(format!("browser provider config {file_name} parse: ok"));
+                        details.push(format!(
+                            "browser provider config {file_name} providers: {}",
+                            summary.len()
+                        ));
+                        for provider in summary {
+                            provider.append_details(&mut details);
+                            provider.append_issues(&mut issues);
+                            configured_providers.push(provider.id);
+                        }
+                    }
+                    Err(err) => {
+                        issues.push(
+                            DoctorIssue::new(
+                                CheckStatus::Warning,
+                                format!("browser provider config {file_name} is not valid JSON"),
+                            )
+                            .measured(err.to_string())
+                            .expected("valid browser computer-use provider configuration")
+                            .remedy(format!(
+                                "Fix {file_name}, or remove it to disable browser computer-use providers."
+                            ))
+                            .field(format!("browser provider config {file_name} parse")),
+                        );
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                details.push(format!(
+                    "browser provider config {file_name} parse: missing"
+                ));
+            }
+            Err(err) => {
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("browser provider config {file_name} could not be read"),
+                    )
+                    .measured(err.to_string())
+                    .expected("readable browser computer-use provider configuration")
+                    .remedy("Check file permissions and rerun codex doctor.")
+                    .field(format!("browser provider config {file_name} read")),
+                );
+            }
+        }
+    }
+
+    configured_providers.sort();
+    configured_providers.dedup();
+    details.push(format!(
+        "browser providers configured: {}",
+        configured_providers.len()
+    ));
+    details.push(format!(
+        "browser provider ids: {}",
+        display_list(&configured_providers)
+    ));
+
+    let android_read_any_config =
+        append_android_computer_use_details(codex_home, &mut details, &mut issues);
+
+    let status = if issues.is_empty() {
+        CheckStatus::Ok
+    } else {
+        CheckStatus::Warning
+    };
+    let summary = if read_any_config
+        || android_read_any_config
+        || !env_overrides.is_empty()
+        || !ANDROID_COMPUTER_USE_ENV_VARS
+            .iter()
+            .all(|name| !env_var_present(name))
+    {
+        "native computer-use provider configuration checked"
+    } else {
+        "native computer-use providers are not configured"
+    };
+    let mut check = DoctorCheck::new(
+        "computer-use.native-provider",
+        "computer-use",
+        status,
+        summary,
+    )
+    .details(details);
+    for issue in issues {
+        check = check.issue(issue);
+    }
+    check
+}
+
+fn browser_provider_configured_from_env() -> bool {
+    first_present_env(&["CODEX_BROWSER_COMPUTER_USE_COMMAND"]).is_some()
+        || first_present_env(&["CODEX_BROWSER_COMPUTER_USE_PROVIDER"])
+            .is_some_and(|provider| !provider.eq_ignore_ascii_case("none"))
+}
+
+fn append_android_computer_use_details(
+    codex_home: &Path,
+    details: &mut Vec<String>,
+    issues: &mut Vec<DoctorIssue>,
+) -> bool {
+    let env_overrides = ANDROID_COMPUTER_USE_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|name| env_var_present(name))
+        .collect::<Vec<_>>();
+    details.push(format!(
+        "android provider env overrides: {}",
+        display_list(&env_overrides)
+    ));
+
+    let mut read_any_config = false;
+    let mut configured = first_present_env(ANDROID_MCP_URL_ENV_VARS).is_some();
+    for file_name in ANDROID_COMPUTER_USE_CONFIG_FILES {
+        let path = codex_home.join(file_name);
+        details.push(format!(
+            "android provider config {file_name}: {}",
+            path.display()
+        ));
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                read_any_config = true;
+                match serde_json::from_str::<AndroidComputerUseDoctorConfig>(&contents) {
+                    Ok(parsed) => {
+                        let has_url = parsed
+                            .mcp_url
+                            .as_deref()
+                            .is_some_and(|url| !url.trim().is_empty());
+                        configured |= has_url;
+                        details.push(format!("android provider config {file_name} parse: ok"));
+                        details.push(format!(
+                            "android provider config {file_name} mcp_url: {}",
+                            if has_url { "configured" } else { "missing" }
+                        ));
+                    }
+                    Err(err) => {
+                        issues.push(
+                            DoctorIssue::new(
+                                CheckStatus::Warning,
+                                format!("android provider config {file_name} is not valid JSON"),
+                            )
+                            .measured(err.to_string())
+                            .expected("valid Android computer-use provider configuration")
+                            .remedy(format!(
+                                "Fix {file_name}, or remove it to disable Android computer-use providers."
+                            ))
+                            .field(format!("android provider config {file_name} parse")),
+                        );
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                details.push(format!(
+                    "android provider config {file_name} parse: missing"
+                ));
+            }
+            Err(err) => {
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("android provider config {file_name} could not be read"),
+                    )
+                    .measured(err.to_string())
+                    .expected("readable Android computer-use provider configuration")
+                    .remedy("Check file permissions and rerun codex doctor.")
+                    .field(format!("android provider config {file_name} read")),
+                );
+            }
+        }
+    }
+
+    let cf_access_client_id = first_present_env(ANDROID_CF_ACCESS_CLIENT_ID_ENV_VARS).is_some();
+    let cf_access_client_secret =
+        first_present_env(ANDROID_CF_ACCESS_CLIENT_SECRET_ENV_VARS).is_some();
+    let cf_access = match (cf_access_client_id, cf_access_client_secret) {
+        (true, true) => "configured",
+        (false, false) => "not configured",
+        (true, false) | (false, true) => "incomplete",
+    };
+    details.push(format!(
+        "android provider cf access credentials: {cf_access}"
+    ));
+    if cf_access == "incomplete" {
+        issues.push(
+            DoctorIssue::new(
+                CheckStatus::Warning,
+                "Android provider Cloudflare Access credentials are incomplete",
+            )
+            .expected("both client id and client secret, or neither")
+            .remedy("Set both Android Cloudflare Access env vars or unset both.")
+            .field("android provider cf access credentials"),
+        );
+    }
+
+    details.push(format!(
+        "android providers configured: {}",
+        if configured { 1 } else { 0 }
+    ));
+    read_any_config
+}
+
+#[derive(Deserialize)]
+struct BrowserComputerUseDoctorConfig {
+    provider: Option<String>,
+    command: Option<DoctorCommandSpec>,
+    node: Option<String>,
+    timeout_secs: Option<u64>,
+    providers: Option<Vec<BrowserDoctorProviderConfig>>,
+    routing: Option<BrowserDoctorRoutingConfig>,
+}
+
+impl BrowserComputerUseDoctorConfig {
+    fn provider_summaries(&self) -> Vec<BrowserProviderDoctorSummary> {
+        let mut summaries = Vec::new();
+        if self.command.is_some() || self.provider.is_some() {
+            let provider = self.provider.as_deref().unwrap_or("command");
+            if provider != "none" {
+                summaries.push(BrowserProviderDoctorSummary {
+                    id: "legacy".to_string(),
+                    provider: provider.to_string(),
+                    backends: if provider == "playwright" {
+                        vec!["auto".to_string()]
+                    } else {
+                        vec!["*".to_string()]
+                    },
+                    platforms: Vec::new(),
+                    timeout_secs: self.timeout_secs,
+                    command: self.command.clone(),
+                    node: self.node.clone(),
+                });
+            }
+        }
+        if let Some(providers) = &self.providers {
+            summaries.extend(
+                providers
+                    .iter()
+                    .filter(|provider| {
+                        provider.provider.as_deref().unwrap_or("command") != PROVIDER_NONE
+                    })
+                    .map(BrowserProviderDoctorSummary::from),
+            );
+        }
+        if let Some(order) = self
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.fallback_order.as_ref())
+        {
+            summaries = order_provider_summaries(summaries, order);
+        }
+        summaries
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserDoctorRoutingConfig {
+    fallback_order: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct BrowserDoctorProviderConfig {
+    id: Option<String>,
+    provider: Option<String>,
+    command: Option<DoctorCommandSpec>,
+    node: Option<String>,
+    timeout_secs: Option<u64>,
+    backends: Option<Vec<String>>,
+    platforms: Option<Vec<String>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum DoctorCommandSpec {
+    String(String),
+    Array(Vec<String>),
+}
+
+impl DoctorCommandSpec {
+    fn argv(&self) -> Option<Vec<String>> {
+        let argv = match self {
+            Self::String(command) => shlex::split(command)?,
+            Self::Array(argv) => argv.clone(),
+        };
+        (!argv.is_empty()).then_some(argv)
+    }
+}
+
+#[derive(Clone)]
+struct BrowserProviderDoctorSummary {
+    id: String,
+    provider: String,
+    backends: Vec<String>,
+    platforms: Vec<String>,
+    timeout_secs: Option<u64>,
+    command: Option<DoctorCommandSpec>,
+    node: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AndroidComputerUseDoctorConfig {
+    mcp_url: Option<String>,
+}
+
+impl BrowserProviderDoctorSummary {
+    fn append_details(&self, details: &mut Vec<String>) {
+        details.push(format!(
+            "browser provider {} kind: {}",
+            self.id, self.provider
+        ));
+        details.push(format!(
+            "browser provider {} backends: {}",
+            self.id,
+            display_list(&self.backends)
+        ));
+        if !self.platforms.is_empty() {
+            details.push(format!(
+                "browser provider {} platforms: {}",
+                self.id,
+                display_list(&self.platforms)
+            ));
+        }
+        if let Some(timeout_secs) = self.timeout_secs {
+            details.push(format!(
+                "browser provider {} timeout_secs: {}",
+                self.id, timeout_secs
+            ));
+        }
+        if let Some(argv) = self.command.as_ref().and_then(DoctorCommandSpec::argv)
+            && let Some(program) = argv.first()
+        {
+            details.push(format!("browser provider {} command: {}", self.id, program));
+            details.push(format!(
+                "browser provider {} command readiness: {}",
+                self.id,
+                command_readiness(program)
+            ));
+        }
+        if self.provider == "playwright" {
+            let node = self.node.as_deref().unwrap_or("node");
+            details.push(format!("browser provider {} node: {}", self.id, node));
+            details.push(format!(
+                "browser provider {} node readiness: {}",
+                self.id,
+                command_readiness(node)
+            ));
+        }
+    }
+
+    fn append_issues(&self, issues: &mut Vec<DoctorIssue>) {
+        match self.provider.as_str() {
+            "command" => match self.command.as_ref().and_then(DoctorCommandSpec::argv) {
+                Some(argv)
+                    if argv.first().is_some_and(|program| {
+                        stdio_command_resolves(program, /*cwd*/ None, /*server_env*/ None).is_ok()
+                    }) => {}
+                Some(argv) => {
+                    let program = argv.first().cloned().unwrap_or_default();
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!("browser provider {} command is not resolvable", self.id),
+                        )
+                        .measured(program)
+                        .expected("command on PATH or executable path")
+                        .remedy("Install the provider command or update browser-computer-use.json.")
+                        .field(format!("browser provider {} command readiness", self.id)),
+                    );
+                }
+                None => {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!("browser provider {} command is missing", self.id),
+                        )
+                        .expected("non-empty command")
+                        .remedy("Add a command array/string for this provider, or disable it.")
+                        .field(format!("browser provider {} command", self.id)),
+                    );
+                }
+            },
+            "playwright" => {
+                let node = self.node.as_deref().unwrap_or("node");
+                if stdio_command_resolves(node, /*cwd*/ None, /*server_env*/ None).is_err() {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!(
+                                "browser provider {} node command is not resolvable",
+                                self.id
+                            ),
+                        )
+                        .measured(node.to_string())
+                        .expected("node command on PATH or executable path")
+                        .remedy("Install Node.js or configure CODEX_BROWSER_COMPUTER_USE_NODE.")
+                        .field(format!("browser provider {} node readiness", self.id)),
+                    );
+                }
+            }
+            "none" => {}
+            other => {
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("browser provider {} has unknown provider kind", self.id),
+                    )
+                    .measured(other.to_string())
+                    .expected("command, playwright, or none")
+                    .remedy("Use a command provider for native/browser shell bridges.")
+                    .field(format!("browser provider {} kind", self.id)),
+                );
+            }
+        }
+    }
+}
+
+impl From<&BrowserDoctorProviderConfig> for BrowserProviderDoctorSummary {
+    fn from(provider: &BrowserDoctorProviderConfig) -> Self {
+        let provider_kind = provider
+            .provider
+            .clone()
+            .unwrap_or_else(|| "command".to_string());
+        Self {
+            id: provider.id.clone().unwrap_or_else(|| provider_kind.clone()),
+            provider: provider_kind.clone(),
+            backends: provider.backends.clone().unwrap_or_else(|| {
+                if provider_kind == "playwright" {
+                    vec!["auto".to_string()]
+                } else {
+                    vec!["*".to_string()]
+                }
+            }),
+            platforms: provider.platforms.clone().unwrap_or_default(),
+            timeout_secs: provider.timeout_secs,
+            command: provider.command.clone(),
+            node: provider.node.clone(),
+        }
+    }
+}
+
+fn order_provider_summaries(
+    providers: Vec<BrowserProviderDoctorSummary>,
+    order: &[String],
+) -> Vec<BrowserProviderDoctorSummary> {
+    let mut remaining = providers;
+    let mut ordered = Vec::new();
+    for id in order {
+        if let Some(index) = remaining.iter().position(|provider| provider.id == *id) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
+}
+
+fn command_readiness(command: &str) -> String {
+    match stdio_command_resolves(command, /*cwd*/ None, /*server_env*/ None) {
+        Ok(()) => "resolvable".to_string(),
+        Err(err) => format!("not resolvable ({err})"),
+    }
+}

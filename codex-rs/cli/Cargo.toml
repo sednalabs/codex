@@ -64,6 +64,7 @@ owo-colors = { workspace = true }
 regex-lite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+shlex = { workspace = true }
 supports-color = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [
