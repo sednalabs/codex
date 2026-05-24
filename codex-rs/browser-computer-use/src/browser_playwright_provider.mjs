@@ -7,6 +7,9 @@ const TOOL_OBSERVE = "browser_observe";
 const TOOL_STEP = "browser_step";
 const CAPTURE_VIEWPORT = "viewport";
 const CAPTURE_FULL_PAGE = "full_page";
+const DEFAULT_PROFILE_LOCK_TIMEOUT_MS = 120_000;
+const PROFILE_LOCK_STALE_MS = 10 * 60_000;
+const PROFILE_LOCK_POLL_MS = 250;
 
 main().catch((error) => {
   writeResponse({
@@ -26,39 +29,40 @@ async function main() {
   const request = JSON.parse(await readStdin());
   const { chromium } = loadPlaywright();
   const stateDir = await browserStateDir();
-  const context = await chromium.launchPersistentContext(stateDir, {
-    ...launchOptions(),
-    headless: playwrightHeadless(),
-    viewport: viewportFromRequest(request),
-  });
-
-  try {
-    const page = await activePage(context);
-    await restoreOrNavigate(page, request);
-
-    const summaries = [];
-    if (request.tool === TOOL_STEP) {
-      const actions = canonicalActions(request.arguments);
-      if (actions.length === 0) {
-        throw new Error("browser_step requires an action or non-empty actions array.");
-      }
-      for (const action of actions) {
-        summaries.push(await runAction(page, action));
-      }
-    } else if (request.tool !== TOOL_OBSERVE) {
-      throw new Error(`Unsupported browser tool ${request.tool}`);
-    }
-
-    await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-    const screenshot = await page.screenshot({
-      type: "png",
-      fullPage: captureMode() === CAPTURE_FULL_PAGE,
+  await withProfileLock(stateDir, async () => {
+    const headless = playwrightHeadless();
+    const viewport = viewportFromRequest(request);
+    const context = await chromium.launchPersistentContext(stateDir, {
+      ...launchOptions({ headless, viewport }),
+      headless,
+      viewport,
     });
-    await saveState(stateDir, page);
-    writeResponse(await responseForPage(page, screenshot, summaries));
-  } finally {
-    await context.close().catch(() => {});
-  }
+
+    try {
+      const page = await activePage(context);
+      await restoreOrNavigate(page, request);
+
+      const summaries = [];
+      if (request.tool === TOOL_STEP) {
+        const actions = canonicalActions(request.arguments);
+        if (actions.length === 0) {
+          throw new Error("browser_step requires an action or non-empty actions array.");
+        }
+        for (const action of actions) {
+          summaries.push(await runAction(page, action));
+        }
+      } else if (request.tool !== TOOL_OBSERVE) {
+        throw new Error(`Unsupported browser tool ${request.tool}`);
+      }
+
+      await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
+      const screenshot = await captureScreenshot(page);
+      await saveState(stateDir, page);
+      writeResponse(await responseForPage(page, screenshot, summaries));
+    } finally {
+      await context.close().catch(() => {});
+    }
+  });
 }
 
 function loadPlaywright() {
@@ -84,12 +88,67 @@ async function browserStateDir() {
   return dir;
 }
 
+async function withProfileLock(stateDir, body) {
+  const lockDir = path.join(stateDir, ".codex-provider.lock");
+  const deadline = Date.now() + lockTimeoutMs();
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      await fs.writeFile(
+        path.join(lockDir, "owner.json"),
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      try {
+        return await body();
+      } finally {
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      if (await removeStaleProfileLock(lockDir)) {
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for browser profile lock at ${lockDir}. Another native browser call may still be using the headed Chrome profile.`,
+        );
+      }
+      await sleep(PROFILE_LOCK_POLL_MS);
+    }
+  }
+}
+
+async function removeStaleProfileLock(lockDir) {
+  try {
+    const stat = await fs.stat(lockDir);
+    if (Date.now() - stat.mtimeMs < PROFILE_LOCK_STALE_MS) {
+      return false;
+    }
+    await fs.rm(lockDir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+}
+
+function lockTimeoutMs() {
+  return envNumber(
+    "CODEX_BROWSER_PLAYWRIGHT_LOCK_TIMEOUT_MS",
+    DEFAULT_PROFILE_LOCK_TIMEOUT_MS,
+  );
+}
+
 function playwrightHeadless() {
   const raw = (process.env.CODEX_BROWSER_PLAYWRIGHT_HEADLESS || "1").toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-function launchOptions() {
+function launchOptions({ headless, viewport }) {
   const options = {};
   const executablePath = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH");
   if (executablePath) {
@@ -98,6 +157,12 @@ function launchOptions() {
   const channel = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_CHANNEL");
   if (channel && !executablePath) {
     options.channel = channel;
+  }
+  if (!headless && viewport) {
+    options.args = [
+      "--window-position=0,0",
+      `--window-size=${viewport.width},${viewport.height}`,
+    ];
   }
   return options;
 }
@@ -485,6 +550,59 @@ function compactOptions(options) {
   );
 }
 
+async function captureScreenshot(page) {
+  const errors = [];
+  const fullPage = captureMode() === CAPTURE_FULL_PAGE;
+  try {
+    return {
+      buffer: await page.screenshot({ type: "png", fullPage }),
+      method: "page.screenshot",
+    };
+  } catch (error) {
+    errors.push(`page.screenshot: ${errorMessage(error)}`);
+  }
+
+  for (const fromSurface of [true, false]) {
+    let cdp = null;
+    try {
+      cdp = await page.context().newCDPSession(page);
+      await cdp.send("Page.enable").catch(() => {});
+      const result = await cdp.send("Page.captureScreenshot", {
+        format: "png",
+        fromSurface,
+        captureBeyondViewport: fullPage,
+      });
+      return {
+        buffer: Buffer.from(result.data, "base64"),
+        method: `cdp.Page.captureScreenshot(fromSurface=${fromSurface})`,
+        warning: compactCaptureErrors(errors),
+      };
+    } catch (error) {
+      errors.push(
+        `cdp.Page.captureScreenshot(fromSurface=${fromSurface}): ${errorMessage(error)}`,
+      );
+    } finally {
+      if (cdp) {
+        await cdp.detach().catch(() => {});
+      }
+    }
+  }
+
+  for (const selector of ["body", "html"]) {
+    try {
+      return {
+        buffer: await page.locator(selector).screenshot({ type: "png" }),
+        method: `locator(${selector}).screenshot`,
+        warning: compactCaptureErrors(errors),
+      };
+    } catch (error) {
+      errors.push(`locator(${selector}).screenshot: ${errorMessage(error)}`);
+    }
+  }
+
+  throw new Error(`Unable to capture browser screenshot. ${compactCaptureErrors(errors)}`);
+}
+
 async function responseForPage(page, screenshot, summaries) {
   const lines = ["Browser observation", `url: ${page.url()}`];
   const title = await pageTitle(page);
@@ -501,12 +619,16 @@ async function responseForPage(page, screenshot, summaries) {
       lines.push(`- ${summary}`);
     }
   }
+  lines.push(`capture: ${screenshot.method}`);
+  if (screenshot.warning) {
+    lines.push(`capture_fallback: ${screenshot.warning}`);
+  }
   return {
     contentItems: [
       { type: "inputText", text: lines.join("\n") },
       {
         type: "inputImage",
-        imageUrl: `data:image/png;base64,${screenshot.toString("base64")}`,
+        imageUrl: `data:image/png;base64,${screenshot.buffer.toString("base64")}`,
         detail: "high",
       },
     ],
@@ -557,6 +679,21 @@ function positiveIntegerOrUndefined(value) {
 
 function nonNegativeIntegerOrUndefined(value) {
   return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function compactCaptureErrors(errors) {
+  return errors
+    .map((error) => error.split("\n")[0])
+    .join(" | ")
+    .slice(0, 500);
+}
+
+function errorMessage(error) {
+  return String(error?.message || error);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function envNumber(name, fallback) {

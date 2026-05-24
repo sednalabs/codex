@@ -478,6 +478,46 @@ async fn thread_start_params_include_user_thread_source() {
     );
 }
 
+#[tokio::test]
+async fn thread_lifecycle_params_include_configured_browser_dynamic_tools() {
+    let codex_home = tempdir().expect("create temp codex home");
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        r#"{"provider":"playwright"}"#,
+    )
+    .expect("write browser provider config");
+    let cwd = tempdir().expect("create temp cwd");
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+
+    let start_params = thread_start_params_from_config(&config);
+    let resume_params = thread_resume_params_from_config(&config, "thread-id".to_string());
+
+    let browser_tools = vec!["browser_observe".to_string(), "browser_step".to_string()];
+    assert_eq!(
+        start_params
+            .dynamic_tools
+            .expect("start dynamic tools")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>(),
+        browser_tools
+    );
+    assert_eq!(
+        resume_params
+            .dynamic_tools
+            .expect("resume dynamic tools")
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>(),
+        browser_tools
+    );
+}
+
 #[test]
 fn active_profile_selection_uses_profile_id_only() {
     let selection = permission_profile_id_from_active_profile(ActivePermissionProfile::new(

@@ -59,6 +59,7 @@ on:
           - codex.app-server-protocol-test
           - codex.app-server-computer-use-targeted
           - codex.tui-native-computer-use-targeted
+          - codex.exec-native-computer-use-targeted
           - codex.native-computer-use-tool-registry-targeted
           - codex.native-computer-use-doctor-targeted
           - codex.app-server-thread-cwd-targeted
@@ -465,6 +466,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}
@@ -668,6 +670,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}

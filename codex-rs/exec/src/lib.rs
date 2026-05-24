@@ -51,6 +51,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
+use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_requirements::cloud_requirements_loader_for_storage;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
@@ -842,7 +843,13 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, request, &mut error_seen).await;
+                handle_server_request(
+                    &client,
+                    request,
+                    &mut error_seen,
+                    config.codex_home.as_path(),
+                )
+                .await;
             }
             InProcessServerEvent::ServerNotification(mut notification) => {
                 if let ServerNotification::Error(payload) = &notification {
@@ -940,6 +947,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         config: config_request_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
         thread_source: Some(ThreadSource::User),
+        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadStartParams::default()
     }
 }
@@ -969,8 +977,18 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
         sandbox: sandbox.flatten(),
         permissions,
         config: config_request_overrides_from_config(config),
+        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadResumeParams::default()
     }
+}
+
+fn configured_browser_dynamic_tools(
+    config: &Config,
+) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+        config.codex_home.as_path(),
+    );
+    (!tools.is_empty()).then_some(tools)
 }
 
 fn permissions_selection_from_config(config: &Config) -> Option<String> {
@@ -1513,6 +1531,7 @@ async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
     error_seen: &mut bool,
+    codex_home: &Path,
 ) {
     let method = server_request_method_name(&request);
     let handle_result = match request {
@@ -1582,16 +1601,32 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ComputerUseCall { request_id, params } => {
-            reject_server_request(
-                client,
-                request_id,
-                &method,
-                format!(
-                    "computer-use calls are not supported in exec mode for thread `{}`",
-                    params.thread_id
-                ),
+            match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
+                &params, codex_home,
             )
             .await
+            {
+                BrowserComputerUseOutcome::Handled(response) => {
+                    match serde_json::to_value(response) {
+                        Ok(value) => {
+                            resolve_server_request(client, request_id, value, &method).await
+                        }
+                        Err(err) => {
+                            Err(format!("failed to serialize computer-use response: {err}"))
+                        }
+                    }
+                }
+                BrowserComputerUseOutcome::Unavailable => reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "No exec computer-use provider is available for `{}`/`{}` in thread `{}`.",
+                        params.adapter, params.tool, params.thread_id
+                    ),
+                )
+                .await,
+            }
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(
@@ -2278,6 +2313,7 @@ mod tests {
             model_provider: "openai".to_string(),
             service_tier: None,
             cwd: test_path_buf("/tmp").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_sources: Vec::new(),
             approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
@@ -2287,7 +2323,6 @@ mod tests {
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
             },
-            permission_profile: None,
             active_permission_profile: None,
             reasoning_effort: None,
         };

@@ -757,6 +757,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertTrue(lane["needs_linux_build_deps"])
         self.assertTrue(lane["needs_dotslash"])
         self.assertFalse(lane["needs_sccache"])
+        self.assertEqual(lane["timeout_minutes"], 120)
 
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
@@ -854,7 +855,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 15)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
@@ -1391,6 +1392,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             enabled,
             {
                 "codex.app-server-protocol-test",
+                "codex.exec-native-computer-use-targeted",
                 "codex.native-computer-use-tool-registry-targeted",
                 "codex.core-subagent-notification-visibility-targeted",
                 "codex.spawn-agent-description-model-surface-targeted",
@@ -1481,6 +1483,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "${{ matrix.needs_bazel }}",
                 )
 
+    def test_validation_lab_passes_timeout_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("timeout_minutes"),
+                    "${{ matrix.timeout_minutes }}",
+                )
+
+        for job_name in ["smoke_node_lanes", "node_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertNotIn("timeout_minutes", (jobs.get(job_name) or {}).get("with") or {})
+
     def test_validation_lab_workflow_lanes_do_not_inherit_secrets_from_operator_refs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         jobs = payload.get("jobs") or {}
@@ -1520,6 +1537,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     ((jobs.get(job_name) or {}).get("with") or {}).get("needs_bazel"),
                     "${{ matrix.needs_bazel }}",
                 )
+
+    def test_sedna_heavy_passes_timeout_to_workflow_lanes(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        jobs = payload.get("jobs") or {}
+
+        for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertEqual(
+                    ((jobs.get(job_name) or {}).get("with") or {}).get("timeout_minutes"),
+                    "${{ matrix.timeout_minutes }}",
+                )
+
+        for job_name in ["smoke_node_lanes", "node_lanes"]:
+            with self.subTest(job=job_name):
+                self.assertNotIn("timeout_minutes", (jobs.get(job_name) or {}).get("with") or {})
 
     def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
         for workflow_name in [
@@ -2540,12 +2572,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 4)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 19)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 20)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "4")
         self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "19")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -2571,7 +2603,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertEqual(payload["selected_workflow_lane_count"], 5)
         self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 21)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 22)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 17)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "20")

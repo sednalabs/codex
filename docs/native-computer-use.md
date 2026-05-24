@@ -64,31 +64,35 @@ such as Playwright, in-app browser, and Chrome extension.
 - `browser_step`: performs one or more bounded browser actions, then returns a
   fresh post-action viewport observation.
 
-Browser tools include a `backend` hint with `auto`, `iab`, and `chrome`
-values. `auto` lets the provider choose the best available browser backend.
-`iab` is intended for the Codex app in-app browser. `chrome` is intended for
-signed-in Chrome-extension-backed browser state. The hint is part of the
-provider contract. The current TUI bridge handles `auto` through Playwright or
-forwards any backend to an operator-configured provider command. `iab` and
-`chrome` require such a provider command until a dedicated in-app-browser or
-Chrome-extension bridge is connected.
+Browser tools include a `backend` hint with values such as `auto`, `browser`,
+`chrome`, `chromium`, and `iab`. `auto` lets the provider choose the best
+available browser backend. `browser`/`chrome`/`chromium` can be served by the
+built-in Playwright provider when it is configured for local Chrome or Chromium.
+`iab` is intended for the Codex app in-app browser and requires a provider that
+declares that backend. The hint is part of the provider contract. Command
+providers can still claim exact backends or wildcard routing for hosted,
+extension-backed, remote, or app-integrated browser runtimes.
 
-The TUI bridge is intentionally pluggable and now supports both the original
-single-provider configuration and a provider registry:
+The browser provider bridge is intentionally pluggable and now supports both
+the original single-provider configuration and a provider registry:
 
 - `CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright` enables the embedded
-  Playwright bridge for `backend=auto`. The bridge launches a persistent
-  Chromium profile, executes bounded browser actions, and returns the viewport
+  Playwright bridge for `backend=auto`, `browser`, `chrome`, and `chromium`.
+  The bridge launches a persistent browser profile, serializes access to that
+  profile, executes bounded browser actions, and returns the viewport
   screenshot as native `inputImage` content. This backend requires `node` and a
   Playwright package that Node can resolve in the runtime environment. For
   realistic remote-editor review loops, configure it to run headed Google
   Chrome on a visible display rather than the default headless Chromium path.
-  The bridge supports accessibility-oriented selectors plus human-like mouse
-  and keyboard primitives: click, type, keypress, key down/up, scroll/wheel,
-  hover, drag, mouse move/down/up, select, wait, and navigate. Selector text
-  entry uses real keyboard events by default, with `method: "fill"` available
-  as a compatibility escape hatch for pages where DOM-level filling is the
-  better tool.
+  Headed launches normalize the initial browser window geometry, and capture
+  falls back from Playwright page screenshots to CDP and locator screenshots so
+  stale Chrome window placement does not turn a visible browser into a
+  text-only failure. The bridge supports accessibility-oriented selectors plus
+  human-like mouse and keyboard primitives: click, type, keypress, key down/up,
+  scroll/wheel, hover, drag, mouse move/down/up, select, wait, and navigate.
+  Selector text entry uses real keyboard events by default, with
+  `method: "fill"` available as a compatibility escape hatch for pages where
+  DOM-level filling is the better tool.
 - `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
   Codex sends `ComputerUseCallParams` JSON on stdin and expects a
   `ComputerUseCallResponse` JSON object on stdout. This is the extension point
@@ -177,8 +181,8 @@ Example routed provider configuration:
 An external command provider should read one `ComputerUseCallParams` JSON object
 from stdin and write one `ComputerUseCallResponse` JSON object to stdout. For
 successful visual responses, that object must include a native `inputImage`
-content item. The TUI bridge fails loudly when a successful browser provider
-response contains only text, metadata, or artifact paths.
+content item. The shared browser bridge fails loudly when a successful browser
+provider response contains only text, metadata, or artifact paths.
 
 The North Star is that screenshots are delivered to the model as native
 `inputImage` content items in the computer-use response. Provider artifact paths
@@ -410,6 +414,8 @@ The focused lanes are:
 - `codex.tui-native-computer-use-targeted`: native request/response events
   render as transcript-visible computer-use cells and can be inserted into the
   live `Ctrl+T` transcript overlay.
+- `codex.exec-native-computer-use-targeted`: configured browser dynamic-tool
+  advertisement and provider request handling in `codex exec`.
 - `codex.native-computer-use-tool-registry-targeted`: canonical Android,
   browser, and desktop schema conversion, adapter classification, duplicate handling,
   deferred tool search, and core timeout cleanup.
@@ -430,6 +436,7 @@ The local just recipes behind those lanes are:
 ```bash
 just app-server-computer-use-targeted
 just tui-native-computer-use-targeted
+just exec-native-computer-use-targeted
 just native-computer-use-tool-registry-targeted
 just native-computer-use-doctor-targeted
 ```
@@ -458,10 +465,12 @@ contract.
 - `codex-rs/app-server-protocol/src/protocol/v2.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
+- `codex-rs/browser-computer-use/src/lib.rs`
+- `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
 - `codex-rs/tui/src/browser_computer_use_provider.rs`
-- `codex-rs/tui/src/browser_playwright_provider.mjs`
 - `codex-rs/tui/src/computer_use_provider.rs`
 - `codex-rs/tui/src/desktop_computer_use_provider.rs`
+- `codex-rs/exec/src/lib.rs`
 - `codex-rs/tui/src/app/app_server_adapter.rs`
 - `codex-rs/tui/src/app/app_server_events.rs`
 - `codex-rs/tui/src/chatwidget.rs`
