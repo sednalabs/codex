@@ -227,8 +227,12 @@ docs-only refresh commit that records this snapshot.
   configured, CLI/TUI thread start, resume, and fork requests advertise
   `browser_observe` and `browser_step` automatically. The Playwright bridge
   supports accessibility-oriented selectors plus human-like mouse and keyboard
-  primitives so agents can fall back to viewport interaction when selector
-  paths are not enough.
+  primitives, defaults to per-thread browser profile isolation for concurrent
+  sidecars, and can still be configured for shared, environment-scoped, or
+  per-call profiles when that lifecycle is intentional. Thread-spawned agents
+  inherit the parent thread's native dynamic tools, so browser-capable sidecars
+  receive the native browser surface rather than silently dropping to a
+  compatibility adapter.
 - The Android adapter is retained as the reference MCP-backed runtime provider:
   reuse `android-emulator-mcp` or a successor when it exposes the current
   Android MCP contract, and adapt harness-specific behavior provider-side

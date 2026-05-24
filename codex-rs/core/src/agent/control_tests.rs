@@ -15,6 +15,7 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
@@ -33,6 +34,7 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::ThreadStore;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
@@ -98,6 +100,21 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
     }
 }
 
+fn browser_observe_dynamic_tool() -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: None,
+        name: "browser_observe".to_string(),
+        description: "Capture the current browser viewport.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": true
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: None,
+    }
+}
+
 struct AgentControlHarness {
     _home: TempDir,
     config: Config,
@@ -144,6 +161,48 @@ impl AgentControlHarness {
             .expect("start thread");
         (new_thread.thread_id, new_thread.thread)
     }
+}
+
+#[tokio::test]
+async fn thread_spawn_subagent_inherits_parent_dynamic_tools() {
+    let harness = AgentControlHarness::new().await;
+    let browser_tool = browser_observe_dynamic_tool();
+    let parent = harness
+        .manager
+        .start_thread_with_tools(
+            harness.config.clone(),
+            vec![browser_tool.clone()],
+            /*persist_extended_history*/ false,
+        )
+        .await
+        .expect("start parent thread with browser tool");
+
+    let spawned = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("inspect the page"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("spawn child agent");
+    let child_thread = harness
+        .manager
+        .get_thread(spawned.thread_id)
+        .await
+        .expect("child thread should be registered");
+
+    assert_eq!(
+        child_thread.dynamic_tools_snapshot().await,
+        vec![browser_tool]
+    );
 }
 
 fn has_subagent_notification(history_items: &[ResponseItem]) -> bool {

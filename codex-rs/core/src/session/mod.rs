@@ -782,6 +782,11 @@ impl Codex {
         state.session_configuration.thread_config_snapshot()
     }
 
+    pub(crate) async fn dynamic_tools_snapshot(&self) -> Vec<DynamicToolSpec> {
+        let state = self.session.state.lock().await;
+        state.session_configuration.dynamic_tools.clone()
+    }
+
     pub(crate) async fn thread_environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
         let state = self.session.state.lock().await;
         state.session_configuration.environments.clone()

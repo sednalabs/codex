@@ -509,6 +509,12 @@ impl CodexThread {
         self.codex.thread_config_snapshot().await
     }
 
+    pub async fn dynamic_tools_snapshot(
+        &self,
+    ) -> Vec<codex_protocol::dynamic_tools::DynamicToolSpec> {
+        self.codex.dynamic_tools_snapshot().await
+    }
+
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.codex.session.get_config().await
     }

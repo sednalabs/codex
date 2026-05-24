@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,10 @@ const CAPTURE_FULL_PAGE = "full_page";
 const DEFAULT_PROFILE_LOCK_TIMEOUT_MS = 120_000;
 const PROFILE_LOCK_STALE_MS = 10 * 60_000;
 const PROFILE_LOCK_POLL_MS = 250;
+const ISOLATION_SHARED = "shared";
+const ISOLATION_THREAD = "thread";
+const ISOLATION_ENVIRONMENT = "environment";
+const ISOLATION_CALL = "call";
 
 main().catch((error) => {
   writeResponse({
@@ -28,19 +33,19 @@ main().catch((error) => {
 async function main() {
   const request = JSON.parse(await readStdin());
   const { chromium } = loadPlaywright();
-  const stateDir = await browserStateDir();
-  await withProfileLock(stateDir, async () => {
+  const profile = await browserProfile(request);
+  await withProfileLock(profile.stateDir, async () => {
     const headless = playwrightHeadless();
     const viewport = viewportFromRequest(request);
-    const context = await chromium.launchPersistentContext(stateDir, {
-      ...launchOptions({ headless, viewport }),
+    const context = await chromium.launchPersistentContext(profile.stateDir, {
+      ...launchOptions({ headless, viewport, profile }),
       headless,
       viewport,
     });
 
     try {
       const page = await activePage(context);
-      await restoreOrNavigate(page, request);
+      await restoreOrNavigate(page, request, profile.stateDir);
 
       const summaries = [];
       if (request.tool === TOOL_STEP) {
@@ -57,8 +62,8 @@ async function main() {
 
       await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
       const screenshot = await captureScreenshot(page);
-      await saveState(stateDir, page);
-      writeResponse(await responseForPage(page, screenshot, summaries));
+      await saveState(profile.stateDir, page);
+      writeResponse(await responseForPage(page, screenshot, summaries, profile));
     } finally {
       await context.close().catch(() => {});
     }
@@ -78,14 +83,100 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function browserStateDir() {
+async function browserProfile(request) {
   const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const dir =
+  const baseDir =
     configured && configured.trim()
       ? configured
       : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
-  await fs.mkdir(dir, { recursive: true });
-  return dir;
+  const isolation = browserIsolationMode();
+  if (isolation === ISOLATION_SHARED) {
+    await fs.mkdir(baseDir, { recursive: true });
+    return {
+      stateDir: baseDir,
+      isolation,
+      identity: ISOLATION_SHARED,
+      label: ISOLATION_SHARED,
+    };
+  }
+
+  const identity = browserProfileIdentity(request, isolation);
+  const label =
+    identity.source === isolation ? isolation : `${isolation}:${identity.source}`;
+  const stateDir = path.join(baseDir, "profiles", identity.component);
+  await fs.mkdir(stateDir, { recursive: true });
+  return { stateDir, isolation, identity: identity.component, label };
+}
+
+function browserIsolationMode() {
+  const raw = (process.env.CODEX_BROWSER_PLAYWRIGHT_ISOLATION || ISOLATION_THREAD)
+    .trim()
+    .toLowerCase();
+  switch (raw) {
+    case ISOLATION_SHARED:
+      return ISOLATION_SHARED;
+    case "session":
+    case "agent":
+    case ISOLATION_THREAD:
+      return ISOLATION_THREAD;
+    case "env":
+    case ISOLATION_ENVIRONMENT:
+      return ISOLATION_ENVIRONMENT;
+    case "turn":
+    case ISOLATION_CALL:
+      return ISOLATION_CALL;
+    default:
+      return ISOLATION_THREAD;
+  }
+}
+
+function browserProfileIdentity(request, isolation) {
+  const source = browserProfileIdentitySource(request, isolation);
+  return {
+    source: source.name,
+    component: safePathComponent(source.value),
+  };
+}
+
+function browserProfileIdentitySource(request, isolation) {
+  if (isolation === ISOLATION_ENVIRONMENT) {
+    return firstIdentity([
+      ["environment", request.environmentId],
+      ["thread", request.threadId],
+      ["call", request.callId],
+    ]);
+  }
+  if (isolation === ISOLATION_CALL) {
+    return firstIdentity([
+      ["call", request.callId],
+      ["turn", request.turnId],
+      ["thread", request.threadId],
+    ]);
+  }
+  return firstIdentity([
+    ["thread", request.threadId],
+    ["environment", request.environmentId],
+    ["call", request.callId],
+  ]);
+}
+
+function firstIdentity(candidates) {
+  for (const [name, value] of candidates) {
+    if (typeof value === "string" && value.trim()) {
+      return { name, value };
+    }
+  }
+  return { name: "default", value: "default" };
+}
+
+function safePathComponent(value) {
+  const text = String(value || "default");
+  const slug = text
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64) || "default";
+  const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
+  return `${slug}-${hash}`;
 }
 
 async function withProfileLock(stateDir, body) {
@@ -148,7 +239,7 @@ function playwrightHeadless() {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-function launchOptions({ headless, viewport }) {
+function launchOptions({ headless, viewport, profile }) {
   const options = {};
   const executablePath = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH");
   if (executablePath) {
@@ -159,12 +250,25 @@ function launchOptions({ headless, viewport }) {
     options.channel = channel;
   }
   if (!headless && viewport) {
+    const position = windowPositionForProfile(profile);
     options.args = [
-      "--window-position=0,0",
+      `--window-position=${position.x},${position.y}`,
       `--window-size=${viewport.width},${viewport.height}`,
     ];
   }
   return options;
+}
+
+function windowPositionForProfile(profile) {
+  if (!profile || profile.isolation === ISOLATION_SHARED) {
+    return { x: 0, y: 0 };
+  }
+  const hash = createHash("sha256").update(profile.identity).digest();
+  const slot = hash[0] % 9;
+  return {
+    x: (slot % 3) * envNumber("CODEX_BROWSER_PLAYWRIGHT_WINDOW_OFFSET_X", 48),
+    y: Math.floor(slot / 3) * envNumber("CODEX_BROWSER_PLAYWRIGHT_WINDOW_OFFSET_Y", 36),
+  };
 }
 
 function viewportFromRequest(request) {
@@ -193,14 +297,14 @@ async function activePage(context) {
   return existing || context.newPage();
 }
 
-async function restoreOrNavigate(page, request) {
+async function restoreOrNavigate(page, request, stateDir) {
   const explicitUrl = request.arguments?.url;
   if (explicitUrl) {
     await page.goto(explicitUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
     return;
   }
 
-  const statePath = path.join(await browserStateDir(), "state.json");
+  const statePath = path.join(stateDir, "state.json");
   const state = await readJsonOrNull(statePath);
   if (state?.url && page.url() === "about:blank") {
     await page.goto(state.url, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
@@ -603,8 +707,11 @@ async function captureScreenshot(page) {
   throw new Error(`Unable to capture browser screenshot. ${compactCaptureErrors(errors)}`);
 }
 
-async function responseForPage(page, screenshot, summaries) {
+async function responseForPage(page, screenshot, summaries, profile) {
   const lines = ["Browser observation", `url: ${page.url()}`];
+  if (profile?.label) {
+    lines.push(`profile: ${profile.label}`);
+  }
   const title = await pageTitle(page);
   if (title) {
     lines.push(`title: ${title}`);
