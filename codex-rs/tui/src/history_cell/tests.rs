@@ -1127,6 +1127,72 @@ fn active_mcp_tool_call_snapshot() {
 }
 
 #[test]
+fn computer_use_call_labels_native_surfaces() {
+    let adapters = [
+        ("browser", "Used browser"),
+        ("desktop", "Used computer"),
+        ("android", "Used Android emulator"),
+    ];
+
+    for (adapter, expected_label) in adapters {
+        let mut cell = new_active_computer_use_call(
+            format!("call-{adapter}"),
+            ComputerUseInvocation {
+                adapter: adapter.to_string(),
+                tool: format!("{adapter}_observe"),
+                arguments: None,
+            },
+            /*animations_enabled*/ false,
+        );
+        cell.complete(ComputerUseCallOutcome {
+            status: codex_app_server_protocol::ComputerUseCallStatus::Completed,
+            content_items: Some(vec![
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,abc".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ]),
+            success: Some(true),
+            error: None,
+            duration: Some(Duration::from_millis(12)),
+        });
+
+        let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+        assert!(rendered.contains(expected_label), "{rendered}");
+        assert!(
+            rendered.contains(&format!("{adapter}_observe")),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<native screenshot>"), "{rendered}");
+    }
+}
+
+#[test]
+fn computer_use_call_failure_is_visible() {
+    let mut cell = new_active_computer_use_call(
+        "call-browser".to_string(),
+        ComputerUseInvocation {
+            adapter: "browser".to_string(),
+            tool: "browser_step".to_string(),
+            arguments: Some(json!({"action": "click"})),
+        },
+        /*animations_enabled*/ false,
+    );
+    cell.complete(ComputerUseCallOutcome {
+        status: codex_app_server_protocol::ComputerUseCallStatus::Failed,
+        content_items: None,
+        success: Some(false),
+        error: Some("capture failed".to_string()),
+        duration: None,
+    });
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    assert!(rendered.contains("Failed using browser"), "{rendered}");
+    assert!(rendered.contains("browser_step"), "{rendered}");
+    assert!(rendered.contains("capture failed"), "{rendered}");
+}
+
+#[test]
 fn mcp_inventory_loading_snapshot() {
     let cell = new_mcp_inventory_loading(/*animations_enabled*/ true);
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");

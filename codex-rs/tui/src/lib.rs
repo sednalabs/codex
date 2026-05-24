@@ -94,6 +94,7 @@ mod ascii_animation;
 #[cfg(not(target_os = "linux"))]
 mod audio_device;
 mod browser_computer_use_provider;
+mod computer_use_display;
 mod computer_use_provider;
 mod desktop_computer_use_provider;
 #[cfg(target_os = "linux")]

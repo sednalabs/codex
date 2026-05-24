@@ -125,6 +125,11 @@ User-visible behavior:
   contract, and keep harness-specific translation in the provider rather than
   in hot Codex core paths.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
+- TUI transcript and replay surfaces render native computer-use items with
+  compact adapter-specific labels such as `Used browser`, `Used computer`, and
+  `Used Android emulator`; exec JSON/human output projects the same calls as
+  compact computer-use events without embedding screenshot bytes in transcript
+  text.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.

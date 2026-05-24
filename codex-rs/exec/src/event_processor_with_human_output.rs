@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
@@ -82,6 +83,14 @@ impl EventProcessorWithHumanOutput {
                     "mcp:".style(self.bold),
                     format!("{server}/{tool}").style(self.cyan),
                     "started".style(self.dimmed)
+                );
+            }
+            ThreadItem::ComputerUseCall { adapter, tool, .. } => {
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, ComputerUseCallStatus::InProgress)
+                        .style(self.bold),
+                    tool.style(self.dimmed)
                 );
             }
             ThreadItem::WebSearch { query, .. } => {
@@ -199,6 +208,27 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                error,
+                ..
+            } => {
+                let status_style = match &status {
+                    ComputerUseCallStatus::Completed => self.green,
+                    ComputerUseCallStatus::Failed => self.red,
+                    ComputerUseCallStatus::InProgress => self.dimmed,
+                };
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, status).style(status_style),
+                    tool.style(self.dimmed)
+                );
+                if let Some(error) = error {
+                    eprintln!("{}", error.style(self.red));
+                }
+            }
             ThreadItem::WebSearch { query, .. } => {
                 eprintln!("{} {}", "web search:".style(self.bold), query);
             }
@@ -207,6 +237,20 @@ impl EventProcessorWithHumanOutput {
             }
             _ => {}
         }
+    }
+}
+
+fn computer_use_human_label(adapter: &str, status: ComputerUseCallStatus) -> String {
+    let surface = match adapter {
+        "android" | "android_emulator" | "android-emulator" => "Android emulator".to_string(),
+        "browser" => "browser".to_string(),
+        "desktop" | "computer" => "computer".to_string(),
+        other => other.replace(['_', '-'], " "),
+    };
+    match status {
+        ComputerUseCallStatus::InProgress => format!("Using {surface}"),
+        ComputerUseCallStatus::Completed => format!("Used {surface}"),
+        ComputerUseCallStatus::Failed => format!("Failed using {surface}"),
     }
 }
 

@@ -311,6 +311,9 @@ impl ChatWidget {
             ThreadItem::ImageGeneration { .. } => {
                 self.on_image_generation_begin();
             }
+            item @ ThreadItem::ComputerUseCall { .. } => {
+                self.on_computer_use_call_started(item);
+            }
             ThreadItem::CollabAgentToolCall {
                 id,
                 tool,

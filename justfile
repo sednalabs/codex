@@ -281,6 +281,11 @@ app-server-computer-use-targeted:
 # Focused native computer-use TUI app-server request and provider routing slice.
 tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui computer_use_display::tests::action_labels_match_native_surfaces --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui history_cell::tests::computer_use_call_labels_native_surfaces --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui history_cell::tests::computer_use_call_failure_is_visible --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui chatwidget::tests::history_replay::replayed_completed_computer_use_call_is_visible --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui chatwidget::tests::history_replay::live_computer_use_call_is_visible_while_active_and_after_completion --lib -- --exact --test-threads=1
     cargo test --locked -p codex-browser-computer-use --lib -- --test-threads=1
     cargo test --locked -p codex-tui desktop_computer_use_provider::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
@@ -289,6 +294,7 @@ tui-native-computer-use-targeted:
 # advertisement and provider request handling in non-interactive sessions.
 exec-native-computer-use-targeted:
     cargo test --locked -p codex-exec thread_lifecycle_params_include_configured_browser_dynamic_tools --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-exec --test event_processor_with_json_output computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.

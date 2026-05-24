@@ -138,6 +138,11 @@ impl ChatWidget {
                 ..
             } => self.on_mcp_tool_call_started(item),
             item @ ThreadItem::McpToolCall { .. } => self.on_mcp_tool_call_completed(item),
+            item @ ThreadItem::ComputerUseCall {
+                status: codex_app_server_protocol::ComputerUseCallStatus::InProgress,
+                ..
+            } => self.on_computer_use_call_started(item),
+            item @ ThreadItem::ComputerUseCall { .. } => self.on_computer_use_call_completed(item),
             ThreadItem::WebSearch { id, query, action } => {
                 self.on_web_search_begin(id.clone());
                 self.on_web_search_end(
@@ -193,7 +198,6 @@ impl ChatWidget {
                 agents_states,
             }),
             ThreadItem::DynamicToolCall { .. } => {}
-            ThreadItem::ComputerUseCall { .. } => {}
         }
 
         if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) && turn_id.is_empty() {

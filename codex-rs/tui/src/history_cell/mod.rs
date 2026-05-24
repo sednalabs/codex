@@ -104,6 +104,7 @@ const RAW_TOOL_OUTPUT_WIDTH: usize = 10_000;
 
 mod approvals;
 mod base;
+mod computer_use;
 mod exec;
 mod hook_cell;
 mod mcp;
@@ -118,6 +119,7 @@ mod session;
 
 pub(crate) use approvals::*;
 pub(crate) use base::*;
+pub(crate) use computer_use::*;
 pub(crate) use exec::*;
 pub(crate) use hook_cell::HookCell;
 pub(crate) use hook_cell::new_active_hook_cell;

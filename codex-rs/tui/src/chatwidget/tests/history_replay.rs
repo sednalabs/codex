@@ -918,6 +918,119 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
 }
 
 #[tokio::test]
+async fn replayed_completed_computer_use_call_is_visible() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::ComputerUseCall {
+            id: "computer-use-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: json!({"scope": "screen_and_ui"}),
+            status: codex_app_server_protocol::ComputerUseCallStatus::Completed,
+            content_items: Some(vec![
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                    text: "Android observation".to_string(),
+                },
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,abc".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ]),
+            success: Some(true),
+            error: None,
+            duration_ms: Some(42),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Used Android emulator"), "{rendered}");
+    assert!(rendered.contains("android_observe"), "{rendered}");
+    assert!(rendered.contains("<native screenshot>"), "{rendered}");
+}
+
+#[tokio::test]
+async fn live_computer_use_call_is_visible_while_active_and_after_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: codex_app_server_protocol::ComputerUseCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                error: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let active = active_blob(&chat);
+    assert!(active.contains("Using browser"), "{active}");
+    assert!(active.contains("browser_step"), "{active}");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: codex_app_server_protocol::ComputerUseCallStatus::Completed,
+                content_items: Some(vec![
+                    codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                        text: "Browser observation\nurl: https://example.test".to_string(),
+                    },
+                    codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,abc".to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ]),
+                success: Some(true),
+                error: None,
+                duration_ms: Some(64),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Used browser"), "{rendered}");
+    assert!(rendered.contains("browser_step"), "{rendered}");
+    assert!(rendered.contains("https://example.test"), "{rendered}");
+    assert!(rendered.contains("<native screenshot>"), "{rendered}");
+}
+
+#[tokio::test]
 async fn live_reasoning_summary_is_not_rendered_twice_when_item_completes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_welcome_banner = false;
