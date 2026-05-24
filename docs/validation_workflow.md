@@ -139,6 +139,8 @@ Every lane row in `.github/validation-lanes.json` is expected to define:
 - `setup_class`
 - `checkout_fetch_depth` (defaults to shallow checkout; widen only when the
   lane truly needs more history)
+- `timeout_minutes` (defaults to 30; raise it only for lanes whose normal
+  cold-cache runtime is legitimately longer)
 - `working_directory`
 - `script_path`
 - `script_args`
@@ -233,15 +235,17 @@ ownership boundary:
   `codex.app-server-computer-use-targeted`,
   `codex.tui-native-computer-use-targeted`, and
   `codex.native-computer-use-tool-registry-targeted`.
+- `codex exec` native browser advertisement or provider-handling changes
+  should add `codex.exec-native-computer-use-targeted`.
 - Provider configuration diagnostics should add
   `codex.native-computer-use-doctor-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app
   that owns that behavior.
 - Browser provider-selection, command-bridge, Playwright-shim, and native-image
-  guard changes inside `codex-rs/tui` should use the focused Codex TUI and
-  tool-registry lanes above. Also run `node --check` on the Playwright shim when
-  it changes.
+  guard changes inside `codex-rs/browser-computer-use` should use the focused
+  Codex TUI/exec and tool-registry lanes above. Also run `node --check` on the
+  Playwright shim when it changes.
 - Browser provider changes that target realistic editor UX should also be
   proved on the owning runtime surface with a headed Chrome provider,
   persistent profile, configured display, and native `inputImage` response.

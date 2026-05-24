@@ -143,6 +143,7 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("checkout_fetch_depth", 1)
+        lane.setdefault("timeout_minutes", 30)
         lane.setdefault("frontier_default", False)
         lane.setdefault("needs_bazel", False)
         lane.setdefault("smoke_gate_only", False)
@@ -247,6 +248,7 @@ def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
             raise SystemExit(f"lane {lane_id} must set pilot_only to true or false")
 
         resolve_checkout_fetch_depth(lane)
+        resolve_timeout_minutes(lane)
 
 
 def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> int:
@@ -265,6 +267,16 @@ def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> i
     return checkout_fetch_depth
 
 
+def resolve_timeout_minutes(lane: dict, *, default: int | None = None) -> int:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    timeout_minutes = lane.get("timeout_minutes", default)
+    if isinstance(timeout_minutes, bool) or not isinstance(timeout_minutes, int):
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    if timeout_minutes <= 0:
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    return timeout_minutes
+
+
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
         "lane_id": spec["lane_id"],
@@ -277,6 +289,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "summary_family": spec["summary_family"],
         "cost_class": spec["cost_class"],
         "checkout_fetch_depth": resolve_checkout_fetch_depth(spec, default=1),
+        "timeout_minutes": resolve_timeout_minutes(spec, default=30),
         "working_directory": spec["working_directory"],
         "script_path": spec["script_path"],
         "script_args": spec.get("script_args") or [],

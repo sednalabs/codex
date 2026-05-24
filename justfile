@@ -281,9 +281,14 @@ app-server-computer-use-targeted:
 # Focused native computer-use TUI app-server request and provider routing slice.
 tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-tui browser_computer_use_provider::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-browser-computer-use --lib -- --test-threads=1
     cargo test --locked -p codex-tui desktop_computer_use_provider::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
+
+# Focused exec native computer-use slice for configured browser tool
+# advertisement and provider request handling in non-interactive sessions.
+exec-native-computer-use-targeted:
+    cargo test --locked -p codex-exec thread_lifecycle_params_include_configured_browser_dynamic_tools --lib -- --exact --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
@@ -300,8 +305,8 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
     cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
-    cargo test --locked -p codex-tui command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
-    cargo test --locked -p codex-tui browser_provider_response_preserves_native_image --lib -- --test-threads=1
+    cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
+    cargo test --locked -p codex-browser-computer-use browser_provider_response_preserves_native_image --lib -- --test-threads=1
     cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
 
 # Focused native computer-use operator diagnostics slice.

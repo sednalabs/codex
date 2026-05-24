@@ -394,6 +394,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}
@@ -583,6 +584,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}

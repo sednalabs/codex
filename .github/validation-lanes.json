@@ -1052,6 +1052,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.exec-native-computer-use-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "exec-native-computer-use-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.native-computer-use-tool-registry-targeted",
       "groups": [
         "ui_protocol"
@@ -1222,6 +1248,7 @@
       "frontier_default": false,
       "summary_family": "argument-comment-lint",
       "cost_class": "high",
+      "timeout_minutes": 120,
       "setup_class": "workflow",
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/argument-comment-lint.sh",
@@ -1652,6 +1679,7 @@
         "codex.app-server-protocol-test",
         "codex.app-server-computer-use-targeted",
         "codex.tui-native-computer-use-targeted",
+        "codex.exec-native-computer-use-targeted",
         "codex.native-computer-use-tool-registry-targeted",
         "codex.native-computer-use-doctor-targeted"
       ],
@@ -1680,8 +1708,14 @@
         "codex-rs/cli/src/doctor.rs",
         "codex-rs/cli/src/doctor/computer_use.rs",
         "codex-rs/cli/src/doctor/output.rs",
+        "codex-rs/browser-computer-use/**",
+        "codex-rs/browser-computer-use/BUILD.bazel",
+        "codex-rs/browser-computer-use/Cargo.toml",
+        "codex-rs/exec/Cargo.toml",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/exec/src/lib_tests.rs",
+        "codex-rs/tui/Cargo.toml",
         "codex-rs/tui/src/browser_computer_use_provider.rs",
-        "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/app_server_session.rs",
@@ -1710,6 +1744,9 @@
         "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
         "codex-rs/tools/src/desktop_tool.rs",
+        "codex-rs/browser-computer-use/src/lib.rs",
+        "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
+        "codex-rs/exec/src/lib.rs",
         "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
