@@ -38,6 +38,23 @@ handlers. Namespaced tools remain ordinary dynamic tools.
   artifact into the active Android session, optionally launches it, then
   returns a fresh post-install observation when available.
 
+The existing Android adapter remains the reference MCP-backed runtime provider,
+not a throwaway prototype. It already demonstrates the split this fork should
+keep: Codex owns canonical tool schemas, transcript events, and native image
+delivery; the Android provider owns emulator/device sessions, `adb`/
+UIAutomator-style capture, screenshot artifacts, UI digests, input execution,
+and provider-side build installation.
+
+`android-emulator-mcp` or a successor should therefore be reused when it can
+expose the current Android MCP tool contract (`android.inspect_ui`,
+`android.capture_screenshot`, `android.read_artifact`, `android.input.*`, and
+`interactive_session.install_build_from_run`). If a provider needs a different
+internal harness, adapt it inside the provider or through a thin provider-side
+compatibility layer rather than changing Codex hot core paths. Do not fold
+Android into the browser backend registry: Android is a peer native adapter,
+while the browser registry is the routing layer for browser-specific backends
+such as Playwright, in-app browser, and Chrome extension.
+
 ### Browser
 
 - `browser_observe`: captures the current browser viewport as model-visible
@@ -54,7 +71,8 @@ forwards any backend to an operator-configured provider command. `iab` and
 `chrome` require such a provider command until a dedicated in-app-browser or
 Chrome-extension bridge is connected.
 
-The TUI bridge is intentionally pluggable:
+The TUI bridge is intentionally pluggable and now supports both the original
+single-provider configuration and a provider registry:
 
 - `CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright` enables the embedded
   Playwright bridge for `backend=auto`. The bridge launches a persistent
@@ -68,6 +86,11 @@ The TUI bridge is intentionally pluggable:
 - `~/.codex/browser-computer-use.json` may provide the same configuration with
   `provider`, `command`, `node`, `timeout_secs`, `state_dir`, and `headless`
   fields.
+- `~/.codex/browser-computer-use.json` may also provide `providers[]` and
+  `routing.fallback_order`. Each provider can declare an `id`, `provider`,
+  `command`, `backends`, `platforms`, and provider-specific settings. Exact
+  backend requests such as `chrome` or `iab` route only to providers that
+  claim that backend; wildcard command providers can claim every backend.
 
 Example command-provider configuration:
 
@@ -89,6 +112,39 @@ Example built-in Playwright configuration:
 }
 ```
 
+Example routed provider configuration:
+
+```json
+{
+  "providers": [
+    {
+      "id": "local-playwright",
+      "provider": "playwright",
+      "backends": ["auto"],
+      "state_dir": "/path/to/browser-state",
+      "headless": true
+    },
+    {
+      "id": "signed-in-chrome",
+      "provider": "command",
+      "backends": ["chrome"],
+      "command": ["node", "/path/to/chrome-provider.mjs"]
+    },
+    {
+      "id": "visible-browser-shell",
+      "provider": "command",
+      "backends": ["iab"],
+      "platforms": ["windows"],
+      "command": ["browser-shell-provider.exe"]
+    }
+  ],
+  "routing": {
+    "fallback_order": ["local-playwright", "signed-in-chrome"]
+  },
+  "timeout_secs": 120
+}
+```
+
 An external command provider should read one `ComputerUseCallParams` JSON object
 from stdin and write one `ComputerUseCallResponse` JSON object to stdout. For
 successful visual responses, that object must include a native `inputImage`
@@ -102,6 +158,29 @@ model-facing visual channel and should not be exposed as instructions for the
 model to fetch local files. If screenshot inlining fails, the response may
 include a concise diagnostic that names the provider artifact involved; that is
 an error breadcrumb, not the normal contract.
+
+`codex doctor` includes a read-only browser computer-use check. It reports
+configured browser provider files, provider ids, declared backends, Android
+provider files, Android endpoint presence, environment overrides, and whether
+configured browser command or Node executables are resolvable. It does not
+launch browsers, connect to user profiles, start emulators, call Android MCP
+servers, or repair configuration.
+
+## Cleanroom Provider Work
+
+Native desktop/browser providers should be implemented as cleanroom provider
+adapters behind the command-provider or future provider-registry seams. Public
+documentation, the open Codex protocol, public OS/browser APIs, and sanitized
+behavioral requirements are acceptable inputs. Raw third-party implementation
+artifacts, private endpoints, signing material, account data, browser profile
+data, and copied implementation text are not acceptable tracked inputs.
+
+When binary inspection is legally permitted for interoperability, error
+correction, or security analysis, keep it in a separate discovery lane. The
+implementation lane should receive only neutral requirements such as provider
+capabilities, state transitions, request/response fields, permission states,
+and failure modes. Do not commit raw inspection notes or generated decompiled
+artifacts to this repository.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the

@@ -29,7 +29,7 @@ const GROUPS: &[OutputGroup] = &[
     },
     OutputGroup {
         title: "Configuration",
-        keys: &["config", "auth", "mcp", "sandbox"],
+        keys: &["config", "auth", "mcp", "computer-use", "sandbox"],
     },
     OutputGroup {
         title: "Updates",
@@ -620,6 +620,7 @@ fn display_summary(check: &DoctorCheck, _options: HumanOutputOptions) -> String 
         "state" => state_summary(check),
         "config" if check.status == CheckStatus::Ok => "loaded".to_string(),
         "mcp" => mcp_summary(check),
+        "computer-use" => computer_use_summary(check),
         "sandbox" => sandbox_summary(check),
         "network" => network_summary(check),
         "websocket" => websocket_summary(check),
@@ -704,6 +705,30 @@ fn mcp_summary(check: &DoctorCheck) -> String {
             count,
             transports.join(", "),
             disabled
+        )
+    }
+}
+
+fn computer_use_summary(check: &DoctorCheck) -> String {
+    let browser_configured = detail::detail_value(check, "browser providers configured")
+        .unwrap_or_else(|| "0".to_string());
+    let android_configured = detail::detail_value(check, "android providers configured")
+        .unwrap_or_else(|| "0".to_string());
+    let browser_env = detail::detail_value(check, "browser provider env overrides")
+        .unwrap_or_else(|| "none".to_string());
+    let android_env = detail::detail_value(check, "android provider env overrides")
+        .unwrap_or_else(|| "none".to_string());
+    if browser_configured == "0"
+        && android_configured == "0"
+        && browser_env == "none"
+        && android_env == "none"
+    {
+        "native providers not configured".to_string()
+    } else if browser_env == "none" && android_env == "none" {
+        format!("{browser_configured} browser · {android_configured} android providers")
+    } else {
+        format!(
+            "{browser_configured} browser · {android_configured} android providers · env overrides"
         )
     }
 }

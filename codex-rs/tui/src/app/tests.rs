@@ -1378,9 +1378,9 @@ fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
 
         let err = app
             .attach_live_thread_for_selection(&mut app_server, thread_id)
@@ -1420,9 +1420,9 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
             Some("Scout".to_string()),
             Some("worker".to_string()),
             /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
 
         let err = app
             .attach_live_thread_for_selection(&mut app_server, thread_id)
@@ -3671,9 +3671,9 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
 
         assert!(
             app.discard_side_thread(&mut app_server, side_thread_id)
@@ -3703,9 +3703,9 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
 
         assert!(
             !app.discard_side_thread(&mut app_server, side_thread_id)

@@ -66,6 +66,7 @@ use serde::Serialize;
 use supports_color::Stream;
 
 mod background;
+mod computer_use;
 mod output;
 mod progress;
 mod runtime;
@@ -350,6 +351,7 @@ async fn build_report(
                 network_check,
                 websocket_check,
                 mcp_check,
+                computer_use_check,
                 sandbox_check,
                 terminal_check,
                 state_check,
@@ -366,6 +368,11 @@ async fn build_report(
                     websocket_reachability_check(config, Some(auth_manager)),
                 ),
                 run_async_check("MCP", progress.clone(), mcp_check(config)),
+                async {
+                    run_sync_check("computer-use", progress.clone(), || {
+                        computer_use::check(config)
+                    })
+                },
                 async {
                     run_sync_check("sandbox", progress.clone(), || {
                         sandbox_check(config, arg0_paths)
@@ -395,6 +402,7 @@ async fn build_report(
                 network_check,
                 websocket_check,
                 mcp_check,
+                computer_use_check,
                 sandbox_check,
                 terminal_check,
                 state_check,
@@ -2871,6 +2879,15 @@ fn env_var_present(name: &str) -> bool {
     env::var_os(name).is_some_and(|value| !value.is_empty())
 }
 
+fn first_present_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 fn human_output_options(command: &DoctorCommand) -> HumanOutputOptions {
     let term = env::var("TERM").ok();
     let color_enabled = should_enable_color(
@@ -3141,6 +3158,59 @@ mod tests {
         assert_eq!(
             json["checks"]["mcp.config"]["issues"][0]["remedy"],
             "Check https://example.com/help."
+        );
+    }
+
+    #[test]
+    fn native_computer_use_check_reports_android_and_browser_config_files() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let command = std::env::current_exe()
+            .expect("current exe")
+            .to_string_lossy()
+            .into_owned();
+        std::fs::write(
+            temp.path().join("browser-computer-use.json"),
+            serde_json::json!({
+                "providers": [{
+                    "id": "doctor-browser",
+                    "provider": "command",
+                    "backends": ["chrome"],
+                    "command": [command]
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write browser config");
+        std::fs::write(
+            temp.path().join("android-computer-use.json"),
+            serde_json::json!({
+                "mcp_url": "https://android-provider.example/mcp"
+            })
+            .to_string(),
+        )
+        .expect("write android config");
+
+        let check = computer_use::check_for_home(temp.path());
+
+        assert_eq!(
+            check.summary,
+            "native computer-use provider configuration checked"
+        );
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|detail| detail.starts_with("browser provider ids: ")
+                    && detail.contains("doctor-browser"))
+        );
+        assert!(check.details.iter().any(|detail| {
+            detail == "android provider config android-computer-use.json mcp_url: configured"
+        }));
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|detail| detail == "android providers configured: 1")
         );
     }
 

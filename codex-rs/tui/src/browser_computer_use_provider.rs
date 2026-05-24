@@ -23,6 +23,7 @@ const PROVIDER_PLAYWRIGHT: &str = "playwright";
 const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
 const TOOL_BROWSER_STEP: &str = "browser_step";
 const BACKEND_AUTO: &str = "auto";
+const BACKEND_WILDCARD: &str = "*";
 
 const PLAYWRIGHT_BRIDGE_SCRIPT: &str = include_str!("browser_playwright_provider.mjs");
 
@@ -47,8 +48,15 @@ pub(crate) async fn handle_browser_computer_use(
         return BrowserComputerUseOutcome::Unavailable;
     };
 
-    let request_timeout = config.timeout;
-    let response = match timeout(request_timeout, handle_with_config(params, config)).await {
+    let requested_backend = requested_backend(&params.arguments);
+    let Some(provider) = config.provider_for_backend(requested_backend).cloned() else {
+        return BrowserComputerUseOutcome::Handled(failed_response(format!(
+            "Browser backend `{requested_backend}` is not available from configured browser computer-use providers. Configure `{ENV_COMMAND}` or add a matching provider to ~/.codex/browser-computer-use.json."
+        )));
+    };
+
+    let request_timeout = provider.timeout;
+    let response = match timeout(request_timeout, handle_with_provider(params, provider)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => failed_response(err),
         Err(_) => failed_response(format!(
@@ -59,17 +67,18 @@ pub(crate) async fn handle_browser_computer_use(
     BrowserComputerUseOutcome::Handled(response)
 }
 
-async fn handle_with_config(
+async fn handle_with_provider(
     params: &ComputerUseCallParams,
-    config: BrowserRuntimeConfig,
+    provider: ConfiguredBrowserProvider,
 ) -> Result<ComputerUseCallResponse, String> {
-    let mut response = match config.provider {
+    let provider_id = provider.id.clone();
+    let mut response = match provider.provider {
         BrowserProvider::Command(command) => run_command_provider(params, &command).await,
         BrowserProvider::Playwright(playwright) => {
             let backend = requested_backend(&params.arguments);
             if backend != BACKEND_AUTO {
                 return Err(format!(
-                    "Browser backend `{backend}` is not available from the TUI Playwright provider. Use backend=auto or configure `{ENV_COMMAND}` for a provider that owns `{backend}`."
+                    "Browser backend `{backend}` is not available from Playwright provider `{provider_id}`. Use backend=auto or configure `{ENV_COMMAND}` for a provider that owns `{backend}`."
                 ));
             }
             run_playwright_provider(params, &playwright).await
@@ -175,26 +184,35 @@ fn parse_provider_response(bytes: &[u8]) -> Result<ComputerUseCallResponse, Stri
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserRuntimeConfig {
-    provider: BrowserProvider,
-    timeout: Duration,
+    providers: Vec<ConfiguredBrowserProvider>,
 }
 
 impl BrowserRuntimeConfig {
     fn load() -> Option<Self> {
-        let file = BrowserRuntimeConfigFile::load();
-        let provider_name = first_env(&[ENV_PROVIDER])
+        Self::from_sources(BrowserRuntimeConfigFile::load(), BrowserRuntimeEnv::read())
+    }
+
+    fn from_sources(
+        file: Option<BrowserRuntimeConfigFile>,
+        env: BrowserRuntimeEnv,
+    ) -> Option<Self> {
+        let provider_name = env
+            .provider
+            .clone()
             .or_else(|| file.as_ref().and_then(|config| config.provider.clone()));
         if provider_name.as_deref() == Some(PROVIDER_NONE) {
             return None;
         }
 
-        let timeout = first_env(&[ENV_TIMEOUT_SECS])
-            .and_then(|value| value.parse::<u64>().ok())
+        let timeout = env
+            .timeout_secs
             .or_else(|| file.as_ref().and_then(|config| config.timeout_secs))
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
 
-        if let Some(command) = first_env(&[ENV_COMMAND])
+        if let Some(command) = env
+            .command
+            .clone()
             .and_then(|command| command_spec_to_argv(CommandSpec::String(command)))
             .or_else(|| {
                 file.as_ref()
@@ -203,24 +221,36 @@ impl BrowserRuntimeConfig {
             })
         {
             return Some(Self {
-                provider: BrowserProvider::Command(CommandProviderConfig { argv: command }),
-                timeout,
+                providers: vec![ConfiguredBrowserProvider::command(
+                    "env-command",
+                    command,
+                    wildcard_backends(),
+                    timeout,
+                )],
             });
         }
 
         if provider_name.as_deref() == Some(PROVIDER_PLAYWRIGHT) {
             return Some(Self {
-                provider: BrowserProvider::Playwright(PlaywrightProviderConfig {
-                    node: first_env(&[ENV_NODE])
-                        .or_else(|| file.as_ref().and_then(|config| config.node.clone()))
-                        .unwrap_or_else(|| "node".to_string()),
-                    state_dir: first_env(&[ENV_PLAYWRIGHT_STATE_DIR])
-                        .or_else(|| file.as_ref().and_then(|config| config.state_dir.clone())),
-                    headless: first_env(&[ENV_PLAYWRIGHT_HEADLESS])
-                        .and_then(|value| parse_bool(&value))
-                        .or_else(|| file.as_ref().and_then(|config| config.headless)),
-                }),
-                timeout,
+                providers: vec![ConfiguredBrowserProvider::playwright(
+                    "playwright",
+                    PlaywrightProviderConfig {
+                        node: env
+                            .node
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.node.clone()))
+                            .unwrap_or_else(|| "node".to_string()),
+                        state_dir: env
+                            .state_dir
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.state_dir.clone())),
+                        headless: env
+                            .headless
+                            .or_else(|| file.as_ref().and_then(|config| config.headless)),
+                    },
+                    vec![BACKEND_AUTO.to_string()],
+                    timeout,
+                )],
             });
         }
 
@@ -228,7 +258,60 @@ impl BrowserRuntimeConfig {
             return None;
         }
 
-        None
+        let file = file?;
+        let providers = file.configured_providers(timeout, &env);
+        (!providers.is_empty()).then_some(Self { providers })
+    }
+
+    fn provider_for_backend(&self, backend: &str) -> Option<&ConfiguredBrowserProvider> {
+        self.providers
+            .iter()
+            .find(|provider| provider.supports_backend(backend))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfiguredBrowserProvider {
+    id: String,
+    provider: BrowserProvider,
+    backends: Vec<String>,
+    timeout: Duration,
+}
+
+impl ConfiguredBrowserProvider {
+    fn command(
+        id: impl Into<String>,
+        argv: Vec<String>,
+        backends: Vec<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            provider: BrowserProvider::Command(CommandProviderConfig { argv }),
+            backends,
+            timeout,
+        }
+    }
+
+    fn playwright(
+        id: impl Into<String>,
+        config: PlaywrightProviderConfig,
+        backends: Vec<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            provider: BrowserProvider::Playwright(config),
+            backends,
+            timeout,
+        }
+    }
+
+    fn supports_backend(&self, backend: &str) -> bool {
+        self.backends.is_empty()
+            || self.backends.iter().any(|configured| {
+                configured == BACKEND_WILDCARD || configured.eq_ignore_ascii_case(backend)
+            })
     }
 }
 
@@ -258,6 +341,8 @@ struct BrowserRuntimeConfigFile {
     timeout_secs: Option<u64>,
     state_dir: Option<String>,
     headless: Option<bool>,
+    providers: Option<Vec<BrowserProviderConfigFile>>,
+    routing: Option<BrowserRoutingConfigFile>,
 }
 
 impl BrowserRuntimeConfigFile {
@@ -275,6 +360,133 @@ impl BrowserRuntimeConfigFile {
         }
         None
     }
+
+    fn configured_providers(
+        &self,
+        default_timeout: Duration,
+        env: &BrowserRuntimeEnv,
+    ) -> Vec<ConfiguredBrowserProvider> {
+        let mut providers = self
+            .providers
+            .as_ref()
+            .map(|providers| {
+                providers
+                    .iter()
+                    .filter(|provider| provider.matches_current_platform())
+                    .filter_map(|provider| provider.to_configured(default_timeout, env))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if let Some(order) = self
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.fallback_order.as_ref())
+        {
+            providers = order_providers(providers, order);
+        }
+
+        providers
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserRoutingConfigFile {
+    fallback_order: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct BrowserProviderConfigFile {
+    id: Option<String>,
+    provider: Option<String>,
+    command: Option<CommandSpec>,
+    node: Option<String>,
+    timeout_secs: Option<u64>,
+    state_dir: Option<String>,
+    headless: Option<bool>,
+    backends: Option<Vec<String>>,
+    platforms: Option<Vec<String>>,
+}
+
+impl BrowserProviderConfigFile {
+    fn matches_current_platform(&self) -> bool {
+        let Some(platforms) = &self.platforms else {
+            return true;
+        };
+        platforms
+            .iter()
+            .any(|platform| platform_matches_current(platform))
+    }
+
+    fn to_configured(
+        &self,
+        default_timeout: Duration,
+        env: &BrowserRuntimeEnv,
+    ) -> Option<ConfiguredBrowserProvider> {
+        let provider_name = self.provider.as_deref().unwrap_or(PROVIDER_COMMAND);
+        if provider_name == PROVIDER_NONE {
+            return None;
+        }
+
+        let timeout = self
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(default_timeout);
+        let backends = self.backends.clone().unwrap_or_else(|| {
+            if provider_name == PROVIDER_PLAYWRIGHT {
+                vec![BACKEND_AUTO.to_string()]
+            } else {
+                wildcard_backends()
+            }
+        });
+        let id = self.id.clone().unwrap_or_else(|| provider_name.to_string());
+
+        match provider_name {
+            PROVIDER_PLAYWRIGHT => Some(ConfiguredBrowserProvider::playwright(
+                id,
+                PlaywrightProviderConfig {
+                    node: self
+                        .node
+                        .clone()
+                        .or_else(|| env.node.clone())
+                        .unwrap_or_else(|| "node".to_string()),
+                    state_dir: self.state_dir.clone().or_else(|| env.state_dir.clone()),
+                    headless: self.headless.or(env.headless),
+                },
+                backends,
+                timeout,
+            )),
+            PROVIDER_COMMAND => self
+                .command
+                .clone()
+                .and_then(command_spec_to_argv)
+                .map(|argv| ConfiguredBrowserProvider::command(id, argv, backends, timeout)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct BrowserRuntimeEnv {
+    provider: Option<String>,
+    command: Option<String>,
+    node: Option<String>,
+    timeout_secs: Option<u64>,
+    state_dir: Option<String>,
+    headless: Option<bool>,
+}
+
+impl BrowserRuntimeEnv {
+    fn read() -> Self {
+        Self {
+            provider: first_env(&[ENV_PROVIDER]),
+            command: first_env(&[ENV_COMMAND]),
+            node: first_env(&[ENV_NODE]),
+            timeout_secs: first_env(&[ENV_TIMEOUT_SECS]).and_then(|value| value.parse().ok()),
+            state_dir: first_env(&[ENV_PLAYWRIGHT_STATE_DIR]),
+            headless: first_env(&[ENV_PLAYWRIGHT_HEADLESS]).and_then(|value| parse_bool(&value)),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -290,6 +502,36 @@ fn command_spec_to_argv(command: CommandSpec) -> Option<Vec<String>> {
         CommandSpec::Array(argv) => argv,
     };
     (!argv.is_empty()).then_some(argv)
+}
+
+fn order_providers(
+    providers: Vec<ConfiguredBrowserProvider>,
+    order: &[String],
+) -> Vec<ConfiguredBrowserProvider> {
+    let mut remaining = providers;
+    let mut ordered = Vec::new();
+    for id in order {
+        if let Some(index) = remaining.iter().position(|provider| provider.id == *id) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
+}
+
+fn wildcard_backends() -> Vec<String> {
+    vec![BACKEND_WILDCARD.to_string()]
+}
+
+fn platform_matches_current(platform: &str) -> bool {
+    match platform.to_ascii_lowercase().as_str() {
+        "all" | "*" => true,
+        "linux" => cfg!(target_os = "linux"),
+        "mac" | "macos" | "darwin" => cfg!(target_os = "macos"),
+        "windows" | "win32" => cfg!(target_os = "windows"),
+        "unix" => cfg!(unix),
+        other => other == std::env::consts::OS,
+    }
 }
 
 fn requested_backend(arguments: &Value) -> &str {
@@ -403,6 +645,129 @@ mod tests {
         assert_eq!(requested_backend(&json!({})), BACKEND_AUTO);
         assert_eq!(requested_backend(&json!({"backend": "iab"})), "iab");
         assert_eq!(requested_backend(&json!({"backend": "chrome"})), "chrome");
+    }
+
+    #[test]
+    fn providers_array_routes_by_requested_backend() {
+        let config = BrowserRuntimeConfig::from_sources(
+            Some(BrowserRuntimeConfigFile {
+                provider: None,
+                command: None,
+                node: None,
+                timeout_secs: None,
+                state_dir: None,
+                headless: None,
+                providers: Some(vec![
+                    BrowserProviderConfigFile {
+                        id: Some("chrome-provider".to_string()),
+                        provider: Some(PROVIDER_COMMAND.to_string()),
+                        command: Some(CommandSpec::Array(vec![
+                            "node".to_string(),
+                            "chrome-provider.mjs".to_string(),
+                        ])),
+                        node: None,
+                        timeout_secs: None,
+                        state_dir: None,
+                        headless: None,
+                        backends: Some(vec!["chrome".to_string()]),
+                        platforms: None,
+                    },
+                    BrowserProviderConfigFile {
+                        id: Some("playwright".to_string()),
+                        provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
+                        command: None,
+                        node: Some("node".to_string()),
+                        timeout_secs: None,
+                        state_dir: None,
+                        headless: None,
+                        backends: Some(vec![BACKEND_AUTO.to_string()]),
+                        platforms: None,
+                    },
+                ]),
+                routing: None,
+            }),
+            BrowserRuntimeEnv::default(),
+        )
+        .expect("configured providers");
+
+        assert_eq!(
+            config.provider_for_backend("chrome").map(|p| &p.id),
+            Some(&"chrome-provider".to_string())
+        );
+        assert_eq!(
+            config.provider_for_backend(BACKEND_AUTO).map(|p| &p.id),
+            Some(&"playwright".to_string())
+        );
+        assert_eq!(config.provider_for_backend("iab"), None);
+    }
+
+    #[test]
+    fn routing_fallback_order_controls_wildcard_provider_preference() {
+        let config = BrowserRuntimeConfig::from_sources(
+            Some(BrowserRuntimeConfigFile {
+                provider: None,
+                command: None,
+                node: None,
+                timeout_secs: None,
+                state_dir: None,
+                headless: None,
+                providers: Some(vec![
+                    BrowserProviderConfigFile {
+                        id: Some("first".to_string()),
+                        provider: Some(PROVIDER_COMMAND.to_string()),
+                        command: Some(CommandSpec::Array(vec!["first".to_string()])),
+                        node: None,
+                        timeout_secs: None,
+                        state_dir: None,
+                        headless: None,
+                        backends: None,
+                        platforms: None,
+                    },
+                    BrowserProviderConfigFile {
+                        id: Some("second".to_string()),
+                        provider: Some(PROVIDER_COMMAND.to_string()),
+                        command: Some(CommandSpec::Array(vec!["second".to_string()])),
+                        node: None,
+                        timeout_secs: None,
+                        state_dir: None,
+                        headless: None,
+                        backends: None,
+                        platforms: None,
+                    },
+                ]),
+                routing: Some(BrowserRoutingConfigFile {
+                    fallback_order: Some(vec!["second".to_string(), "first".to_string()]),
+                }),
+            }),
+            BrowserRuntimeEnv::default(),
+        )
+        .expect("configured providers");
+
+        assert_eq!(
+            config.provider_for_backend(BACKEND_AUTO).map(|p| &p.id),
+            Some(&"second".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_playwright_provider_only_claims_auto_backend() {
+        let config = BrowserRuntimeConfig::from_sources(
+            Some(BrowserRuntimeConfigFile {
+                provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
+                command: None,
+                node: Some("node".to_string()),
+                timeout_secs: None,
+                state_dir: None,
+                headless: None,
+                providers: None,
+                routing: None,
+            }),
+            BrowserRuntimeEnv::default(),
+        )
+        .expect("playwright provider");
+
+        assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
+        assert!(config.provider_for_backend("chrome").is_none());
     }
 
     #[test]

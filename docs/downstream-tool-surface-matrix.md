@@ -62,7 +62,9 @@ Notes:
   canonical schema, native image-output expectation, adapter dispatch,
   transcript events, app-server bridge, TUI projection, and rollout trace
   semantics. The browser adapter has a TUI provider bridge with a configured
-  command backend and a built-in Playwright backend for `backend=auto`. See
-  [`native-computer-use.md`](native-computer-use.md).
+  command backend, provider routing, and a built-in Playwright backend for
+  `backend=auto`; Android remains the MCP-backed reference provider and should
+  be adapted provider-side when `android-emulator-mcp` or a successor needs
+  harness-specific glue. See [`native-computer-use.md`](native-computer-use.md).
 - `apply_patch` and `js_repl` are included as control rows so future audits do
   not misclassify them as carry-only behavior.

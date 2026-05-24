@@ -224,6 +224,13 @@ docs-only refresh commit that records this snapshot.
   protocol events and snapshots. The TUI provider registry handles Android and
   routes browser calls to either a configured provider command or the built-in
   Playwright provider for `backend=auto`.
+- The Android adapter is retained as the reference MCP-backed runtime provider:
+  reuse `android-emulator-mcp` or a successor when it exposes the current
+  Android MCP contract, and adapt harness-specific behavior provider-side
+  rather than in hot Codex core paths.
+- `codex doctor` includes read-only native provider diagnostics for browser
+  provider configuration and Android provider endpoint/credential shape without
+  launching browsers, connecting to profiles, or starting emulator sessions.
 - Android screenshots and browser viewport captures are expected to reach the
   model as native image content items. Provider artifact paths are kept for
   diagnostics, audit, or replay; they are not the normal model-facing visual

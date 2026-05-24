@@ -2266,6 +2266,7 @@ dependencies = [
  "regex-lite",
  "serde",
  "serde_json",
+ "shlex",
  "sqlx",
  "supports-color 3.0.2",
  "tempfile",
