@@ -1,8 +1,11 @@
 use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
+use codex_app_server_protocol::DynamicToolSpec;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
 use serde::Deserialize;
 use serde_json::Value;
+use serde_json::json;
 use std::io::Write as _;
 use std::process::Stdio;
 use std::time::Duration;
@@ -17,6 +20,13 @@ const ENV_NODE: &str = "CODEX_BROWSER_COMPUTER_USE_NODE";
 const ENV_TIMEOUT_SECS: &str = "CODEX_BROWSER_COMPUTER_USE_TIMEOUT_SECS";
 const ENV_PLAYWRIGHT_STATE_DIR: &str = "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR";
 const ENV_PLAYWRIGHT_HEADLESS: &str = "CODEX_BROWSER_PLAYWRIGHT_HEADLESS";
+const ENV_PLAYWRIGHT_NODE_PATH: &str = "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH";
+const ENV_PLAYWRIGHT_EXECUTABLE_PATH: &str = "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH";
+const ENV_PLAYWRIGHT_CHANNEL: &str = "CODEX_BROWSER_PLAYWRIGHT_CHANNEL";
+const ENV_PLAYWRIGHT_DISPLAY: &str = "CODEX_BROWSER_PLAYWRIGHT_DISPLAY";
+const ENV_PLAYWRIGHT_CAPTURE_MODE: &str = "CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE";
+const ENV_PLAYWRIGHT_VIEWPORT_WIDTH: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH";
+const ENV_PLAYWRIGHT_VIEWPORT_HEIGHT: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT";
 const PROVIDER_COMMAND: &str = "command";
 const PROVIDER_NONE: &str = "none";
 const PROVIDER_PLAYWRIGHT: &str = "playwright";
@@ -26,6 +36,45 @@ const BACKEND_AUTO: &str = "auto";
 const BACKEND_WILDCARD: &str = "*";
 
 const PLAYWRIGHT_BRIDGE_SCRIPT: &str = include_str!("browser_playwright_provider.mjs");
+
+pub(crate) fn configured_browser_dynamic_tools() -> Vec<DynamicToolSpec> {
+    if BrowserRuntimeConfig::load().is_none() {
+        return Vec::new();
+    }
+
+    vec![
+        browser_dynamic_tool(
+            TOOL_BROWSER_OBSERVE,
+            "Capture the current browser viewport as a model-visible screenshot.",
+            "non_mutating",
+        ),
+        browser_dynamic_tool(
+            TOOL_BROWSER_STEP,
+            "Perform bounded browser actions, then return a fresh browser screenshot.",
+            "mutating",
+        ),
+    ]
+}
+
+fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: None,
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": true
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: Some(DynamicToolCapability {
+            family: Some("browser".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: Some(mutation_class.to_string()),
+            lease_mode: None,
+        }),
+    }
+}
 
 pub(crate) enum BrowserComputerUseOutcome {
     Handled(ComputerUseCallResponse),
@@ -115,19 +164,68 @@ async fn run_playwright_provider(
         .map_err(|err| format!("failed to write browser provider script: {err}"))?;
 
     let script_path = script_file.path().to_string_lossy().to_string();
-    let mut envs = Vec::new();
-    if let Some(state_dir) = &config.state_dir {
-        envs.push((ENV_PLAYWRIGHT_STATE_DIR.to_string(), state_dir.clone()));
-    }
-    if let Some(headless) = config.headless {
-        envs.push((
-            ENV_PLAYWRIGHT_HEADLESS.to_string(),
-            if headless { "1" } else { "0" }.to_string(),
-        ));
-    }
+    let envs = playwright_provider_envs(config);
 
     let output = run_provider_process(&[config.node.clone(), script_path], params, &envs).await?;
     parse_provider_response(&output)
+}
+
+fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, String)> {
+    let mut envs = Vec::new();
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_NODE_PATH,
+        config.node_path.clone(),
+    );
+    if let Some(node_path) = &config.node_path {
+        push_env(&mut envs, "NODE_PATH", Some(node_path.clone()));
+    }
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_STATE_DIR,
+        config.state_dir.clone(),
+    );
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_EXECUTABLE_PATH,
+        config.executable_path.clone(),
+    );
+    push_env(&mut envs, ENV_PLAYWRIGHT_CHANNEL, config.channel.clone());
+    push_env(&mut envs, ENV_PLAYWRIGHT_DISPLAY, config.display.clone());
+    if let Some(display) = &config.display {
+        push_env(&mut envs, "DISPLAY", Some(display.clone()));
+    }
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_CAPTURE_MODE,
+        config.capture_mode.clone(),
+    );
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_VIEWPORT_WIDTH,
+        config.viewport_width.map(|width| width.to_string()),
+    );
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_VIEWPORT_HEIGHT,
+        config.viewport_height.map(|height| height.to_string()),
+    );
+    if let Some(headless) = config.headless {
+        push_env(
+            &mut envs,
+            ENV_PLAYWRIGHT_HEADLESS,
+            Some(if headless { "1" } else { "0" }.to_string()),
+        );
+    }
+    envs
+}
+
+fn push_env(envs: &mut Vec<(String, String)>, key: &str, value: Option<String>) {
+    if let Some(value) = value
+        && !value.trim().is_empty()
+    {
+        envs.push((key.to_string(), value));
+    }
 }
 
 async fn run_provider_process(
@@ -241,6 +339,10 @@ impl BrowserRuntimeConfig {
                             .clone()
                             .or_else(|| file.as_ref().and_then(|config| config.node.clone()))
                             .unwrap_or_else(|| "node".to_string()),
+                        node_path: env
+                            .node_path
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.node_path.clone())),
                         state_dir: env
                             .state_dir
                             .clone()
@@ -248,6 +350,27 @@ impl BrowserRuntimeConfig {
                         headless: env
                             .headless
                             .or_else(|| file.as_ref().and_then(|config| config.headless)),
+                        executable_path: env.executable_path.clone().or_else(|| {
+                            file.as_ref()
+                                .and_then(|config| config.executable_path.clone())
+                        }),
+                        channel: env
+                            .channel
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.channel.clone())),
+                        display: env
+                            .display
+                            .clone()
+                            .or_else(|| file.as_ref().and_then(|config| config.display.clone())),
+                        capture_mode: env.capture_mode.clone().or_else(|| {
+                            file.as_ref().and_then(|config| config.capture_mode.clone())
+                        }),
+                        viewport_width: env
+                            .viewport_width
+                            .or_else(|| file.as_ref().and_then(|config| config.viewport_width)),
+                        viewport_height: env
+                            .viewport_height
+                            .or_else(|| file.as_ref().and_then(|config| config.viewport_height)),
                     },
                     vec![BACKEND_AUTO.to_string()],
                     timeout,
@@ -330,8 +453,15 @@ struct CommandProviderConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlaywrightProviderConfig {
     node: String,
+    node_path: Option<String>,
     state_dir: Option<String>,
     headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -339,9 +469,16 @@ struct BrowserRuntimeConfigFile {
     provider: Option<String>,
     command: Option<CommandSpec>,
     node: Option<String>,
+    node_path: Option<String>,
     timeout_secs: Option<u64>,
     state_dir: Option<String>,
     headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
     providers: Option<Vec<BrowserProviderConfigFile>>,
     routing: Option<BrowserRoutingConfigFile>,
 }
@@ -402,9 +539,16 @@ struct BrowserProviderConfigFile {
     provider: Option<String>,
     command: Option<CommandSpec>,
     node: Option<String>,
+    node_path: Option<String>,
     timeout_secs: Option<u64>,
     state_dir: Option<String>,
     headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
     backends: Option<Vec<String>>,
     platforms: Option<Vec<String>>,
 }
@@ -451,8 +595,21 @@ impl BrowserProviderConfigFile {
                         .clone()
                         .or_else(|| env.node.clone())
                         .unwrap_or_else(|| "node".to_string()),
+                    node_path: self.node_path.clone().or_else(|| env.node_path.clone()),
                     state_dir: self.state_dir.clone().or_else(|| env.state_dir.clone()),
                     headless: self.headless.or(env.headless),
+                    executable_path: self
+                        .executable_path
+                        .clone()
+                        .or_else(|| env.executable_path.clone()),
+                    channel: self.channel.clone().or_else(|| env.channel.clone()),
+                    display: self.display.clone().or_else(|| env.display.clone()),
+                    capture_mode: self
+                        .capture_mode
+                        .clone()
+                        .or_else(|| env.capture_mode.clone()),
+                    viewport_width: self.viewport_width.or(env.viewport_width),
+                    viewport_height: self.viewport_height.or(env.viewport_height),
                 },
                 backends,
                 timeout,
@@ -472,9 +629,16 @@ struct BrowserRuntimeEnv {
     provider: Option<String>,
     command: Option<String>,
     node: Option<String>,
+    node_path: Option<String>,
     timeout_secs: Option<u64>,
     state_dir: Option<String>,
     headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
 }
 
 impl BrowserRuntimeEnv {
@@ -483,9 +647,18 @@ impl BrowserRuntimeEnv {
             provider: first_env(&[ENV_PROVIDER]),
             command: first_env(&[ENV_COMMAND]),
             node: first_env(&[ENV_NODE]),
+            node_path: first_env(&[ENV_PLAYWRIGHT_NODE_PATH]),
             timeout_secs: first_env(&[ENV_TIMEOUT_SECS]).and_then(|value| value.parse().ok()),
             state_dir: first_env(&[ENV_PLAYWRIGHT_STATE_DIR]),
             headless: first_env(&[ENV_PLAYWRIGHT_HEADLESS]).and_then(|value| parse_bool(&value)),
+            executable_path: first_env(&[ENV_PLAYWRIGHT_EXECUTABLE_PATH]),
+            channel: first_env(&[ENV_PLAYWRIGHT_CHANNEL]),
+            display: first_env(&[ENV_PLAYWRIGHT_DISPLAY]),
+            capture_mode: first_env(&[ENV_PLAYWRIGHT_CAPTURE_MODE]),
+            viewport_width: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_WIDTH])
+                .and_then(|value| value.parse().ok()),
+            viewport_height: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_HEIGHT])
+                .and_then(|value| value.parse().ok()),
         }
     }
 }
@@ -655,9 +828,16 @@ mod tests {
                 provider: None,
                 command: None,
                 node: None,
+                node_path: None,
                 timeout_secs: None,
                 state_dir: None,
                 headless: None,
+                executable_path: None,
+                channel: None,
+                display: None,
+                capture_mode: None,
+                viewport_width: None,
+                viewport_height: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("chrome-provider".to_string()),
@@ -667,9 +847,16 @@ mod tests {
                             "chrome-provider.mjs".to_string(),
                         ])),
                         node: None,
+                        node_path: None,
                         timeout_secs: None,
                         state_dir: None,
                         headless: None,
+                        executable_path: None,
+                        channel: None,
+                        display: None,
+                        capture_mode: None,
+                        viewport_width: None,
+                        viewport_height: None,
                         backends: Some(vec!["chrome".to_string()]),
                         platforms: None,
                     },
@@ -678,9 +865,16 @@ mod tests {
                         provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
                         command: None,
                         node: Some("node".to_string()),
+                        node_path: None,
                         timeout_secs: None,
                         state_dir: None,
                         headless: None,
+                        executable_path: None,
+                        channel: None,
+                        display: None,
+                        capture_mode: None,
+                        viewport_width: None,
+                        viewport_height: None,
                         backends: Some(vec![BACKEND_AUTO.to_string()]),
                         platforms: None,
                     },
@@ -709,18 +903,32 @@ mod tests {
                 provider: None,
                 command: None,
                 node: None,
+                node_path: None,
                 timeout_secs: None,
                 state_dir: None,
                 headless: None,
+                executable_path: None,
+                channel: None,
+                display: None,
+                capture_mode: None,
+                viewport_width: None,
+                viewport_height: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("first".to_string()),
                         provider: Some(PROVIDER_COMMAND.to_string()),
                         command: Some(CommandSpec::Array(vec!["first".to_string()])),
                         node: None,
+                        node_path: None,
                         timeout_secs: None,
                         state_dir: None,
                         headless: None,
+                        executable_path: None,
+                        channel: None,
+                        display: None,
+                        capture_mode: None,
+                        viewport_width: None,
+                        viewport_height: None,
                         backends: None,
                         platforms: None,
                     },
@@ -729,9 +937,16 @@ mod tests {
                         provider: Some(PROVIDER_COMMAND.to_string()),
                         command: Some(CommandSpec::Array(vec!["second".to_string()])),
                         node: None,
+                        node_path: None,
                         timeout_secs: None,
                         state_dir: None,
                         headless: None,
+                        executable_path: None,
+                        channel: None,
+                        display: None,
+                        capture_mode: None,
+                        viewport_width: None,
+                        viewport_height: None,
                         backends: None,
                         platforms: None,
                     },
@@ -757,9 +972,16 @@ mod tests {
                 provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
                 command: None,
                 node: Some("node".to_string()),
+                node_path: None,
                 timeout_secs: None,
                 state_dir: None,
                 headless: None,
+                executable_path: None,
+                channel: None,
+                display: None,
+                capture_mode: None,
+                viewport_width: None,
+                viewport_height: None,
                 providers: None,
                 routing: None,
             }),
@@ -769,6 +991,76 @@ mod tests {
 
         assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
         assert!(config.provider_for_backend("chrome").is_none());
+    }
+
+    #[test]
+    fn playwright_provider_exports_real_browser_environment() {
+        let config = PlaywrightProviderConfig {
+            node: "node".to_string(),
+            node_path: Some("/opt/node_modules".to_string()),
+            state_dir: Some("/tmp/codex-browser".to_string()),
+            headless: Some(false),
+            executable_path: Some("/usr/bin/google-chrome".to_string()),
+            channel: None,
+            display: Some(":99".to_string()),
+            capture_mode: Some("viewport".to_string()),
+            viewport_width: Some(1440),
+            viewport_height: Some(1000),
+        };
+
+        assert_eq!(
+            playwright_provider_envs(&config),
+            vec![
+                (
+                    ENV_PLAYWRIGHT_NODE_PATH.to_string(),
+                    "/opt/node_modules".to_string()
+                ),
+                ("NODE_PATH".to_string(), "/opt/node_modules".to_string()),
+                (
+                    ENV_PLAYWRIGHT_STATE_DIR.to_string(),
+                    "/tmp/codex-browser".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_EXECUTABLE_PATH.to_string(),
+                    "/usr/bin/google-chrome".to_string()
+                ),
+                (ENV_PLAYWRIGHT_DISPLAY.to_string(), ":99".to_string()),
+                ("DISPLAY".to_string(), ":99".to_string()),
+                (
+                    ENV_PLAYWRIGHT_CAPTURE_MODE.to_string(),
+                    "viewport".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_VIEWPORT_WIDTH.to_string(),
+                    "1440".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_VIEWPORT_HEIGHT.to_string(),
+                    "1000".to_string()
+                ),
+                (ENV_PLAYWRIGHT_HEADLESS.to_string(), "0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn configured_browser_tools_are_session_scoped_native_tools() {
+        let tools = [
+            browser_dynamic_tool(TOOL_BROWSER_OBSERVE, "observe", "non_mutating"),
+            browser_dynamic_tool(TOOL_BROWSER_STEP, "step", "mutating"),
+        ];
+
+        assert_eq!(tools[0].name, TOOL_BROWSER_OBSERVE);
+        assert_eq!(tools[1].name, TOOL_BROWSER_STEP);
+        assert!(tools.iter().all(|tool| tool.namespace.is_none()));
+        assert!(tools.iter().all(|tool| !tool.defer_loading));
+        assert!(tools.iter().all(|tool| !tool.persist_on_resume));
+        assert!(tools.iter().all(|tool| {
+            tool.capability
+                .as_ref()
+                .and_then(|capability| capability.family.as_deref())
+                == Some("browser")
+        }));
     }
 
     #[test]

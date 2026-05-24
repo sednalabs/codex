@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
 const TOOL_OBSERVE = "browser_observe";
 const TOOL_STEP = "browser_step";
+const CAPTURE_VIEWPORT = "viewport";
+const CAPTURE_FULL_PAGE = "full_page";
 
 main().catch((error) => {
   writeResponse({
@@ -21,9 +24,10 @@ main().catch((error) => {
 
 async function main() {
   const request = JSON.parse(await readStdin());
-  const { chromium } = await import("playwright");
+  const { chromium } = loadPlaywright();
   const stateDir = await browserStateDir();
   const context = await chromium.launchPersistentContext(stateDir, {
+    ...launchOptions(),
     headless: playwrightHeadless(),
     viewport: viewportFromRequest(request),
   });
@@ -46,12 +50,20 @@ async function main() {
     }
 
     await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-    const screenshot = await page.screenshot({ type: "png", fullPage: false });
+    const screenshot = await page.screenshot({
+      type: "png",
+      fullPage: captureMode() === CAPTURE_FULL_PAGE,
+    });
     await saveState(stateDir, page);
     writeResponse(await responseForPage(page, screenshot, summaries));
   } finally {
     await context.close().catch(() => {});
   }
+}
+
+function loadPlaywright() {
+  const require = createRequire(import.meta.url);
+  return require("playwright");
 }
 
 async function readStdin() {
@@ -77,12 +89,38 @@ function playwrightHeadless() {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
+function launchOptions() {
+  const options = {};
+  const executablePath = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH");
+  if (executablePath) {
+    options.executablePath = executablePath;
+  }
+  const channel = trimmedEnv("CODEX_BROWSER_PLAYWRIGHT_CHANNEL");
+  if (channel && !executablePath) {
+    options.channel = channel;
+  }
+  return options;
+}
+
 function viewportFromRequest(request) {
   const view = request.arguments?.view || {};
   return {
-    width: numberOrDefault(view.viewportWidth, 1280),
-    height: numberOrDefault(view.viewportHeight, 720),
+    width: numberOrDefault(
+      view.viewportWidth,
+      envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH", 1280),
+    ),
+    height: numberOrDefault(
+      view.viewportHeight,
+      envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT", 720),
+    ),
   };
+}
+
+function captureMode() {
+  const mode = (
+    process.env.CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE || CAPTURE_VIEWPORT
+  ).toLowerCase();
+  return mode === CAPTURE_FULL_PAGE ? CAPTURE_FULL_PAGE : CAPTURE_VIEWPORT;
 }
 
 async function activePage(context) {
@@ -294,6 +332,20 @@ function requiredNumber(value, field) {
 
 function numberOrDefault(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function trimmedEnv(name) {
+  const value = process.env[name];
+  return value && value.trim() ? value.trim() : null;
 }
 
 function writeResponse(response) {

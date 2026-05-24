@@ -135,7 +135,10 @@ Desktop provider configuration:
 
 The browser adapter is the cleanroom target for in-app-browser shells,
 Windows-hosted browser shells, Chrome extension backends, remote browsers, and
-the built-in Playwright fallback.
+the built-in Playwright provider. The Playwright provider can remain a portable
+headless fallback, but visual review should configure it as a headed Google
+Chrome provider with an operator-managed display, persistent profile, and
+explicit Node module path.
 
 Codex exposes:
 

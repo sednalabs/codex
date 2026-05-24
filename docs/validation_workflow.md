@@ -242,6 +242,9 @@ ownership boundary:
   guard changes inside `codex-rs/tui` should use the focused Codex TUI and
   tool-registry lanes above. Also run `node --check` on the Playwright shim when
   it changes.
+- Browser provider changes that target realistic editor UX should also be
+  proved on the owning runtime surface with a headed Chrome provider,
+  persistent profile, configured display, and native `inputImage` response.
 - Browser runtime work outside this repo, such as in-app-browser,
   Chrome-extension, remote-browser, viewport capture, and browser input
   execution providers, should be validated in the browser provider or client

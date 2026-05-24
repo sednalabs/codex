@@ -119,6 +119,26 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn browser_native_dynamic_tools_require_loaded_thread_reload() {
+        let tool = ApiDynamicToolSpec {
+            namespace: None,
+            name: codex_tools::BROWSER_OBSERVE_TOOL_NAME.to_string(),
+            description: "Browser observe".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": true}),
+            defer_loading: false,
+            persist_on_resume: false,
+            capability: Some(codex_protocol::dynamic_tools::DynamicToolCapability {
+                family: Some("browser".to_string()),
+                capability_scope: Some("session".to_string()),
+                mutation_class: Some("non_mutating".to_string()),
+                lease_mode: None,
+            }),
+        };
+
+        assert!(dynamic_tool_requires_thread_reload(&tool));
+    }
+
+    #[test]
     fn validate_dynamic_tools_accepts_nullable_field_schema() {
         let tools = vec![ApiDynamicToolSpec {
             namespace: None,

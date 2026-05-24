@@ -1371,6 +1371,7 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         session_start_source,
         thread_source: Some(ThreadSource::User),
+        dynamic_tools: configured_browser_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadStartParams::default()
     }
@@ -1410,6 +1411,7 @@ fn thread_resume_params_from_config(
         sandbox,
         permissions,
         config: config_request_overrides_from_config(&config),
+        dynamic_tools: configured_browser_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadResumeParams::default()
     }
@@ -1453,9 +1455,15 @@ fn thread_fork_params_from_config(
         developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         thread_source: Some(ThreadSource::User),
+        dynamic_tools: configured_browser_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadForkParams::default()
     }
+}
+
+fn configured_browser_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let tools = crate::browser_computer_use_provider::configured_browser_dynamic_tools();
+    (!tools.is_empty()).then_some(tools)
 }
 
 fn thread_cwd_from_config(
