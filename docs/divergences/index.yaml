@@ -623,7 +623,7 @@
         "docs/native-computer-use.md",
         "docs/native-computer-use-cleanroom.md"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape. The browser adapter has a TUI provider registry that can call operator-configured provider commands or the built-in Playwright provider for backend=auto, can auto-advertise browser tools in CLI/TUI sessions when configured, and can target headed Google Chrome on a visible display for realistic editor UX evidence. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape. The browser adapter has a TUI provider registry that can call operator-configured provider commands or the built-in Playwright provider for backend=auto, can auto-advertise browser tools in CLI/TUI sessions when configured, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, and can target headed Google Chrome on a visible display for realistic editor UX evidence. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -643,6 +643,7 @@
         "browser_backend_schema_exposes_supported_provider_backends",
         "native_computer_use_registry_classifies_android_and_browser_tools",
         "native_computer_use_registry_classifies_desktop_tools",
+        "browser_step_schema_exposes_human_like_input_primitives",
         "browser_handler_uses_browser_adapter",
         "browser_provider_requires_configured_backend",
         "configured_browser_tools_are_session_scoped_native_tools",

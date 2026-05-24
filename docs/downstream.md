@@ -118,7 +118,7 @@ User-visible behavior:
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
 - Namespaced Android-like and browser-like tools remain normal dynamic tools.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
-- `browser_observe` is non-mutating; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `iab`, or `chrome`.
+- `browser_observe` is non-mutating; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `iab`, or `chrome`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The TUI browser bridge supports a built-in Playwright backend for `backend=auto` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops.
 - The Android adapter remains the MCP-backed reference runtime provider; reuse
   `android-emulator-mcp` or a successor when it exposes the current Android MCP

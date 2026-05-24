@@ -167,8 +167,15 @@ async function runAction(page, action) {
     case "keypress":
       await keypress(page, action);
       return "sent browser keypress";
+    case "key_down":
+      await keyDown(page, action);
+      return "sent browser key down";
+    case "key_up":
+      await keyUp(page, action);
+      return "sent browser key up";
     case "scroll":
-      await page.mouse.wheel(numberOrDefault(action.scroll_x, 0), numberOrDefault(action.scroll_y, 720));
+    case "mouse_wheel":
+      await mouseWheel(page, action);
       return "scrolled browser viewport";
     case "wait":
       await page.waitForTimeout(numberOrDefault(action.ms, 1000));
@@ -182,6 +189,15 @@ async function runAction(page, action) {
     case "hover":
       await hover(page, action);
       return action.selector ? "hovered browser selector" : `hovered at ${action.x},${action.y}`;
+    case "mouse_move":
+      await mouseMove(page, action);
+      return `moved browser mouse to ${action.x},${action.y}`;
+    case "mouse_down":
+      await mouseDown(page, action);
+      return "sent browser mouse down";
+    case "mouse_up":
+      await mouseUp(page, action);
+      return "sent browser mouse up";
     default:
       throw new Error(`Unsupported browser action ${type}`);
   }
@@ -197,20 +213,38 @@ async function requireUrl(page, action) {
 async function click(page, action) {
   const locator = locatorFromAction(page, action);
   if (locator) {
-    await locator.click({ timeout: timeoutMs({ arguments: action }) });
+    await withKeyboardModifiers(page, action, async () => {
+      await locator.click({
+        ...clickOptions(action),
+        timeout: timeoutMs({ arguments: action }),
+      });
+    });
   } else {
-    await page.mouse.click(requiredNumber(action, "x"), requiredNumber(action, "y"));
+    await withKeyboardModifiers(page, action, async () => {
+      await moveMouseToActionPoint(page, action);
+      await page.mouse.click(
+        requiredNumber(action, "x"),
+        requiredNumber(action, "y"),
+        clickOptions(action),
+      );
+    });
   }
 }
 
 async function typeText(page, action) {
   const text = action.text || "";
   const locator = locatorFromAction(page, action);
-  if (locator) {
+  if (locator && textEntryMethod(action) === "fill") {
     await locator.fill(text, { timeout: timeoutMs({ arguments: action }) });
-  } else {
-    await page.keyboard.type(text);
+    return;
   }
+  if (locator) {
+    await locator.click({ timeout: timeoutMs({ arguments: action }) });
+    if (action.replace !== false) {
+      await selectAllAndClear(page);
+    }
+  }
+  await page.keyboard.type(text, keyboardDelayOptions(action));
 }
 
 async function keypress(page, action) {
@@ -218,7 +252,26 @@ async function keypress(page, action) {
   if (!key) {
     throw new Error("keypress requires key or keys");
   }
-  await page.keyboard.press(key);
+  await page.keyboard.press(key, keyboardDelayOptions(action));
+}
+
+async function keyDown(page, action) {
+  const key = requiredKey(action, "key_down");
+  await page.keyboard.down(key);
+}
+
+async function keyUp(page, action) {
+  const key = requiredKey(action, "key_up");
+  await page.keyboard.up(key);
+}
+
+async function mouseWheel(page, action) {
+  await withKeyboardModifiers(page, action, async () => {
+    await page.mouse.wheel(
+      numberOrDefault(action.scroll_x, 0),
+      numberOrDefault(action.scroll_y, 720),
+    );
+  });
 }
 
 async function selectOption(page, action) {
@@ -230,10 +283,20 @@ async function selectOption(page, action) {
 }
 
 async function drag(page, action) {
-  await page.mouse.move(requiredNumber(action, "x1"), requiredNumber(action, "y1"));
-  await page.mouse.down();
-  await page.mouse.move(requiredNumber(action, "x2"), requiredNumber(action, "y2"));
-  await page.mouse.up();
+  await withKeyboardModifiers(page, action, async () => {
+    await page.mouse.move(
+      requiredNumber(action, "x1"),
+      requiredNumber(action, "y1"),
+      mouseMoveOptions(action),
+    );
+    await page.mouse.down(mouseButtonOptions(action));
+    await page.mouse.move(
+      requiredNumber(action, "x2"),
+      requiredNumber(action, "y2"),
+      mouseMoveOptions(action),
+    );
+    await page.mouse.up(mouseButtonOptions(action));
+  });
 }
 
 async function hover(page, action) {
@@ -241,8 +304,32 @@ async function hover(page, action) {
   if (locator) {
     await locator.hover({ timeout: timeoutMs({ arguments: action }) });
   } else {
-    await page.mouse.move(requiredNumber(action, "x"), requiredNumber(action, "y"));
+    await mouseMove(page, action);
   }
+}
+
+async function mouseMove(page, action) {
+  await page.mouse.move(
+    requiredNumber(action, "x"),
+    requiredNumber(action, "y"),
+    mouseMoveOptions(action),
+  );
+}
+
+async function mouseDown(page, action) {
+  await withKeyboardModifiers(page, action, async () => {
+    await moveMouseIfActionPoint(page, action);
+    await page.mouse.down(mouseButtonOptions(action));
+    await delayAfterMouseEvent(page, action);
+  });
+}
+
+async function mouseUp(page, action) {
+  await withKeyboardModifiers(page, action, async () => {
+    await moveMouseIfActionPoint(page, action);
+    await page.mouse.up(mouseButtonOptions(action));
+    await delayAfterMouseEvent(page, action);
+  });
 }
 
 function locatorFromAction(page, action) {
@@ -257,15 +344,145 @@ function locatorFromAction(page, action) {
     return page.locator(selector.css).first();
   }
   if (selector.text) {
-    return page.getByText(selector.text).first();
+    return page.getByText(selector.text, selectorOptions(selector)).first();
   }
   if (selector.label) {
-    return page.getByLabel(selector.label).first();
+    return page.getByLabel(selector.label, selectorOptions(selector)).first();
+  }
+  if (selector.placeholder) {
+    return page
+      .getByPlaceholder(selector.placeholder, selectorOptions(selector))
+      .first();
+  }
+  if (selector.test_id || selector.testId) {
+    return page.getByTestId(selector.test_id || selector.testId).first();
+  }
+  if (selector.title) {
+    return page.getByTitle(selector.title, selectorOptions(selector)).first();
+  }
+  if (selector.alt_text || selector.altText) {
+    return page
+      .getByAltText(selector.alt_text || selector.altText, selectorOptions(selector))
+      .first();
   }
   if (selector.role) {
-    return page.getByRole(selector.role, selector.name ? { name: selector.name } : undefined).first();
+    return page.getByRole(selector.role, roleSelectorOptions(selector)).first();
   }
   return null;
+}
+
+function textEntryMethod(action) {
+  return action.method === "fill" || action.input_method === "fill"
+    ? "fill"
+    : "keyboard";
+}
+
+async function selectAllAndClear(page) {
+  const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  await page.keyboard.press(`${modifier}+A`);
+  await page.keyboard.press("Backspace");
+}
+
+function requiredKey(action, actionName) {
+  if (!action.key) {
+    throw new Error(`${actionName} requires key`);
+  }
+  return action.key;
+}
+
+function clickOptions(action) {
+  return compactOptions({
+    ...mouseButtonOptions(action),
+    ...keyboardDelayOptions(action),
+    clickCount: positiveIntegerOrUndefined(action.click_count),
+  });
+}
+
+function mouseButtonOptions(action) {
+  return { button: mouseButton(action) };
+}
+
+function mouseButton(action) {
+  const button = action.button || "left";
+  if (!["left", "right", "middle"].includes(button)) {
+    throw new Error("button must be left, right, or middle");
+  }
+  return button;
+}
+
+function mouseMoveOptions(action) {
+  return compactOptions({ steps: positiveIntegerOrUndefined(action.steps) });
+}
+
+function keyboardDelayOptions(action) {
+  return compactOptions({
+    delay: nonNegativeIntegerOrUndefined(action.delay_ms),
+  });
+}
+
+async function moveMouseToActionPoint(page, action) {
+  await page.mouse.move(
+    requiredNumber(action, "x"),
+    requiredNumber(action, "y"),
+    mouseMoveOptions(action),
+  );
+}
+
+async function moveMouseIfActionPoint(page, action) {
+  const hasX = typeof action.x === "number";
+  const hasY = typeof action.y === "number";
+  if (hasX !== hasY) {
+    throw new Error(
+      "mouse action requires both x and y when either coordinate is provided",
+    );
+  }
+  if (hasX && hasY) {
+    await page.mouse.move(action.x, action.y, mouseMoveOptions(action));
+  }
+}
+
+async function delayAfterMouseEvent(page, action) {
+  const delay = nonNegativeIntegerOrUndefined(action.delay_ms);
+  if (delay !== undefined) {
+    await page.waitForTimeout(delay);
+  }
+}
+
+async function withKeyboardModifiers(page, action, body) {
+  const modifiers = Array.isArray(action.modifiers) ? action.modifiers : [];
+  for (const modifier of modifiers) {
+    if (!["Alt", "Control", "Meta", "Shift"].includes(modifier)) {
+      throw new Error("modifiers must contain only Alt, Control, Meta, or Shift");
+    }
+  }
+  for (const modifier of modifiers) {
+    await page.keyboard.down(modifier);
+  }
+  try {
+    return await body();
+  } finally {
+    for (const modifier of modifiers.slice().reverse()) {
+      await page.keyboard.up(modifier).catch(() => {});
+    }
+  }
+}
+
+function selectorOptions(selector) {
+  return selector.exact === undefined ? undefined : { exact: Boolean(selector.exact) };
+}
+
+function roleSelectorOptions(selector) {
+  const options = selector.name ? { name: selector.name } : {};
+  if (selector.exact !== undefined) {
+    options.exact = Boolean(selector.exact);
+  }
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+function compactOptions(options) {
+  return Object.fromEntries(
+    Object.entries(options).filter(([, value]) => value !== undefined),
+  );
 }
 
 async function responseForPage(page, screenshot, summaries) {
@@ -332,6 +549,14 @@ function requiredNumber(value, field) {
 
 function numberOrDefault(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function positiveIntegerOrUndefined(value) {
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeIntegerOrUndefined(value) {
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function envNumber(name, fallback) {

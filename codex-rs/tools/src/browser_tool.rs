@@ -13,8 +13,22 @@ const BACKEND_AUTO: &str = "auto";
 const BACKEND_IAB: &str = "iab";
 const BACKEND_CHROME: &str = "chrome";
 
-const STEP_ACTIONS: [&str; 9] = [
-    "navigate", "click", "type", "keypress", "scroll", "wait", "select", "drag", "hover",
+const STEP_ACTIONS: [&str; 15] = [
+    "navigate",
+    "click",
+    "type",
+    "keypress",
+    "key_down",
+    "key_up",
+    "scroll",
+    "mouse_wheel",
+    "wait",
+    "select",
+    "drag",
+    "hover",
+    "mouse_move",
+    "mouse_down",
+    "mouse_up",
 ];
 
 pub fn canonical_browser_dynamic_tool(tool: &DynamicToolSpec) -> Option<ResponsesApiTool> {
@@ -117,8 +131,8 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "selector".to_string(),
-            permissive_object(Some(
-                "Optional opaque selector object for selector-backed interactions.".to_string(),
+            selector_schema(Some(
+                "Optional selector for element-backed interactions. Use a string CSS selector or an object with css, text, label, role/name, placeholder, test_id, title, alt_text, and exact fields.".to_string(),
             )),
         ),
         (
@@ -168,8 +182,47 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
             )),
         ),
         (
+            "button".to_string(),
+            string_enum(
+                &["left", "right", "middle"],
+                "Mouse button for click, mouse_down, mouse_up, or drag actions.",
+            ),
+        ),
+        (
+            "click_count".to_string(),
+            JsonSchema::integer(Some(
+                "Number of clicks for click actions; use 2 for double-click.".to_string(),
+            )),
+        ),
+        (
+            "delay_ms".to_string(),
+            JsonSchema::integer(Some(
+                "Human-paced delay in milliseconds for typing, keypress, click, or mouse events."
+                    .to_string(),
+            )),
+        ),
+        (
+            "steps".to_string(),
+            JsonSchema::integer(Some(
+                "Intermediate mouse movement steps for human-like move, click, drag, hover, mouse_down, or mouse_up actions.".to_string(),
+            )),
+        ),
+        (
+            "modifiers".to_string(),
+            JsonSchema::array(
+                string_enum(
+                    &["Alt", "Control", "Meta", "Shift"],
+                    "Keyboard modifier to hold while performing the action.",
+                ),
+                Some("Keyboard modifiers to hold while performing a mouse action.".to_string()),
+            ),
+        ),
+        (
             "key".to_string(),
-            JsonSchema::string(Some("Key or key combination to send.".to_string())),
+            JsonSchema::string(Some(
+                "Key, key combination, or key name for keypress, key_down, or key_up actions."
+                    .to_string(),
+            )),
         ),
         (
             "keys".to_string(),
@@ -181,6 +234,20 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         (
             "ms".to_string(),
             JsonSchema::integer(Some("Milliseconds to wait.".to_string())),
+        ),
+        (
+            "method".to_string(),
+            string_enum(
+                &["keyboard", "fill"],
+                "Text entry method. keyboard sends human-like key events; fill uses DOM-level Playwright fill as a compatibility escape hatch.",
+            ),
+        ),
+        (
+            "replace".to_string(),
+            JsonSchema::boolean(Some(
+                "For keyboard text entry with a selector, select existing text and replace it before typing."
+                    .to_string(),
+            )),
         ),
         (
             "timeout_secs".to_string(),
@@ -258,6 +325,18 @@ fn permissive_object(description: Option<String>) -> JsonSchema {
     let mut schema = JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(true.into()));
     schema.description = description;
     schema
+}
+
+fn selector_schema(description: Option<String>) -> JsonSchema {
+    JsonSchema::any_of(
+        vec![
+            JsonSchema::string(Some("CSS selector string.".to_string())),
+            permissive_object(Some(
+                "Selector object for accessibility-oriented or CSS selector lookup.".to_string(),
+            )),
+        ],
+        description,
+    )
 }
 
 fn string_enum(values: &[&str], description: &str) -> JsonSchema {
