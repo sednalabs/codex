@@ -294,7 +294,7 @@ tui-native-computer-use-targeted:
 # advertisement and provider request handling in non-interactive sessions.
 exec-native-computer-use-targeted:
     cargo test --locked -p codex-exec thread_lifecycle_params_include_configured_browser_dynamic_tools --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-exec --test event_processor_with_json_output computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
+    cargo test --locked -p codex-exec --test all event_processor_with_json_output::computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
 # and deferred tool-search discovery.
