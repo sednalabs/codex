@@ -352,7 +352,7 @@ fn dynamic_tools_require_thread_reload(dynamic_tools: Option<&[ApiDynamicToolSpe
 }
 
 fn dynamic_tool_requires_thread_reload(tool: &ApiDynamicToolSpec) -> bool {
-    is_environment_scoped_dynamic_tool(tool) || is_legacy_native_android_dynamic_tool(tool)
+    is_environment_scoped_dynamic_tool(tool) || is_bare_native_computer_use_dynamic_tool(tool)
 }
 
 fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
@@ -362,14 +362,17 @@ fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
         .is_some_and(|scope| scope.eq_ignore_ascii_case("environment"))
 }
 
-fn is_legacy_native_android_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
-    tool.capability.is_none()
-        && tool.namespace.is_none()
+fn is_bare_native_computer_use_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.namespace.is_none()
         && matches!(
             tool.name.as_str(),
             codex_tools::ANDROID_OBSERVE_TOOL_NAME
                 | codex_tools::ANDROID_STEP_TOOL_NAME
                 | codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
+                | codex_tools::BROWSER_OBSERVE_TOOL_NAME
+                | codex_tools::BROWSER_STEP_TOOL_NAME
+                | codex_tools::DESKTOP_OBSERVE_TOOL_NAME
+                | codex_tools::DESKTOP_STEP_TOOL_NAME
         )
 }
 

@@ -80,14 +80,17 @@ single-provider configuration and a provider registry:
   Playwright bridge for `backend=auto`. The bridge launches a persistent
   Chromium profile, executes bounded browser actions, and returns the viewport
   screenshot as native `inputImage` content. This backend requires `node` and a
-  Playwright package that Node can resolve in the runtime environment.
+  Playwright package that Node can resolve in the runtime environment. For
+  realistic remote-editor review loops, configure it to run headed Google
+  Chrome on a visible display rather than the default headless Chromium path.
 - `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
   Codex sends `ComputerUseCallParams` JSON on stdin and expects a
   `ComputerUseCallResponse` JSON object on stdout. This is the extension point
   for in-app-browser, signed-in Chrome, remote, or hosted browser providers.
 - `~/.codex/browser-computer-use.json` may provide the same configuration with
-  `provider`, `command`, `node`, `timeout_secs`, `state_dir`, and `headless`
-  fields.
+  `provider`, `command`, `node`, `node_path`, `timeout_secs`, `state_dir`,
+  `headless`, `executable_path`, `channel`, `display`, `capture_mode`,
+  `viewport_width`, and `viewport_height` fields.
 - `~/.codex/browser-computer-use.json` may also provide `providers[]` and
   `routing.fallback_order`. Each provider can declare an `id`, `provider`,
   `command`, `backends`, `platforms`, and provider-specific settings. Exact
@@ -111,6 +114,24 @@ Example built-in Playwright configuration:
   "state_dir": "/path/to/browser-state",
   "headless": true,
   "timeout_secs": 120
+}
+```
+
+Example realistic headed Chrome configuration for a visible Linux display:
+
+```json
+{
+  "provider": "playwright",
+  "node": "node",
+  "node_path": "/path/to/node_modules",
+  "executable_path": "/usr/bin/google-chrome",
+  "display": ":99",
+  "state_dir": "/path/to/browser-profile",
+  "headless": false,
+  "capture_mode": "viewport",
+  "viewport_width": 1440,
+  "viewport_height": 1000,
+  "timeout_secs": 180
 }
 ```
 
@@ -313,6 +334,12 @@ protocol events, and app-server turn snapshots replay the same
 `ThreadItem::ComputerUseCall` shape on resume or thread reads. The TUI renders
 live and replayed computer-use cells, including fallback messaging when the TUI
 session has no native computer-use provider for the request.
+
+For CLI/TUI sessions, a configured local browser provider also advertises the
+bare `browser_observe` and `browser_step` dynamic tools at thread start,
+resume, and fork time. The advertised tools are session-scoped and are not
+persisted blindly across resumes; each new TUI session re-checks local provider
+configuration before exposing native browser use to the model.
 
 Transcript visibility depends on the native computer-use event path. Provider
 operations are expected to enter Codex as `ComputerUseCallRequest` and

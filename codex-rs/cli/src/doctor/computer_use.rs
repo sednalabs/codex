@@ -20,6 +20,13 @@ const BROWSER_COMPUTER_USE_ENV_VARS: &[&str] = &[
     "CODEX_BROWSER_COMPUTER_USE_TIMEOUT_SECS",
     "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR",
     "CODEX_BROWSER_PLAYWRIGHT_HEADLESS",
+    "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH",
+    "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH",
+    "CODEX_BROWSER_PLAYWRIGHT_CHANNEL",
+    "CODEX_BROWSER_PLAYWRIGHT_DISPLAY",
+    "CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE",
+    "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH",
+    "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT",
 ];
 const ANDROID_COMPUTER_USE_CONFIG_FILES: &[&str] = &[
     "android-computer-use.json",
@@ -507,7 +514,16 @@ struct BrowserComputerUseDoctorConfig {
     provider: Option<String>,
     command: Option<DoctorCommandSpec>,
     node: Option<String>,
+    node_path: Option<String>,
     timeout_secs: Option<u64>,
+    state_dir: Option<String>,
+    headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
     providers: Option<Vec<BrowserDoctorProviderConfig>>,
     routing: Option<BrowserDoctorRoutingConfig>,
 }
@@ -530,6 +546,15 @@ impl BrowserComputerUseDoctorConfig {
                     timeout_secs: self.timeout_secs,
                     command: self.command.clone(),
                     node: self.node.clone(),
+                    node_path: self.node_path.clone(),
+                    state_dir: self.state_dir.clone(),
+                    headless: self.headless,
+                    executable_path: self.executable_path.clone(),
+                    channel: self.channel.clone(),
+                    display: self.display.clone(),
+                    capture_mode: self.capture_mode.clone(),
+                    viewport_width: self.viewport_width,
+                    viewport_height: self.viewport_height,
                 });
             }
         }
@@ -565,7 +590,16 @@ struct BrowserDoctorProviderConfig {
     provider: Option<String>,
     command: Option<DoctorCommandSpec>,
     node: Option<String>,
+    node_path: Option<String>,
     timeout_secs: Option<u64>,
+    state_dir: Option<String>,
+    headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
     backends: Option<Vec<String>>,
     platforms: Option<Vec<String>>,
 }
@@ -598,6 +632,15 @@ struct BrowserProviderDoctorSummary {
     timeout_secs: Option<u64>,
     command: Option<DoctorCommandSpec>,
     node: Option<String>,
+    node_path: Option<String>,
+    state_dir: Option<String>,
+    headless: Option<bool>,
+    executable_path: Option<String>,
+    channel: Option<String>,
+    display: Option<String>,
+    capture_mode: Option<String>,
+    viewport_width: Option<u64>,
+    viewport_height: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -677,6 +720,59 @@ impl BrowserProviderDoctorSummary {
                 self.id,
                 command_readiness(node)
             ));
+            if let Some(node_path) = &self.node_path {
+                details.push(format!(
+                    "browser provider {} node_path: {}",
+                    self.id, node_path
+                ));
+            }
+            if let Some(state_dir) = &self.state_dir {
+                details.push(format!(
+                    "browser provider {} state_dir: {}",
+                    self.id, state_dir
+                ));
+            }
+            if let Some(headless) = self.headless {
+                details.push(format!(
+                    "browser provider {} headless: {}",
+                    self.id, headless
+                ));
+            }
+            if let Some(executable_path) = &self.executable_path {
+                details.push(format!(
+                    "browser provider {} executable_path: {}",
+                    self.id, executable_path
+                ));
+                details.push(format!(
+                    "browser provider {} executable_path readiness: {}",
+                    self.id,
+                    command_readiness(executable_path)
+                ));
+            }
+            if let Some(channel) = &self.channel {
+                details.push(format!("browser provider {} channel: {}", self.id, channel));
+            }
+            if let Some(display) = &self.display {
+                details.push(format!("browser provider {} display: {}", self.id, display));
+            }
+            if let Some(capture_mode) = &self.capture_mode {
+                details.push(format!(
+                    "browser provider {} capture_mode: {}",
+                    self.id, capture_mode
+                ));
+            }
+            if let Some(width) = self.viewport_width {
+                details.push(format!(
+                    "browser provider {} viewport_width: {}",
+                    self.id, width
+                ));
+            }
+            if let Some(height) = self.viewport_height {
+                details.push(format!(
+                    "browser provider {} viewport_height: {}",
+                    self.id, height
+                ));
+            }
         }
     }
 
@@ -729,6 +825,74 @@ impl BrowserProviderDoctorSummary {
                         .field(format!("browser provider {} node readiness", self.id)),
                     );
                 }
+                if let Some(executable_path) = &self.executable_path
+                    && stdio_command_resolves(
+                        executable_path,
+                        /*cwd*/ None,
+                        /*server_env*/ None,
+                    )
+                    .is_err()
+                {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!(
+                                "browser provider {} executable path is not resolvable",
+                                self.id
+                            ),
+                        )
+                        .measured(executable_path.clone())
+                        .expected("Google Chrome/Chromium executable path")
+                        .remedy("Install Chrome/Chromium or update browser-computer-use.json.")
+                        .field(format!(
+                            "browser provider {} executable_path readiness",
+                            self.id
+                        )),
+                    );
+                }
+                if self.headless == Some(false)
+                    && self
+                        .display
+                        .as_deref()
+                        .map(|display| display.trim().is_empty())
+                        .unwrap_or(true)
+                    && std::env::var("DISPLAY")
+                        .ok()
+                        .map(|display| display.trim().is_empty())
+                        .unwrap_or(true)
+                {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!(
+                                "browser provider {} is headed but no display is configured",
+                                self.id
+                            ),
+                        )
+                        .expected("DISPLAY or browser provider display")
+                        .remedy(
+                            "Start a visible X11/noVNC session and set display in browser-computer-use.json.",
+                        )
+                        .field(format!("browser provider {} display", self.id)),
+                    );
+                }
+                if let Some(capture_mode) = &self.capture_mode
+                    && !matches!(
+                        capture_mode.trim().to_ascii_lowercase().as_str(),
+                        "viewport" | "full_page"
+                    )
+                {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!("browser provider {} capture mode is unknown", self.id),
+                        )
+                        .measured(capture_mode.clone())
+                        .expected("viewport or full_page")
+                        .remedy("Use capture_mode=viewport for realistic editor UX loops.")
+                        .field(format!("browser provider {} capture_mode", self.id)),
+                    );
+                }
             }
             "none" => {}
             other => {
@@ -767,6 +931,15 @@ impl From<&BrowserDoctorProviderConfig> for BrowserProviderDoctorSummary {
             timeout_secs: provider.timeout_secs,
             command: provider.command.clone(),
             node: provider.node.clone(),
+            node_path: provider.node_path.clone(),
+            state_dir: provider.state_dir.clone(),
+            headless: provider.headless,
+            executable_path: provider.executable_path.clone(),
+            channel: provider.channel.clone(),
+            display: provider.display.clone(),
+            capture_mode: provider.capture_mode.clone(),
+            viewport_width: provider.viewport_width,
+            viewport_height: provider.viewport_height,
         }
     }
 }

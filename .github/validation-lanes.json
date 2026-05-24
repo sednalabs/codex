@@ -1658,6 +1658,7 @@
       "allowed_paths": [
         "codex-rs/app-server/src/codex_message_processor.rs",
         "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/app-server-protocol/schema/**",
         "codex-rs/app-server-protocol/src/**",
@@ -1683,6 +1684,7 @@
         "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/app/tests.rs",
@@ -1700,6 +1702,7 @@
       ],
       "required_any_paths": [
         "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
@@ -1710,6 +1713,7 @@
         "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/cli/src/doctor/computer_use.rs"
       ]
     },
