@@ -214,6 +214,7 @@ for a removed crate path.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
 - For native computer-use, use the Codex app-server/protocol, TUI provider
-  registry, and tool-registry lanes above for the generic contract. Use
-  Android harness, browser provider, or consumer-app validation only when the
-  question is runtime capability or app behavior outside Codex.
+  registry, command-bridge, Playwright-shim, and tool-registry lanes above for
+  the generic contract. Use Android harness, external browser provider, or
+  consumer-app validation only when the question is runtime capability or app
+  behavior outside Codex.

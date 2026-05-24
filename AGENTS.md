@@ -65,6 +65,12 @@ In the codex-rs folder where the rust code lives:
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
 - Prefer private modules and explicitly exported public crate API.
+- Keep native computer-use runtime work behind provider seams:
+  - Codex owns the canonical tool schema, protocol events, app-server bridge, TUI projection, rollout, and native image-output contract.
+  - Runtime backends own Android sessions, browser sessions, screenshots or viewport capture, UI digests, and input execution.
+  - Route TUI browser backend work through `codex-rs/tui/src/browser_computer_use_provider.rs`, `codex-rs/tui/src/browser_playwright_provider.mjs`, or the command-provider interface. Do not add provider-specific browser automation to hot app-server/core dispatch paths.
+  - Successful visual observe/step responses must include native `inputImage` content. Text-only summaries, local artifact paths, or provider diagnostics are not a substitute for model-visible pixels.
+  - When changing native computer-use behavior, update `docs/native-computer-use.md`, `docs/downstream-tool-surface-matrix.md`, `docs/downstream-regression-matrix.md`, `docs/divergences/index.yaml`, and the focused just recipes when their scope changes.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the

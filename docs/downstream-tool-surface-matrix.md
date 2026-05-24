@@ -14,7 +14,7 @@ Review baseline:
 - `upstream/main`: `7d47056ea42636271ac020b86347fbbef49490aa`
 - mirror branch `upstream-main` (`origin/upstream-main`):
   `7d47056ea42636271ac020b86347fbbef49490aa`
-- `main` (`origin/main`): `0a7f085914ff8e3ede9895ca70a422eae4221cb9`
+- `main` (`origin/main`): `2f56b6f5182e7161a0a73baa0453d598723a7c59`
 
 | Surface | `upstream/main` | `main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |

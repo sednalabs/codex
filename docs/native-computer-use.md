@@ -64,11 +64,36 @@ The TUI bridge is intentionally pluggable:
 - `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
   Codex sends `ComputerUseCallParams` JSON on stdin and expects a
   `ComputerUseCallResponse` JSON object on stdout. This is the extension point
-  for future in-app-browser, signed-in Chrome, remote, or hosted browser
-  providers.
+  for in-app-browser, signed-in Chrome, remote, or hosted browser providers.
 - `~/.codex/browser-computer-use.json` may provide the same configuration with
   `provider`, `command`, `node`, `timeout_secs`, `state_dir`, and `headless`
   fields.
+
+Example command-provider configuration:
+
+```json
+{
+  "command": ["node", "/path/to/browser-provider.mjs"],
+  "timeout_secs": 120
+}
+```
+
+Example built-in Playwright configuration:
+
+```json
+{
+  "provider": "playwright",
+  "state_dir": "/path/to/browser-state",
+  "headless": true,
+  "timeout_secs": 120
+}
+```
+
+An external command provider should read one `ComputerUseCallParams` JSON object
+from stdin and write one `ComputerUseCallResponse` JSON object to stdout. For
+successful visual responses, that object must include a native `inputImage`
+content item. The TUI bridge fails loudly when a successful browser provider
+response contains only text, metadata, or artifact paths.
 
 The North Star is that screenshots are delivered to the model as native
 `inputImage` content items in the computer-use response. Provider artifact paths
