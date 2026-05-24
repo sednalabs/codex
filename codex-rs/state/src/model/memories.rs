@@ -22,6 +22,21 @@ pub struct Stage1Output {
     pub generated_at: DateTime<Utc>,
 }
 
+/// Durable record proving a phase-2 output tree was produced from a known
+/// prepared input set by the configured consolidator path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase2AttestedBaseline {
+    pub memory_root_key: String,
+    pub output_tree_sha256: String,
+    pub schema_version: i64,
+    pub selection_sha256: String,
+    pub prepared_inputs_sha256: String,
+    pub consolidator_sha256: String,
+    pub completion_watermark: i64,
+    pub selected_count: i64,
+    pub attested_at: i64,
+}
+
 #[derive(Debug)]
 pub(crate) struct Stage1OutputRow {
     thread_id: String,

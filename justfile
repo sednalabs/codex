@@ -344,8 +344,9 @@ core-context-serialization-targeted:
 
 # Focused attestation contract slice for phase-2 fail-closed reuse semantics.
 core-attestation-targeted:
-    cargo test -p codex-core consolidation_artifacts_ready_rejects_ --lib -- --test-threads=1
-    cargo test -p codex-state global_phase2_attestation_requirement_is_root_scoped -- --exact --test-threads=1
+    cargo test -p codex-memories-write phase2_attestation --lib -- --test-threads=1
+    cargo test -p codex-memories-write memories_startup_phase2 --lib -- --test-threads=1
+    cargo test -p codex-state phase2_attestation --lib -- --test-threads=1
 
 # Focused startup repair slice for state DBs with schema changes applied but
 # missing SQLx migration records.

@@ -2,8 +2,8 @@
 
 This directory owns reusable memory crates and the memory pipeline documentation.
 
-Runtime orchestration for Phase 1 and Phase 2 still lives in `codex-core` under
-`codex-rs/core/src/memories/`.
+Runtime orchestration for Phase 1 and Phase 2 lives in `codex-memories-write`
+under `codex-rs/memories/write`.
 
 ## Crates
 
