@@ -207,9 +207,9 @@ docs-only refresh commit that records this snapshot.
 ### Native Computer-Use Adapter Bridge
 
 - Downstream promotes bare `android_observe`, `android_step`,
-  `android_install_build_from_run`, `browser_observe`, and `browser_step`
-  dynamic tools into first-party native computer-use function tools with
-  Codex-owned schemas.
+  `android_install_build_from_run`, `browser_observe`, `browser_step`,
+  `desktop_observe`, and `desktop_step` dynamic tools into first-party native
+  computer-use function tools with Codex-owned schemas.
 - Namespaced Android-like or browser-like tools remain ordinary dynamic tools
   so app-specific providers can keep their own tool surfaces without taking
   over the native Codex contract.
@@ -228,6 +228,9 @@ docs-only refresh commit that records this snapshot.
   reuse `android-emulator-mcp` or a successor when it exposes the current
   Android MCP contract, and adapt harness-specific behavior provider-side
   rather than in hot Codex core paths.
+- The desktop adapter is the cleanroom provider seam for macOS Screen
+  Recording/Accessibility-style runtimes and future native desktop providers.
+  TUI dispatch stays behind an operator-configured command provider.
 - `codex doctor` includes read-only native provider diagnostics for browser
   provider configuration and Android provider endpoint/credential shape without
   launching browsers, connecting to profiles, or starting emulator sessions.
@@ -247,6 +250,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tools/src/android_tool.rs`
   - `codex-rs/tools/src/browser_tool.rs`
   - `codex-rs/tools/src/computer_use_tool.rs`
+  - `codex-rs/tools/src/desktop_tool.rs`
   - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
   - `codex-rs/core/src/tools/tool_search_entry.rs`
@@ -259,6 +263,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/browser_computer_use_provider.rs`
   - `codex-rs/tui/src/browser_playwright_provider.mjs`
   - `codex-rs/tui/src/computer_use_provider.rs`
+  - `codex-rs/tui/src/desktop_computer_use_provider.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
   - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
@@ -271,6 +276,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tools/src/browser_tool_tests.rs`
   - `codex-rs/tools/src/computer_use_tool_tests.rs`
   - `docs/native-computer-use.md`
+  - `docs/native-computer-use-cleanroom.md`
 
 ### Review And History Accounting Alignment
 

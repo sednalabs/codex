@@ -95,6 +95,7 @@ mod ascii_animation;
 mod audio_device;
 mod browser_computer_use_provider;
 mod computer_use_provider;
+mod desktop_computer_use_provider;
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod audio_device {

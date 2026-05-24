@@ -582,6 +582,7 @@
         "native computer-use protocol events",
         "Android observe/step/install function tools",
         "browser observe/step function tools",
+        "desktop observe/step function tools",
         "native screenshot and browser viewport image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
@@ -593,6 +594,7 @@
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/tool_search_entry.rs",
@@ -605,6 +607,7 @@
         "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/chatwidget.rs",
@@ -616,9 +619,11 @@
         "codex-rs/tools/src/android_tool_tests.rs",
         "codex-rs/tools/src/browser_tool_tests.rs",
         "codex-rs/tools/src/computer_use_tool_tests.rs",
-        "docs/native-computer-use.md"
+        "codex-rs/tools/src/desktop_tool_tests.rs",
+        "docs/native-computer-use.md",
+        "docs/native-computer-use-cleanroom.md"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, and browser_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, and provider-side build installation. Android remains the reference MCP-backed provider shape. The browser adapter has a TUI provider registry that can call operator-configured provider commands or the built-in Playwright provider for backend=auto.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape. The browser adapter has a TUI provider registry that can call operator-configured provider commands or the built-in Playwright provider for backend=auto. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -633,14 +638,19 @@
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "android_dynamic_tools_use_canonical_codex_tool_definitions",
         "canonical_browser_dynamic_tool_preserves_supported_browser_tool_names",
+        "canonical_desktop_observe_schema_exposes_screen_and_ui_scope",
+        "canonical_desktop_step_schema_exposes_cleanroom_action_set",
         "browser_backend_schema_exposes_supported_provider_backends",
         "native_computer_use_registry_classifies_android_and_browser_tools",
+        "native_computer_use_registry_classifies_desktop_tools",
         "browser_handler_uses_browser_adapter",
         "browser_provider_requires_configured_backend",
+        "desktop_provider_requires_configured_command",
         "command_provider_bridge_returns_native_image_response",
         "browser_provider_response_preserves_native_image",
+        "desktop_provider_response_without_native_image_fails_loudly",
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
-        "native_computer_use_check_reports_android_and_browser_config_files",
+        "native_computer_use_check_reports_android_browser_and_desktop_config_files",
         "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",
         "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
@@ -650,7 +660,7 @@
         "computer_use_call_response_is_tool_runtime_end"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android or browser tooling outside hot Codex core. Android screenshots and browser viewport captures should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side."
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams."
     },
     {
       "id": "codex-tui-session-surfaces",

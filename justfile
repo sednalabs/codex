@@ -282,6 +282,7 @@ app-server-computer-use-targeted:
 tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
     cargo test --locked -p codex-tui browser_computer_use_provider::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-tui desktop_computer_use_provider::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
@@ -290,8 +291,10 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-core-plugins bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_browser_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools desktop_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools browser_backend_schema_exposes_supported_provider_backends --lib -- --test-threads=1
     cargo test --locked -p codex-tools native_computer_use_registry_classifies_android_and_browser_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-tools native_computer_use_registry_classifies_desktop_tools --lib -- --test-threads=1
     cargo test --locked -p codex-core duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --test-threads=1
     cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
     cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
@@ -300,6 +303,10 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-tui command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
     cargo test --locked -p codex-tui browser_provider_response_preserves_native_image --lib -- --test-threads=1
     cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
+
+# Focused native computer-use operator diagnostics slice.
+native-computer-use-doctor-targeted:
+    cargo test --locked -p codex-cli doctor::tests::native_computer_use_check_reports_android_browser_and_desktop_config_files -- --exact --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
@@ -396,7 +403,7 @@ downstream-ledger-seam:
 
 [no-cd]
 downstream-docs-check:
-    git diff --check -- docs/downstream.md docs/native-computer-use.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+    git diff --check -- docs/downstream.md docs/native-computer-use.md docs/native-computer-use-cleanroom.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
     cd "{{justfile_directory()}}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
     cd "{{justfile_directory()}}" && python3 .github/scripts/check_markdown_links.py
 

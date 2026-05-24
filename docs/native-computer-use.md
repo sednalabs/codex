@@ -7,7 +7,9 @@ tool-registry, app-server, TUI, rollout, and validation behavior.
 Native runtime backends are supplied by external providers. Android is the
 first implemented provider. Browser is now a registered adapter with a TUI
 provider bridge that can either invoke an operator-configured command or use
-the built-in Playwright backend for `backend=auto`.
+the built-in Playwright backend for `backend=auto`. Desktop is a registered
+adapter for cleanroom macOS Screen Recording/Accessibility-style runtimes and
+future native desktop providers.
 
 ## Ownership Boundaries
 
@@ -161,10 +163,41 @@ an error breadcrumb, not the normal contract.
 
 `codex doctor` includes a read-only browser computer-use check. It reports
 configured browser provider files, provider ids, declared backends, Android
-provider files, Android endpoint presence, environment overrides, and whether
-configured browser command or Node executables are resolvable. It does not
-launch browsers, connect to user profiles, start emulators, call Android MCP
-servers, or repair configuration.
+provider files, Android endpoint presence, desktop provider files, environment
+overrides, and whether configured browser, desktop, or Node executables are
+resolvable. It does not launch browsers, connect to user profiles, start
+emulators, call Android MCP servers, start desktop providers, or repair
+configuration.
+
+### Desktop
+
+- `desktop_observe`: captures the current desktop app/window state as
+  model-visible image output, optionally paired with a compact accessibility or
+  UI digest.
+- `desktop_step`: performs one or more bounded desktop UI actions, then
+  returns a fresh post-action screenshot observation.
+
+Desktop is the cleanroom adapter for macOS Screen Recording and Accessibility
+runtime providers. It intentionally uses a provider command behind the TUI
+seam rather than linking provider implementation into Codex core. Configure it
+with `CODEX_DESKTOP_COMPUTER_USE_COMMAND` or
+`~/.codex/desktop-computer-use.json`:
+
+```json
+{
+  "provider": "command",
+  "platforms": ["macos"],
+  "command": ["/path/to/desktop-provider", "stdio"],
+  "timeout_secs": 120
+}
+```
+
+The desktop provider receives the same `ComputerUseCallParams` object on stdin
+and must return one `ComputerUseCallResponse` object on stdout. Successful
+visual responses must include a native `inputImage` content item. Permission
+prompts, Screen Recording/Accessibility state, lock-screen behavior, app
+focus, screenshot capture, UI-tree generation, and input synthesis all remain
+provider responsibilities.
 
 ## Cleanroom Provider Work
 
@@ -174,6 +207,10 @@ documentation, the open Codex protocol, public OS/browser APIs, and sanitized
 behavioral requirements are acceptable inputs. Raw third-party implementation
 artifacts, private endpoints, signing material, account data, browser profile
 data, and copied implementation text are not acceptable tracked inputs.
+
+See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for
+the sanitized macOS desktop, Windows/browser-shell, Chrome-extension, and
+bundled-plugin contracts derived from the discovery lane.
 
 When binary inspection is legally permitted for interoperability, error
 correction, or security analysis, keep it in a separate discovery lane. The
@@ -228,7 +265,8 @@ rather than the provider's raw dynamic schema.
 
 1. A thread is started, resumed, or forked with `dynamicTools` containing bare
    native computer-use tools such as `android_observe`, `android_step`,
-   `android_install_build_from_run`, `browser_observe`, or `browser_step`.
+   `android_install_build_from_run`, `browser_observe`, `browser_step`,
+   `desktop_observe`, or `desktop_step`.
 2. The tool registry promotes those names to canonical Codex function tools and
    registers `ToolHandlerKind::ComputerUse`.
 3. When the model calls one of those tools, `codex-core` emits a
@@ -339,9 +377,11 @@ The focused lanes are:
 - `codex.tui-native-computer-use-targeted`: native request/response events
   render as transcript-visible computer-use cells and can be inserted into the
   live `Ctrl+T` transcript overlay.
-- `codex.native-computer-use-tool-registry-targeted`: canonical Android and
-  browser schema conversion, adapter classification, duplicate handling,
+- `codex.native-computer-use-tool-registry-targeted`: canonical Android,
+  browser, and desktop schema conversion, adapter classification, duplicate handling,
   deferred tool search, and core timeout cleanup.
+- `codex.native-computer-use-doctor-targeted`: `codex doctor` reporting for
+  Android, browser, and desktop provider configuration.
 - `codex.app-server-protocol-test`: protocol schema and thread-history
   projection coverage.
 - Hosted CodeQL Rust contract checks cover native-image guard dominance,
@@ -358,6 +398,7 @@ The local just recipes behind those lanes are:
 just app-server-computer-use-targeted
 just tui-native-computer-use-targeted
 just native-computer-use-tool-registry-targeted
+just native-computer-use-doctor-targeted
 ```
 
 Do not use local Android builds, browser sessions, or app-specific validation
@@ -374,6 +415,7 @@ contract.
 - `codex-rs/tools/src/android_tool.rs`
 - `codex-rs/tools/src/browser_tool.rs`
 - `codex-rs/tools/src/computer_use_tool.rs`
+- `codex-rs/tools/src/desktop_tool.rs`
 - `codex-rs/core/src/tools/handlers/computer_use.rs`
 - `codex-rs/core/src/tools/tool_search_entry.rs`
 - `codex-rs/core-plugins/src/lib.rs`
@@ -386,6 +428,7 @@ contract.
 - `codex-rs/tui/src/browser_computer_use_provider.rs`
 - `codex-rs/tui/src/browser_playwright_provider.mjs`
 - `codex-rs/tui/src/computer_use_provider.rs`
+- `codex-rs/tui/src/desktop_computer_use_provider.rs`
 - `codex-rs/tui/src/app/app_server_adapter.rs`
 - `codex-rs/tui/src/app/app_server_events.rs`
 - `codex-rs/tui/src/chatwidget.rs`
@@ -397,5 +440,6 @@ contract.
 - `codex-rs/tools/src/android_tool_tests.rs`
 - `codex-rs/tools/src/browser_tool_tests.rs`
 - `codex-rs/tools/src/computer_use_tool_tests.rs`
+- `codex-rs/tools/src/desktop_tool_tests.rs`
 - `.github/validation-lanes.json`
 - `justfile`

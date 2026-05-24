@@ -3162,7 +3162,7 @@ mod tests {
     }
 
     #[test]
-    fn native_computer_use_check_reports_android_and_browser_config_files() {
+    fn native_computer_use_check_reports_android_browser_and_desktop_config_files() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let command = std::env::current_exe()
             .expect("current exe")
@@ -3189,6 +3189,16 @@ mod tests {
             .to_string(),
         )
         .expect("write android config");
+        std::fs::write(
+            temp.path().join("desktop-computer-use.json"),
+            serde_json::json!({
+                "provider": "command",
+                "platforms": ["all"],
+                "command": [command]
+            })
+            .to_string(),
+        )
+        .expect("write desktop config");
 
         let check = computer_use::check_for_home(temp.path());
 
@@ -3211,6 +3221,12 @@ mod tests {
                 .details
                 .iter()
                 .any(|detail| detail == "android providers configured: 1")
+        );
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|detail| detail == "desktop providers configured: 1")
         );
     }
 

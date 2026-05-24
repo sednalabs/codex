@@ -115,6 +115,7 @@ Why:
 User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the current TUI provider registry routes them to a browser bridge when configured.
+- Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
 - Namespaced Android-like and browser-like tools remain normal dynamic tools.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `iab`, or `chrome`.
@@ -129,6 +130,7 @@ User-visible behavior:
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
+- See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for the sanitized desktop, browser-shell, Chrome-extension, and bundled-plugin cleanroom contracts.
 
 ### Usage ledger: first-party local `usage.sqlite`
 

@@ -714,21 +714,29 @@ fn computer_use_summary(check: &DoctorCheck) -> String {
         .unwrap_or_else(|| "0".to_string());
     let android_configured = detail::detail_value(check, "android providers configured")
         .unwrap_or_else(|| "0".to_string());
+    let desktop_configured = detail::detail_value(check, "desktop providers configured")
+        .unwrap_or_else(|| "0".to_string());
     let browser_env = detail::detail_value(check, "browser provider env overrides")
         .unwrap_or_else(|| "none".to_string());
     let android_env = detail::detail_value(check, "android provider env overrides")
         .unwrap_or_else(|| "none".to_string());
+    let desktop_env = detail::detail_value(check, "desktop provider env overrides")
+        .unwrap_or_else(|| "none".to_string());
     if browser_configured == "0"
         && android_configured == "0"
+        && desktop_configured == "0"
         && browser_env == "none"
         && android_env == "none"
+        && desktop_env == "none"
     {
         "native providers not configured".to_string()
-    } else if browser_env == "none" && android_env == "none" {
-        format!("{browser_configured} browser · {android_configured} android providers")
+    } else if browser_env == "none" && android_env == "none" && desktop_env == "none" {
+        format!(
+            "{browser_configured} browser · {android_configured} android · {desktop_configured} desktop providers"
+        )
     } else {
         format!(
-            "{browser_configured} browser · {android_configured} android providers · env overrides"
+            "{browser_configured} browser · {android_configured} android · {desktop_configured} desktop providers · env overrides"
         )
     }
 }

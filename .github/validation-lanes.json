@@ -1078,6 +1078,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.native-computer-use-doctor-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "native-computer-use-doctor-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.app-server-thread-cwd-targeted",
       "groups": [
         "ui_protocol"
@@ -1626,7 +1652,8 @@
         "codex.app-server-protocol-test",
         "codex.app-server-computer-use-targeted",
         "codex.tui-native-computer-use-targeted",
-        "codex.native-computer-use-tool-registry-targeted"
+        "codex.native-computer-use-tool-registry-targeted",
+        "codex.native-computer-use-doctor-targeted"
       ],
       "allowed_paths": [
         "codex-rs/app-server/src/codex_message_processor.rs",
@@ -1645,17 +1672,27 @@
         "codex-rs/tools/src/browser_tool_tests.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
         "codex-rs/tools/src/computer_use_tool_tests.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
+        "codex-rs/tools/src/desktop_tool_tests.rs",
         "codex-rs/tools/src/lib.rs",
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
+        "codex-rs/cli/src/doctor.rs",
+        "codex-rs/cli/src/doctor/computer_use.rs",
+        "codex-rs/cli/src/doctor/output.rs",
         "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/browser_playwright_provider.mjs",
         "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/app/tests.rs",
         "codex-rs/tui/src/lib.rs",
         "justfile",
+        "docs/downstream.md",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-tool-surface-matrix.md",
         "docs/native-computer-use.md",
+        "docs/native-computer-use-cleanroom.md",
         "docs/downstream-regression-matrix.md",
         "docs/validation_workflow.md",
         "docs/divergences/index.yaml",
@@ -1669,8 +1706,11 @@
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
         "codex-rs/tui/src/browser_computer_use_provider.rs",
-        "codex-rs/tui/src/computer_use_provider.rs"
+        "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/cli/src/doctor/computer_use.rs"
       ]
     },
     {
