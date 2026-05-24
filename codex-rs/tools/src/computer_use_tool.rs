@@ -4,10 +4,13 @@ use crate::android_tool::ANDROID_OBSERVE_TOOL_NAME;
 use crate::android_tool::canonical_android_dynamic_tool;
 use crate::browser_tool::BROWSER_OBSERVE_TOOL_NAME;
 use crate::browser_tool::canonical_browser_dynamic_tool;
+use crate::desktop_tool::DESKTOP_OBSERVE_TOOL_NAME;
+use crate::desktop_tool::canonical_desktop_dynamic_tool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 
 pub const COMPUTER_USE_ADAPTER_ANDROID: &str = "android";
 pub const COMPUTER_USE_ADAPTER_BROWSER: &str = "browser";
+pub const COMPUTER_USE_ADAPTER_DESKTOP: &str = "desktop";
 
 #[derive(Debug, Clone)]
 pub struct NativeComputerUseTool {
@@ -31,15 +34,27 @@ pub fn canonical_native_computer_use_dynamic_tool(
         });
     }
 
-    canonical_browser_dynamic_tool(tool).map(|output_tool| {
-        let is_observe = output_tool.name == BROWSER_OBSERVE_TOOL_NAME;
-        NativeComputerUseTool {
-            adapter: COMPUTER_USE_ADAPTER_BROWSER,
-            tool: output_tool,
-            is_mutating: !is_observe,
-            uses_long_timeout: false,
-        }
-    })
+    canonical_browser_dynamic_tool(tool)
+        .map(|output_tool| {
+            let is_observe = output_tool.name == BROWSER_OBSERVE_TOOL_NAME;
+            NativeComputerUseTool {
+                adapter: COMPUTER_USE_ADAPTER_BROWSER,
+                tool: output_tool,
+                is_mutating: !is_observe,
+                uses_long_timeout: false,
+            }
+        })
+        .or_else(|| {
+            canonical_desktop_dynamic_tool(tool).map(|output_tool| {
+                let is_observe = output_tool.name == DESKTOP_OBSERVE_TOOL_NAME;
+                NativeComputerUseTool {
+                    adapter: COMPUTER_USE_ADAPTER_DESKTOP,
+                    tool: output_tool,
+                    is_mutating: !is_observe,
+                    uses_long_timeout: false,
+                }
+            })
+        })
 }
 
 #[cfg(test)]

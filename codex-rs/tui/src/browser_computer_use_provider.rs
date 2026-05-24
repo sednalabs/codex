@@ -144,6 +144,7 @@ async fn run_provider_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|err| format!("failed to start browser provider `{program}`: {err}"))?;
 

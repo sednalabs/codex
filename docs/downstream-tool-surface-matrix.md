@@ -25,6 +25,8 @@ Review baseline:
 | Bare `android_install_build_from_run` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler; treated as mutating, with a longer timeout for provider-side artifact download, install, launch, and post-install observation | yes | `codex.native-computer-use-tool-registry-targeted` |
 | Bare `browser_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `browser`; treated as non-mutating; TUI routes it to a configured command provider or the built-in Playwright provider for `backend=auto` | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
 | Bare `browser_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `browser`; treated as mutating, with batched `actions[]`, compatibility single-action fields, and `backend=auto|iab|chrome`; TUI routes `auto` through Playwright and reserves `iab`/`chrome` for configured provider commands | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
+| Bare `desktop_observe` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `desktop`; treated as non-mutating; TUI routes it to an operator-configured desktop provider command | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
+| Bare `desktop_step` dynamic tool | Normal dynamic tool when supplied by a client/provider | Promoted to canonical native computer-use function tool with Codex-owned schema and `ComputerUse` handler using adapter `desktop`; treated as mutating, with batched `actions[]` and compatibility single-action fields for click, text, key, scroll, drag, set-value, select-text, wait, and move actions | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.tui-native-computer-use-targeted` |
 | `browser-use@openai-bundled` tool suggestion | Not included in downstream allowlist before this carry | Discoverable alongside `chrome@openai-bundled` and `computer-use@openai-bundled` so tool suggestion can find the browser plugin family | yes | `bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable` |
 | Namespaced native-like dynamic tools | Normal namespaced dynamic tools | Same as upstream-style dynamic tools; no native promotion for namespaced `android_observe`, `android_step`, `browser_observe`, or `browser_step` | no | `namespaced_android_dynamic_tool_names_remain_dynamic_tools`; `canonical_browser_dynamic_tool_ignores_namespaced_tools` |
 | App-server computer-use bridge | No v2 `item/computerUse/call` native bridge | API v2 projects native computer-use requests into `ThreadItem::ComputerUseCall`, sends `item/computerUse/call` to capable clients, and forwards client responses back to the active turn | yes | `codex.app-server-computer-use-targeted`; `codex.app-server-protocol-test` |
@@ -57,14 +59,18 @@ Notes:
   filtering via `agent_roots`, rather than overloading `list_agents` with
   provenance-heavy output by default.
 - Native promotion is intentionally limited to recognized bare tool names.
-  Runtime providers supply Android capability, browser capability, device or
-  browser execution, and provider-side build installation, while Codex owns the
-  canonical schema, native image-output expectation, adapter dispatch,
+  Runtime providers supply Android capability, browser capability, desktop
+  capability, device/browser/desktop execution, and provider-side build
+  installation, while Codex owns the canonical schema, native image-output
+  expectation, adapter dispatch,
   transcript events, app-server bridge, TUI projection, and rollout trace
   semantics. The browser adapter has a TUI provider bridge with a configured
   command backend, provider routing, and a built-in Playwright backend for
   `backend=auto`; Android remains the MCP-backed reference provider and should
   be adapted provider-side when `android-emulator-mcp` or a successor needs
   harness-specific glue. See [`native-computer-use.md`](native-computer-use.md).
+  The desktop adapter is the cleanroom target for macOS Screen
+  Recording/Accessibility and future native desktop providers; see
+  [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md).
 - `apply_patch` and `js_repl` are included as control rows so future audits do
   not misclassify them as carry-only behavior.

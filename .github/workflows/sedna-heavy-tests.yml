@@ -60,6 +60,7 @@ on:
           - codex.app-server-computer-use-targeted
           - codex.tui-native-computer-use-targeted
           - codex.native-computer-use-tool-registry-targeted
+          - codex.native-computer-use-doctor-targeted
           - codex.app-server-thread-cwd-targeted
           - codex.agent-workflow-sanity
           - codex.shell-tool-mcp-ci

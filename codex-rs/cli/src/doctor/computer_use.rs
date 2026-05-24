@@ -50,6 +50,13 @@ const ANDROID_CF_ACCESS_CLIENT_SECRET_ENV_VARS: &[&str] = &[
     "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
     "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
 ];
+const DESKTOP_COMPUTER_USE_CONFIG_FILES: &[&str] =
+    &["desktop-computer-use.json", "desktop-dynamic-tools.json"];
+const DESKTOP_COMPUTER_USE_ENV_VARS: &[&str] = &[
+    "CODEX_DESKTOP_COMPUTER_USE_PROVIDER",
+    "CODEX_DESKTOP_COMPUTER_USE_COMMAND",
+    "CODEX_DESKTOP_COMPUTER_USE_TIMEOUT_SECS",
+];
 const PROVIDER_NONE: &str = "none";
 
 pub(super) fn check(config: &Config) -> DoctorCheck {
@@ -146,6 +153,8 @@ pub(super) fn check_for_home(codex_home: &Path) -> DoctorCheck {
 
     let android_read_any_config =
         append_android_computer_use_details(codex_home, &mut details, &mut issues);
+    let desktop_read_any_config =
+        append_desktop_computer_use_details(codex_home, &mut details, &mut issues);
 
     let status = if issues.is_empty() {
         CheckStatus::Ok
@@ -154,8 +163,12 @@ pub(super) fn check_for_home(codex_home: &Path) -> DoctorCheck {
     };
     let summary = if read_any_config
         || android_read_any_config
+        || desktop_read_any_config
         || !env_overrides.is_empty()
         || !ANDROID_COMPUTER_USE_ENV_VARS
+            .iter()
+            .all(|name| !env_var_present(name))
+        || !DESKTOP_COMPUTER_USE_ENV_VARS
             .iter()
             .all(|name| !env_var_present(name))
     {
@@ -180,6 +193,23 @@ fn browser_provider_configured_from_env() -> bool {
     first_present_env(&["CODEX_BROWSER_COMPUTER_USE_COMMAND"]).is_some()
         || first_present_env(&["CODEX_BROWSER_COMPUTER_USE_PROVIDER"])
             .is_some_and(|provider| !provider.eq_ignore_ascii_case("none"))
+}
+
+fn desktop_provider_configured_from_env() -> bool {
+    let command_configured = first_present_env(&["CODEX_DESKTOP_COMPUTER_USE_COMMAND"]).is_some();
+    match first_present_env(&["CODEX_DESKTOP_COMPUTER_USE_PROVIDER"]).as_deref() {
+        Some(provider) if desktop_provider_is_disabled(provider) => false,
+        Some(provider) if !desktop_provider_is_command(provider) => false,
+        _ => command_configured,
+    }
+}
+
+fn desktop_provider_is_disabled(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case(PROVIDER_NONE)
+}
+
+fn desktop_provider_is_command(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case("command")
 }
 
 fn append_android_computer_use_details(
@@ -287,6 +317,191 @@ fn append_android_computer_use_details(
     read_any_config
 }
 
+fn append_desktop_computer_use_details(
+    codex_home: &Path,
+    details: &mut Vec<String>,
+    issues: &mut Vec<DoctorIssue>,
+) -> bool {
+    let env_overrides = DESKTOP_COMPUTER_USE_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|name| env_var_present(name))
+        .collect::<Vec<_>>();
+    details.push(format!(
+        "desktop provider env overrides: {}",
+        display_list(&env_overrides)
+    ));
+    if let Some(provider) = first_present_env(&["CODEX_DESKTOP_COMPUTER_USE_PROVIDER"]) {
+        details.push(format!("desktop provider env provider: {provider}"));
+        if !desktop_provider_is_disabled(&provider) && !desktop_provider_is_command(&provider) {
+            issues.push(
+                DoctorIssue::new(
+                    CheckStatus::Warning,
+                    "desktop provider env provider kind is unknown",
+                )
+                .measured(provider)
+                .expected("command or none")
+                .remedy("Set CODEX_DESKTOP_COMPUTER_USE_PROVIDER=command, or unset it.")
+                .field("desktop provider env provider"),
+            );
+        }
+    }
+
+    let mut configured = desktop_provider_configured_from_env();
+    let mut read_any_config = false;
+    for file_name in DESKTOP_COMPUTER_USE_CONFIG_FILES {
+        let path = codex_home.join(file_name);
+        details.push(format!(
+            "desktop provider config {file_name}: {}",
+            path.display()
+        ));
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                read_any_config = true;
+                match serde_json::from_str::<DesktopComputerUseDoctorConfig>(&contents) {
+                    Ok(parsed) => {
+                        let provider = parsed.provider.as_deref().unwrap_or("command");
+                        let platform_matches = parsed.matches_current_platform();
+                        details.push(format!("desktop provider config {file_name} parse: ok"));
+                        details.push(format!(
+                            "desktop provider config {file_name} provider: {}",
+                            if provider.trim().is_empty() {
+                                "command"
+                            } else {
+                                provider.trim()
+                            }
+                        ));
+                        if let Some(platforms) = &parsed.platforms {
+                            details.push(format!(
+                                "desktop provider config {file_name} platforms: {}",
+                                display_list(platforms)
+                            ));
+                            details.push(format!(
+                                "desktop provider config {file_name} platform match: {}",
+                                if platform_matches { "yes" } else { "no" }
+                            ));
+                        }
+                        if let Some(timeout_secs) = parsed.timeout_secs {
+                            details.push(format!(
+                                "desktop provider config {file_name} timeout_secs: {timeout_secs}"
+                            ));
+                        }
+                        if !platform_matches {
+                            continue;
+                        }
+                        if desktop_provider_is_disabled(provider) {
+                            continue;
+                        }
+                        if !desktop_provider_is_command(provider) {
+                            issues.push(
+                                DoctorIssue::new(
+                                    CheckStatus::Warning,
+                                    format!(
+                                        "desktop provider config {file_name} has unknown provider kind"
+                                    ),
+                                )
+                                .measured(provider.to_string())
+                                .expected("command or none")
+                                .remedy("Use a command provider for desktop computer-use bridges.")
+                                .field(format!("desktop provider config {file_name} provider")),
+                            );
+                            continue;
+                        }
+                        match parsed.command.as_ref().and_then(DoctorCommandSpec::argv) {
+                            Some(argv) if argv.first().is_some() => {
+                                let program = argv.first().cloned().unwrap_or_default();
+                                configured = true;
+                                details.push(format!(
+                                    "desktop provider config {file_name} command: {program}"
+                                ));
+                                details.push(format!(
+                                    "desktop provider config {file_name} command readiness: {}",
+                                    command_readiness(&program)
+                                ));
+                                if stdio_command_resolves(
+                                    &program, /*cwd*/ None, /*server_env*/ None,
+                                )
+                                .is_err()
+                                {
+                                    issues.push(
+                                        DoctorIssue::new(
+                                            CheckStatus::Warning,
+                                            format!(
+                                                "desktop provider config {file_name} command is not resolvable"
+                                            ),
+                                        )
+                                        .measured(program)
+                                        .expected("command on PATH or executable path")
+                                        .remedy(
+                                            "Install the desktop provider command or update desktop-computer-use.json.",
+                                        )
+                                        .field(format!(
+                                            "desktop provider config {file_name} command readiness"
+                                        )),
+                                    );
+                                }
+                            }
+                            _ if parsed.provider.as_deref() == Some(PROVIDER_NONE) => {}
+                            _ => {
+                                issues.push(
+                                    DoctorIssue::new(
+                                        CheckStatus::Warning,
+                                        format!(
+                                            "desktop provider config {file_name} command is missing"
+                                        ),
+                                    )
+                                    .expected("non-empty command")
+                                    .remedy(
+                                        "Add a command array/string for this provider, or disable it.",
+                                    )
+                                    .field(format!("desktop provider config {file_name} command")),
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        issues.push(
+                            DoctorIssue::new(
+                                CheckStatus::Warning,
+                                format!("desktop provider config {file_name} is not valid JSON"),
+                            )
+                            .measured(err.to_string())
+                            .expected("valid desktop computer-use provider configuration")
+                            .remedy(format!(
+                                "Fix {file_name}, or remove it to disable desktop computer-use providers."
+                            ))
+                            .field(format!("desktop provider config {file_name} parse")),
+                        );
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                details.push(format!(
+                    "desktop provider config {file_name} parse: missing"
+                ));
+            }
+            Err(err) => {
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("desktop provider config {file_name} could not be read"),
+                    )
+                    .measured(err.to_string())
+                    .expected("readable desktop computer-use provider configuration")
+                    .remedy("Check file permissions and rerun codex doctor.")
+                    .field(format!("desktop provider config {file_name} read")),
+                );
+            }
+        }
+    }
+
+    details.push(format!(
+        "desktop providers configured: {}",
+        if configured { 1 } else { 0 }
+    ));
+    read_any_config
+}
+
 #[derive(Deserialize)]
 struct BrowserComputerUseDoctorConfig {
     provider: Option<String>,
@@ -368,7 +583,9 @@ impl DoctorCommandSpec {
             Self::String(command) => shlex::split(command)?,
             Self::Array(argv) => argv.clone(),
         };
-        (!argv.is_empty()).then_some(argv)
+        argv.first()
+            .is_some_and(|program| !program.trim().is_empty())
+            .then_some(argv)
     }
 }
 
@@ -386,6 +603,36 @@ struct BrowserProviderDoctorSummary {
 #[derive(Deserialize)]
 struct AndroidComputerUseDoctorConfig {
     mcp_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DesktopComputerUseDoctorConfig {
+    provider: Option<String>,
+    command: Option<DoctorCommandSpec>,
+    timeout_secs: Option<u64>,
+    platforms: Option<Vec<String>>,
+}
+
+impl DesktopComputerUseDoctorConfig {
+    fn matches_current_platform(&self) -> bool {
+        let Some(platforms) = &self.platforms else {
+            return true;
+        };
+        platforms
+            .iter()
+            .any(|platform| platform_matches_current(platform))
+    }
+}
+
+fn platform_matches_current(platform: &str) -> bool {
+    match platform.trim().to_ascii_lowercase().as_str() {
+        "all" | "*" => true,
+        "linux" => cfg!(target_os = "linux"),
+        "mac" | "macos" | "darwin" => cfg!(target_os = "macos"),
+        "windows" | "win32" => cfg!(target_os = "windows"),
+        "unix" => cfg!(unix),
+        other => other == std::env::consts::OS,
+    }
 }
 
 impl BrowserProviderDoctorSummary {

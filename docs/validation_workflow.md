@@ -233,6 +233,8 @@ ownership boundary:
   `codex.app-server-computer-use-targeted`,
   `codex.tui-native-computer-use-targeted`, and
   `codex.native-computer-use-tool-registry-targeted`.
+- Provider configuration diagnostics should add
+  `codex.native-computer-use-doctor-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app
   that owns that behavior.
@@ -244,6 +246,11 @@ ownership boundary:
   Chrome-extension, remote-browser, viewport capture, and browser input
   execution providers, should be validated in the browser provider or client
   integration that owns that behavior.
+- Desktop runtime work outside this repo, such as macOS Screen
+  Recording/Accessibility capture, lock-screen handling, app focus, UI digest
+  generation, and desktop input execution, should be validated in the desktop
+  provider that owns that behavior. Codex lanes prove only the canonical tool
+  schema, event path, and command-provider seam.
 - Solar Gravity Lab validation is appropriate when proving a consumer workflow,
   not when the question is the generic Codex computer-use contract.
 
