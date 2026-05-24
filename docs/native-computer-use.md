@@ -83,6 +83,12 @@ single-provider configuration and a provider registry:
   Playwright package that Node can resolve in the runtime environment. For
   realistic remote-editor review loops, configure it to run headed Google
   Chrome on a visible display rather than the default headless Chromium path.
+  The bridge supports accessibility-oriented selectors plus human-like mouse
+  and keyboard primitives: click, type, keypress, key down/up, scroll/wheel,
+  hover, drag, mouse move/down/up, select, wait, and navigate. Selector text
+  entry uses real keyboard events by default, with `method: "fill"` available
+  as a compatibility escape hatch for pages where DOM-level filling is the
+  better tool.
 - `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
   Codex sends `ComputerUseCallParams` JSON on stdin and expects a
   `ComputerUseCallResponse` JSON object on stdout. This is the extension point

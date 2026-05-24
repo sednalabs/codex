@@ -225,7 +225,10 @@ docs-only refresh commit that records this snapshot.
   routes browser calls to either a configured provider command or the built-in
   Playwright provider for `backend=auto`; when that browser provider is
   configured, CLI/TUI thread start, resume, and fork requests advertise
-  `browser_observe` and `browser_step` automatically.
+  `browser_observe` and `browser_step` automatically. The Playwright bridge
+  supports accessibility-oriented selectors plus human-like mouse and keyboard
+  primitives so agents can fall back to viewport interaction when selector
+  paths are not enough.
 - The Android adapter is retained as the reference MCP-backed runtime provider:
   reuse `android-emulator-mcp` or a successor when it exposes the current
   Android MCP contract, and adapt harness-specific behavior provider-side
