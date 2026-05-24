@@ -100,15 +100,17 @@
         "prepared-input fingerprinting"
       ],
       "files": [
-        "codex-rs/core/src/memories/phase2.rs",
-        "codex-rs/core/src/memories/phase2_attestation_tests.rs",
-        "codex-rs/core/src/memories/tests.rs",
+        "codex-rs/memories/write/src/phase2.rs",
+        "codex-rs/memories/write/src/phase2_attestation.rs",
+        "codex-rs/memories/write/src/phase2_attestation_tests.rs",
+        "codex-rs/memories/write/src/startup_tests.rs",
         "codex-rs/state/src/runtime/phase2_attestation.rs",
         "codex-rs/state/migrations/0024_phase2_attestation_roots.sql",
+        "codex-rs/state/migrations/0038_phase2_attested_baselines.sql",
         "codex-rs/state/migrations/0031_device_key_bindings.sql",
         "codex-rs/state/migrations/0032_thread_goals.sql"
       ],
-      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete, and preserves unique state migration versions when upstream migrations are replayed after downstream-only slots.",
+      "behavior": "Downstream records phase-2 output-tree baselines in state before consolidation can complete, and preserves unique state migration versions when upstream migrations are replayed after downstream-only slots.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -116,11 +118,12 @@
       },
       "guardrail_lane": "codex.core-attestation-targeted",
       "tests": [
-        "consolidation_artifacts_ready_rejects_*",
-        "global_phase2_attestation_requirement_is_root_scoped"
+        "phase2_attestation::*",
+        "memories_startup_phase2_*",
+        "runtime::phase2_attestation::*"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to the downstream state runtime. Upstream device key bindings and thread goals keep their SQL content but use the next free downstream migration versions."
+      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Upstream device key bindings and thread goals keep their SQL content but use the next free downstream migration versions."
     },
     {
       "id": "cli-git-metadata-and-rebuild-triggers",

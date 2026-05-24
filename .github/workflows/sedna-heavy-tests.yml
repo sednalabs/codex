@@ -54,6 +54,7 @@ on:
           - codex.core-context-serialization-targeted
           - codex.core-attestation-targeted
           - codex.state-spawn-lineage-contract-targeted
+          - codex.state-migration-repair-targeted
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
           - codex.app-server-computer-use-targeted
@@ -231,7 +232,7 @@ jobs:
                 run_core_family=true
                 run_ui_protocol_family=true
                 ;;
-              codex-rs/core/src/memories/phase2.rs|codex-rs/core/src/memories/phase2_attestation_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0024_phase2_attestation_roots.sql)
+              codex-rs/memories/write/src/phase2.rs|codex-rs/memories/write/src/phase2_attestation.rs|codex-rs/memories/write/src/phase2_attestation_tests.rs|codex-rs/memories/write/src/startup_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0024_phase2_attestation_roots.sql|codex-rs/state/migrations/0038_phase2_attested_baselines.sql)
                 run_core_family=true
                 run_attestation_family=true
                 ;;

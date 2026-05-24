@@ -19,6 +19,7 @@ pub use graph::DirectionalThreadSpawnEdgeStatus;
 pub use log::LogEntry;
 pub use log::LogQuery;
 pub use log::LogRow;
+pub use memories::Phase2AttestedBaseline;
 pub use memories::Phase2JobClaimOutcome;
 pub use memories::Stage1JobClaim;
 pub use memories::Stage1JobClaimOutcome;

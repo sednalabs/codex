@@ -99,10 +99,10 @@ docs-only refresh commit that records this snapshot.
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
   support has been initialized for a memory root.
-- Consolidated memory artifacts are fingerprinted against the prepared immutable
-  input tree and the effective consolidator contract, then recorded in
-  attestation sidecars plus runtime state so unchanged selections can safely
-  reuse existing outputs while drifted or tampered artifacts are rejected.
+- Consolidated memory artifacts are fingerprinted against the prepared input
+  tree, the effective consolidator contract, and the output tree, then recorded
+  in runtime state so unchanged workspaces can safely reuse existing outputs
+  while drifted or tampered artifacts are rejected after bootstrap.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
 - Because these downstream state migrations occupy slots that upstream did not
@@ -114,11 +114,13 @@ docs-only refresh commit that records this snapshot.
   upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
   already-shipped downstream `0028` through `0031` migration versions.
 - Primary files:
-  - `codex-rs/core/src/memories/phase2.rs`
-  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
-  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/memories/write/src/phase2.rs`
+  - `codex-rs/memories/write/src/phase2_attestation.rs`
+  - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
+  - `codex-rs/memories/write/src/startup_tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `docs/memories.md`

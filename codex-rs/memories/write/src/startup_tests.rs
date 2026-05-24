@@ -56,6 +56,7 @@ async fn memories_startup_phase2_tracks_workspace_diff_across_runs() -> anyhow::
         "git_branch: branch-rollout-a\n\nrollout summary A\n",
     )
     .await?;
+    seed_required_phase2_outputs(&memory_root).await?;
     reset_git_repository(&memory_root).await?;
 
     let _thread_b = seed_stage1_output(
@@ -68,15 +69,7 @@ async fn memories_startup_phase2_tracks_workspace_diff_across_runs() -> anyhow::
     )
     .await?;
 
-    let phase2 = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-phase2"),
-            ev_assistant_message("msg-phase2", "phase2 complete"),
-            ev_completed("resp-phase2"),
-        ]),
-    )
-    .await;
+    let phase2 = mount_phase2_success(&server, "phase2").await;
 
     let test = build_test_codex(&server, home.clone()).await?;
     trigger_memories_startup(&test).await;
@@ -148,16 +141,9 @@ async fn memories_startup_phase2_prunes_old_extension_resources() -> anyhow::Res
         (now - chrono::Duration::days(6)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&recent_file, "recent resource").await?;
+    seed_required_phase2_outputs(&home.path().join("memories")).await?;
 
-    let phase2 = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-phase2"),
-            ev_assistant_message("msg-phase2", "phase2 complete"),
-            ev_completed("resp-phase2"),
-        ]),
-    )
-    .await;
+    let phase2 = mount_phase2_success(&server, "phase2").await;
 
     let test = build_test_codex(&server, home.clone()).await?;
     trigger_memories_startup(&test).await;
@@ -207,16 +193,9 @@ async fn memories_startup_phase2_prunes_old_extension_resources_without_stage1_i
         (now - chrono::Duration::days(8)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&old_file, "old resource").await?;
+    seed_required_phase2_outputs(&home.path().join("memories")).await?;
 
-    let phase2 = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-phase2-empty"),
-            ev_assistant_message("msg-phase2-empty", "phase2 complete"),
-            ev_completed("resp-phase2-empty"),
-        ]),
-    )
-    .await;
+    let phase2 = mount_phase2_success(&server, "phase2-empty").await;
 
     let test = build_test_codex(&server, home.clone()).await?;
     trigger_memories_startup(&test).await;
@@ -234,7 +213,6 @@ async fn memories_startup_phase2_prunes_old_extension_resources_without_stage1_i
     shutdown_test_codex(&test).await?;
     Ok(())
 }
-
 #[tokio::test]
 async fn memories_startup_phase1_uses_live_thread_service_tier() -> anyhow::Result<()> {
     let server = start_mock_server().await;
@@ -269,7 +247,10 @@ async fn memories_startup_phase1_uses_live_thread_service_tier() -> anyhow::Resu
     let request_context = context
         .stage_one_request_context(
             &test.config,
-            test.config.model.as_deref().unwrap_or("gpt-5.4-mini"),
+            test.config
+                .model
+                .as_deref()
+                .unwrap_or(crate::stage_one::MODEL),
             ReasoningEffort::Low,
         )
         .await;
@@ -304,6 +285,25 @@ async fn init_state_db(home: &Arc<TempDir>) -> anyhow::Result<Arc<codex_state::S
         codex_state::StateRuntime::init(home.path().to_path_buf(), "test-provider".into()).await?;
     db.mark_backfill_complete(/*last_watermark*/ None).await?;
     Ok(db)
+}
+
+async fn mount_phase2_success(server: &wiremock::MockServer, id: &str) -> ResponseMock {
+    mount_sse_once(
+        server,
+        sse(vec![
+            ev_response_created(&format!("resp-{id}-done")),
+            ev_assistant_message(&format!("msg-{id}-done"), "phase2 complete"),
+            ev_completed(&format!("resp-{id}-done")),
+        ]),
+    )
+    .await
+}
+
+async fn seed_required_phase2_outputs(memory_root: &Path) -> anyhow::Result<()> {
+    tokio::fs::create_dir_all(memory_root).await?;
+    tokio::fs::write(memory_root.join("MEMORY.md"), "memory index\n").await?;
+    tokio::fs::write(memory_root.join("memory_summary.md"), "v1\n\nsummary\n").await?;
+    Ok(())
 }
 
 async fn trigger_memories_startup(test: &TestCodex) {

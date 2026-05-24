@@ -4,6 +4,7 @@ use crate::metrics::MEMORY_PHASE_TWO_E2E_MS;
 use crate::metrics::MEMORY_PHASE_TWO_INPUT;
 use crate::metrics::MEMORY_PHASE_TWO_JOBS;
 use crate::metrics::MEMORY_PHASE_TWO_TOKEN_USAGE;
+use crate::phase2_attestation;
 use crate::prune_old_extension_resources;
 use crate::rebuild_raw_memories_file_from_memories;
 use crate::runtime::MemoryStartupContext;
@@ -140,6 +141,23 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     };
     if !workspace_diff.has_changes() {
         tracing::error!("Phase 2 no changes");
+        let success_status = match no_workspace_change_attestation_status(db.as_ref(), &root).await
+        {
+            Ok(status) => status,
+            Err(err) => {
+                tracing::error!(
+                    "failed phase-2 no-change attestation check after baselines exist: {err}"
+                );
+                job::failed(
+                    context.as_ref(),
+                    db.as_ref(),
+                    &claim,
+                    "failed_attestation_no_workspace_change",
+                )
+                .await;
+                return;
+            }
+        };
         // We check only after sync of the file system.
         job::succeed(
             context.as_ref(),
@@ -147,7 +165,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             &claim,
             new_watermark,
             &raw_memories,
-            "succeeded_no_workspace_changes",
+            success_status,
         )
         .await;
         return;
@@ -168,6 +186,28 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
 
     // 8. Spawn the consolidation agent.
     let prompt = agent::get_prompt(&root);
+    let attestation_context = match phase2_attestation::capture_prepared_context(
+        &root,
+        config.as_ref(),
+        &agent_config,
+        &prompt,
+        &raw_memories,
+    )
+    .await
+    {
+        Ok(attestation_context) => attestation_context,
+        Err(err) => {
+            tracing::error!("failed capturing phase-2 attestation context: {err}");
+            job::failed(
+                context.as_ref(),
+                db.as_ref(),
+                &claim,
+                "failed_attestation_capture",
+            )
+            .await;
+            return;
+        }
+    };
     let agent = match context
         .spawn_consolidation_agent(agent_config, prompt)
         .await
@@ -187,6 +227,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         new_watermark,
         raw_memories.clone(),
         root,
+        attestation_context,
         agent,
         phase_two_e2e_timer,
     );
@@ -207,6 +248,51 @@ async fn sync_phase2_workspace_inputs(
     rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?;
     prune_old_extension_resources(root).await;
     Ok(())
+}
+
+async fn no_workspace_change_attestation_status(
+    db: &StateRuntime,
+    root: &Path,
+) -> anyhow::Result<&'static str> {
+    let memory_root_key = match phase2_attestation::memory_root_key(root).await {
+        Ok(memory_root_key) => memory_root_key,
+        Err(err) => {
+            tracing::warn!(
+                "failed deriving phase-2 memory root key on no-change path; preserving bootstrap-compatible success path: {err}"
+            );
+            return Ok("succeeded_no_workspace_changes");
+        }
+    };
+    let has_any_baseline = db
+        .has_phase2_attested_baseline_for_root(memory_root_key.as_str())
+        .await?;
+    let output_tree_sha256 = match phase2_attestation::current_output_tree_sha256(root).await {
+        Ok(output_tree_sha256) => output_tree_sha256,
+        Err(err) if !has_any_baseline => {
+            tracing::warn!(
+                "failed hashing phase-2 output tree on no-change bootstrap path; preserving bootstrap-compatible success path: {err}"
+            );
+            return Ok("succeeded_no_workspace_changes");
+        }
+        Err(err) => return Err(err),
+    };
+    let has_matching_baseline = phase2_attestation::matching_attested_baseline_exists(
+        db,
+        memory_root_key.as_str(),
+        output_tree_sha256.as_str(),
+    )
+    .await?;
+    if has_matching_baseline {
+        return Ok("succeeded_no_workspace_changes_attested");
+    }
+
+    if has_any_baseline {
+        anyhow::bail!(
+            "memory root has phase-2 attested baselines, but current output tree {output_tree_sha256} is not recorded"
+        );
+    }
+
+    Ok("succeeded_no_workspace_changes")
 }
 
 mod job {
@@ -357,6 +443,7 @@ mod agent {
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
         memory_root: codex_utils_absolute_path::AbsolutePathBuf,
+        attestation_context: phase2_attestation::Phase2AttestationContext,
         agent: SpawnedConsolidationAgent,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
@@ -406,6 +493,41 @@ mod agent {
                     }
                 };
                 if still_owns_lock {
+                    let output_tree_sha256 = match phase2_attestation::validate_completed_run(
+                        &memory_root,
+                        &attestation_context,
+                    )
+                    .await
+                    {
+                        Ok(output_tree_sha256) => output_tree_sha256,
+                        Err(err) => {
+                            tracing::error!(
+                                "failed validating completed phase-2 attestation outputs: {err}"
+                            );
+                            job::failed(
+                                context.as_ref(),
+                                &db,
+                                &claim,
+                                "failed_attestation_validate",
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    if let Err(err) = phase2_attestation::record_completed_baseline(
+                        &db,
+                        &attestation_context,
+                        output_tree_sha256,
+                        new_watermark,
+                    )
+                    .await
+                    {
+                        tracing::error!("failed recording phase-2 attested baseline: {err}");
+                        job::failed(context.as_ref(), &db, &claim, "failed_attestation_record")
+                            .await;
+                        return;
+                    }
+
                     if let Err(err) = reset_memory_workspace_baseline(&memory_root).await {
                         tracing::error!("failed resetting memory workspace baseline: {err}");
                         job::failed(context.as_ref(), &db, &claim, "failed_workspace_commit").await;
