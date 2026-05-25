@@ -7,9 +7,9 @@ use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_protocol::dynamic_tools::DynamicToolCapability;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
-use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -33,6 +33,10 @@ const ENV_PLAYWRIGHT_CAPTURE_MODE: &str = "CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE
 const ENV_PLAYWRIGHT_ISOLATION: &str = "CODEX_BROWSER_PLAYWRIGHT_ISOLATION";
 const ENV_PLAYWRIGHT_VIEWPORT_WIDTH: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH";
 const ENV_PLAYWRIGHT_VIEWPORT_HEIGHT: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT";
+const ENV_PLAYWRIGHT_ARTIFACT_DIR: &str = "CODEX_BROWSER_PLAYWRIGHT_ARTIFACT_DIR";
+const ENV_PLAYWRIGHT_ARTIFACT_POLICY: &str = "CODEX_BROWSER_PLAYWRIGHT_ARTIFACT_POLICY";
+const ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS: &str = "CODEX_BROWSER_PLAYWRIGHT_ALLOW_CALL_HEADERS";
+const ENV_PLAYWRIGHT_SERVICE_PROFILES: &str = "CODEX_BROWSER_PLAYWRIGHT_SERVICE_PROFILES_JSON";
 const PROVIDER_COMMAND: &str = "command";
 const PROVIDER_NONE: &str = "none";
 const PROVIDER_PLAYWRIGHT: &str = "playwright";
@@ -45,6 +49,9 @@ const BACKEND_CHROMIUM: &str = "chromium";
 const BACKEND_WILDCARD: &str = "*";
 
 const PLAYWRIGHT_BRIDGE_SCRIPT: &str = include_str!("browser_playwright_provider.mjs");
+const PLAYWRIGHT_REVIEW_SCRIPT: &str = include_str!("browser_playwright_review.mjs");
+const PLAYWRIGHT_SERVICE_HEADERS_SCRIPT: &str =
+    include_str!("browser_playwright_service_headers.mjs");
 
 /// Return browser computer-use dynamic tools for the process default Codex home.
 pub fn configured_browser_dynamic_tools() -> Vec<DynamicToolSpec> {
@@ -190,17 +197,26 @@ async fn run_playwright_provider(
     params: &ComputerUseCallParams,
     config: &PlaywrightProviderConfig,
 ) -> Result<ComputerUseCallResponse, String> {
-    let mut script_file = tempfile::Builder::new()
+    let script_dir = tempfile::Builder::new()
         .prefix("codex-browser-provider-")
-        .suffix(".mjs")
-        .tempfile()
-        .map_err(|err| format!("failed to create browser provider script: {err}"))?;
-    script_file
-        .as_file_mut()
-        .write_all(PLAYWRIGHT_BRIDGE_SCRIPT.as_bytes())
+        .tempdir()
+        .map_err(|err| format!("failed to create browser provider script directory: {err}"))?;
+    let script_path = script_dir.path().join("browser_playwright_provider.mjs");
+    let review_script_path = script_dir.path().join("browser_playwright_review.mjs");
+    let service_headers_script_path = script_dir
+        .path()
+        .join("browser_playwright_service_headers.mjs");
+    std::fs::write(&script_path, PLAYWRIGHT_BRIDGE_SCRIPT)
         .map_err(|err| format!("failed to write browser provider script: {err}"))?;
+    std::fs::write(&review_script_path, PLAYWRIGHT_REVIEW_SCRIPT)
+        .map_err(|err| format!("failed to write browser review script: {err}"))?;
+    std::fs::write(
+        &service_headers_script_path,
+        PLAYWRIGHT_SERVICE_HEADERS_SCRIPT,
+    )
+    .map_err(|err| format!("failed to write browser service header script: {err}"))?;
 
-    let script_path = script_file.path().to_string_lossy().to_string();
+    let script_path = script_path.to_string_lossy().to_string();
     let envs = playwright_provider_envs(config);
 
     let output = run_provider_process(&[config.node.clone(), script_path], params, &envs).await?;
@@ -252,6 +268,28 @@ fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, S
         ENV_PLAYWRIGHT_VIEWPORT_HEIGHT,
         config.viewport_height.map(|height| height.to_string()),
     );
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_ARTIFACT_DIR,
+        config.artifact_dir.clone(),
+    );
+    push_env(
+        &mut envs,
+        ENV_PLAYWRIGHT_ARTIFACT_POLICY,
+        config.artifact_policy.clone(),
+    );
+    if config.allow_call_extra_http_headers.unwrap_or(false) {
+        push_env(
+            &mut envs,
+            ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS,
+            Some("1".to_string()),
+        );
+    }
+    if !config.service_profiles.is_empty()
+        && let Ok(value) = serde_json::to_string(&config.service_profiles)
+    {
+        push_env(&mut envs, ENV_PLAYWRIGHT_SERVICE_PROFILES, Some(value));
+    }
     if let Some(headless) = config.headless {
         push_env(
             &mut envs,
@@ -420,6 +458,24 @@ impl BrowserRuntimeConfig {
                         viewport_height: env
                             .viewport_height
                             .or_else(|| file.as_ref().and_then(|config| config.viewport_height)),
+                        artifact_dir: env.artifact_dir.clone().or_else(|| {
+                            file.as_ref().and_then(|config| config.artifact_dir.clone())
+                        }),
+                        artifact_policy: env.artifact_policy.clone().or_else(|| {
+                            file.as_ref()
+                                .and_then(|config| config.artifact_policy.clone())
+                        }),
+                        allow_call_extra_http_headers: env.allow_call_extra_http_headers.or_else(
+                            || {
+                                file.as_ref()
+                                    .and_then(|config| config.allow_call_extra_http_headers)
+                            },
+                        ),
+                        service_profiles: merge_service_profiles(
+                            file.as_ref()
+                                .and_then(|config| config.service_profiles.clone()),
+                            env.service_profiles.clone(),
+                        ),
                     },
                     default_playwright_backends(),
                     timeout,
@@ -512,6 +568,10 @@ struct PlaywrightProviderConfig {
     isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
+    artifact_dir: Option<String>,
+    artifact_policy: Option<String>,
+    allow_call_extra_http_headers: Option<bool>,
+    service_profiles: Vec<ServiceProfileConfigFile>,
 }
 
 #[derive(Deserialize)]
@@ -530,6 +590,10 @@ struct BrowserRuntimeConfigFile {
     isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
+    artifact_dir: Option<String>,
+    artifact_policy: Option<String>,
+    allow_call_extra_http_headers: Option<bool>,
+    service_profiles: Option<Vec<ServiceProfileConfigFile>>,
     providers: Option<Vec<BrowserProviderConfigFile>>,
     routing: Option<BrowserRoutingConfigFile>,
 }
@@ -600,6 +664,10 @@ struct BrowserProviderConfigFile {
     isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
+    artifact_dir: Option<String>,
+    artifact_policy: Option<String>,
+    allow_call_extra_http_headers: Option<bool>,
+    service_profiles: Option<Vec<ServiceProfileConfigFile>>,
     backends: Option<Vec<String>>,
     platforms: Option<Vec<String>>,
 }
@@ -662,6 +730,21 @@ impl BrowserProviderConfigFile {
                     isolation: self.isolation.clone().or_else(|| env.isolation.clone()),
                     viewport_width: self.viewport_width.or(env.viewport_width),
                     viewport_height: self.viewport_height.or(env.viewport_height),
+                    artifact_dir: self
+                        .artifact_dir
+                        .clone()
+                        .or_else(|| env.artifact_dir.clone()),
+                    artifact_policy: self
+                        .artifact_policy
+                        .clone()
+                        .or_else(|| env.artifact_policy.clone()),
+                    allow_call_extra_http_headers: self
+                        .allow_call_extra_http_headers
+                        .or(env.allow_call_extra_http_headers),
+                    service_profiles: merge_service_profiles(
+                        self.service_profiles.clone(),
+                        env.service_profiles.clone(),
+                    ),
                 },
                 backends,
                 timeout,
@@ -692,6 +775,10 @@ struct BrowserRuntimeEnv {
     isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
+    artifact_dir: Option<String>,
+    artifact_policy: Option<String>,
+    allow_call_extra_http_headers: Option<bool>,
+    service_profiles: Vec<ServiceProfileConfigFile>,
 }
 
 impl BrowserRuntimeEnv {
@@ -713,8 +800,24 @@ impl BrowserRuntimeEnv {
                 .and_then(|value| value.parse().ok()),
             viewport_height: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_HEIGHT])
                 .and_then(|value| value.parse().ok()),
+            artifact_dir: first_env(&[ENV_PLAYWRIGHT_ARTIFACT_DIR]),
+            artifact_policy: first_env(&[ENV_PLAYWRIGHT_ARTIFACT_POLICY]),
+            allow_call_extra_http_headers: first_env(&[ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS])
+                .and_then(|value| parse_bool(&value)),
+            service_profiles: first_env(&[ENV_PLAYWRIGHT_SERVICE_PROFILES])
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ServiceProfileConfigFile {
+    id: String,
+    actor: Option<String>,
+    allowed_hosts: Vec<String>,
+    headers: Option<std::collections::BTreeMap<String, String>>,
+    env_headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -745,6 +848,15 @@ fn order_providers(
     }
     ordered.extend(remaining);
     ordered
+}
+
+fn merge_service_profiles(
+    file_profiles: Option<Vec<ServiceProfileConfigFile>>,
+    env_profiles: Vec<ServiceProfileConfigFile>,
+) -> Vec<ServiceProfileConfigFile> {
+    let mut profiles = file_profiles.unwrap_or_default();
+    profiles.extend(env_profiles);
+    profiles
 }
 
 fn wildcard_backends() -> Vec<String> {
@@ -861,6 +973,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::io::Write as _;
 
     #[test]
     fn command_spec_accepts_shell_like_string_and_array() {
@@ -902,6 +1015,10 @@ mod tests {
                 isolation: None,
                 viewport_width: None,
                 viewport_height: None,
+                artifact_dir: None,
+                artifact_policy: None,
+                allow_call_extra_http_headers: None,
+                service_profiles: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("chrome-provider".to_string()),
@@ -922,6 +1039,10 @@ mod tests {
                         isolation: None,
                         viewport_width: None,
                         viewport_height: None,
+                        artifact_dir: None,
+                        artifact_policy: None,
+                        allow_call_extra_http_headers: None,
+                        service_profiles: None,
                         backends: Some(vec!["chrome".to_string()]),
                         platforms: None,
                     },
@@ -941,6 +1062,10 @@ mod tests {
                         isolation: None,
                         viewport_width: None,
                         viewport_height: None,
+                        artifact_dir: None,
+                        artifact_policy: None,
+                        allow_call_extra_http_headers: None,
+                        service_profiles: None,
                         backends: Some(vec![BACKEND_AUTO.to_string()]),
                         platforms: None,
                     },
@@ -980,6 +1105,10 @@ mod tests {
                 isolation: None,
                 viewport_width: None,
                 viewport_height: None,
+                artifact_dir: None,
+                artifact_policy: None,
+                allow_call_extra_http_headers: None,
+                service_profiles: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("first".to_string()),
@@ -997,6 +1126,10 @@ mod tests {
                         isolation: None,
                         viewport_width: None,
                         viewport_height: None,
+                        artifact_dir: None,
+                        artifact_policy: None,
+                        allow_call_extra_http_headers: None,
+                        service_profiles: None,
                         backends: None,
                         platforms: None,
                     },
@@ -1016,6 +1149,10 @@ mod tests {
                         isolation: None,
                         viewport_width: None,
                         viewport_height: None,
+                        artifact_dir: None,
+                        artifact_policy: None,
+                        allow_call_extra_http_headers: None,
+                        service_profiles: None,
                         backends: None,
                         platforms: None,
                     },
@@ -1052,6 +1189,10 @@ mod tests {
                 isolation: None,
                 viewport_width: None,
                 viewport_height: None,
+                artifact_dir: None,
+                artifact_policy: None,
+                allow_call_extra_http_headers: None,
+                service_profiles: None,
                 providers: None,
                 routing: None,
             }),
@@ -1064,6 +1205,74 @@ mod tests {
         assert!(config.provider_for_backend(BACKEND_CHROME).is_some());
         assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
         assert!(config.provider_for_backend("iab").is_none());
+    }
+
+    #[test]
+    fn playwright_provider_carries_artifact_and_service_profile_config() {
+        let config = BrowserRuntimeConfig::from_sources(
+            Some(BrowserRuntimeConfigFile {
+                provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
+                command: None,
+                node: Some("node".to_string()),
+                node_path: None,
+                timeout_secs: None,
+                state_dir: None,
+                headless: None,
+                executable_path: None,
+                channel: None,
+                display: None,
+                capture_mode: None,
+                isolation: None,
+                viewport_width: None,
+                viewport_height: None,
+                artifact_dir: Some("/tmp/artifacts".to_string()),
+                artifact_policy: Some("failure".to_string()),
+                allow_call_extra_http_headers: Some(true),
+                service_profiles: Some(vec![ServiceProfileConfigFile {
+                    id: "cf-access".to_string(),
+                    actor: Some("service account".to_string()),
+                    allowed_hosts: vec!["example.test".to_string()],
+                    headers: Some(std::collections::BTreeMap::from([(
+                        "CF-Access-Client-Id".to_string(),
+                        "client-id".to_string(),
+                    )])),
+                    env_headers: Some(std::collections::BTreeMap::from([(
+                        "CF-Access-Client-Secret".to_string(),
+                        "CF_SECRET".to_string(),
+                    )])),
+                }]),
+                providers: None,
+                routing: None,
+            }),
+            BrowserRuntimeEnv::default(),
+        )
+        .expect("playwright provider");
+
+        let provider = config
+            .provider_for_backend(BACKEND_AUTO)
+            .expect("provider for auto");
+        let BrowserProvider::Playwright(playwright) = &provider.provider else {
+            panic!("expected playwright provider");
+        };
+        assert_eq!(playwright.artifact_dir.as_deref(), Some("/tmp/artifacts"));
+        assert_eq!(playwright.artifact_policy.as_deref(), Some("failure"));
+        assert_eq!(playwright.allow_call_extra_http_headers, Some(true));
+        assert_eq!(
+            playwright.service_profiles,
+            vec![ServiceProfileConfigFile {
+                id: "cf-access".to_string(),
+                actor: Some("service account".to_string()),
+                allowed_hosts: vec!["example.test".to_string()],
+                headers: Some(std::collections::BTreeMap::from([(
+                    "CF-Access-Client-Id".to_string(),
+                    "client-id".to_string(),
+                )])),
+                env_headers: Some(std::collections::BTreeMap::from([(
+                    "CF-Access-Client-Secret".to_string(),
+                    "CF_SECRET".to_string(),
+                )])),
+            }]
+        );
     }
 
     #[test]
@@ -1080,6 +1289,16 @@ mod tests {
             isolation: Some("thread".to_string()),
             viewport_width: Some(1440),
             viewport_height: Some(1000),
+            artifact_dir: Some("/tmp/codex-browser-artifacts".to_string()),
+            artifact_policy: Some("failure".to_string()),
+            allow_call_extra_http_headers: Some(true),
+            service_profiles: vec![ServiceProfileConfigFile {
+                id: "cf-access".to_string(),
+                actor: Some("service account".to_string()),
+                allowed_hosts: vec!["example.test".to_string()],
+                headers: None,
+                env_headers: None,
+            }],
         };
 
         assert_eq!(
@@ -1112,6 +1331,23 @@ mod tests {
                 (
                     ENV_PLAYWRIGHT_VIEWPORT_HEIGHT.to_string(),
                     "1000".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_ARTIFACT_DIR.to_string(),
+                    "/tmp/codex-browser-artifacts".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_ARTIFACT_POLICY.to_string(),
+                    "failure".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS.to_string(),
+                    "1".to_string()
+                ),
+                (
+                    ENV_PLAYWRIGHT_SERVICE_PROFILES.to_string(),
+                    r#"[{"id":"cf-access","actor":"service account","allowed_hosts":["example.test"],"headers":null,"env_headers":null}]"#
+                        .to_string()
                 ),
                 (ENV_PLAYWRIGHT_HEADLESS.to_string(), "0".to_string()),
             ]

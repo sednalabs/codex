@@ -228,8 +228,11 @@ docs-only refresh commit that records this snapshot.
   `browser_observe` and `browser_step` automatically. The Playwright bridge
   supports accessibility-oriented selectors plus human-like mouse and keyboard
   primitives, defaults to per-thread browser profile isolation for concurrent
-  sidecars, and can still be configured for shared, environment-scoped, or
-  per-call profiles when that lifecycle is intentional. Thread-spawned agents
+  sidecars, can return visible-control metadata and selector candidates for UX
+  loops, can save redacted audit artifacts, can use locally configured
+  service-account navigation headers for allowed hosts, and can still be
+  configured for shared, environment-scoped, or per-call profiles when that
+  lifecycle is intentional. Thread-spawned agents
   inherit the parent thread's native dynamic tools, so browser-capable sidecars
   receive the native browser surface rather than silently dropping to a
   compatibility adapter.

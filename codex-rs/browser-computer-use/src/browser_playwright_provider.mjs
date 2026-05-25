@@ -3,11 +3,22 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import {
+  actionSummary,
+  captureBundle,
+  pageResponseAfterFailure,
+  pageState,
+  responseForPage,
+  restoreScroll,
+  settleAfterActions,
+} from "./browser_playwright_review.mjs";
+import {
+  installServiceHeaderRoute,
+  serviceHeaderPlan,
+} from "./browser_playwright_service_headers.mjs";
 
 const TOOL_OBSERVE = "browser_observe";
 const TOOL_STEP = "browser_step";
-const CAPTURE_VIEWPORT = "viewport";
-const CAPTURE_FULL_PAGE = "full_page";
 const DEFAULT_PROFILE_LOCK_TIMEOUT_MS = 120_000;
 const PROFILE_LOCK_STALE_MS = 10 * 60_000;
 const PROFILE_LOCK_POLL_MS = 250;
@@ -37,6 +48,7 @@ async function main() {
   await withProfileLock(profile.stateDir, async () => {
     const headless = playwrightHeadless();
     const viewport = viewportFromRequest(request);
+    const serviceHeaders = serviceHeaderPlan(request);
     const context = await chromium.launchPersistentContext(profile.stateDir, {
       ...launchOptions({ headless, viewport, profile }),
       headless,
@@ -44,26 +56,62 @@ async function main() {
     });
 
     try {
+      await installServiceHeaderRoute(context, serviceHeaders);
       const page = await activePage(context);
       await restoreOrNavigate(page, request, profile.stateDir);
 
       const summaries = [];
+      const actionTrail = [];
       if (request.tool === TOOL_STEP) {
         const actions = canonicalActions(request.arguments);
         if (actions.length === 0) {
           throw new Error("browser_step requires an action or non-empty actions array.");
         }
         for (const action of actions) {
-          summaries.push(await runAction(page, action));
+          const before = await pageState(page);
+          try {
+            const summary = await runAction(page, action);
+            summaries.push(summary);
+            actionTrail.push({ action: actionSummary(action), before, after: await pageState(page), summary });
+          } catch (error) {
+            actionTrail.push({
+              action: actionSummary(action),
+              before,
+              after: await pageState(page),
+              error: errorMessage(error),
+            });
+            await settleAfterActions(page, request);
+            const failureResponse = await pageResponseAfterFailure(
+              page,
+              summaries,
+              profile,
+              request,
+              action,
+              error,
+              actionTrail,
+              serviceHeaders,
+            );
+            await saveState(profile.stateDir, page);
+            writeResponse(failureResponse);
+            return;
+          }
         }
       } else if (request.tool !== TOOL_OBSERVE) {
         throw new Error(`Unsupported browser tool ${request.tool}`);
       }
 
       await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-      const screenshot = await captureScreenshot(page);
+      await settleAfterActions(page, request);
+      const screenshots = await captureBundle(page, request);
       await saveState(profile.stateDir, page);
-      writeResponse(await responseForPage(page, screenshot, summaries, profile));
+      writeResponse(
+        await responseForPage(page, screenshots, summaries, profile, {
+          request,
+          actionTrail,
+          serviceHeaders,
+          success: true,
+        }),
+      );
     } finally {
       await context.close().catch(() => {});
     }
@@ -285,13 +333,6 @@ function viewportFromRequest(request) {
   };
 }
 
-function captureMode() {
-  const mode = (
-    process.env.CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE || CAPTURE_VIEWPORT
-  ).toLowerCase();
-  return mode === CAPTURE_FULL_PAGE ? CAPTURE_FULL_PAGE : CAPTURE_VIEWPORT;
-}
-
 async function activePage(context) {
   const existing = context.pages().find((page) => !page.isClosed());
   return existing || context.newPage();
@@ -301,14 +342,19 @@ async function restoreOrNavigate(page, request, stateDir) {
   const explicitUrl = request.arguments?.url;
   if (explicitUrl) {
     await page.goto(explicitUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
+    await restoreScroll(page, request);
     return;
   }
 
   const statePath = path.join(stateDir, "state.json");
   const state = await readJsonOrNull(statePath);
-  if (state?.url && page.url() === "about:blank") {
+  if (navigableUrl(state?.url) && pageUrl(page) === "about:blank") {
     await page.goto(state.url, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
+    if (!request.arguments?.view && typeof state.scrollY === "number") {
+      await page.evaluate((scrollY) => window.scrollTo(window.scrollX, scrollY), state.scrollY);
+    }
   }
+  await restoreScroll(page, request);
 }
 
 function canonicalActions(argumentsValue) {
@@ -333,6 +379,12 @@ async function runAction(page, action) {
     case "type":
       await typeText(page, action);
       return action.selector ? "typed into browser selector" : "typed into focused browser element";
+    case "focus":
+      await focusElement(page, action);
+      return action.selector ? "focused browser selector" : "focused current browser element";
+    case "clear":
+      await clearElement(page, action);
+      return action.selector ? "cleared browser selector" : "cleared focused browser element";
     case "keypress":
       await keypress(page, action);
       return "sent browser keypress";
@@ -414,6 +466,29 @@ async function typeText(page, action) {
     }
   }
   await page.keyboard.type(text, keyboardDelayOptions(action));
+}
+
+async function focusElement(page, action) {
+  const locator = locatorFromAction(page, action);
+  if (locator) {
+    await locator.focus({ timeout: timeoutMs({ arguments: action }) });
+    return;
+  }
+  if (typeof action.x === "number" && typeof action.y === "number") {
+    await mouseMove(page, action);
+  }
+}
+
+async function clearElement(page, action) {
+  const locator = locatorFromAction(page, action);
+  if (locator) {
+    if (textEntryMethod(action) === "fill") {
+      await locator.fill("", { timeout: timeoutMs({ arguments: action }) });
+      return;
+    }
+    await locator.click({ timeout: timeoutMs({ arguments: action }) });
+  }
+  await selectAllAndClear(page);
 }
 
 async function keypress(page, action) {
@@ -506,36 +581,35 @@ function locatorFromAction(page, action) {
   if (!selector) {
     return null;
   }
+  const maybeFirst = (locator) => selector.strict ? locator : locator.first();
   if (typeof selector === "string") {
     return page.locator(selector).first();
   }
   if (selector.css) {
-    return page.locator(selector.css).first();
+    return maybeFirst(page.locator(selector.css));
   }
   if (selector.text) {
-    return page.getByText(selector.text, selectorOptions(selector)).first();
+    return maybeFirst(page.getByText(selector.text, selectorOptions(selector)));
   }
   if (selector.label) {
-    return page.getByLabel(selector.label, selectorOptions(selector)).first();
+    return maybeFirst(page.getByLabel(selector.label, selectorOptions(selector)));
   }
   if (selector.placeholder) {
-    return page
-      .getByPlaceholder(selector.placeholder, selectorOptions(selector))
-      .first();
+    return maybeFirst(page.getByPlaceholder(selector.placeholder, selectorOptions(selector)));
   }
   if (selector.test_id || selector.testId) {
-    return page.getByTestId(selector.test_id || selector.testId).first();
+    return maybeFirst(page.getByTestId(selector.test_id || selector.testId));
   }
   if (selector.title) {
-    return page.getByTitle(selector.title, selectorOptions(selector)).first();
+    return maybeFirst(page.getByTitle(selector.title, selectorOptions(selector)));
   }
   if (selector.alt_text || selector.altText) {
-    return page
-      .getByAltText(selector.alt_text || selector.altText, selectorOptions(selector))
-      .first();
+    return maybeFirst(
+      page.getByAltText(selector.alt_text || selector.altText, selectorOptions(selector)),
+    );
   }
   if (selector.role) {
-    return page.getByRole(selector.role, roleSelectorOptions(selector)).first();
+    return maybeFirst(page.getByRole(selector.role, roleSelectorOptions(selector)));
   }
   return null;
 }
@@ -654,107 +728,46 @@ function compactOptions(options) {
   );
 }
 
-async function captureScreenshot(page) {
-  const errors = [];
-  const fullPage = captureMode() === CAPTURE_FULL_PAGE;
-  try {
-    return {
-      buffer: await page.screenshot({ type: "png", fullPage }),
-      method: "page.screenshot",
-    };
-  } catch (error) {
-    errors.push(`page.screenshot: ${errorMessage(error)}`);
-  }
-
-  for (const fromSurface of [true, false]) {
-    let cdp = null;
-    try {
-      cdp = await page.context().newCDPSession(page);
-      await cdp.send("Page.enable").catch(() => {});
-      const result = await cdp.send("Page.captureScreenshot", {
-        format: "png",
-        fromSurface,
-        captureBeyondViewport: fullPage,
-      });
-      return {
-        buffer: Buffer.from(result.data, "base64"),
-        method: `cdp.Page.captureScreenshot(fromSurface=${fromSurface})`,
-        warning: compactCaptureErrors(errors),
-      };
-    } catch (error) {
-      errors.push(
-        `cdp.Page.captureScreenshot(fromSurface=${fromSurface}): ${errorMessage(error)}`,
-      );
-    } finally {
-      if (cdp) {
-        await cdp.detach().catch(() => {});
-      }
-    }
-  }
-
-  for (const selector of ["body", "html"]) {
-    try {
-      return {
-        buffer: await page.locator(selector).screenshot({ type: "png" }),
-        method: `locator(${selector}).screenshot`,
-        warning: compactCaptureErrors(errors),
-      };
-    } catch (error) {
-      errors.push(`locator(${selector}).screenshot: ${errorMessage(error)}`);
-    }
-  }
-
-  throw new Error(`Unable to capture browser screenshot. ${compactCaptureErrors(errors)}`);
-}
-
-async function responseForPage(page, screenshot, summaries, profile) {
-  const lines = ["Browser observation", `url: ${page.url()}`];
-  if (profile?.label) {
-    lines.push(`profile: ${profile.label}`);
-  }
-  const title = await pageTitle(page);
-  if (title) {
-    lines.push(`title: ${title}`);
-  }
-  const viewport = page.viewportSize();
-  if (viewport) {
-    lines.push(`viewport: ${viewport.width}x${viewport.height}`);
-  }
-  if (summaries.length > 0) {
-    lines.push("actions:");
-    for (const summary of summaries) {
-      lines.push(`- ${summary}`);
-    }
-  }
-  lines.push(`capture: ${screenshot.method}`);
-  if (screenshot.warning) {
-    lines.push(`capture_fallback: ${screenshot.warning}`);
-  }
-  return {
-    contentItems: [
-      { type: "inputText", text: lines.join("\n") },
-      {
-        type: "inputImage",
-        imageUrl: `data:image/png;base64,${screenshot.buffer.toString("base64")}`,
-        detail: "high",
-      },
-    ],
-    success: true,
-  };
-}
-
-function pageTitle(page) {
-  return page
-    .title()
-    .then((title) => title)
-    .catch(() => "");
-}
-
 async function saveState(stateDir, page) {
+  const viewport = page.viewportSize?.() || null;
+  const url = pageUrl(page);
+  const scroll = await page
+    .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    .catch(() => ({ x: 0, y: 0 }));
+  if (!navigableUrl(url)) {
+    return;
+  }
   await fs.writeFile(
     path.join(stateDir, "state.json"),
-    JSON.stringify({ url: page.url(), updatedAt: new Date().toISOString() }),
+    JSON.stringify({
+      url,
+      scrollX: scroll.x,
+      scrollY: scroll.y,
+      viewportWidth: viewport?.width,
+      viewportHeight: viewport?.height,
+      updatedAt: new Date().toISOString(),
+    }),
   );
+}
+
+function pageUrl(page) {
+  try {
+    return page.url();
+  } catch {
+    return "unknown";
+  }
+}
+
+function navigableUrl(value) {
+  if (typeof value !== "string" || !value.trim() || value === "unknown") {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "file:";
+  } catch {
+    return false;
+  }
 }
 
 async function readJsonOrNull(file) {
@@ -786,13 +799,6 @@ function positiveIntegerOrUndefined(value) {
 
 function nonNegativeIntegerOrUndefined(value) {
   return Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
-function compactCaptureErrors(errors) {
-  return errors
-    .map((error) => error.split("\n")[0])
-    .join(" | ")
-    .slice(0, 500);
 }
 
 function errorMessage(error) {
