@@ -26,7 +26,7 @@ fn search_info_uses_dynamic_tool_metadata_and_parameter_names() {
 
     assert_eq!(
         search_info.entry.search_text,
-        "automation_update automation update Create or update automations. codex_app mode timezone"
+        "automation_update automation update automation-update automationupdate Create or update automations. codex_app codex app codex-app codexapp mode timezone"
     );
     assert_eq!(
         search_info.source_info,
