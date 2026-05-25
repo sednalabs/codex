@@ -9,6 +9,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::flat_tool_name;
+use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
@@ -233,50 +234,54 @@ fn mcp_hook_tool_input(raw_arguments: &str) -> Value {
 
 fn build_mcp_search_text(info: &ToolInfo) -> String {
     let tool_name = info.canonical_tool_name();
-    let mut schema_properties = info
-        .tool
-        .input_schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    schema_properties.sort();
-    let mut parts = vec![
-        flat_tool_name(&tool_name).into_owned(),
-        info.callable_name.clone(),
-        info.tool.name.to_string(),
-        info.server_name.clone(),
-    ];
+    let mut builder = SearchTextBuilder::new();
+    builder.push(flat_tool_name(&tool_name));
+    builder.push(&info.callable_name);
+    builder.push(info.tool.name.as_ref());
+    builder.push(&info.server_name);
     if let Some(title) = info.tool.title.as_deref().map(str::trim)
         && !title.is_empty()
     {
-        parts.push(title.to_string());
+        builder.push(title);
     }
     if let Some(description) = info.tool.description.as_deref().map(str::trim)
         && !description.is_empty()
     {
-        parts.push(description.to_string());
+        builder.push(description);
     }
     if let Some(connector_name) = info.connector_name.as_deref().map(str::trim)
         && !connector_name.is_empty()
     {
-        parts.push(connector_name.to_string());
+        builder.push(connector_name);
     }
     if let Some(namespace_description) = info.namespace_description.as_deref().map(str::trim)
         && !namespace_description.is_empty()
     {
-        parts.push(namespace_description.to_string());
+        builder.push(namespace_description);
     }
-    parts.extend(
-        info.plugin_display_names
-            .iter()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|display_name| !display_name.is_empty())
-            .map(str::to_string),
-    );
-    parts.extend(schema_properties);
-    parts.join(" ")
+    for display_name in info
+        .plugin_display_names
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty())
+    {
+        builder.push(display_name);
+    }
+    if info
+        .tool
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.read_only_hint)
+        .unwrap_or(false)
+    {
+        builder.push("read only");
+        builder.push("read-only");
+        builder.push("read_only");
+        builder.push("readonly");
+    }
+    builder.push_schema_object_terms(&info.tool.input_schema);
+    builder.finish()
 }
 
 #[cfg(test)]

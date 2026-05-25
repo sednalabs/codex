@@ -140,9 +140,6 @@ mod tests {
     use crate::tools::handlers::McpHandler;
     use codex_mcp::ToolInfo;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
-    use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-    use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
-    use codex_tools::ANDROID_STEP_TOOL_NAME;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
@@ -253,6 +250,126 @@ mod tests {
                 }),
             ],
         );
+    }
+
+    #[test]
+    fn mcp_search_prefers_read_only_d1_query_for_natural_phrasing() {
+        let search_infos = cloudflare_like_tools()
+            .into_iter()
+            .map(|tool| {
+                McpHandler::new(tool)
+                    .expect("MCP tool should convert")
+                    .search_info()
+                    .expect("MCP handler should return search info")
+            })
+            .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        for query in [
+            "cloudflare d1 execute query",
+            "Cloudflare D1 read only query execute SQL database",
+        ] {
+            let tools = handler.search(query, 1).expect("search should succeed");
+            assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
+        }
+    }
+
+    fn namespace_tool_names(tools: &[LoadableToolSpec]) -> Vec<&str> {
+        tools
+            .iter()
+            .flat_map(|tool| match tool {
+                LoadableToolSpec::Namespace(namespace) => namespace
+                    .tools
+                    .iter()
+                    .map(|tool| match tool {
+                        ResponsesApiNamespaceTool::Function(tool) => tool.name.as_str(),
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    fn cloudflare_like_tools() -> Vec<ToolInfo> {
+        vec![
+            cloudflare_tool_info(
+                "api_read",
+                "Execute a read-only Cloudflare REST API GET operation.",
+                &["operation_id", "query"],
+                true,
+            ),
+            cloudflare_tool_info(
+                "api_mutate",
+                "Execute a mutating Cloudflare REST API operation.",
+                &["operation_id", "body"],
+                false,
+            ),
+            cloudflare_tool_info(
+                "d1_validate_query",
+                "Validate one read-only D1 SQL statement without executing it.",
+                &["database_id", "sql"],
+                true,
+            ),
+            cloudflare_tool_info(
+                "d1_execute_write",
+                "Execute one audited D1 row-write SQL statement.",
+                &["database_id", "sql"],
+                false,
+            ),
+            cloudflare_tool_info(
+                "d1_query_read_only",
+                "Run or execute one read-only D1 SQL SELECT query against a database and return rows.",
+                &["database_id", "sql", "max_rows"],
+                true,
+            ),
+        ]
+    }
+
+    fn cloudflare_tool_info(
+        tool_name: &str,
+        description: &str,
+        properties: &[&str],
+        read_only: bool,
+    ) -> ToolInfo {
+        let properties = properties
+            .iter()
+            .map(|property| {
+                (
+                    (*property).to_string(),
+                    serde_json::json!({ "type": "string" }),
+                )
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+
+        let mut annotations = rmcp::model::ToolAnnotations::default();
+        annotations.read_only_hint = Some(read_only);
+
+        ToolInfo {
+            server_name: "cloudflare".to_string(),
+            supports_parallel_tool_calls: false,
+            server_origin: None,
+            callable_name: tool_name.to_string(),
+            callable_namespace: "mcp__cloudflare__".to_string(),
+            namespace_description: Some("Cloudflare account and data tools.".to_string()),
+            tool: Tool {
+                name: tool_name.to_string().into(),
+                title: None,
+                description: Some(description.to_string().into()),
+                input_schema: Arc::new(rmcp::model::object(serde_json::json!({
+                    "type": "object",
+                    "properties": properties,
+                    "additionalProperties": false,
+                }))),
+                output_schema: None,
+                annotations: Some(annotations),
+                execution: None,
+                icons: None,
+                meta: None,
+            },
+            connector_id: None,
+            connector_name: Some("Cloudflare".to_string()),
+            plugin_display_names: Vec::new(),
+        }
     }
 
     fn tool_info(server_name: &str, tool_name: &str, description_prefix: &str) -> ToolInfo {

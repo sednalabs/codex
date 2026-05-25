@@ -9,6 +9,7 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
@@ -223,23 +224,14 @@ async fn request_dynamic_tool(
 }
 
 fn build_dynamic_search_text(tool: &DynamicToolSpec) -> String {
-    let mut schema_properties = tool
-        .input_schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    schema_properties.sort();
-    let mut parts = vec![
-        tool.name.clone(),
-        tool.name.replace('_', " "),
-        tool.description.clone(),
-    ];
+    let mut builder = SearchTextBuilder::new();
+    builder.push(&tool.name);
+    builder.push(&tool.description);
     if let Some(namespace) = &tool.namespace {
-        parts.push(namespace.clone());
+        builder.push(namespace);
     }
-    parts.extend(schema_properties);
-    parts.join(" ")
+    builder.push_schema_terms(&tool.input_schema);
+    builder.finish()
 }
 
 #[cfg(test)]
