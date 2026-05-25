@@ -7,9 +7,9 @@ tool-registry, app-server, TUI, rollout, and validation behavior.
 Native runtime backends are supplied by external providers. Android is the
 first implemented provider. Browser is now a registered adapter with a TUI
 provider bridge that can either invoke an operator-configured command or use
-the built-in Playwright backend for `backend=auto`. Desktop is a registered
-adapter for cleanroom macOS Screen Recording/Accessibility-style runtimes and
-future native desktop providers.
+the built-in Playwright backend for `backend=auto`, `browser`, `chrome`, or
+`chromium`. Desktop is a registered adapter for cleanroom macOS Screen
+Recording/Accessibility-style runtimes and future native desktop providers.
 
 ## Ownership Boundaries
 
@@ -89,10 +89,18 @@ the original single-provider configuration and a provider registry:
   stale Chrome window placement does not turn a visible browser into a
   text-only failure. The bridge supports accessibility-oriented selectors plus
   human-like mouse and keyboard primitives: click, type, keypress, key down/up,
-  scroll/wheel, hover, drag, mouse move/down/up, select, wait, and navigate.
-  Selector text entry uses real keyboard events by default, with
+  scroll/wheel, hover, drag, mouse move/down/up, select, wait, focus, clear,
+  and navigate. Selector text entry uses real keyboard events by default, with
   `method: "fill"` available as a compatibility escape hatch for pages where
-  DOM-level filling is the better tool.
+  DOM-level filling is the better tool. `browser_observe` can request compact
+  interaction metadata with `scope: "viewport_and_page"` and can capture a
+  small labeled viewport bundle for top/bottom or desktop/mobile UX review.
+  Interaction metadata uses labels, visible text, attributes, and selector
+  hints; it must not echo arbitrary typed field values into model context or
+  saved manifests.
+  When a Playwright-backed step fails, the bridge returns the current page
+  state, visible controls, selector candidates, and a fresh native screenshot
+  whenever screenshot capture still works.
 - `CODEX_BROWSER_COMPUTER_USE_COMMAND` points to an external provider command.
   Codex sends `ComputerUseCallParams` JSON on stdin and expects a
   `ComputerUseCallResponse` JSON object on stdout. This is the extension point
@@ -101,7 +109,8 @@ the original single-provider configuration and a provider registry:
   `provider`, `command`, `node`, `node_path`, `timeout_secs`, `state_dir`,
   `headless`, `executable_path`, `channel`, `display`, `capture_mode`,
   `isolation`,
-  `viewport_width`, and `viewport_height` fields.
+  `viewport_width`, `viewport_height`, `artifact_dir`, `artifact_policy`,
+  `allow_call_extra_http_headers`, and `service_profiles` fields.
 - `~/.codex/browser-computer-use.json` may also provide `providers[]` and
   `routing.fallback_order`. Each provider can declare an `id`, `provider`,
   `command`, `backends`, `platforms`, and provider-specific settings. Exact
@@ -114,6 +123,23 @@ the original single-provider configuration and a provider registry:
   Operators can set `isolation` to `shared`, `environment`, or `call` when a
   single shared profile, selected environment scope, or per-call ephemerality is
   the better runtime contract.
+
+The built-in Playwright provider can save optional audit artifacts. Native
+`inputImage` content remains the primary model-facing channel; artifacts are
+diagnostic breadcrumbs for review bundles or failure triage. Set
+`artifact_policy` to `failure` or `always`, and optionally set `artifact_dir`.
+Failures save artifacts by default unless `artifact_policy` is `off`; successful
+calls save artifacts only when requested or when policy is `always`. Artifact
+write failures are reported in the browser observation text and should not turn
+an otherwise useful browser observation into a provider failure.
+
+Service-account navigation is configured locally with `service_profiles`.
+Profiles declare an `id`, a non-secret `actor` label, `allowed_hosts`, and
+headers supplied either directly from local config or through environment
+variables. Tool calls may request a `service_profile`. Direct per-call headers
+are accepted only when `allow_call_extra_http_headers` is enabled and
+`allowed_hosts` is supplied. Provider text output and manifests may show actor
+labels and header names, but must redact header values.
 
 Example command-provider configuration:
 
@@ -150,6 +176,19 @@ Example realistic headed Chrome configuration for a visible Linux display:
   "capture_mode": "viewport",
   "viewport_width": 1440,
   "viewport_height": 1000,
+  "artifact_policy": "failure",
+  "artifact_dir": "/path/to/browser-artifacts",
+  "service_profiles": [
+    {
+      "id": "staging-access",
+      "actor": "staging service account",
+      "allowed_hosts": ["staging.example.com"],
+      "env_headers": {
+        "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
+        "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET"
+      }
+    }
+  ],
   "timeout_secs": 180
 }
 ```
