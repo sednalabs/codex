@@ -78,7 +78,11 @@ fn build_all_tools_value<'s>(
 
     for (index, tool) in enabled_tools.iter().enumerate() {
         let item = v8::Object::new(scope);
-        let name = v8::String::new(scope, &tool.tool_name)
+        let all_tools_name = tool
+            .all_tools_name
+            .as_deref()
+            .unwrap_or(tool.global_name.as_str());
+        let name = v8::String::new(scope, all_tools_name)
             .ok_or_else(|| "failed to allocate ALL_TOOLS name".to_string())?;
         let description = v8::String::new(scope, &tool.description)
             .ok_or_else(|| "failed to allocate ALL_TOOLS description".to_string())?;
@@ -86,7 +90,7 @@ fn build_all_tools_value<'s>(
         if item.set(scope, name_key.into(), name.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS name".to_string());
         }
-        if let Some(module) = &tool.module {
+        if let Some(module) = &tool.all_tools_module {
             let module = v8::String::new(scope, module)
                 .ok_or_else(|| "failed to allocate ALL_TOOLS module".to_string())?;
             if item.set(scope, module_key.into(), module.into()) != Some(true) {

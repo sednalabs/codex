@@ -31,9 +31,9 @@ dependencies = [
 
 [[package]]
 name = "actix-http"
-version = "3.12.1"
+version = "3.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93acb4a42f64936f9b8cae4a433b237599dd6eb6ed06124eb67132ef8cc90662"
+checksum = "7926860314cbe2fb5d1f13731e387ab43bd32bca224e82e6e2db85de0a3dba49"
 dependencies = [
  "actix-codec",
  "actix-rt",
@@ -1395,6 +1395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1858,6 +1867,7 @@ dependencies = [
  "pretty_assertions",
  "regex-lite",
  "reqwest",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -1926,6 +1936,8 @@ dependencies = [
  "codex-utils-cli",
  "codex-utils-json-to-toml",
  "codex-utils-pty",
+ "codex-web-search-extension",
+ "codex-windows-sandbox",
  "core_test_support",
  "flate2",
  "futures",
@@ -2249,6 +2261,7 @@ dependencies = [
  "codex-exec-server",
  "codex-execpolicy",
  "codex-features",
+ "codex-git-utils",
  "codex-install-context",
  "codex-login",
  "codex-mcp",
@@ -2260,6 +2273,7 @@ dependencies = [
  "codex-protocol",
  "codex-responses-api-proxy",
  "codex-rmcp-client",
+ "codex-rollout",
  "codex-rollout-trace",
  "codex-sandboxing",
  "codex-state",
@@ -2274,7 +2288,9 @@ dependencies = [
  "codex-windows-sandbox",
  "crossterm",
  "http 1.4.0",
+ "insta",
  "libc",
+ "os_info",
  "owo-colors",
  "predicates",
  "pretty_assertions",
@@ -2284,12 +2300,16 @@ dependencies = [
  "shlex",
  "sqlx",
  "supports-color 3.0.2",
+ "sys-locale",
  "tempfile",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "unicode-segmentation",
+ "which 8.0.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2522,6 +2542,7 @@ dependencies = [
  "codex-feedback",
  "codex-git-utils",
  "codex-hooks",
+ "codex-install-context",
  "codex-login",
  "codex-mcp",
  "codex-memories-read",
@@ -2978,6 +2999,7 @@ dependencies = [
  "chrono",
  "codex-core",
  "codex-extension-api",
+ "codex-otel",
  "codex-protocol",
  "codex-state",
  "codex-tools",
@@ -3194,28 +3216,12 @@ dependencies = [
  "codex-core",
  "codex-extension-api",
  "codex-features",
- "codex-memories-read",
+ "codex-otel",
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
+ "codex-utils-template",
  "pretty_assertions",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "codex-memories-mcp"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "codex-utils-absolute-path",
- "codex-utils-output-truncation",
- "pretty_assertions",
- "rmcp",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3231,11 +3237,7 @@ dependencies = [
  "codex-protocol",
  "codex-shell-command",
  "codex-utils-absolute-path",
- "codex-utils-output-truncation",
- "codex-utils-template",
  "pretty_assertions",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -3795,6 +3797,7 @@ dependencies = [
  "codex-features",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
  "codex-utils-output-truncation",
  "codex-utils-pty",
  "codex-utils-string",
@@ -3823,7 +3826,6 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-browser-computer-use",
- "codex-chatgpt",
  "codex-cli",
  "codex-cloud-requirements",
  "codex-config",
@@ -4008,6 +4010,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "codex-utils-cache",
+ "divan",
  "image",
  "mime_guess",
  "thiserror 2.0.18",
@@ -4157,6 +4160,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-web-search-extension"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "codex-api",
+ "codex-core",
+ "codex-extension-api",
+ "codex-features",
+ "codex-login",
+ "codex-model-provider",
+ "codex-model-provider-info",
+ "codex-protocol",
+ "codex-tools",
+ "http 1.4.0",
+ "pretty_assertions",
+ "schemars 1.2.1",
+ "serde_json",
+]
+
+[[package]]
 name = "codex-windows-sandbox"
 version = "0.0.0"
 dependencies = [
@@ -4177,6 +4200,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing-appender",
  "windows 0.58.0",
  "windows-sys 0.52.0",
 ]
@@ -4252,6 +4276,12 @@ checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
 ]
+
+[[package]]
+name = "condtype"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf0a07a401f374238ab8e2f11a104d2851bf9ce711ec69804834de8af45c7af"
 
 [[package]]
 name = "console"
@@ -5215,6 +5245,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "divan"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a405457ec78b8fe08b0e32b4a3570ab5dff6dd16eb9e76a5ee0a9d9cbd898933"
+dependencies = [
+ "cfg-if",
+ "clap",
+ "condtype",
+ "divan-macros",
+ "libc",
+ "regex-lite",
+]
+
+[[package]]
+name = "divan-macros"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9556bc800956545d6420a640173e5ba7dfa82f38d3ea5a167eb555bc69ac3323"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "dns-lookup"
 version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5487,7 +5542,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11747,11 +11802,12 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.18.0"
+version = "3.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd5414fad8e6907dbdd5bc441a50ae8d6e26151a03b1de04d89a5576de61d01f"
+checksum = "e72c1c2cb7b223fafb600a619537a871c2818583d619401b785e7c0b746ccde2"
 dependencies = [
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "hex",
  "indexmap 1.9.3",
@@ -11766,9 +11822,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.18.0"
+version = "3.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3db8978e608f1fe7357e211969fd9abdcae80bac1ba7a3369bb7eb6b404eb65"
+checksum = "b90c488738ecb4fb0262f41f43bc40efc5868d9fb744319ddf5f5317f417bfac"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",

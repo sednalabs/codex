@@ -340,11 +340,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let run_cloud_requirements = cloud_requirements.clone();
 
     let model_provider = if oss {
-        let resolved = resolve_oss_provider(
-            oss_provider.as_deref(),
-            &config_toml,
-            /*config_profile*/ None,
-        );
+        let resolved = resolve_oss_provider(oss_provider.as_deref(), &config_toml);
 
         if let Some(provider) = resolved {
             Some(provider)
@@ -383,11 +379,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         workspace_roots: None,
         model_provider: model_provider.clone(),
         service_tier: None,
-        config_profile: None,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
-        zsh_path: None,
+        default_zsh_path: None,
         base_instructions: None,
         developer_instructions: None,
         personality: None,
@@ -752,6 +747,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         thread_id: primary_thread_id_for_span.clone(),
                         input: items.into_iter().map(Into::into).collect(),
                         responsesapi_client_metadata: None,
+                        additional_context: None,
                         environments: None,
                         cwd: Some(default_cwd),
                         runtime_workspace_roots: None,
@@ -991,6 +987,14 @@ fn configured_browser_dynamic_tools(
     (!tools.is_empty()).then_some(tools)
 }
 
+fn config_request_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
+    let mut overrides = HashMap::new();
+    if config.bypass_hook_trust {
+        overrides.insert("bypass_hook_trust".to_string(), Value::Bool(true));
+    }
+    (!overrides.is_empty()).then_some(overrides)
+}
+
 fn permissions_selection_from_config(config: &Config) -> Option<String> {
     config
         .permissions
@@ -1025,13 +1029,6 @@ fn sandbox_mode_from_permission_profile(
             }
         }
     }
-}
-
-fn config_request_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
-    config
-        .active_profile
-        .as_ref()
-        .map(|profile| HashMap::from([("profile".to_string(), Value::String(profile.clone()))]))
 }
 
 fn approvals_reviewer_override_from_config(

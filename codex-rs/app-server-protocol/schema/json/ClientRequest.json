@@ -11,6 +11,28 @@
       ],
       "type": "string"
     },
+    "AdditionalContextEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AdditionalContextKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AdditionalContextKind": {
+      "enum": [
+        "untrusted",
+        "application"
+      ],
+      "type": "string"
+    },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -431,7 +453,6 @@
           ]
         },
         "includeLayers": {
-          "default": false,
           "type": "boolean"
         }
       },
@@ -781,8 +802,7 @@
         }
       },
       "required": [
-        "classification",
-        "includeLogs"
+        "classification"
       ],
       "type": "object"
     },
@@ -1096,7 +1116,6 @@
     "GetAccountParams": {
       "properties": {
         "refreshToken": {
-          "default": false,
           "description": "When `true`, requests a proactive token refresh before returning.\n\nIn managed auth mode this triggers the normal refresh-token flow. In\nexternal auth mode this flag is ignored. Clients should refresh tokens\nthemselves and call `account/login/start` with `chatgptAuthTokens`.",
           "type": "boolean"
         }
@@ -1184,6 +1203,8 @@
     },
     "ImageDetail": {
       "enum": [
+        "auto",
+        "low",
         "high",
         "original"
       ],
@@ -1262,6 +1283,12 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
             "null"
           ]
         }
@@ -3364,7 +3391,6 @@
           ]
         },
         "persistExtendedHistory": {
-          "default": false,
           "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
@@ -3713,7 +3739,6 @@
     "ThreadReadParams": {
       "properties": {
         "includeTurns": {
-          "default": false,
           "description": "When true, include turns and their items from rollout history.",
           "type": "boolean"
         },
@@ -4002,7 +4027,6 @@
           ]
         },
         "persistExtendedHistory": {
-          "default": false,
           "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
@@ -4387,7 +4411,6 @@
           ]
         },
         "experimentalRawEvents": {
-          "default": false,
           "description": "If true, opt into emitting raw Responses API items on the event stream.\nThis is for internal use only (e.g. Codex Cloud).",
           "type": "boolean"
         },
@@ -4418,7 +4441,6 @@
           ]
         },
         "persistExtendedHistory": {
-          "default": false,
           "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
           "type": "boolean"
         },
@@ -4659,6 +4681,16 @@
     },
     "TurnStartParams": {
       "properties": {
+        "additionalContext": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AdditionalContextEntry"
+          },
+          "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "approvalPolicy": {
           "anyOf": [
             {
@@ -4815,6 +4847,16 @@
     },
     "TurnSteerParams": {
       "properties": {
+        "additionalContext": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AdditionalContextEntry"
+          },
+          "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "expectedTurnId": {
           "description": "Required active turn id precondition. The request fails when it does not\nmatch the currently active turn.",
           "type": "string"

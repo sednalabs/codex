@@ -224,6 +224,7 @@ impl ChatWidget {
             crate::status::new_status_output_with_rate_limits_handle_for_instruction_sources(
                 &self.config,
                 self.runtime_model_provider_base_url.as_deref(),
+                self.remote_connection.as_ref(),
                 self.status_account_display.as_ref(),
                 token_info,
                 total_usage,
@@ -380,7 +381,7 @@ impl ChatWidget {
     ) -> Option<String> {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
-        Some(format!("{label} {remaining:.0}%"))
+        Some(format!("{label} {remaining:.0}% left"))
     }
 
     pub(super) fn status_line_weekly_limit_display(

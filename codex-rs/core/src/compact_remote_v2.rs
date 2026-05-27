@@ -16,6 +16,8 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::responses_retry::ResponsesStreamRequest;
+use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::session::Session;
 use crate::session::turn::built_tools;
 use crate::session::turn_context::TurnContext;
@@ -39,13 +41,15 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
-use futures::TryFutureExt;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 // Mirror the current /responses/compact retained-message default while the
 // server-side path remains the reference implementation.
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+// Compact attempts can run much longer than normal turns, so keep the per-transport
+// retry budget smaller than the general Responses stream retry budget.
+const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -73,6 +77,7 @@ pub(crate) async fn run_remote_compact_task(
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
+        trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
@@ -105,7 +110,7 @@ async fn run_remote_compact_task_inner(
         turn_context.as_ref(),
         trigger,
         reason,
-        CompactionImplementation::Responses,
+        CompactionImplementation::ResponsesCompactionV2,
         phase,
     )
     .await;
@@ -277,31 +282,71 @@ async fn run_remote_compaction_request_v2(
     prompt: &Prompt,
     turn_metadata_header: Option<&str>,
 ) -> CodexResult<(ResponseItem, String)> {
-    let stream = client_session
-        .stream(
-            prompt,
-            &turn_context.model_info,
-            &turn_context.session_telemetry,
-            turn_context.reasoning_effort,
-            turn_context.reasoning_summary,
-            turn_context.config.service_tier.clone(),
-            turn_metadata_header,
-            &InferenceTraceContext::disabled(),
-        )
-        .or_else(|err| async {
-            let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
-            let compact_request_log_data =
-                build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
-            log_remote_compact_failure(
-                turn_context,
-                &compact_request_log_data,
-                total_usage_breakdown,
-                &err,
-            );
-            Err(err)
-        })
-        .await?;
-    collect_compaction_output(stream).await
+    let max_retries = turn_context
+        .provider
+        .info()
+        .stream_max_retries()
+        .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
+    let mut retries = 0;
+    loop {
+        let result = match client_session
+            .stream(
+                prompt,
+                &turn_context.model_info,
+                &turn_context.session_telemetry,
+                turn_context.reasoning_effort,
+                turn_context.reasoning_summary,
+                turn_context.config.service_tier.clone(),
+                turn_metadata_header,
+                &InferenceTraceContext::disabled(),
+            )
+            .await
+        {
+            Ok(stream) => collect_compaction_output(stream).await,
+            Err(err) => Err(err),
+        };
+
+        match result {
+            Ok(compaction_output) => return Ok(compaction_output),
+            Err(err) if !err.is_retryable() => {
+                log_remote_compaction_request_failure(sess, turn_context, prompt, &err).await;
+                return Err(err);
+            }
+            Err(err) => {
+                if let Err(err) = handle_retryable_response_stream_error(
+                    &mut retries,
+                    max_retries,
+                    err,
+                    client_session,
+                    sess,
+                    turn_context,
+                    ResponsesStreamRequest::RemoteCompactionV2,
+                )
+                .await
+                {
+                    log_remote_compaction_request_failure(sess, turn_context, prompt, &err).await;
+                    return Err(err);
+                }
+            }
+        }
+    }
+}
+
+async fn log_remote_compaction_request_failure(
+    sess: &Session,
+    turn_context: &TurnContext,
+    prompt: &Prompt,
+    err: &CodexErr,
+) {
+    let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
+    let compact_request_log_data =
+        build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
+    log_remote_compact_failure(
+        turn_context,
+        &compact_request_log_data,
+        total_usage_breakdown,
+        err,
+    );
 }
 
 async fn collect_compaction_output(
@@ -331,8 +376,9 @@ async fn collect_compaction_output(
     }
 
     let Some(response_id) = completed_response_id else {
-        return Err(CodexErr::Fatal(
+        return Err(CodexErr::Stream(
             "remote compaction v2 stream closed before response.completed".to_string(),
+            None,
         ));
     };
 

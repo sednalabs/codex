@@ -69,4 +69,5 @@ mod turn_interrupt;
 mod turn_start;
 mod turn_start_zsh_fork;
 mod turn_steer;
+mod web_search;
 mod windows_sandbox_setup;

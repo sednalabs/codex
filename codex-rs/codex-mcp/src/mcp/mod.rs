@@ -152,6 +152,9 @@ pub struct McpConfig {
     /// ChatGPT auth is checked separately at runtime before the host-owned apps
     /// MCP server is added.
     pub apps_enabled: bool,
+    /// Whether model-visible MCP tool namespaces should keep the legacy
+    /// `mcp__` prefix.
+    pub prefix_mcp_tool_names: bool,
     /// Client-side elicitation capabilities advertised during MCP initialization.
     pub client_elicitation_capability: ElicitationCapability,
     /// Config-backed MCP servers keyed by server name.
@@ -308,6 +311,7 @@ pub async fn read_mcp_resource(
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
         host_owned_codex_apps_enabled,
+        config.prefix_mcp_tool_names,
         config.client_elicitation_capability.clone(),
         tool_plugin_provenance(config),
         auth,
@@ -381,6 +385,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
         host_owned_codex_apps_enabled,
+        config.prefix_mcp_tool_names,
         config.client_elicitation_capability.clone(),
         tool_plugin_provenance,
         auth,

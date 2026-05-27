@@ -582,6 +582,15 @@ impl ThreadManager {
         &self,
         options: StartThreadOptions,
     ) -> CodexResult<NewThread> {
+        self.start_thread_with_options_and_fork_source(options, /*forked_from_thread_id*/ None)
+            .await
+    }
+
+    async fn start_thread_with_options_and_fork_source(
+        &self,
+        options: StartThreadOptions,
+        forked_from_thread_id: Option<ThreadId>,
+    ) -> CodexResult<NewThread> {
         let session_source = options
             .session_source
             .unwrap_or_else(|| self.state.session_source.clone());
@@ -594,6 +603,7 @@ impl ThreadManager {
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
             session_source,
+            forked_from_thread_id,
             thread_source,
             options.dynamic_tools,
             options.persist_extended_history,
@@ -634,7 +644,8 @@ impl ThreadManager {
             history,
             InterruptedTurnHistoryMarker::from_config(&options.config),
         );
-        self.start_thread_with_options(options).await
+        self.start_thread_with_options_and_fork_source(options, Some(forked_from_thread_id))
+            .await
     }
 
     pub async fn resume_thread_from_rollout(
@@ -693,6 +704,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
+            /*forked_from_thread_id*/ None,
             thread_source,
             dynamic_tools,
             persist_extended_history,
@@ -718,6 +730,7 @@ impl ThreadManager {
             InitialHistory::New,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
+            /*forked_from_thread_id*/ None,
             /*thread_source*/ None,
             Vec::new(),
             /*persist_extended_history*/ false,
@@ -747,6 +760,7 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             self.agent_control(),
+            /*forked_from_thread_id*/ None,
             thread_source,
             Vec::new(),
             /*persist_extended_history*/ false,
@@ -925,6 +939,13 @@ impl ThreadManager {
         persist_extended_history: bool,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        // `forked_from_id()` describes this history's existing lineage. When
+        // forking a resumed thread, the child copies the resumed thread itself.
+        let forked_from_thread_id = match &history {
+            InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+            InitialHistory::Forked(_) => history.forked_from_id(),
+            InitialHistory::New | InitialHistory::Cleared => None,
+        };
         let interrupted_marker = InterruptedTurnHistoryMarker::from_config(&config);
         let history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
         let environments = default_thread_environment_selections(
@@ -936,6 +957,7 @@ impl ThreadManager {
             history,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
+            forked_from_thread_id,
             thread_source,
             dynamic_tools,
             persist_extended_history,
@@ -973,6 +995,27 @@ impl ThreadManagerState {
             .iter()
             .filter_map(|(thread_id, thread)| {
                 (!thread.session_source.is_internal()).then_some(*thread_id)
+            })
+            .collect()
+    }
+
+    /// List parent-child edges for currently loaded thread-spawn agents.
+    pub(crate) async fn list_live_thread_spawn_edges(&self) -> Vec<(ThreadId, ThreadId)> {
+        self.threads
+            .read()
+            .await
+            .iter()
+            .filter_map(|(thread_id, thread)| {
+                if thread.session_source.is_internal() {
+                    return None;
+                }
+                match &thread.session_source {
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        ..
+                    }) => Some((*parent_thread_id, *thread_id)),
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -1049,6 +1092,7 @@ impl ThreadManagerState {
             config,
             agent_control,
             self.session_source.clone(),
+            /*forked_from_thread_id*/ None,
             /*thread_source*/ None,
             /*persist_extended_history*/ false,
             /*metrics_service_name*/ None,
@@ -1065,6 +1109,7 @@ impl ThreadManagerState {
         config: Config,
         agent_control: AgentControl,
         session_source: SessionSource,
+        forked_from_thread_id: Option<ThreadId>,
         thread_source: Option<ThreadSource>,
         persist_extended_history: bool,
         metrics_service_name: Option<String>,
@@ -1081,6 +1126,7 @@ impl ThreadManagerState {
             Arc::clone(&self.auth_manager),
             agent_control,
             session_source,
+            forked_from_thread_id,
             thread_source,
             Vec::new(),
             persist_extended_history,
@@ -1115,6 +1161,7 @@ impl ThreadManagerState {
             Arc::clone(&self.auth_manager),
             agent_control,
             session_source,
+            /*forked_from_thread_id*/ None,
             thread_source,
             Vec::new(),
             /*persist_extended_history*/ false,
@@ -1136,6 +1183,7 @@ impl ThreadManagerState {
         agent_control: AgentControl,
         session_source: SessionSource,
         thread_source: Option<ThreadSource>,
+        forked_from_thread_id: Option<ThreadId>,
         persist_extended_history: bool,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
@@ -1150,6 +1198,7 @@ impl ThreadManagerState {
             Arc::clone(&self.auth_manager),
             agent_control,
             session_source,
+            forked_from_thread_id,
             thread_source,
             Vec::new(),
             persist_extended_history,
@@ -1171,6 +1220,7 @@ impl ThreadManagerState {
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
+        forked_from_thread_id: Option<ThreadId>,
         thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
@@ -1185,6 +1235,7 @@ impl ThreadManagerState {
             auth_manager,
             agent_control,
             self.session_source.clone(),
+            forked_from_thread_id,
             thread_source,
             dynamic_tools,
             persist_extended_history,
@@ -1206,6 +1257,7 @@ impl ThreadManagerState {
         auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
         session_source: SessionSource,
+        forked_from_thread_id: Option<ThreadId>,
         thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         persist_extended_history: bool,
@@ -1264,6 +1316,7 @@ impl ThreadManagerState {
             extensions: Arc::clone(&self.extensions),
             conversation_history: initial_history,
             session_source,
+            forked_from_thread_id,
             thread_source,
             agent_control,
             dynamic_tools,
