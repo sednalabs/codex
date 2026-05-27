@@ -3272,7 +3272,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
 }
 
 #[tokio::test]
-async fn turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2()
+async fn turn_start_emits_spawn_agent_item_with_role_locked_model_metadata_when_role_layering_is_present_v2()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -3427,8 +3427,8 @@ config_file = "./custom-role.toml"
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
-    assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
-    assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(model, Some(ROLE_MODEL.to_string()));
+    assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");
