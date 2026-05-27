@@ -10,7 +10,6 @@ use crate::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::panic::AssertUnwindSafe;
 
 #[derive(Debug)]
 struct ParsedCodeModeDeclaration {
@@ -137,23 +136,6 @@ fn normalize_code_mode_fields(fields: &[String]) -> Vec<String> {
         .collect::<Vec<_>>();
     fields.sort_unstable();
     fields
-}
-
-fn empty_namespace_descriptions() -> BTreeMap<String, codex_code_mode::ToolNamespaceDescription> {
-    BTreeMap::new()
-}
-
-fn update_plan_definition() -> codex_code_mode::ToolDefinition {
-    codex_code_mode::ToolDefinition {
-        name: "update_plan".to_string(),
-        tool_name: ToolName::plain("update_plan"),
-        all_tools_name: None,
-        all_tools_module: None,
-        description: "Update the plan".to_string(),
-        kind: codex_code_mode::CodeModeToolKind::Function,
-        input_schema: None,
-        output_schema: None,
-    }
 }
 
 fn split_code_mode_description(description: &str) -> Option<(&str, &str, &str)> {

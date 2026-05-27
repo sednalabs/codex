@@ -2879,7 +2879,7 @@ async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Resu
     let server = responses::start_mock_server().await;
     let code = r#"
 const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__rmcp__echo"
+  ({ name, module }) => name === "echo" && module === "tools/mcp/rmcp.js"
 );
 text(JSON.stringify(tool));
 "#;
@@ -2902,7 +2902,8 @@ text(JSON.stringify(tool));
     assert_eq!(
         parsed,
         serde_json::json!({
-            "name": "mcp__rmcp__echo",
+            "name": "echo",
+            "module": "tools/mcp/rmcp.js",
             "description": concat!(
                 "Echo back the provided message and include environment data.\n\n",
                 "exec tool declaration:\n",
