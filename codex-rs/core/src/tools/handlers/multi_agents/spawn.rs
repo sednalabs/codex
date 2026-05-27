@@ -7,7 +7,6 @@ use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_spawn_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -91,18 +90,15 @@ async fn handle_spawn_agent(
     if args.fork_context {
         reject_full_fork_spawn_overrides(role_name, args.model.as_deref(), args.reasoning_effort)?;
     } else {
-        apply_requested_spawn_agent_model_overrides(
+        apply_spawn_agent_model_selection(
             &session,
             turn.as_ref(),
             &mut config,
+            role_name,
             args.model.as_deref(),
             args.reasoning_effort,
         )
         .await?;
-        let spawn_model_selection_carry = apply_role_to_spawn_config(&mut config, role_name)
-            .await
-            .map_err(FunctionCallError::RespondToModel)?;
-        spawn_model_selection_carry.apply_to_config(&mut config);
     }
     apply_spawn_agent_service_tier(
         &session,
