@@ -474,8 +474,8 @@ pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32)
 /// spawns stay in lock-step:
 ///
 /// 1. inherit the parent config built for this turn
-/// 2. apply role-provided model carry
-/// 3. apply explicit model / reasoning arguments
+/// 2. apply explicit model / reasoning arguments
+/// 3. apply the role layer and reapply caller-owned model carry for settings the role does not own
 /// 4. normalize reasoning against the final model metadata
 pub(crate) async fn apply_spawn_agent_model_selection(
     session: &Session,
@@ -485,12 +485,6 @@ pub(crate) async fn apply_spawn_agent_model_selection(
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
-    let pre_role_reasoning_effort = config.model_reasoning_effort;
-    let spawn_model_selection_carry = apply_role_to_spawn_config(config, role_name)
-        .await
-        .map_err(FunctionCallError::RespondToModel)?;
-    spawn_model_selection_carry.apply_to_config(config);
-
     apply_requested_spawn_agent_model_overrides(
         session,
         turn,
@@ -499,6 +493,12 @@ pub(crate) async fn apply_spawn_agent_model_selection(
         requested_reasoning_effort,
     )
     .await?;
+
+    let pre_role_reasoning_effort = config.model_reasoning_effort;
+    let spawn_model_selection_carry = apply_role_to_spawn_config(config, role_name)
+        .await
+        .map_err(FunctionCallError::RespondToModel)?;
+    spawn_model_selection_carry.apply_to_config(config);
 
     normalize_spawn_agent_reasoning_effort(
         session,
