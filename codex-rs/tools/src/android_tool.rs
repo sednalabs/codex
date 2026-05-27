@@ -11,7 +11,7 @@ pub const ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME: &str = "android_install_buil
 const OBSERVE_SCOPE_SCREEN: &str = "screen";
 const OBSERVE_SCOPE_SCREEN_AND_UI: &str = "screen_and_ui";
 
-const STEP_ACTIONS: [&str; 16] = [
+const STEP_ACTIONS: [&str; 17] = [
     "launch_app",
     "tap",
     "type_text",
@@ -24,6 +24,7 @@ const STEP_ACTIONS: [&str; 16] = [
     "wait",
     "keypress",
     "drag",
+    "long_press",
     "move",
     "zoom",
     "reset_zoom",
@@ -60,6 +61,31 @@ fn create_android_observe_tool(defer_loading: bool) -> ResponsesApiTool {
                 &[OBSERVE_SCOPE_SCREEN, OBSERVE_SCOPE_SCREEN_AND_UI],
                 "Whether to capture only the screenshot or pair it with a compact UI digest.",
             ),
+        ),
+        (
+            "serial".to_string(),
+            JsonSchema::string(Some(
+                "Optional Android device serial to observe.".to_string(),
+            )),
+        ),
+        (
+            "timeout_secs".to_string(),
+            JsonSchema::number(Some(
+                "Optional provider-side timeout in seconds for screenshot and UI-tree capture."
+                    .to_string(),
+            )),
+        ),
+        (
+            "screenshot_filename".to_string(),
+            JsonSchema::string(Some(
+                "Optional provider artifact filename for the screenshot receipt. The provider must still return native image content for model-visible screenshots.".to_string(),
+            )),
+        ),
+        (
+            "hierarchy_filename".to_string(),
+            JsonSchema::string(Some(
+                "Optional provider artifact filename for the UI hierarchy receipt.".to_string(),
+            )),
         ),
     ]);
 
@@ -107,6 +133,19 @@ fn create_android_step_tool(defer_loading: bool) -> ResponsesApiTool {
             &[OBSERVE_SCOPE_SCREEN, OBSERVE_SCOPE_SCREEN_AND_UI],
             "Whether the post-action observation should include a compact UI digest.",
         ),
+    );
+    properties.insert(
+        "screenshot_filename".to_string(),
+        JsonSchema::string(Some(
+            "Optional provider artifact filename for the post-action screenshot receipt. The provider must still return native image content for model-visible screenshots.".to_string(),
+        )),
+    );
+    properties.insert(
+        "hierarchy_filename".to_string(),
+        JsonSchema::string(Some(
+            "Optional provider artifact filename for the post-action UI hierarchy receipt."
+                .to_string(),
+        )),
     );
     properties.insert(
         "view".to_string(),
@@ -179,6 +218,19 @@ fn create_android_install_build_from_run_tool(defer_loading: bool) -> ResponsesA
                 "Whether the post-install observation should include a compact UI digest.",
             ),
         ),
+        (
+            "screenshot_filename".to_string(),
+            JsonSchema::string(Some(
+                "Optional provider artifact filename for the post-install screenshot receipt. The provider must still return native image content for model-visible screenshots.".to_string(),
+            )),
+        ),
+        (
+            "hierarchy_filename".to_string(),
+            JsonSchema::string(Some(
+                "Optional provider artifact filename for the post-install UI hierarchy receipt."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ResponsesApiTool {
@@ -223,8 +275,8 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "selector".to_string(),
-            permissive_object(Some(
-                "Optional opaque selector object for selector-backed interactions.".to_string(),
+            android_selector_schema(Some(
+                "Optional selector for UI-tree-backed interactions. Prefer text, content description, resource id, class name, or bounds-derived targets over visually guessed coordinates.".to_string(),
             )),
         ),
         (
@@ -302,7 +354,7 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "wait_for_selector".to_string(),
-            permissive_object(Some(
+            android_selector_schema(Some(
                 "Optional selector to wait for after the action completes.".to_string(),
             )),
         ),
@@ -316,7 +368,7 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "expect_focus_selector".to_string(),
-            permissive_object(Some(
+            android_selector_schema(Some(
                 "Optional selector that should become focused after a type action.".to_string(),
             )),
         ),
@@ -340,7 +392,9 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "target".to_string(),
-            permissive_object(Some("Optional semantic action target payload.".to_string())),
+            android_selector_schema(Some(
+                "Optional selector-like target payload for semantic or element actions.".to_string(),
+            )),
         ),
         (
             "region".to_string(),
@@ -546,8 +600,100 @@ fn string_enum(values: &[&str], description: &str) -> JsonSchema {
     )
 }
 
-fn permissive_object(description: Option<String>) -> JsonSchema {
-    let mut schema = JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(true.into()));
+fn android_selector_schema(description: Option<String>) -> JsonSchema {
+    let mut schema = JsonSchema::object(
+        BTreeMap::from([
+            (
+                "text".to_string(),
+                JsonSchema::string(Some(
+                    "Visible text to match in the Android UI tree.".to_string(),
+                )),
+            ),
+            (
+                "content_description".to_string(),
+                JsonSchema::string(Some(
+                    "Accessibility content description to match.".to_string(),
+                )),
+            ),
+            (
+                "contentDescription".to_string(),
+                JsonSchema::string(Some(
+                    "Compatibility alias for content_description.".to_string(),
+                )),
+            ),
+            (
+                "resource_id".to_string(),
+                JsonSchema::string(Some(
+                    "Android resource id to match, when exposed by the UI tree.".to_string(),
+                )),
+            ),
+            (
+                "resourceId".to_string(),
+                JsonSchema::string(Some(
+                    "Compatibility alias for resource_id.".to_string(),
+                )),
+            ),
+            (
+                "class_name".to_string(),
+                JsonSchema::string(Some(
+                    "Android view class name to match when text/id are insufficient.".to_string(),
+                )),
+            ),
+            (
+                "className".to_string(),
+                JsonSchema::string(Some("Compatibility alias for class_name.".to_string())),
+            ),
+            (
+                "bounds".to_string(),
+                bounds_schema(Some(
+                    "Device-space bounds from a UI-tree node; providers should tap the center when using bounds as a target.".to_string(),
+                )),
+            ),
+            (
+                "enabled".to_string(),
+                JsonSchema::boolean(Some(
+                    "Optional expected enabled state for candidate filtering.".to_string(),
+                )),
+            ),
+        ]),
+        /*required*/ None,
+        Some(true.into()),
+    );
+    schema.description = description;
+    schema
+}
+
+fn bounds_schema(description: Option<String>) -> JsonSchema {
+    let mut schema = JsonSchema::object(
+        BTreeMap::from([
+            (
+                "left".to_string(),
+                JsonSchema::number(Some("Left device-space coordinate.".to_string())),
+            ),
+            (
+                "top".to_string(),
+                JsonSchema::number(Some("Top device-space coordinate.".to_string())),
+            ),
+            (
+                "right".to_string(),
+                JsonSchema::number(Some("Right device-space coordinate.".to_string())),
+            ),
+            (
+                "bottom".to_string(),
+                JsonSchema::number(Some("Bottom device-space coordinate.".to_string())),
+            ),
+            (
+                "width".to_string(),
+                JsonSchema::number(Some("Optional bounds width in device pixels.".to_string())),
+            ),
+            (
+                "height".to_string(),
+                JsonSchema::number(Some("Optional bounds height in device pixels.".to_string())),
+            ),
+        ]),
+        /*required*/ None,
+        Some(false.into()),
+    );
     schema.description = description;
     schema
 }

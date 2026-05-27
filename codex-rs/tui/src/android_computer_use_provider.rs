@@ -132,7 +132,15 @@ async fn step(
 
     let mut summaries = Vec::new();
     for action in actions {
-        summaries.push(run_action(client, tools, &action).await?);
+        match run_action(client, tools, &action).await {
+            Ok(summary) => summaries.push(summary),
+            Err(err) => {
+                return Ok(action_failure_response(
+                    client, tools, arguments, &action, err, &summaries,
+                )
+                .await);
+            }
+        }
     }
 
     let mut response = match inspect_ui(client, arguments).await {
@@ -172,6 +180,73 @@ async fn step(
         "Android post-action observation missing native image output. The actions above may already have executed; recover with a fresh android_observe before making visual claims, and do not repeat mutating actions solely because the screenshot was missing.",
     );
     Ok(response)
+}
+
+async fn action_failure_response(
+    client: &mut AndroidRuntimeClient,
+    tools: &BTreeSet<String>,
+    arguments: &Value,
+    failed_action: &Value,
+    action_error: String,
+    completed_summaries: &[String],
+) -> ComputerUseCallResponse {
+    let failure_summary = action_failure_summary(
+        action_kind(failed_action),
+        &action_error,
+        completed_summaries,
+    );
+    let recovery_hint = "The current Android state is included below when available. The failed action may already have changed the device state; inspect the post-failure screen before retrying mutating input.";
+
+    let mut response = match inspect_ui(client, arguments).await {
+        Ok(observation) => {
+            match observation_response(
+                client,
+                tools,
+                observation,
+                "Android action failure observation",
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(err) => failed_response(format!(
+                    "{failure_summary}\n\nPost-failure observation could not be converted into a model response: {err}\n\n{recovery_hint}"
+                )),
+            }
+        }
+        Err(observe_err) => {
+            match screenshot_fallback_response(
+                client,
+                tools,
+                arguments,
+                "Android action failure observation",
+                &observe_err,
+                /*action_already_executed*/ true,
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(fallback_err) => failed_response(format!(
+                    "{failure_summary}\n\nPost-failure observation unavailable.\n\nandroid.inspect_ui failed: {observe_err}\nScreenshot fallback failed: {fallback_err}\n\n{recovery_hint}"
+                )),
+            }
+        }
+    };
+
+    prepend_text(
+        &mut response.content_items,
+        &format!("{failure_summary}\n{recovery_hint}"),
+    );
+    require_native_image_for_visual_response(
+        &mut response,
+        "Android action failure observation missing native image output. The failed action may already have changed the device state; recover with a fresh android_observe before retrying mutating input.",
+    );
+    response.success = false;
+    response.error = Some(format!(
+        "Android action `{}` failed: {}",
+        action_kind(failed_action),
+        compact_summary_text(&action_error)
+    ));
+    response
 }
 
 async fn install_build_from_run(
@@ -389,14 +464,7 @@ async fn run_action(
     tools: &BTreeSet<String>,
     action: &Value,
 ) -> Result<String, String> {
-    let action_type = action
-        .get("type")
-        .or_else(|| action.get("action"))
-        .or_else(|| action.get("name"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-
-    match action_type {
+    match action_kind(action) {
         "launch_app" => {
             let mut args = json!({});
             copy_first_present(action, &mut args, &["package_name", "package"]);
@@ -537,6 +605,15 @@ async fn run_action(
         }
         other => Err(format!("Unsupported Android action `{other}`.")),
     }
+}
+
+fn action_kind(action: &Value) -> &str {
+    action
+        .get("type")
+        .or_else(|| action.get("action"))
+        .or_else(|| action.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -891,6 +968,39 @@ fn append_text(items: &mut [ComputerUseCallOutputContentItem], extra: &str) {
     if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
         text.push_str(extra);
     }
+}
+
+fn prepend_text(items: &mut Vec<ComputerUseCallOutputContentItem>, prefix: &str) {
+    if let Some(ComputerUseCallOutputContentItem::InputText { text }) = items.first_mut() {
+        *text = format!("{prefix}\n\n{text}");
+    } else {
+        items.insert(
+            0,
+            ComputerUseCallOutputContentItem::InputText {
+                text: prefix.to_string(),
+            },
+        );
+    }
+}
+
+fn action_failure_summary(
+    failed_action_kind: &str,
+    action_error: &str,
+    completed_summaries: &[String],
+) -> String {
+    let mut lines = vec![format!(
+        "Android action `{failed_action_kind}` failed: {}",
+        compact_summary_text(action_error)
+    )];
+    if !completed_summaries.is_empty() {
+        lines.push("Actions completed before failure:".to_string());
+        lines.extend(
+            completed_summaries
+                .iter()
+                .map(|summary| format!("- {summary}")),
+        );
+    }
+    lines.join("\n")
 }
 
 fn observation_labels(observation: &Value) -> Vec<String> {
@@ -1642,5 +1752,37 @@ mod tests {
         assert_eq!(args["y1"], 1000);
         assert_eq!(args["x2"], 500);
         assert_eq!(args["y2"], 700);
+    }
+
+    #[test]
+    fn action_kind_accepts_current_and_compatibility_fields() {
+        assert_eq!(action_kind(&json!({"type": "tap"})), "tap");
+        assert_eq!(action_kind(&json!({"action": "swipe"})), "swipe");
+        assert_eq!(
+            action_kind(&json!({"name": "semantic_action"})),
+            "semantic_action"
+        );
+        assert_eq!(action_kind(&json!({})), "unknown");
+    }
+
+    #[test]
+    fn action_failure_summary_lists_completed_actions_without_payload_echo() {
+        let summary = action_failure_summary(
+            "tap",
+            "selector timed out",
+            &[
+                "launched Android app".to_string(),
+                "typed Android text".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            summary,
+            "Android action `tap` failed: selector timed out\n\
+             Actions completed before failure:\n\
+             - launched Android app\n\
+             - typed Android text"
+        );
+        assert!(!summary.contains("secret"));
     }
 }
