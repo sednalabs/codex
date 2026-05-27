@@ -125,6 +125,12 @@ User-visible behavior:
   `android-emulator-mcp` or a successor when it exposes the current Android MCP
   contract, and keep harness-specific translation in the provider rather than
   in hot Codex core paths.
+- Android provider behavior should absorb emulator-QA discipline without
+  pushing shell recipes into Codex core: explicit device serial/readiness,
+  UIAutomator-style hierarchy capture, selector-to-bounds targeting, screenshot
+  and hierarchy receipts, log/performance artifacts for focused debugging, and
+  post-failure observations that help agents recover from partially completed
+  mutating actions.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - TUI transcript and replay surfaces render native computer-use items with
   compact adapter-specific labels such as `Used browser`, `Used computer`, and

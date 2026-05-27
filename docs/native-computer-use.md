@@ -47,6 +47,21 @@ delivery; the Android provider owns emulator/device sessions, `adb`/
 UIAutomator-style capture, screenshot artifacts, UI digests, input execution,
 and provider-side build installation.
 
+Android providers should internalize the practical emulator-QA discipline that
+agents otherwise have to rediscover by hand: choose an explicit device serial,
+prove boot/readiness, install or launch the target app, capture a screenshot,
+dump a UI hierarchy, summarize visible controls, and collect logs or trace
+artifacts when the task asks for debugging evidence. The Codex-facing result
+should still stay small and visual: native `inputImage` content plus compact
+state text. UI hierarchy XML, screenshot files, logcat, and run manifests are
+receipts for audit and replay, not substitutes for model-visible pixels.
+
+Selectors should be backed by the Android UI tree whenever possible. Providers
+should prefer visible text, content descriptions, resource ids, class names, or
+bounds derived from the current UI hierarchy before falling back to visually
+guessed coordinates. Screenshots give the model product judgement; the UI tree
+gives the provider reliable hands.
+
 `android-emulator-mcp` or a successor should therefore be reused when it can
 expose the current Android MCP tool contract (`android.inspect_ui`,
 `android.capture_screenshot`, `android.read_artifact`, `android.input.*`, and
@@ -56,6 +71,22 @@ compatibility layer rather than changing Codex hot core paths. Do not fold
 Android into the browser backend registry: Android is a peer native adapter,
 while the browser registry is the routing layer for browser-specific backends
 such as Playwright, in-app browser, and Chrome extension.
+
+When an Android action fails, the native bridge should return the action error
+with a fresh post-failure observation when the provider can still capture one:
+current screenshot, compact UI digest or selector candidates, and any completed
+action summaries. This mirrors the browser failure contract and keeps agents
+from blindly replaying mutating input after a partially completed flow. If
+post-failure screenshot capture is unavailable, the response must say that the
+current state is unproven and instruct the agent to recover with
+`android_observe` before making visual claims.
+
+Performance, memory, and jank analysis belong in a companion Android
+performance workflow rather than the hot `android_step` path. Use adb-backed
+tools such as Simpleperf, Perfetto, `gfxinfo`, `dumpsys meminfo`, heap dumps,
+and logcat around a focused flow when the user asks about responsiveness,
+startup, leaks, CPU, or frame timing. Native observe/step remains the default
+eyes-and-hands loop; performance artifacts are an opt-in evidence lane.
 
 ### Browser
 
