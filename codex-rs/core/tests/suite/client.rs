@@ -2911,6 +2911,7 @@ async fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Resul
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await?;
@@ -2972,6 +2973,7 @@ async fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await?;

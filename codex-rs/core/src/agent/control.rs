@@ -38,6 +38,7 @@ use codex_thread_store::ReadThreadParams;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -1866,19 +1867,51 @@ fn compute_descendant_counts(
     tree_children: &HashMap<ThreadId, Vec<ThreadId>>,
     descendant_counts: &mut HashMap<ThreadId, usize>,
 ) -> usize {
+    compute_descendant_counts_inner(
+        thread_id,
+        tree_children,
+        descendant_counts,
+        &mut HashSet::new(),
+    )
+}
+
+fn compute_descendant_counts_inner(
+    thread_id: ThreadId,
+    tree_children: &HashMap<ThreadId, Vec<ThreadId>>,
+    descendant_counts: &mut HashMap<ThreadId, usize>,
+    visiting: &mut HashSet<ThreadId>,
+) -> usize {
     if let Some(count) = descendant_counts.get(&thread_id).copied() {
         return count;
     }
+    if !visiting.insert(thread_id) {
+        warn!(%thread_id, "cycle detected in agent descendant tree");
+        return 0;
+    }
 
     let count = tree_children.get(&thread_id).map_or(0, |children| {
-        children.len()
-            + children
-                .iter()
-                .map(|child_thread_id| {
-                    compute_descendant_counts(*child_thread_id, tree_children, descendant_counts)
-                })
-                .sum::<usize>()
+        children
+            .iter()
+            .map(|child_thread_id| {
+                if visiting.contains(child_thread_id) {
+                    warn!(
+                        parent_thread_id = %thread_id,
+                        child_thread_id = %child_thread_id,
+                        "cycle detected in agent descendant tree"
+                    );
+                    0
+                } else {
+                    1 + compute_descendant_counts_inner(
+                        *child_thread_id,
+                        tree_children,
+                        descendant_counts,
+                        visiting,
+                    )
+                }
+            })
+            .sum()
     });
+    visiting.remove(&thread_id);
     descendant_counts.insert(thread_id, count);
     count
 }
@@ -1889,8 +1922,28 @@ fn compute_active_live_descendant_count(
     status_by_thread_id: &HashMap<ThreadId, AgentStatus>,
     active_descendant_counts: &mut HashMap<ThreadId, usize>,
 ) -> usize {
+    compute_active_live_descendant_count_inner(
+        thread_id,
+        live_children_by_parent,
+        status_by_thread_id,
+        active_descendant_counts,
+        &mut HashSet::new(),
+    )
+}
+
+fn compute_active_live_descendant_count_inner(
+    thread_id: ThreadId,
+    live_children_by_parent: &HashMap<ThreadId, Vec<(ThreadId, AgentMetadata)>>,
+    status_by_thread_id: &HashMap<ThreadId, AgentStatus>,
+    active_descendant_counts: &mut HashMap<ThreadId, usize>,
+    visiting: &mut HashSet<ThreadId>,
+) -> usize {
     if let Some(count) = active_descendant_counts.get(&thread_id).copied() {
         return count;
+    }
+    if !visiting.insert(thread_id) {
+        warn!(%thread_id, "cycle detected in live agent descendant tree");
+        return 0;
     }
 
     let count = live_children_by_parent
@@ -1899,19 +1952,29 @@ fn compute_active_live_descendant_count(
             children
                 .iter()
                 .map(|(child_thread_id, _)| {
+                    if visiting.contains(child_thread_id) {
+                        warn!(
+                            parent_thread_id = %thread_id,
+                            child_thread_id = %child_thread_id,
+                            "cycle detected in live agent descendant tree"
+                        );
+                        return 0;
+                    }
                     let child_is_active = status_by_thread_id
                         .get(child_thread_id)
                         .is_some_and(|status| !is_final(status));
                     usize::from(child_is_active)
-                        + compute_active_live_descendant_count(
+                        + compute_active_live_descendant_count_inner(
                             *child_thread_id,
                             live_children_by_parent,
                             status_by_thread_id,
                             active_descendant_counts,
+                            visiting,
                         )
                 })
                 .sum()
         });
+    visiting.remove(&thread_id);
     active_descendant_counts.insert(thread_id, count);
     count
 }
