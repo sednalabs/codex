@@ -57,6 +57,7 @@ use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,6 +98,28 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+}
+
+fn run_multi_agent_surface_test<F, Fut>(test_body: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("multi-agent-surface-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("multi-agent surface test runtime should build")
+                .block_on(test_body());
+        })
+        .expect("multi-agent surface test thread should spawn");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -1492,99 +1515,101 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
     );
 }
 
-#[tokio::test]
-async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_message() {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let manager = thread_manager();
-    let root = manager
-        .start_thread((*turn.config).clone())
-        .await
-        .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
-    session.conversation_id = root.thread_id;
-    let mut config = (*turn.config).clone();
-    let _ = config.features.enable(Feature::MultiAgentV2);
-    turn.config = Arc::new(config);
+#[test]
+fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_message() {
+    run_multi_agent_surface_test(|| async {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        let root = manager
+            .start_thread((*turn.config).clone())
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.conversation_id = root.thread_id;
+        let mut config = (*turn.config).clone();
+        let _ = config.features.enable(Feature::MultiAgentV2);
+        turn.config = Arc::new(config);
 
-    let session = Arc::new(session);
-    let turn = Arc::new(turn);
-    let spawn_output = SpawnAgentHandlerV2::default()
-        .handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "inspect this repo",
-                "task_name": "worker"
-            })),
-        ))
-        .await
-        .expect("spawn_agent should succeed");
-    let _ = expect_text_output(spawn_output);
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let spawn_output = SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo",
+                    "task_name": "worker"
+                })),
+            ))
+            .await
+            .expect("spawn_agent should succeed");
+        let _ = expect_text_output(spawn_output);
 
-    let agent_id = session
-        .services
-        .agent_control
-        .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker")
-        .await
-        .expect("worker path should resolve");
-    let child_thread = manager
-        .get_thread(agent_id)
-        .await
-        .expect("child thread should exist");
-    let child_turn = child_thread.codex.session.new_default_turn().await;
-    child_thread
-        .codex
-        .session
-        .send_event(
-            child_turn.as_ref(),
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: child_turn.sub_id.clone(),
-                last_agent_message: Some("done".to_string()),
-                compaction_events_in_turn: 0,
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            }),
-        )
-        .await;
+        let agent_id = session
+            .services
+            .agent_control
+            .resolve_agent_reference(session.conversation_id, &turn.session_source, "worker")
+            .await
+            .expect("worker path should resolve");
+        let child_thread = manager
+            .get_thread(agent_id)
+            .await
+            .expect("child thread should exist");
+        let child_turn = child_thread.codex.session.new_default_turn().await;
+        child_thread
+            .codex
+            .session
+            .send_event(
+                child_turn.as_ref(),
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: child_turn.sub_id.clone(),
+                    last_agent_message: Some("done".to_string()),
+                    compaction_events_in_turn: 0,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            )
+            .await;
 
-    let output = ListAgentsHandlerV2
-        .handle(invocation(
-            session,
-            turn,
-            "list_agents",
-            function_payload(json!({})),
-        ))
-        .await
-        .expect("list_agents should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: ListAgentsResult =
-        serde_json::from_str(&content).expect("list_agents result should be json");
+        let output = ListAgentsHandlerV2
+            .handle(invocation(
+                session,
+                turn,
+                "list_agents",
+                function_payload(json!({})),
+            ))
+            .await
+            .expect("list_agents should succeed");
+        let (content, success) = expect_text_output(output);
+        let result: ListAgentsResult =
+            serde_json::from_str(&content).expect("list_agents result should be json");
 
-    let agent_names = result
-        .agents
-        .iter()
-        .map(|agent| agent.agent_name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(agent_names, vec!["/root", "/root/worker"]);
-    let root_agent = result
-        .agents
-        .iter()
-        .find(|agent| agent.agent_name == "/root")
-        .expect("root agent should be listed");
-    assert_eq!(root_agent.last_task_message.as_deref(), Some("Main thread"));
-    let worker = result
-        .agents
-        .iter()
-        .find(|agent| agent.agent_name == "/root/worker")
-        .expect("worker agent should be listed");
-    assert_eq!(worker.agent_status, json!({"completed": "done"}));
-    assert_eq!(
-        worker.last_task_message.as_deref(),
-        Some("inspect this repo")
-    );
-    assert_eq!(success, Some(true));
+        let agent_names = result
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(agent_names, vec!["/root", "/root/worker"]);
+        let root_agent = result
+            .agents
+            .iter()
+            .find(|agent| agent.agent_name == "/root")
+            .expect("root agent should be listed");
+        assert_eq!(root_agent.last_task_message.as_deref(), Some("Main thread"));
+        let worker = result
+            .agents
+            .iter()
+            .find(|agent| agent.agent_name == "/root/worker")
+            .expect("worker agent should be listed");
+        assert_eq!(worker.agent_status, json!({"completed": "done"}));
+        assert_eq!(
+            worker.last_task_message.as_deref(),
+            Some("inspect this repo")
+        );
+        assert_eq!(success, Some(true));
+    });
 }
 
 #[tokio::test]
