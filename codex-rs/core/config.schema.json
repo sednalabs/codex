@@ -559,6 +559,9 @@
             "network_proxy": {
               "$ref": "#/definitions/FeatureToml"
             },
+            "non_prefixed_mcp_tool_names": {
+              "type": "boolean"
+            },
             "personality": {
               "type": "boolean"
             },
@@ -629,6 +632,9 @@
               "type": "boolean"
             },
             "sqlite": {
+              "type": "boolean"
+            },
+            "standalone_web_search": {
               "type": "boolean"
             },
             "steer": {
@@ -857,17 +863,6 @@
           "oneOf": [
             {
               "$ref": "#/definitions/WindowsToml"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "zsh_path": {
-          "description": "Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.",
-          "oneOf": [
-            {
-              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -1525,6 +1520,13 @@
           "description": "Model used for memory consolidation.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "dedicated_tools": {
+          "description": "When `true`, expose dedicated memory tools through the extension tool surface.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -5585,6 +5587,9 @@
         "network_proxy": {
           "$ref": "#/definitions/FeatureToml"
         },
+        "non_prefixed_mcp_tool_names": {
+          "type": "boolean"
+        },
         "personality": {
           "type": "boolean"
         },
@@ -5655,6 +5660,9 @@
           "type": "boolean"
         },
         "sqlite": {
+          "type": "boolean"
+        },
+        "standalone_web_search": {
           "type": "boolean"
         },
         "steer": {
@@ -5842,7 +5850,7 @@
       ]
     },
     "log_dir": {
-      "description": "Directory where Codex writes log files, for example `codex-tui.log`. Defaults to `$CODEX_HOME/log`.",
+      "description": "Directory where Codex writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to `$CODEX_HOME/log`.",
       "oneOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
@@ -6319,17 +6327,6 @@
       "oneOf": [
         {
           "$ref": "#/definitions/WindowsToml"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "zsh_path": {
-      "description": "Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.",
-      "oneOf": [
-        {
-          "$ref": "#/definitions/AbsolutePathBuf"
         },
         {
           "type": "null"

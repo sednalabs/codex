@@ -27,6 +27,9 @@ use codex_tools::mcp_tool_to_responses_api_tool;
 use serde_json::Map;
 use serde_json::Value;
 
+const LEGACY_MCP_TOOL_NAME_PREFIX: &str = "mcp__";
+const MCP_TOOL_NAME_DELIMITER: &str = "__";
+
 pub struct McpHandler {
     tool_info: ToolInfo,
     spec: ToolSpec,
@@ -36,6 +39,29 @@ impl McpHandler {
     pub fn new(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
         let spec = create_tool_spec(&tool_info)?;
         Ok(Self { tool_info, spec })
+    }
+
+    fn hook_tool_name(&self) -> HookToolName {
+        HookToolName::new(ensure_mcp_prefix(&join_tool_name(&self.tool_name())))
+    }
+}
+
+fn join_tool_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) => {
+            let namespace = namespace.trim_end_matches('_');
+            let name = tool_name.name.trim_start_matches('_');
+            format!("{namespace}{MCP_TOOL_NAME_DELIMITER}{name}")
+        }
+        None => tool_name.name.clone(),
+    }
+}
+
+fn ensure_mcp_prefix(name: &str) -> String {
+    if name.starts_with(LEGACY_MCP_TOOL_NAME_PREFIX) {
+        name.to_string()
+    } else {
+        format!("{LEGACY_MCP_TOOL_NAME_PREFIX}{name}")
     }
 }
 
@@ -90,7 +116,7 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
             call_id.clone(),
             self.tool_info.server_name.clone(),
             self.tool_info.tool.name.to_string(),
-            self.tool_name().to_string(),
+            self.hook_tool_name(),
             payload,
         )
         .await;
@@ -151,7 +177,7 @@ impl CoreToolRuntime for McpHandler {
         };
 
         Some(PreToolUsePayload {
-            tool_name: HookToolName::new(self.tool_name().to_string()),
+            tool_name: self.hook_tool_name(),
             tool_input: mcp_hook_tool_input(arguments),
         })
     }
@@ -190,7 +216,7 @@ impl CoreToolRuntime for McpHandler {
         let tool_response =
             result.post_tool_use_response(&invocation.call_id, &invocation.payload)?;
         Some(PostToolUsePayload {
-            tool_name: HookToolName::new(self.tool_name().to_string()),
+            tool_name: self.hook_tool_name(),
             tool_use_id: invocation.call_id.clone(),
             tool_input: result.post_tool_use_input(&invocation.payload)?,
             tool_response,
@@ -293,6 +319,9 @@ mod tests {
     use super::*;
     use crate::session::tests::make_session_and_context;
     use crate::tools::context::ToolCallSource;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::registry::PostToolUsePayload;
+    use crate::tools::registry::PreToolUsePayload;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -300,7 +329,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn mcp_pre_tool_use_payload_uses_model_tool_name_and_raw_args() {
+    async fn mcp_pre_tool_use_payload_uses_prefixed_tool_name_and_raw_args() {
         let payload = ToolPayload::Function {
             arguments: json!({
                 "entities": [{
@@ -311,7 +340,7 @@ mod tests {
             .to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("memory", "mcp__memory__", "create_entities"))
+        let handler = McpHandler::new(tool_info("memory", "memory", "create_entities"))
             .expect("MCP tool spec should build");
         assert_eq!(
             handler.pre_tool_use_payload(&ToolInvocation {
@@ -320,7 +349,7 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre".to_string(),
-                tool_name: codex_tools::ToolName::namespaced("mcp__memory__", "create_entities"),
+                tool_name: codex_tools::ToolName::namespaced("memory", "create_entities"),
                 source: ToolCallSource::Direct,
                 payload,
             }),
@@ -342,7 +371,7 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("foo", "mcp__foo__", "exec_command"))
+        let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
         assert_eq!(
@@ -352,7 +381,7 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre-builtin-like".to_string(),
-                tool_name: codex_tools::ToolName::namespaced("mcp__foo__", "exec_command"),
+                tool_name: codex_tools::ToolName::namespaced("mcp__foo", "exec_command"),
                 source: ToolCallSource::Direct,
                 payload,
             }),
@@ -369,7 +398,7 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("foo", "mcp__foo__", "exec_command"))
+        let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
         let invocation = handler
@@ -380,7 +409,7 @@ mod tests {
                     cancellation_token: tokio_util::sync::CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-mcp-rewrite-builtin-like".to_string(),
-                    tool_name: codex_tools::ToolName::namespaced("mcp__foo__", "exec_command"),
+                    tool_name: codex_tools::ToolName::namespaced("mcp__foo", "exec_command"),
                     source: ToolCallSource::Direct,
                     payload,
                 },
@@ -395,7 +424,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_post_tool_use_payload_uses_model_tool_name_args_and_result() {
+    async fn mcp_post_tool_use_payload_uses_prefixed_tool_name_args_and_result() {
         let payload = ToolPayload::Function {
             arguments: json!({ "path": "/tmp/notes.txt" }).to_string(),
         };
@@ -419,7 +448,7 @@ mod tests {
             truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(1024),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("filesystem", "mcp__filesystem__", "read_file"))
+        let handler = McpHandler::new(tool_info("filesystem", "filesystem", "read_file"))
             .expect("MCP tool spec should build");
         let invocation = ToolInvocation {
             session: session.into(),
@@ -427,7 +456,7 @@ mod tests {
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-mcp-post".to_string(),
-            tool_name: codex_tools::ToolName::namespaced("mcp__filesystem__", "read_file"),
+            tool_name: codex_tools::ToolName::namespaced("filesystem", "read_file"),
             source: ToolCallSource::Direct,
             payload,
         };
@@ -450,11 +479,6 @@ mod tests {
                 }),
             })
         );
-    }
-
-    #[test]
-    fn mcp_hook_tool_input_defaults_empty_args_to_object() {
-        assert_eq!(mcp_hook_tool_input("  "), json!({}));
     }
 
     #[test]

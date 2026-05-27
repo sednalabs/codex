@@ -57,7 +57,7 @@ When a change updates model catalogs or model metadata (`/models` payloads, pres
 
 - Fill in the PR template (or include similar information) - **What? Why? How?**
 - Include a link to a bug report or enhancement request in the issue tracker
-- Run the smallest relevant local checks first. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant crate-scoped tests. Heavy sweeps and release-mode validation should be offloaded to GitHub Actions after the branch is pushed.
+- Run the smallest relevant local checks first. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant tests (for example, `just test -p codex-tui`). Heavy sweeps and release-mode validation should be offloaded to GitHub Actions after the branch is pushed.
 - Make sure your branch is up-to-date with `main` and that you have resolved merge conflicts.
 - Mark the PR as **Ready for review** only when you believe it is in a merge-able state.
 

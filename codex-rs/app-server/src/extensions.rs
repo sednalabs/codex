@@ -1,5 +1,8 @@
-use crate::outgoing_message::ConnectionId;
-use crate::outgoing_message::OutgoingMessageSender;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Weak;
+
 use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::PluginDetail;
@@ -8,29 +11,32 @@ use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::Turn;
-use codex_core::AuthManager;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
+use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_file_watcher::WatchPath;
+use codex_login::AuthManager;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Weak;
+
+use crate::outgoing_message::ConnectionId;
+use crate::outgoing_message::OutgoingMessageSender;
 
 /// Internal app-server extension seam.
 ///
-/// This is intentionally small and static: we want a no-op upstream-shaped
-/// surface plus a downstream implementation, not a dynamic plugin system.
+/// This keeps fork-specific behavior behind a narrow, upstream-shaped hook
+/// surface rather than spreading it through request processors and hot loops.
 pub(crate) trait AppServerHooks: Send + Sync + 'static {
     /// Lifecycle hook for app-server startup.
     fn on_app_server_start(
@@ -170,14 +176,49 @@ pub(crate) async fn dispatch_notification_to_connection(
     }
 }
 
-pub(crate) fn thread_extensions<S>(guardian_agent_spawner: S) -> Arc<ExtensionRegistry<Config>>
+pub(crate) fn thread_extensions<S>(
+    guardian_agent_spawner: S,
+    event_sink: Arc<dyn ExtensionEventSink>,
+    auth_manager: Arc<AuthManager>,
+) -> Arc<ExtensionRegistry<Config>>
 where
     S: AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> + 'static,
 {
-    let mut builder = ExtensionRegistryBuilder::<Config>::new();
+    let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
     codex_guardian::install(&mut builder, guardian_agent_spawner);
-    codex_memories_extension::install(&mut builder);
+    codex_memories_extension::install(&mut builder, codex_otel::global());
+    codex_web_search_extension::install(&mut builder, auth_manager);
     Arc::new(builder.build())
+}
+
+pub(crate) fn app_server_extension_event_sink(
+    outgoing: Arc<OutgoingMessageSender>,
+) -> Arc<dyn ExtensionEventSink> {
+    Arc::new(AppServerExtensionEventSink { outgoing })
+}
+
+struct AppServerExtensionEventSink {
+    outgoing: Arc<OutgoingMessageSender>,
+}
+
+impl ExtensionEventSink for AppServerExtensionEventSink {
+    fn emit(&self, event: Event) {
+        match event.msg {
+            EventMsg::ThreadGoalUpdated(thread_goal_event) => {
+                self.outgoing
+                    .try_send_server_notification(ServerNotification::ThreadGoalUpdated(
+                        ThreadGoalUpdatedNotification {
+                            thread_id: thread_goal_event.thread_id.to_string(),
+                            turn_id: thread_goal_event.turn_id,
+                            goal: thread_goal_event.goal.into(),
+                        },
+                    ));
+            }
+            msg => {
+                tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");
+            }
+        }
+    }
 }
 
 pub(crate) fn guardian_agent_spawner(
@@ -313,10 +354,24 @@ fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use codex_file_watcher::WatchPath;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadGoal as AppServerThreadGoal;
+    use codex_app_server_protocol::ThreadGoalStatus as AppServerThreadGoalStatus;
+    use codex_protocol::protocol::ThreadGoal;
+    use codex_protocol::protocol::ThreadGoalStatus;
+    use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    use super::*;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
 
     #[test]
     fn noop_hooks_default_to_upstreamish_behavior() {
@@ -453,5 +508,66 @@ mod tests {
         assert_eq!(uninstall_response, PluginUninstallResponse {});
         assert_eq!(marketplace_add_response.marketplace_name, "test");
         assert_eq!(apps_list_response.next_cursor.as_deref(), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn app_server_event_sink_forwards_thread_goal_updates() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let sink = app_server_extension_event_sink(outgoing);
+        let thread_id = ThreadId::default();
+
+        sink.emit(Event {
+            id: "call-1".to_string(),
+            msg: EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                thread_id,
+                turn_id: Some("turn-1".to_string()),
+                goal: ThreadGoal {
+                    thread_id,
+                    objective: "wire extension events".to_string(),
+                    status: ThreadGoalStatus::Active,
+                    token_budget: Some(123),
+                    tokens_used: 45,
+                    time_used_seconds: 6,
+                    created_at: 7,
+                    updated_at: 8,
+                },
+            }),
+        });
+
+        let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for forwarded extension event")
+            .expect("outgoing channel closed unexpectedly");
+        let OutgoingEnvelope::Broadcast { message } = envelope else {
+            panic!("expected broadcast notification");
+        };
+        let OutgoingMessage::AppServerNotification(ServerNotification::ThreadGoalUpdated(
+            notification,
+        )) = message
+        else {
+            panic!("expected thread goal updated notification");
+        };
+
+        assert_eq!(
+            ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: Some("turn-1".to_string()),
+                goal: AppServerThreadGoal {
+                    thread_id: thread_id.to_string(),
+                    objective: "wire extension events".to_string(),
+                    status: AppServerThreadGoalStatus::Active,
+                    token_budget: Some(123),
+                    tokens_used: 45,
+                    time_used_seconds: 6,
+                    created_at: 7,
+                    updated_at: 8,
+                },
+            },
+            notification
+        );
     }
 }

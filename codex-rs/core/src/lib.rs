@@ -14,6 +14,7 @@ mod client_common;
 mod realtime_context;
 mod realtime_conversation;
 mod realtime_prompt;
+mod responses_retry;
 pub(crate) mod session;
 pub use session::SteerInputError;
 mod codex_thread;

@@ -1320,6 +1320,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await
@@ -1411,6 +1412,7 @@ async fn responses_websocket_invalid_request_error_with_status_is_forwarded() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await

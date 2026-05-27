@@ -46,8 +46,10 @@ use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
+use super::remote_connection::RemoteConnectionStatus;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
+use crate::wrapping::word_wrap_lines;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -107,6 +109,7 @@ struct StatusHistoryCell {
     agents_summary: String,
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
+    remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
     account: Option<StatusAccountDisplay>,
     thread_name: Option<String>,
@@ -174,6 +177,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     new_status_output_with_rate_limits_handle(
         config,
         /*runtime_model_provider_base_url*/ None,
+        /*remote_connection*/ None,
         account_display,
         token_info,
         total_usage,
@@ -195,6 +199,7 @@ pub(crate) fn new_status_output_with_rate_limits(
 pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
     runtime_model_provider_base_url: Option<&str>,
+    remote_connection: Option<&RemoteConnectionStatus>,
     account_display: Option<&StatusAccountDisplay>,
     token_info: Option<&TokenUsageInfo>,
     total_usage: &TokenUsage,
@@ -212,6 +217,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     new_status_output_with_rate_limits_handle_for_instruction_sources(
         config,
         runtime_model_provider_base_url,
+        remote_connection,
         account_display,
         token_info,
         total_usage,
@@ -233,6 +239,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
 pub(crate) fn new_status_output_with_rate_limits_handle_for_instruction_sources(
     config: &Config,
     runtime_model_provider_base_url: Option<&str>,
+    remote_connection: Option<&RemoteConnectionStatus>,
     account_display: Option<&StatusAccountDisplay>,
     token_info: Option<&TokenUsageInfo>,
     total_usage: &TokenUsage,
@@ -252,6 +259,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle_for_instruction_sources(
     let (card, handle) = StatusHistoryCell::new(
         config,
         runtime_model_provider_base_url,
+        remote_connection,
         account_display,
         token_info,
         total_usage,
@@ -279,6 +287,7 @@ impl StatusHistoryCell {
     fn new(
         config: &Config,
         runtime_model_provider_base_url: Option<&str>,
+        remote_connection: Option<&RemoteConnectionStatus>,
         account_display: Option<&StatusAccountDisplay>,
         token_info: Option<&TokenUsageInfo>,
         total_usage: &TokenUsage,
@@ -398,6 +407,7 @@ impl StatusHistoryCell {
                 agents_summary,
                 collaboration_mode: collaboration_mode.map(ToString::to_string),
                 model_provider,
+                remote_connection: remote_connection.cloned(),
                 show_chatgpt_usage_link,
                 account,
                 thread_name,
@@ -754,7 +764,6 @@ impl HistoryCell for StatusHistoryCell {
             Span::from(" ").dim(),
             Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
         ]));
-        lines.push(Line::from(Vec::<Span<'static>>::new()));
 
         let available_inner_width = usize::from(width.saturating_sub(4));
         if available_inner_width == 0 {
@@ -832,10 +841,28 @@ impl HistoryCell for StatusHistoryCell {
             [note_first_line, note_second_line],
             RtOptions::new(available_inner_width),
         );
+        lines.push(Line::from(Vec::<Span<'static>>::new()));
         // The ChatGPT usage page only applies to providers backed by OpenAI auth;
         // providers like Bedrock manage limits and billing elsewhere.
         if self.show_chatgpt_usage_link {
             lines.extend(note_lines);
+            lines.push(Line::from(Vec::<Span<'static>>::new()));
+        }
+        if let Some(remote_connection) = self.remote_connection.as_ref() {
+            let wrapped_remote = word_wrap_lines(
+                [Line::from(vec![
+                    Span::from(remote_connection.address.clone()),
+                    Span::from(" (").dim(),
+                    Span::from(remote_connection.version.clone()).dim(),
+                    Span::from(")").dim(),
+                ])],
+                RtOptions::new(value_width.max(1)),
+            );
+            let mut wrapped_remote = wrapped_remote.into_iter();
+            if let Some(first) = wrapped_remote.next() {
+                lines.push(formatter.line("Remote", first.spans));
+                lines.extend(wrapped_remote.map(|line| formatter.continuation(line.spans)));
+            }
             lines.push(Line::from(Vec::<Span<'static>>::new()));
         }
 

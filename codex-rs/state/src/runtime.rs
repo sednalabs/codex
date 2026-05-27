@@ -10,6 +10,7 @@ use crate::LOGS_DB_FILENAME;
 use crate::LogEntry;
 use crate::LogQuery;
 use crate::LogRow;
+use crate::MEMORIES_DB_FILENAME;
 use crate::STATE_DB_FILENAME;
 use crate::SortKey;
 use crate::ThreadMetadata;
@@ -19,6 +20,7 @@ use crate::USAGE_DB_FILENAME;
 use crate::apply_rollout_item;
 use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
+use crate::migrations::runtime_memories_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_usage_migrator;
 use crate::model::AgentJobRow;
@@ -75,6 +77,7 @@ pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
+pub use memories::MemoryStore;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 
@@ -143,7 +146,16 @@ const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
     migrate_phase: "migrate_usage",
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 4] = [STATE_DB, LOGS_DB, GOALS_DB, USAGE_DB];
+const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "memories DB",
+    filename: MEMORIES_DB_FILENAME,
+    kind: DbKind::Memories,
+    open_phase: "open_memories",
+    repair_phase: None,
+    migrate_phase: "migrate_memories",
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 5] = [STATE_DB, LOGS_DB, GOALS_DB, MEMORIES_DB, USAGE_DB];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeDbPath {
@@ -159,6 +171,7 @@ pub struct StateRuntime {
     logs_pool: Arc<sqlx::SqlitePool>,
     usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
+    memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
@@ -214,10 +227,12 @@ impl StateRuntime {
         let logs_migrator = runtime_logs_migrator();
         let usage_migrator = runtime_usage_migrator();
         let goals_migrator = runtime_goals_migrator();
+        let memories_migrator = runtime_memories_migrator();
         let state_path = STATE_DB.path(codex_home.as_path());
         let logs_path = LOGS_DB.path(codex_home.as_path());
         let goals_path = GOALS_DB.path(codex_home.as_path());
         let usage_path = USAGE_DB.path(codex_home.as_path());
+        let memories_path = MEMORIES_DB.path(codex_home.as_path());
         let pool = match open_state_sqlite(&state_path, &state_migrator, telemetry_override).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -249,6 +264,22 @@ impl StateRuntime {
                     return Err(err);
                 }
             };
+        let memories_pool = match open_memories_sqlite(
+            &memories_path,
+            &memories_migrator,
+            telemetry_override,
+        )
+        .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!(
+                    "failed to open memories db at {}: {err}",
+                    memories_path.display()
+                );
+                return Err(err);
+            }
+        };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -276,6 +307,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
             usage_pool,
@@ -300,6 +332,28 @@ impl StateRuntime {
 
     pub fn thread_goals(&self) -> &GoalStore {
         &self.thread_goals
+    }
+
+    pub fn memories(&self) -> &MemoryStore {
+        &self.memories
+    }
+
+    pub async fn clear_memory_data_in_sqlite_home(sqlite_home: &Path) -> anyhow::Result<bool> {
+        let memories_path = MEMORIES_DB.path(sqlite_home);
+        if !tokio::fs::try_exists(&memories_path).await? {
+            return Ok(false);
+        }
+
+        let memories_migrator = runtime_memories_migrator();
+        let pool = open_memories_sqlite(
+            &memories_path,
+            &memories_migrator,
+            /*telemetry_override*/ None,
+        )
+        .await?;
+        memories::clear_memory_data_in_pool(&pool).await?;
+        pool.close().await;
+        Ok(true)
     }
 }
 
@@ -346,6 +400,14 @@ async fn open_usage_sqlite(
     telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
     open_sqlite(path, migrator, USAGE_DB, telemetry_override).await
+}
+
+async fn open_memories_sqlite(
+    path: &Path,
+    migrator: &Migrator,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    open_sqlite(path, migrator, MEMORIES_DB, telemetry_override).await
 }
 
 async fn open_sqlite(
@@ -434,6 +496,14 @@ pub fn goals_db_filename() -> String {
 
 pub fn goals_db_path(codex_home: &Path) -> PathBuf {
     GOALS_DB.path(codex_home)
+}
+
+pub fn memories_db_filename() -> String {
+    MEMORIES_DB.filename.to_string()
+}
+
+pub fn memories_db_path(codex_home: &Path) -> PathBuf {
+    MEMORIES_DB.path(codex_home)
 }
 
 pub fn runtime_db_paths(codex_home: &Path) -> Vec<RuntimeDbPath> {
@@ -962,6 +1032,8 @@ mod tests {
             "migrate_logs",
             "open_goals",
             "migrate_goals",
+            "open_memories",
+            "migrate_memories",
             "open_usage",
             "migrate_usage",
             "ensure_backfill_state",
