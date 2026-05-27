@@ -2170,9 +2170,9 @@ async fn status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line(
 
     let captured_at = chrono::Local::now();
     let cases = [
-        (40.0, 60.0, "weekly 60% (on pace)"),
-        (40.0, 56.0, "weekly 60% (under 4%)"),
-        (56.0, 50.0, "weekly 44% (over 6%)"),
+        (40.0, 60.0, "weekly 60% left (on pace)"),
+        (40.0, 56.0, "weekly 60% left (under 4%)"),
+        (56.0, 50.0, "weekly 44% left (over 6%)"),
     ];
     for (used_percent, time_remaining_pct, expected) in cases {
         set_weekly_status_line_snapshot(&mut chat, captured_at, used_percent, time_remaining_pct);
@@ -2198,7 +2198,7 @@ async fn status_line_weekly_limit_renders_stale_suffix_over_pace_details() {
 
     assert_eq!(
         status_line_text(&chat),
-        Some("weekly 44% (stale)".to_string())
+        Some("weekly 44% left (stale)".to_string())
     );
 }
 
@@ -2225,7 +2225,7 @@ async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("weekly 44%".to_string()));
+    assert_eq!(status_line_text(&chat), Some("weekly 44% left".to_string()));
 }
 
 #[tokio::test]
