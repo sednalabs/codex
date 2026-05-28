@@ -79,13 +79,12 @@ struct EchoArgs {
 
 impl ServerHandler for TestToolServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
                 .build(),
-            ..ServerInfo::default()
-        }
+        )
     }
 
     fn list_tools(
@@ -130,12 +129,7 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                Ok(CallToolResult {
-                    content: Vec::new(),
-                    structured_content: Some(structured_content),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                Ok(structured_tool_result(structured_content))
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
@@ -143,6 +137,12 @@ impl ServerHandler for TestToolServer {
             )),
         }
     }
+}
+
+fn structured_tool_result(value: serde_json::Value) -> CallToolResult {
+    let mut result = CallToolResult::success(Vec::new());
+    result.structured_content = Some(value);
+    result
 }
 
 #[tokio::main]
