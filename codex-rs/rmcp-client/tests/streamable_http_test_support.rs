@@ -50,31 +50,17 @@ fn streamable_http_server_bin() -> Result<PathBuf, CargoBinError> {
 }
 
 fn init_params() -> InitializeRequestParams {
-    InitializeRequestParams {
-        meta: None,
-        capabilities: ClientCapabilities {
-            experimental: None,
-            extensions: None,
-            roots: None,
-            sampling: None,
-            elicitation: Some(ElicitationCapability {
-                form: Some(FormElicitationCapability {
-                    schema_validation: None,
-                }),
-                url: None,
-            }),
-            tasks: None,
-        },
-        client_info: Implementation {
-            name: "codex-test".into(),
-            version: "0.0.0-test".into(),
-            title: Some("Codex rmcp recovery test".into()),
-            description: None,
-            icons: None,
-            website_url: None,
-        },
-        protocol_version: ProtocolVersion::V_2025_06_18,
-    }
+    let mut capabilities = ClientCapabilities::default();
+    capabilities.elicitation = Some(ElicitationCapability {
+        form: Some(FormElicitationCapability {
+            schema_validation: None,
+        }),
+        url: None,
+    });
+    let client_info =
+        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp recovery test");
+    InitializeRequestParams::new(capabilities, client_info)
+        .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
