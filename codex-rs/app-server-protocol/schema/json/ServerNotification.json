@@ -4158,6 +4158,13 @@
         "id": {
           "type": "string"
         },
+        "model": {
+          "description": "Latest observed model for this thread, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "modelProvider": {
           "description": "Model provider used for this thread (for example, 'openai').",
           "type": "string"
@@ -4179,6 +4186,17 @@
         "preview": {
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest observed reasoning effort for this thread, if known."
         },
         "sessionId": {
           "description": "Session id shared by threads that belong to the same session tree.",

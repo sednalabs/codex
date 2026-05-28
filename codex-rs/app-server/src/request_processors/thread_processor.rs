@@ -4047,6 +4047,8 @@ pub(crate) fn thread_from_stored_thread(
         } else {
             thread.model_provider
         },
+        model: thread.model,
+        reasoning_effort: thread.reasoning_effort,
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
         status: ThreadStatus::NotLoaded,
@@ -4251,6 +4253,8 @@ fn build_thread_from_snapshot(
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),
+        model: Some(config_snapshot.model.clone()),
+        reasoning_effort: config_snapshot.reasoning_effort,
         created_at: now,
         updated_at: now,
         status: ThreadStatus::NotLoaded,

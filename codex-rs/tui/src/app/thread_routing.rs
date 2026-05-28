@@ -5,7 +5,8 @@
 //! when the visible thread changes.
 
 use super::*;
-use crate::session_resume::read_session_model;
+use crate::session_resume::SessionModelSettings;
+use crate::session_resume::read_session_model_settings;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
@@ -938,13 +939,28 @@ impl App {
         session
             .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
-        if let Some(model) =
-            read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
-        {
+        let mut model_settings = SessionModelSettings {
+            model: notification.thread.model.clone(),
+            reasoning_effort: notification.thread.reasoning_effort,
+        };
+        if model_settings.model.is_none() || model_settings.reasoning_effort.is_none() {
+            let stored_settings = read_session_model_settings(
+                self.state_db.as_deref(),
+                thread_id,
+                rollout_path.as_deref(),
+            )
+            .await;
+            model_settings.model = model_settings.model.or(stored_settings.model);
+            model_settings.reasoning_effort = model_settings
+                .reasoning_effort
+                .or(stored_settings.reasoning_effort);
+        }
+        if let Some(model) = model_settings.model {
             session.model = model;
         } else if rollout_path.is_some() {
             session.model.clear();
         }
+        session.reasoning_effort = model_settings.reasoning_effort.map(Into::into);
         session.message_history = None;
         session.rollout_path = rollout_path;
         self.upsert_agent_picker_thread(

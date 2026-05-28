@@ -12,6 +12,7 @@ This fork publishes downstream behavior on `main` and keeps an exact upstream mi
 - `sedna-sync-upstream` fast-forwards the mirror and then runs the downstream divergence audit against the exact synced SHA.
 - avoid force-push on `main` during normal sync; reserve `--force-with-lease` for exceptional repair only
 - new feature branches: create from `main` by default
+- completed feature, bugfix, docs, or cleanup branch work must be committed, pushed, and opened as a PR targeting `origin/main` before handoff; do not leave finished work local-only
 - upstream-only compatibility/test probes: create from `upstream-main`, then cherry-pick to `main` if retained downstream
 
 ## Local clone migration

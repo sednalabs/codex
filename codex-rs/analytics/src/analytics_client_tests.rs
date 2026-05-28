@@ -168,6 +168,8 @@ fn sample_thread_with_metadata(
         preview: "first prompt".to_string(),
         ephemeral,
         model_provider: "openai".to_string(),
+        model: None,
+        reasoning_effort: None,
         created_at: 1,
         updated_at: 2,
         status: AppServerThreadStatus::Idle,
@@ -3693,6 +3695,7 @@ async fn turn_event_counts_completed_tool_items() {
             prompt: Some("help".to_string()),
             model: Some("gpt-5".to_string()),
             reasoning_effort: None,
+            timed_out: false,
             agents_states: Default::default(),
         },
         ThreadItem::WebSearch {

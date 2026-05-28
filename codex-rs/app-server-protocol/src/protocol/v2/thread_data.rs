@@ -2,6 +2,7 @@ use super::CodexErrorInfo;
 use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::ThreadSource as CoreThreadSource;
@@ -114,6 +115,10 @@ pub struct Thread {
     pub ephemeral: bool,
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
+    /// Latest observed model for this thread, if known.
+    pub model: Option<String>,
+    /// Latest observed reasoning effort for this thread, if known.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]
     pub created_at: i64,

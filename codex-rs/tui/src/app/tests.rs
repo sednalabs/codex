@@ -2758,6 +2758,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     let primary_cwd = test_path_buf("/tmp/main").abs();
     let shared_root = test_path_buf("/tmp/shared").abs();
     let primary_session = ThreadSessionState {
+        model: "gpt-5.5".to_string(),
+        reasoning_effort: None,
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
         runtime_workspace_roots: vec![primary_cwd.clone(), shared_root.clone()],
@@ -2783,6 +2785,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         "payload": {
             "cwd": test_path_buf("/tmp/agent"),
             "model": "gpt-agent",
+            "effort": "high",
         },
     });
     std::fs::write(
@@ -2799,6 +2802,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 model_provider: "agent-provider".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
                 status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -2830,6 +2835,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     assert_eq!(session.thread_id, agent_thread_id);
     assert_eq!(session.thread_name, Some("agent thread".to_string()));
     assert_eq!(session.model, "gpt-agent");
+    assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
     assert_eq!(session.model_provider_id, "agent-provider");
     assert_eq!(session.approval_policy, primary_session.approval_policy);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
@@ -2889,6 +2895,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 model_provider: "agent-provider".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
                 status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -2933,6 +2941,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
     let primary_cwd = test_path_buf("/tmp/main").abs();
     let primary_session = ThreadSessionState {
+        model: "gpt-5.5".to_string(),
+        reasoning_effort: None,
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
         runtime_workspace_roots: vec![primary_cwd.clone()],
@@ -2947,6 +2957,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         preview: "read thread".to_string(),
         ephemeral: false,
         model_provider: "read-provider".to_string(),
+        model: Some("gpt-5.3-codex".to_string()),
+        reasoning_effort: Some(ReasoningEffortConfig::High),
         created_at: 1,
         updated_at: 2,
         status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -2967,6 +2979,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         .await;
 
     assert_eq!(session.thread_id, read_thread_id);
+    assert_eq!(session.model, "gpt-5.3-codex");
+    assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
     assert_eq!(
         session.runtime_workspace_roots,
@@ -5022,6 +5036,8 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 0,
                 updated_at: 0,
                 status: codex_app_server_protocol::ThreadStatus::Idle,

@@ -894,6 +894,8 @@ mod tests {
             preview: String::new(),
             ephemeral: false,
             model_provider: "mock-provider".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
             status: ThreadStatus::NotLoaded,

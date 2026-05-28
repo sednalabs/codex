@@ -116,11 +116,12 @@ artifacts.
 1. Edit locally.
 2. Run the smallest relevant local smoke check.
 3. Commit and push.
-4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
+4. Open a pull request to `origin/main` for completed branch work; a pushed branch without a PR is not a handoff.
+5. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
+6. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
    `validation-lab`.
-6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
+7. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam (a pre-mapped, narrow change boundary the planner can verify
