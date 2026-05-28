@@ -1041,6 +1041,11 @@ async fn create_oauth_transport_and_runtime(
         OAuthState::Session(_) | OAuthState::AuthorizedHttpClient(_) => {
             return Err(anyhow!("unexpected OAuth state during client setup"));
         }
+        _ => {
+            return Err(anyhow!(
+                "unexpected OAuth state variant during client setup"
+            ));
+        }
     };
 
     let auth_client = AuthClient::new(
