@@ -27,6 +27,7 @@ use codex_mcp::resolve_oauth_scopes;
 use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::delete_oauth_tokens;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::perform_oauth_login;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
@@ -159,6 +160,10 @@ pub struct LoginArgs {
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
     pub scopes: Vec<String>,
+
+    /// Use OAuth device authorization for headless login.
+    #[arg(long = "device-auth")]
+    pub device_auth: bool,
 }
 
 #[derive(Debug, clap::Parser)]
@@ -453,7 +458,11 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     )));
     let mcp_servers = mcp_manager.configured_servers(&config).await;
 
-    let LoginArgs { name, scopes } = login_args;
+    let LoginArgs {
+        name,
+        scopes,
+        device_auth,
+    } = login_args;
 
     let Some(server) = mcp_servers.get(&name) else {
         bail!("No MCP server named '{name}' found.");
@@ -477,6 +486,62 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     };
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
+
+    if device_auth {
+        let oauth_config = match oauth_login_support(&server.transport).await {
+            McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
+            McpOAuthLoginSupport::Unsupported => {
+                bail!("No authorization support detected for MCP server '{name}'.")
+            }
+            McpOAuthLoginSupport::Unknown(err) => {
+                return Err(err).context(format!(
+                    "failed to discover OAuth support for MCP server '{name}'"
+                ));
+            }
+        };
+        let Some(oauth_client_id) = server
+            .oauth_client_id()
+            .filter(|client_id| !client_id.trim().is_empty())
+        else {
+            bail!(
+                "OAuth device login for MCP server '{name}' requires a configured public OAuth client id."
+            );
+        };
+        let Some(device_authorization_endpoint) = oauth_config
+            .device_authorization_endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+        else {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing device_authorization_endpoint."
+            );
+        };
+        if let Some(grant_types) = &oauth_config.grant_types_supported
+            && !grant_types
+                .iter()
+                .any(|grant| grant == "urn:ietf:params:oauth:grant-type:device_code")
+        {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing device_code grant type."
+            );
+        }
+
+        perform_oauth_device_login(
+            &name,
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            http_headers,
+            env_http_headers,
+            &resolved_scopes.scopes,
+            oauth_client_id,
+            server.oauth_resource.as_deref(),
+            device_authorization_endpoint,
+            &oauth_config.token_endpoint,
+        )
+        .await?;
+        println!("Successfully logged in to MCP server '{name}'.");
+        return Ok(());
+    }
 
     perform_oauth_login_retry_without_scopes(
         &name,
@@ -989,5 +1054,24 @@ fn format_mcp_status(config: &McpServerConfig) -> String {
         format!("disabled: {reason}")
     } else {
         "disabled".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn mcp_login_parses_device_auth_flag() {
+        let cli = McpCli::try_parse_from(["mcp", "login", "--device-auth", "ops"])
+            .expect("parse mcp login");
+        let McpSubcommand::Login(args) = cli.subcommand else {
+            panic!("expected login subcommand");
+        };
+
+        assert_eq!(args.name, "ops");
+        assert_eq!(args.scopes, Vec::<String>::new());
+        assert!(args.device_auth);
     }
 }

@@ -23,7 +23,10 @@ const OAUTH_DISCOVERY_VERSION: &str = "2024-11-05";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
+    pub token_endpoint: String,
     pub scopes_supported: Option<Vec<String>>,
+    pub device_authorization_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 /// Determine the authentication status for a streamable HTTP MCP server.
@@ -119,9 +122,14 @@ async fn discover_streamable_http_oauth_with_headers(
             }
         };
 
-        if metadata.authorization_endpoint.is_some() && metadata.token_endpoint.is_some() {
+        if metadata.authorization_endpoint.is_some()
+            && let Some(token_endpoint) = metadata.token_endpoint
+        {
             return Ok(Some(StreamableHttpOAuthDiscovery {
+                token_endpoint,
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
+                device_authorization_endpoint: metadata.device_authorization_endpoint,
+                grant_types_supported: normalize_scopes(metadata.grant_types_supported),
             }));
         }
     }
@@ -141,6 +149,10 @@ struct OAuthDiscoveryMetadata {
     token_endpoint: Option<String>,
     #[serde(default)]
     scopes_supported: Option<Vec<String>>,
+    #[serde(default)]
+    device_authorization_endpoint: Option<String>,
+    #[serde(default)]
+    grant_types_supported: Option<Vec<String>>,
 }
 
 fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -317,6 +329,12 @@ mod tests {
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
             "scopes_supported": ["profile", " email ", "profile", "", "   "],
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": [
+                "authorization_code",
+                " urn:ietf:params:oauth:grant-type:device_code ",
+                "authorization_code"
+            ],
         }))
         .await;
 
@@ -330,8 +348,16 @@ mod tests {
         .expect("oauth support should be detected");
 
         assert_eq!(
-            discovery.scopes_supported,
-            Some(vec!["profile".to_string(), "email".to_string()])
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                grant_types_supported: Some(vec![
+                    "authorization_code".to_string(),
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string()
+                ]),
+            }
         );
     }
 
@@ -353,7 +379,15 @@ mod tests {
         .expect("discovery should succeed")
         .expect("oauth support should be detected");
 
-        assert_eq!(discovery.scopes_supported, None);
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: None,
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
+            }
+        );
     }
 
     #[tokio::test]
