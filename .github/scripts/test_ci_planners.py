@@ -1338,22 +1338,37 @@ class ValidationPlanScriptTests(unittest.TestCase):
         steps = summary.get("steps") or []
 
         self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
-        self.assertEqual((steps[2] or {}).get("name"), "Record Actions cache occupancy")
+        record_step = next(
+            (
+                step
+                for step in steps
+                if step.get("name") == "Record Actions cache occupancy"
+            ),
+            {},
+        )
+        report_step = next(
+            (
+                step
+                for step in steps
+                if "--cache-occupancy-json" in (step.get("run") or "")
+            ),
+            {},
+        )
         self.assertIn(
             "report_actions_cache_occupancy.py",
-            (steps[2] or {}).get("run") or "",
+            record_step.get("run") or "",
         )
         self.assertIn(
             "--cache-occupancy-json",
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--rust-batching-mode "${{ needs.metadata.outputs.rust_batching_mode }}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--rust-batching-reason "${{ needs.metadata.outputs.rust_batching_reason }}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
 
     def test_validation_lab_only_fetches_target_history_for_artifact_versioning(self) -> None:
@@ -3150,38 +3165,49 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         steps = summary.get("steps") or []
         self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
-        self.assertEqual((steps[0] or {}).get("uses"), "actions/checkout@v6")
-        self.assertEqual((steps[1] or {}).get("uses"), "actions/download-artifact@v8")
-        self.assertEqual((steps[2] or {}).get("name"), "Record Actions cache occupancy")
+        uses_steps = [step.get("uses") for step in steps]
+        self.assertIn("actions/checkout@v6", uses_steps)
+        self.assertIn("actions/download-artifact@v8", uses_steps)
+        self.assertIn("actions/upload-artifact@v7", uses_steps)
+        self.assertTrue(
+            any(step.get("name") == "Record Actions cache occupancy" for step in steps)
+        )
+        report_step = next(
+            (
+                step
+                for step in steps
+                if "aggregate_validation_summary.py" in (step.get("run") or "")
+            ),
+            {},
+        )
         self.assertIn(
             "aggregate_validation_summary.py",
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--planned-matrix-json \'${{ needs.metadata.outputs.planned_matrix }}\'',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             "--cache-occupancy-json",
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--workflow-result "${WORKFLOW_RESULT}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--rust-minimal-result "${rust_minimal_result}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
         self.assertIn(
             '--rust-integration-result "${rust_integration_result}"',
-            (steps[3] or {}).get("run") or "",
+            report_step.get("run") or "",
         )
-        self.assertEqual((steps[4] or {}).get("uses"), "actions/upload-artifact@v7")
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
