@@ -114,31 +114,18 @@ impl McpProcess {
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
-        let params = InitializeRequestParams {
-            meta: None,
-            capabilities: ClientCapabilities {
-                elicitation: Some(ElicitationCapability {
-                    form: Some(FormElicitationCapability {
-                        schema_validation: None,
-                    }),
-                    url: None,
-                }),
-                experimental: None,
-                extensions: None,
-                roots: None,
-                sampling: None,
-                tasks: None,
-            },
-            client_info: Implementation {
-                name: "elicitation test".into(),
-                title: Some("Elicitation Test".into()),
-                version: "0.0.0".into(),
-                description: None,
-                icons: None,
-                website_url: None,
-            },
-            protocol_version: ProtocolVersion::V_2025_03_26,
-        };
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation = Some(ElicitationCapability {
+            form: Some(FormElicitationCapability {
+                schema_validation: None,
+            }),
+            url: None,
+        });
+        let params = InitializeRequestParams::new(
+            capabilities,
+            Implementation::new("elicitation test", "0.0.0").with_title("Elicitation Test"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_03_26);
         let params_value = serde_json::to_value(params)?;
 
         self.send_jsonrpc_message(JsonRpcMessage::Request(JsonRpcRequest {
