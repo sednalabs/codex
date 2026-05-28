@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-weight-seconds", default="")
     parser.add_argument("--batch-setup-duration-ms", default="")
     parser.add_argument("--artifact-name", default="")
+    parser.add_argument("--nextest-archive-artifact-name", default="")
+    parser.add_argument("--nextest-archive-file-name", default="")
+    parser.add_argument("--nextest-archive-mode", default="")
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -141,6 +144,9 @@ def main() -> None:
         "log_available": bool(lines),
         "primary_signal": primary_signal(error_lines, tail_lines),
         "artifact_name": args.artifact_name or "",
+        "nextest_archive_artifact_name": args.nextest_archive_artifact_name or "",
+        "nextest_archive_file_name": args.nextest_archive_file_name or "",
+        "nextest_archive_mode": args.nextest_archive_mode or "not-applicable",
     }
 
     output_path = Path(args.output)
