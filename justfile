@@ -250,6 +250,12 @@ mcp-safety-targeted:
     cargo test -p codex-core config::service_tests::write_value_supports_custom_mcp_server_default_tool_approval_mode --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client load_oauth_tokens_ --lib -- --test-threads=1
 
+# Focused downstream MCP OAuth device-login slice for browserless hosts.
+mcp-device-login-targeted:
+    cargo test -p codex-rmcp-client discover_streamable_http_oauth_returns_normalized_scopes --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client device_login_polls_until_authorized --lib -- --exact --test-threads=1
+    cargo test -p codex-cli --bin codex mcp_login_parses_device_auth_flag -- --exact --test-threads=1
+
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_exact_model_slug_override_through_role_layering --lib -- --exact --test-threads=1

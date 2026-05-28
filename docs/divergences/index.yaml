@@ -335,6 +335,41 @@
       "notes": "Keeps broken or partially-written fallback credential files from turning into hard auth failures during MCP login and reconnect flows."
     },
     {
+      "id": "mcp-oauth-device-login",
+      "title": "MCP OAuth device login for headless servers",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "operator-facing",
+      "surface": [
+        "codex mcp login --device-auth",
+        "Streamable HTTP OAuth discovery metadata",
+        "MCP OAuth token cache"
+      ],
+      "files": [
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs",
+        ".github/validation-lanes.json",
+        "justfile"
+      ],
+      "behavior": "Downstream adds a standards-based OAuth Device Authorization Grant login path for headless MCP servers, preserving discovery metadata and storing tokens in the existing MCP cache.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "5a9c53213d6bcbda108ee7297e6cbb02625cb835",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-device-login-targeted",
+      "tests": [
+        "discover_streamable_http_oauth_returns_normalized_scopes",
+        "device_login_polls_until_authorized",
+        "mcp_login_parses_device_auth_flag"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps the Ops MCP EC2 lab login path on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support."
+    },
+    {
       "id": "startup-plugin-sync-bounded-wait",
       "title": "Startup plugin sync bounded wait and completion re-arm",
       "status": "upstream-equivalent",
