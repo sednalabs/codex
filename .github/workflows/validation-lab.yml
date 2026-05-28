@@ -15,9 +15,17 @@ on:
       lane_set:
         required: true
         type: string
+      fanout_tier:
+        required: false
+        type: string
+        default: enterprise
       lanes:
         required: false
         type: string
+      rust_batching:
+        required: false
+        type: string
+        default: auto
       artifact_build:
         required: false
         type: boolean
@@ -65,11 +73,31 @@ on:
           - ui-protocol
           - docs
           - attestation
+          - product-surfaces
+          - sdk
         default: all
+      fanout_tier:
+        description: Hosted-runner fanout tier
+        required: true
+        type: choice
+        options:
+          - balanced
+          - enterprise
+          - soak
+        default: enterprise
       lanes:
         description: Optional comma-separated explicit lane IDs
         required: false
         type: string
+      rust_batching:
+        description: Batch Rust lanes to reuse runner-local build artifacts
+        required: false
+        type: choice
+        options:
+          - auto
+          - off
+          - force
+        default: auto
       artifact_build:
         description: Also build and upload a disposable preview artifact
         required: false
@@ -100,11 +128,13 @@ concurrency:
     ${{
       inputs.supersession_mode == 'auto' &&
       format(
-        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}',
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}',
         inputs.ref || github.ref_name,
         inputs.profile,
         inputs.lane_set,
         inputs.lanes || 'default',
+        inputs.fanout_tier || 'enterprise',
+        inputs.rust_batching || 'auto',
         inputs.artifact_build && 'artifact' || 'no-artifact',
         inputs.include_explicit_lanes && 'explicit' || 'default'
       ) ||
@@ -152,17 +182,25 @@ jobs:
       run_artifact: ${{ steps.meta.outputs.run_artifact }}
       matrix_fail_fast: ${{ steps.meta.outputs.matrix_fail_fast }}
       matrix_max_parallel: ${{ steps.meta.outputs.matrix_max_parallel }}
+      fanout_tier: ${{ steps.meta.outputs.fanout_tier }}
+      planned_job_count: ${{ steps.meta.outputs.planned_job_count }}
+      rust_batching_mode: ${{ steps.meta.outputs.rust_batching_mode }}
+      rust_batching_reason: ${{ steps.meta.outputs.rust_batching_reason }}
       selected_setup_classes: ${{ steps.meta.outputs.selected_setup_classes }}
       selected_workflow_matrix: ${{ steps.meta.outputs.selected_workflow_matrix }}
       selected_node_matrix: ${{ steps.meta.outputs.selected_node_matrix }}
       selected_rust_minimal_matrix: ${{ steps.meta.outputs.selected_rust_minimal_matrix }}
       selected_rust_integration_matrix: ${{ steps.meta.outputs.selected_rust_integration_matrix }}
       selected_release_matrix: ${{ steps.meta.outputs.selected_release_matrix }}
+      selected_rust_minimal_batch_matrix: ${{ steps.meta.outputs.selected_rust_minimal_batch_matrix }}
+      selected_rust_integration_batch_matrix: ${{ steps.meta.outputs.selected_rust_integration_batch_matrix }}
       selected_workflow_lane_count: ${{ steps.meta.outputs.selected_workflow_lane_count }}
       selected_node_lane_count: ${{ steps.meta.outputs.selected_node_lane_count }}
       selected_rust_minimal_lane_count: ${{ steps.meta.outputs.selected_rust_minimal_lane_count }}
       selected_rust_integration_lane_count: ${{ steps.meta.outputs.selected_rust_integration_lane_count }}
       selected_release_lane_count: ${{ steps.meta.outputs.selected_release_lane_count }}
+      selected_rust_minimal_batch_count: ${{ steps.meta.outputs.selected_rust_minimal_batch_count }}
+      selected_rust_integration_batch_count: ${{ steps.meta.outputs.selected_rust_integration_batch_count }}
       workflow_max_parallel: ${{ steps.meta.outputs.workflow_max_parallel }}
       node_max_parallel: ${{ steps.meta.outputs.node_max_parallel }}
       rust_minimal_max_parallel: ${{ steps.meta.outputs.rust_minimal_max_parallel }}
@@ -195,7 +233,10 @@ jobs:
           LAB_DISPLAY_REF: ${{ inputs.ref || github.ref_name }}
           LAB_PROFILE: ${{ inputs.profile }}
           LAB_LANE_SET: ${{ inputs.lane_set }}
+          LAB_FANOUT_TIER: ${{ inputs.fanout_tier || 'enterprise' }}
           LAB_LANES: ${{ inputs.lanes }}
+          LAB_RUST_BATCHING: ${{ inputs.rust_batching || 'auto' }}
+          LAB_RUST_BATCHING_OVERRIDE: ${{ vars.VALIDATION_LAB_RUST_BATCHING }}
           LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
           LAB_INCLUDE_EXPLICIT_LANES: ${{ inputs.include_explicit_lanes }}
         run: |
@@ -225,7 +266,7 @@ jobs:
           fi
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --lanes "${LAB_LANES}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --fanout-tier "${LAB_FANOUT_TIER}" --lanes "${LAB_LANES}" --rust-batching "${LAB_RUST_BATCHING}" --rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
 
           # Helper function for robustly parsing the validation plan metadata.
           # We include explicit error reporting for missing fields or malformed JSON
@@ -281,17 +322,25 @@ jobs:
           run_artifact="$(SELECTION_META="${selection_meta}" parse_meta "run_artifact")"
           matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
           matrix_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "matrix_max_parallel")"
+          fanout_tier="$(SELECTION_META="${selection_meta}" parse_meta "fanout_tier")"
+          planned_job_count="$(SELECTION_META="${selection_meta}" parse_meta "planned_job_count")"
+          rust_batching_mode="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_mode")"
+          rust_batching_reason="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_reason")"
           selected_setup_classes="$(SELECTION_META="${selection_meta}" parse_meta "selected_setup_classes")"
           selected_workflow_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_matrix")"
           selected_node_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_matrix")"
           selected_rust_minimal_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_matrix")"
           selected_rust_integration_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_matrix")"
           selected_release_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_matrix")"
+          selected_rust_minimal_batch_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_matrix")"
+          selected_rust_integration_batch_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_matrix")"
           selected_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_lane_count")"
           selected_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_lane_count")"
           selected_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_lane_count")"
           selected_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_lane_count")"
           selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
+          selected_rust_minimal_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_count")"
+          selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
           workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
           node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
           rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
@@ -316,6 +365,10 @@ jobs:
             echo "run_artifact=${run_artifact}"
             echo "matrix_fail_fast=${matrix_fail_fast}"
             echo "matrix_max_parallel=${matrix_max_parallel}"
+            echo "fanout_tier=${fanout_tier}"
+            echo "planned_job_count=${planned_job_count}"
+            echo "rust_batching_mode=${rust_batching_mode}"
+            echo "rust_batching_reason=${rust_batching_reason}"
             echo "smoke_workflow_matrix=${smoke_workflow_matrix}"
             echo "smoke_node_matrix=${smoke_node_matrix}"
             echo "smoke_rust_minimal_matrix=${smoke_rust_minimal_matrix}"
@@ -332,11 +385,15 @@ jobs:
             echo "selected_rust_minimal_matrix=${selected_rust_minimal_matrix}"
             echo "selected_rust_integration_matrix=${selected_rust_integration_matrix}"
             echo "selected_release_matrix=${selected_release_matrix}"
+            echo "selected_rust_minimal_batch_matrix=${selected_rust_minimal_batch_matrix}"
+            echo "selected_rust_integration_batch_matrix=${selected_rust_integration_batch_matrix}"
             echo "selected_workflow_lane_count=${selected_workflow_lane_count}"
             echo "selected_node_lane_count=${selected_node_lane_count}"
             echo "selected_rust_minimal_lane_count=${selected_rust_minimal_lane_count}"
             echo "selected_rust_integration_lane_count=${selected_rust_integration_lane_count}"
             echo "selected_release_lane_count=${selected_release_lane_count}"
+            echo "selected_rust_minimal_batch_count=${selected_rust_minimal_batch_count}"
+            echo "selected_rust_integration_batch_count=${selected_rust_integration_batch_count}"
             echo "workflow_max_parallel=${workflow_max_parallel}"
             echo "node_max_parallel=${node_max_parallel}"
             echo "rust_minimal_max_parallel=${rust_minimal_max_parallel}"
@@ -355,10 +412,13 @@ jobs:
             echo "- Profile: \`${{ inputs.profile }}\`"
             echo "- Profile intent: \`${{ steps.meta.outputs.profile_intent }}\`"
             echo "- Lane set: \`${{ inputs.lane_set }}\`"
+            echo "- Fanout tier: \`${{ steps.meta.outputs.fanout_tier }}\`"
             echo "- Selection summary: \`${{ steps.meta.outputs.lane_summary }}\`"
             echo "- Explicit lanes supplied: \`${{ inputs.lanes != '' && 'true' || 'false' }}\`"
             echo "- Include explicit-only lanes: \`${{ inputs.include_explicit_lanes && 'true' || 'false' }}\`"
             echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
+            echo "- Planned jobs: \`${{ steps.meta.outputs.planned_job_count }}\`"
+            echo "- Rust batching: \`${{ steps.meta.outputs.rust_batching_mode }}\` (${{ steps.meta.outputs.rust_batching_reason }})"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
             echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
@@ -667,6 +727,34 @@ jobs:
       needs_sccache: ${{ matrix.needs_sccache }}
       cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
+  rust_minimal_batches:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_minimal_batch_count) > 0
+      }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_minimal_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_minimal_batch_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-batch.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      batch_id: ${{ matrix.batch_id }}
+      batch_index: ${{ matrix.batch_index }}
+      setup_class: ${{ matrix.setup_class }}
+      lane_ids_json: ${{ matrix.lane_ids_json }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
+
   rust_integration_lanes:
     needs:
       - metadata
@@ -695,6 +783,34 @@ jobs:
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
+
+  rust_integration_batches:
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_integration_batch_count) > 0
+      }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_integration_batch_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-batch.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      batch_id: ${{ matrix.batch_id }}
+      batch_index: ${{ matrix.batch_index }}
+      setup_class: ${{ matrix.setup_class }}
+      lane_ids_json: ${{ matrix.lane_ids_json }}
       needs_just: ${{ matrix.needs_just }}
       needs_node: ${{ matrix.needs_node }}
       needs_nextest: ${{ matrix.needs_nextest }}
@@ -750,7 +866,9 @@ jobs:
       - workflow_lanes
       - node_lanes
       - rust_minimal_lanes
+      - rust_minimal_batches
       - rust_integration_lanes
+      - rust_integration_batches
       - release_lanes
     if: >-
       ${{
@@ -765,7 +883,9 @@ jobs:
         (needs.workflow_lanes.result == 'success' || needs.workflow_lanes.result == 'skipped') &&
         (needs.node_lanes.result == 'success' || needs.node_lanes.result == 'skipped') &&
         (needs.rust_minimal_lanes.result == 'success' || needs.rust_minimal_lanes.result == 'skipped') &&
+        (needs.rust_minimal_batches.result == 'success' || needs.rust_minimal_batches.result == 'skipped') &&
         (needs.rust_integration_lanes.result == 'success' || needs.rust_integration_lanes.result == 'skipped') &&
+        (needs.rust_integration_batches.result == 'success' || needs.rust_integration_batches.result == 'skipped') &&
         (needs.release_lanes.result == 'success' || needs.release_lanes.result == 'skipped')
       }}
     uses: ./.github/workflows/_validation-lane-release.yml
@@ -801,12 +921,15 @@ jobs:
       - workflow_lanes
       - node_lanes
       - rust_minimal_lanes
+      - rust_minimal_batches
       - rust_integration_lanes
+      - rust_integration_batches
       - release_lanes
       - artifact
     if: ${{ always() && needs.metadata.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@v6
@@ -822,8 +945,28 @@ jobs:
           path: ${{ runner.temp }}/validation-lane-summaries
           merge-multiple: true
 
+      - name: Record Actions cache occupancy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cache_occupancy_file="${RUNNER_TEMP}/actions-cache-occupancy.json"
+          cache_occupancy_markdown="${RUNNER_TEMP}/actions-cache-occupancy.md"
+          python3 .github/scripts/report_actions_cache_occupancy.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --output "${cache_occupancy_file}" \
+            --markdown-output "${cache_occupancy_markdown}"
+          cat "${cache_occupancy_markdown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "CACHE_OCCUPANCY_FILE=${cache_occupancy_file}" >> "$GITHUB_ENV"
+
       - name: Build validation summary artifact
         shell: bash
+        env:
+          RUST_MINIMAL_RESULT: ${{ needs.rust_minimal_lanes.result || 'skipped' }}
+          RUST_MINIMAL_BATCH_RESULT: ${{ needs.rust_minimal_batches.result || 'skipped' }}
+          RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
+          RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
         run: |
           set -euo pipefail
           summary_file="${RUNNER_TEMP}/validation-summary.json"
@@ -837,6 +980,21 @@ jobs:
               smoke_gate_result="success"
             fi
           fi
+          combined_result() {
+            local first="$1"
+            local second="$2"
+            if [[ "${first}" == "failure" || "${second}" == "failure" ]]; then
+              echo "failure"
+            elif [[ "${first}" == "cancelled" || "${second}" == "cancelled" ]]; then
+              echo "cancelled"
+            elif [[ "${first}" == "success" || "${second}" == "success" ]]; then
+              echo "success"
+            else
+              echo "skipped"
+            fi
+          }
+          rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
+          rust_integration_result="$(combined_result "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ needs.metadata.outputs.host_ref }}" \
@@ -863,12 +1021,15 @@ jobs:
             --smoke-gate-result "${smoke_gate_result}" \
             --workflow-result "${{ needs.workflow_lanes.result || 'skipped' }}" \
             --node-result "${{ needs.node_lanes.result || 'skipped' }}" \
-            --rust-minimal-result "${{ needs.rust_minimal_lanes.result || 'skipped' }}" \
-            --rust-integration-result "${{ needs.rust_integration_lanes.result || 'skipped' }}" \
+            --rust-minimal-result "${rust_minimal_result}" \
+            --rust-integration-result "${rust_integration_result}" \
             --release-result "${{ needs.release_lanes.result || 'skipped' }}" \
             --run-artifact "${{ needs.metadata.outputs.run_artifact }}" \
             --artifact-result "${{ needs.artifact.result || 'skipped' }}" \
             --matrix-fail-fast "${{ needs.metadata.outputs.matrix_fail_fast }}" \
+            --rust-batching-mode "${{ needs.metadata.outputs.rust_batching_mode }}" \
+            --rust-batching-reason "${{ needs.metadata.outputs.rust_batching_reason }}" \
+            --cache-occupancy-json "${CACHE_OCCUPANCY_FILE:-}" \
             --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
             --output "${summary_file}"
           echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"
@@ -899,6 +1060,7 @@ jobs:
           print(f"- Lane set: `{payload['selection']['lane_set']}`")
           print(f"- Lane count: `{summary['lane_count']}`")
           print(f"- Total recorded lane runtime (ms): `{summary.get('total_duration_ms', 0)}`")
+          print(f"- Rust batching: `{payload['selection'].get('rust_batching_mode') or 'off'}`")
           timing_breakdown = summary.get("timing_breakdown_ms") or {}
           if timing_breakdown:
               print("- Timing breakdown (ms):")

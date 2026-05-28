@@ -106,12 +106,29 @@ Use separate runs only when the questions are genuinely independent.
 
 Default validation-lab policy:
 
-- `targeted`: low fan-out
+- `targeted`: focused fan-out for one named lane family
 - `frontier`: bounded fan-out with `fail-fast=false` and split setup-class
   matrices so `workflow`, `node`, `rust_minimal`, `rust_integration`, and
   `release` lanes can scale independently
 - `broad`: moderate fan-out
-- `full`: conservative fan-out
+- `full`: checkpoint fan-out
+
+`fanout_tier` controls how much hosted runner capacity the lab is allowed to
+use for selected lanes:
+
+- `balanced`: smaller caps for routine comparison runs
+- `enterprise`: the default tier for public-repo hosted validation, using more
+  of the available GitHub-hosted runner pool while preserving profile-specific
+  caps
+- `soak`: explicit high-capacity probes for capacity and queueing behavior
+
+The planner rejects any lab plan that would create more than 256 matrix or
+artifact jobs. Use a narrower `lane_set`, explicit `lanes=...`, or a lower
+fanout tier when the guard trips.
+
+Rust validation-lab lanes support `rust_batching=auto|off|force`. Batching
+uses the reusable Rust batch workflow so compatible Rust lanes can share runner
+setup and build artifacts while still reporting per-lane summaries.
 
 Do not widen every iteration into a broad or full run.
 Get one seam green first, use `frontier` to harvest nearby blockers when the
@@ -133,6 +150,10 @@ attributable proof.
 
 The validation planners now consume an explicit lane catalog rather than
 deriving execution behavior from an inline command string.
+
+Named lane families include `product-surfaces` for app-server, MCP server,
+exec-server, CLI, and workflow policy checks, and `sdk` for targeted Python and
+TypeScript SDK checks.
 
 Every lane row in `.github/validation-lanes.json` is expected to define:
 

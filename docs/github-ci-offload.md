@@ -323,6 +323,11 @@ The important fields are:
 - validation-lab also keeps the target checkout shallow for ordinary
   smoke/targeted/frontier runs; it only fetches full target history when
   artifact mode needs merged Sedna tags for preview-version derivation
+- validation-lab exposes `fanout_tier=balanced|enterprise|soak`; `enterprise`
+  is the default hosted-runner tier, while `soak` is reserved for explicit
+  capacity probes, and the planner rejects plans above 256 matrix/artifact jobs
+- validation-lab exposes `rust_batching=auto|off|force` so selected Rust lanes
+  can use the shared Rust batch workflow and report batch-aware summaries
 - reusable validation-lane workflows also resolve shared helper scripts from a
   separate `.workflow-src` checkout at the workflow ref, so older PR heads can
   keep running under newer lane-helper contracts without carrying helper copies

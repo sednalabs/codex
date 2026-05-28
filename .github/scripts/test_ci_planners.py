@@ -853,10 +853,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
+        self.assertEqual(len(payload["selected_matrix"]["include"]), 21)
+        self.assertEqual(payload["planned_job_count"], 9)
+        self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 6)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 2)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertTrue(
             all(
@@ -866,6 +871,78 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn("codex.app-server-protocol-test", payload["selected_lane_ids"])
         self.assertIn("codex.blocking-waits-targeted", payload["selected_lane_ids"])
+
+    def test_lab_targeted_ui_protocol_can_disable_rust_batching(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "ui-protocol",
+            "--rust-batching",
+            "off",
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+        self.assertEqual(payload["planned_job_count"], 21)
+        self.assertEqual(payload["rust_batching_mode"], "off")
+        self.assertEqual(payload["rust_batching_reason"], "disabled by workflow input")
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
+
+    def test_lab_product_surface_lane_set_returns_first_wave_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "product-surfaces",
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+        self.assertEqual(payload["planned_job_count"], 5)
+        self.assertEqual(payload["selected_workflow_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 3)
+        self.assertEqual(
+            payload["selected_lane_ids"],
+            [
+                "codex.app-server-v2-contract-targeted",
+                "codex.mcp-server-contract-targeted",
+                "codex.exec-server-targeted",
+                "codex.cli-surface-targeted",
+                "codex.workflow-security-targeted",
+            ],
+        )
+
+    def test_lab_sdk_lane_set_returns_python_and_typescript_lanes(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "sdk",
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+        self.assertEqual(payload["planned_job_count"], 2)
+        self.assertEqual(payload["selected_workflow_lane_count"], 1)
+        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(
+            payload["selected_lane_ids"],
+            [
+                "codex.sdk-python-targeted",
+                "codex.sdk-typescript-targeted",
+            ],
+        )
 
     def test_lab_smoke_profile_uses_wider_rust_integration_parallelism(self) -> None:
         payload = run_script(
@@ -910,6 +987,59 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("selected_matrix", payload)
         self.assertIn("selected_workflow_matrix", payload)
         self.assertIn("smoke_workflow_matrix", payload)
+
+    def test_lab_rejects_matrix_plans_above_job_limit(self) -> None:
+        def workflow_lane(index: int) -> dict:
+            return {
+                "lane_id": f"codex.synthetic-workflow-{index:03d}",
+                "groups": ["workflow"],
+                "lane_sets": ["all"],
+                "status_class": "active",
+                "setup_class": "workflow",
+                "frontier_role": "depth",
+                "summary_family": f"synthetic-workflow-{index:03d}",
+                "cost_class": "low",
+                "checkout_fetch_depth": 1,
+                "timeout_minutes": 30,
+                "working_directory": ".",
+                "script_path": ".github/scripts/validation-lanes/workflow-ci-sanity.sh",
+                "script_args": [],
+                "needs_just": False,
+                "needs_node": False,
+                "needs_nextest": False,
+                "needs_linux_build_deps": False,
+                "needs_dotslash": False,
+                "needs_sccache": False,
+                "needs_bazel": False,
+            }
+
+        catalog = {"lanes": [workflow_lane(index) for index in range(257)]}
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(catalog, handle)
+            handle.flush()
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "resolve_validation_plan.py"),
+                    "lab",
+                    "--profile",
+                    "frontier",
+                    "--lane-set",
+                    "all",
+                    "--artifact-build",
+                    "false",
+                    "--catalog-path",
+                    handle.name,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("would create 257 matrix/artifact jobs", proc.stderr)
+        self.assertIn("above the 256 job cap", proc.stderr)
 
     def test_lab_targeted_rejects_boolean_checkout_fetch_depth_metadata(self) -> None:
         catalog_path = REPO_ROOT / ".github/validation-lanes.json"
@@ -1163,8 +1293,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual((jobs.get("workflow_lanes") or {}).get("needs"), ["metadata"])
         self.assertEqual((jobs.get("node_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("rust_minimal_lanes") or {}).get("needs"), ["metadata"])
-        self.assertEqual((jobs.get("rust_integration_lanes") or {}).get("needs"), ["metadata"])
+        self.assertEqual(
+            (jobs.get("rust_minimal_lanes") or {}).get("needs"), ["metadata"]
+        )
+        self.assertEqual(
+            (jobs.get("rust_minimal_batches") or {}).get("needs"), ["metadata"]
+        )
+        self.assertEqual(
+            (jobs.get("rust_integration_lanes") or {}).get("needs"), ["metadata"]
+        )
+        self.assertEqual(
+            (jobs.get("rust_integration_batches") or {}).get("needs"), ["metadata"]
+        )
         self.assertEqual((jobs.get("release_lanes") or {}).get("needs"), ["metadata"])
 
     def test_validation_lab_summary_waits_for_smoke_and_selected_fanout(self) -> None:
@@ -1184,10 +1324,36 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "workflow_lanes",
                 "node_lanes",
                 "rust_minimal_lanes",
+                "rust_minimal_batches",
                 "rust_integration_lanes",
+                "rust_integration_batches",
                 "release_lanes",
                 "artifact",
             ],
+        )
+
+    def test_validation_lab_summary_records_cache_occupancy(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        summary = ((payload.get("jobs") or {}).get("summary") or {})
+        steps = summary.get("steps") or []
+
+        self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
+        self.assertEqual((steps[2] or {}).get("name"), "Record Actions cache occupancy")
+        self.assertIn(
+            "report_actions_cache_occupancy.py",
+            (steps[2] or {}).get("run") or "",
+        )
+        self.assertIn(
+            "--cache-occupancy-json",
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--rust-batching-mode "${{ needs.metadata.outputs.rust_batching_mode }}"',
+            (steps[3] or {}).get("run") or "",
+        )
+        self.assertIn(
+            '--rust-batching-reason "${{ needs.metadata.outputs.rust_batching_reason }}"',
+            (steps[3] or {}).get("run") or "",
         )
 
     def test_validation_lab_only_fetches_target_history_for_artifact_versioning(self) -> None:
@@ -1256,6 +1422,63 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('display_ref="${LAB_DISPLAY_REF}"', run_script)
         self.assertNotIn("checkout_ref='${{", run_script)
         self.assertNotIn("display_ref='${{", run_script)
+
+    def test_validation_lab_exposes_fanout_and_batching_controls(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        workflow_dispatch_inputs = (
+            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
+        )
+        workflow_call_inputs = (
+            (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
+        )
+        lane_set_options = (workflow_dispatch_inputs.get("lane_set") or {}).get("options") or []
+
+        self.assertIn("product-surfaces", lane_set_options)
+        self.assertIn("sdk", lane_set_options)
+        self.assertEqual(
+            (workflow_dispatch_inputs.get("fanout_tier") or {}).get("options"),
+            ["balanced", "enterprise", "soak"],
+        )
+        self.assertEqual(
+            (workflow_dispatch_inputs.get("rust_batching") or {}).get("options"),
+            ["auto", "off", "force"],
+        )
+        self.assertEqual(
+            (workflow_call_inputs.get("fanout_tier") or {}).get("default"),
+            "enterprise",
+        )
+        self.assertEqual(
+            (workflow_call_inputs.get("rust_batching") or {}).get("default"), "auto"
+        )
+
+        metadata_job = ((payload.get("jobs") or {}).get("metadata") or {})
+        self.assertEqual(
+            (metadata_job.get("outputs") or {}).get("fanout_tier"),
+            "${{ steps.meta.outputs.fanout_tier }}",
+        )
+        self.assertEqual(
+            (metadata_job.get("outputs") or {}).get("planned_job_count"),
+            "${{ steps.meta.outputs.planned_job_count }}",
+        )
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/validation-lab.yml",
+            "metadata",
+            "Compute validation-lab plan",
+        )
+        env = metadata_step.get("env") or {}
+        self.assertEqual(
+            env.get("LAB_FANOUT_TIER"),
+            "${{ inputs.fanout_tier || 'enterprise' }}",
+        )
+        self.assertEqual(env.get("LAB_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
+        self.assertEqual(
+            env.get("LAB_RUST_BATCHING_OVERRIDE"),
+            "${{ vars.VALIDATION_LAB_RUST_BATCHING }}",
+        )
+        run_script = metadata_step.get("run") or ""
+        self.assertIn('--fanout-tier "${LAB_FANOUT_TIER}"', run_script)
+        self.assertIn('--rust-batching "${LAB_RUST_BATCHING}"', run_script)
+        self.assertIn('--rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}"', run_script)
 
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
@@ -1392,6 +1615,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             enabled,
             {
                 "codex.app-server-protocol-test",
+                "codex.cli-surface-targeted",
                 "codex.exec-native-computer-use-targeted",
                 "codex.native-computer-use-tool-registry-targeted",
                 "codex.core-subagent-notification-visibility-targeted",
@@ -1451,7 +1675,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "smoke_rust_integration_lanes",
             "smoke_release_lanes",
             "rust_minimal_lanes",
+            "rust_minimal_batches",
             "rust_integration_lanes",
+            "rust_integration_batches",
             "release_lanes",
             "artifact",
         ]
@@ -2570,15 +2796,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["selected_workflow_lane_count"], 4)
-        self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 20)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 16)
+        self.assertEqual(payload["planned_job_count"], 28)
+        self.assertEqual(payload["selected_workflow_lane_count"], 6)
+        self.assertEqual(payload["selected_node_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 7)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 6)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["workflow_max_parallel"], "4")
-        self.assertEqual(payload["node_max_parallel"], "1")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
-        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["workflow_max_parallel"], "6")
+        self.assertEqual(payload["node_max_parallel"], "2")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "21")
+        self.assertEqual(payload["rust_integration_max_parallel"], "19")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -2601,13 +2830,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["selected_workflow_lane_count"], 5)
-        self.assertEqual(payload["selected_node_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_lane_count"], 22)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 17)
+        self.assertEqual(payload["planned_job_count"], 31)
+        self.assertEqual(payload["selected_workflow_lane_count"], 7)
+        self.assertEqual(payload["selected_node_lane_count"], 2)
+        self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 8)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 6)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "20")
-        self.assertEqual(payload["rust_integration_max_parallel"], "8")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "23")
+        self.assertEqual(payload["rust_integration_max_parallel"], "20")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -2718,8 +2950,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["matrix_fail_fast"], "false")
         self.assertEqual(payload["continue_after_smoke_failure"], "true")
         self.assertEqual(payload["eager_release_lanes"], "true")
-        self.assertEqual(payload["workflow_max_parallel"], "5")
-        self.assertEqual(payload["node_max_parallel"], "1")
+        self.assertEqual(payload["workflow_max_parallel"], "7")
+        self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
