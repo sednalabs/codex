@@ -351,7 +351,9 @@
         "codex-rs/rmcp-client/src/auth_status.rs",
         "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
         "codex-rs/rmcp-client/src/lib.rs",
+        ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
         "justfile"
       ],
       "behavior": "Downstream adds a standards-based OAuth Device Authorization Grant login path for headless MCP servers, preserving discovery metadata and storing tokens in the existing MCP cache.",

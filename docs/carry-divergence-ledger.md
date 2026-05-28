@@ -339,7 +339,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/rmcp-client/src/auth_status.rs`
   - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
   - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
   - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
   - `justfile`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`

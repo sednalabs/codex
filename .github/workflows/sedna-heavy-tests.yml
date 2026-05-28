@@ -48,6 +48,7 @@ on:
           - codex.blocking-waits-targeted
           - codex.custom-prompts-targeted
           - codex.mcp-safety-targeted
+          - codex.mcp-device-login-targeted
           - codex.core-subagent-model-pinning-targeted
           - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
