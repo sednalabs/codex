@@ -13,9 +13,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_utils_absolute_path::canonicalize_preserving_symlinks;
 use codex_utils_sandbox_summary::summarize_permission_profile;
-use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
