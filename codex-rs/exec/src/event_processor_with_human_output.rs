@@ -567,6 +567,10 @@ fn should_print_final_message_to_tty(
 }
 
 #[cfg(test)]
+#[path = "event_processor_with_human_output_tests.rs"]
+mod event_processor_with_human_output_tests;
+
+#[cfg(test)]
 mod tests {
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::Turn;
