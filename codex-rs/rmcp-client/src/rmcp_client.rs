@@ -1020,7 +1020,7 @@ async fn create_oauth_transport_and_runtime(
     OAuthPersistor,
 )> {
     let builder =
-        apply_default_headers_for_rmcp_oauth(rmcp_reqwest::Client::builder(), &default_headers);
+        apply_default_headers_for_rmcp_oauth(reqwest::Client::builder(), &default_headers);
     let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
     // shared HTTP client abstraction instead of always creating the local

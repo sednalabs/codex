@@ -127,9 +127,9 @@ pub(crate) fn apply_default_headers(
 }
 
 pub(crate) fn apply_default_headers_for_rmcp_oauth(
-    builder: rmcp_reqwest::ClientBuilder,
+    builder: ClientBuilder,
     default_headers: &HeaderMap,
-) -> rmcp_reqwest::ClientBuilder {
+) -> ClientBuilder {
     if default_headers.is_empty() {
         builder
     } else {

@@ -9,12 +9,12 @@ use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use reqwest::ClientBuilder;
 use reqwest::Url;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
 use rmcp::transport::auth::OAuthClientConfig;
 use rmcp::transport::auth::OAuthState;
-use rmcp_reqwest::ClientBuilder;
 use sha2::Digest;
 use sha2::Sha256;
 use tiny_http::Response;
@@ -604,7 +604,7 @@ impl OauthLoginFlow {
 
 async fn start_authorization(
     server_url: &str,
-    http_client: rmcp_reqwest::Client,
+    http_client: reqwest::Client,
     scopes: &[&str],
     redirect_uri: &str,
     oauth_client_id: Option<&str>,
@@ -710,7 +710,7 @@ mod tests {
         let base_url = spawn_oauth_metadata_server().await;
         let oauth_state = start_authorization(
             &format!("{base_url}/mcp"),
-            rmcp_reqwest::Client::new(),
+            reqwest::Client::new(),
             &[],
             "http://127.0.0.1/callback",
             Some("eci-prd-pub-codex-123"),
