@@ -2236,6 +2236,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("scheduled_duplicate_skip", results_run)
         self.assertIn("Equivalent rust-ci run already passed", results_run)
 
+    def test_rust_ci_argument_comment_lint_timeout_matches_lane_contract(self) -> None:
+        rust_ci = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        rust_ci_full = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+
+        plan_run = (
+            (((rust_ci.get("jobs") or {}).get("matrix_plan") or {}).get("steps") or [])[0].get(
+                "run"
+            )
+            or ""
+        )
+        self.assertIn('"timeout_minutes": 120', plan_run)
+
+        rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
+            "argument_comment_lint_prebuilt"
+        ) or {}
+        self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "120")
+
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
