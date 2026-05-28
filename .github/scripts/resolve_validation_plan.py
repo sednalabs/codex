@@ -30,8 +30,10 @@ ORDERED_SETUP_CLASSES = [
 RUST_BATCH_SETUP_CLASSES = {"rust_minimal", "rust_integration"}
 RUST_BATCH_AUTO_MIN_LANES = 3
 RUST_BATCH_FORCE_MIN_LANES = 2
-RUST_BATCH_MAX_LANES = 3
-RUST_BATCH_TARGET_WEIGHT_SECONDS = 1200
+# Keep auto batches small enough that link-heavy Rust recipes do not compete
+# for too much runner-local disk or memory in one job.
+RUST_BATCH_MAX_LANES = 2
+RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
 LAB_MATRIX_JOB_LIMIT = 256
 VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
