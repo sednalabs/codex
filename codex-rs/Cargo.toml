@@ -291,7 +291,7 @@ eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
-gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
+gix = { version = "0.83.0", default-features = false, features = ["sha1"] }
 glob = "0.3"
 globset = "0.4"
 hmac = "0.12.1"
@@ -346,7 +346,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 regex = "1.12.3"
 regex-lite = "0.1.8"
 reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "0.15.0", default-features = false }
+rmcp = { version = "1.7.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
