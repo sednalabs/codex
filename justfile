@@ -281,6 +281,29 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
 
+# Focused app-server v2 contract slice for high-signal client-facing RPCs.
+app-server-v2-contract-targeted:
+    cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+
+# Focused MCP server contract slice for approval and tool response ordering.
+mcp-server-contract-targeted:
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response -- --exact --test-threads=1
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_patch_approval_triggers_elicitation -- --exact --test-threads=1
+
+# Focused exec-server protocol slice for websocket startup and process basics.
+exec-server-targeted:
+    cargo test --locked -p codex-exec-server --test initialize -- --test-threads=1
+    cargo test --locked -p codex-exec-server --test websocket -- --test-threads=1
+    cargo test --locked -p codex-exec-server --test process exec_server_starts_process_over_websocket -- --exact --test-threads=1
+
+# Focused CLI surface slice for parser, subcommand, and diagnostics contracts.
+cli-surface-targeted:
+    cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
+    cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
+
 # Focused native computer-use bridge slice for app-server protocol routing,
 # client response handling, and Android tool lifecycle injection.
 app-server-computer-use-targeted:

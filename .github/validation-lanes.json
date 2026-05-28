@@ -1156,6 +1156,194 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.app-server-v2-contract-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "app-server-v2-contract",
+      "setup_class": "rust_integration",
+      "batch_group": "app-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "app-server-v2-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.mcp-server-contract-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "mcp-server-contract",
+      "setup_class": "rust_integration",
+      "batch_group": "mcp-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-server-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.exec-server-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "exec-server",
+      "setup_class": "rust_integration",
+      "batch_group": "exec-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "exec-server-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.cli-surface-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "cli-surface",
+      "setup_class": "rust_minimal",
+      "batch_group": "cli",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "cli-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.workflow-security-targeted",
+      "groups": [
+        "product_surface",
+        "workflow"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "workflow-security",
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/workflow-security-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
+      "lane_id": "codex.sdk-python-targeted",
+      "groups": [
+        "sdk"
+      ],
+      "lane_sets": [
+        "all",
+        "sdk"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "sdk"
+      ],
+      "summary_family": "sdk-python",
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/sdk-python-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
+      "lane_id": "codex.sdk-typescript-targeted",
+      "groups": [
+        "sdk"
+      ],
+      "lane_sets": [
+        "all",
+        "sdk"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "sdk"
+      ],
+      "summary_family": "sdk-typescript",
+      "setup_class": "node",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/sdk-typescript-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": true,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
       "lane_id": "codex.agent-workflow-sanity",
       "groups": [
         "workflow"
