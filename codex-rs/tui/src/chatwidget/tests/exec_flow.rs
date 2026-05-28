@@ -706,7 +706,13 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
 
     terminal_interaction(&mut chat, "call-1", "proc-1", "");
 
-    assert!(chat.transcript.active_cell.is_none());
+    let active_lines = chat
+        .active_cell_transcript_lines(/*width*/ 80)
+        .expect("wait primitive cell should be active");
+    assert_eq!(
+        lines_to_single_string(&active_lines),
+        "• Waiting via background terminal · sleep 5\n"
+    );
     assert_eq!(
         chat.status_state.current_status.header,
         "Waiting for background terminal"

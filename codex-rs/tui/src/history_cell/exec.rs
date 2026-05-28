@@ -103,6 +103,76 @@ pub(crate) fn new_unified_exec_interaction(
 }
 
 #[derive(Debug)]
+pub(crate) struct WaitPrimitiveCell {
+    kind: WaitPrimitiveKind,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitPrimitiveKind {
+    BackgroundTerminal,
+}
+
+impl WaitPrimitiveKind {
+    fn label(self) -> &'static str {
+        match self {
+            WaitPrimitiveKind::BackgroundTerminal => "background terminal",
+        }
+    }
+}
+
+impl WaitPrimitiveCell {
+    pub(crate) fn background_terminal(command_display: Option<String>) -> Self {
+        Self {
+            kind: WaitPrimitiveKind::BackgroundTerminal,
+            detail: command_display.filter(|display| !display.is_empty()),
+        }
+    }
+
+    pub(crate) fn update_background_terminal_detail(&mut self, command_display: Option<String>) {
+        if self.kind != WaitPrimitiveKind::BackgroundTerminal || self.detail.is_some() {
+            return;
+        }
+        self.detail = command_display.filter(|display| !display.is_empty());
+    }
+
+    pub(crate) fn is_background_terminal(&self) -> bool {
+        self.kind == WaitPrimitiveKind::BackgroundTerminal
+    }
+}
+
+impl HistoryCell for WaitPrimitiveCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let mut spans = vec!["• Waiting via ".bold(), self.kind.label().bold()];
+        if let Some(detail) = &self.detail {
+            spans.push(" · ".dim());
+            spans.push(detail.clone().dim());
+        }
+        let header = Line::from(spans);
+        let mut out = Vec::new();
+        let wrapped = adaptive_wrap_line(&header, RtOptions::new(width as usize));
+        push_owned_lines(&wrapped, &mut out);
+        out
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let text = if let Some(detail) = &self.detail {
+            format!("Waiting via {}: {detail}", self.kind.label())
+        } else {
+            format!("Waiting via {}", self.kind.label())
+        };
+        vec![Line::from(text)]
+    }
+}
+
+pub(crate) fn new_background_terminal_wait(command_display: Option<String>) -> WaitPrimitiveCell {
+    WaitPrimitiveCell::background_terminal(command_display)
+}
+
+#[derive(Debug)]
 struct UnifiedExecProcessesCell {
     processes: Vec<UnifiedExecProcessDetails>,
 }
