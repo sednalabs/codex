@@ -30,9 +30,84 @@ ORDERED_SETUP_CLASSES = [
 RUST_BATCH_SETUP_CLASSES = {"rust_minimal", "rust_integration"}
 RUST_BATCH_AUTO_MIN_LANES = 3
 RUST_BATCH_FORCE_MIN_LANES = 2
-RUST_BATCH_MAX_LANES = 3
-RUST_BATCH_TARGET_WEIGHT_SECONDS = 1200
+# Keep auto batches small enough that link-heavy Rust recipes do not compete
+# for too much runner-local disk or memory in one job.
+RUST_BATCH_MAX_LANES = 2
+RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
+LAB_MATRIX_JOB_LIMIT = 256
+VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
+LAB_FANOUT_CAPS = {
+    "balanced": {
+        "targeted": {
+            "workflow": 12,
+            "node": 6,
+            "rust_minimal": 12,
+            "rust_integration": 6,
+            "release": 1,
+        },
+        "frontier": {
+            "workflow": 24,
+            "node": 8,
+            "rust_minimal": 40,
+            "rust_integration": 24,
+            "release": 2,
+        },
+        "checkpoint": {
+            "workflow": 16,
+            "node": 6,
+            "rust_minimal": 24,
+            "rust_integration": 12,
+            "release": 1,
+        },
+    },
+    "enterprise": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 64,
+            "node": 24,
+            "rust_minimal": 128,
+            "rust_integration": 96,
+            "release": 4,
+        },
+        "checkpoint": {
+            "workflow": 48,
+            "node": 16,
+            "rust_minimal": 96,
+            "rust_integration": 64,
+            "release": 2,
+        },
+    },
+    "soak": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 6,
+        },
+        "checkpoint": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 4,
+        },
+    },
+}
 
 
 def catalog_path() -> Path:
@@ -450,7 +525,17 @@ def normalize_rust_batching_mode(raw: str) -> str:
     return mode
 
 
-def effective_rust_batching_mode(requested: str, repo_override: str) -> tuple[str, str]:
+def normalize_lab_fanout_tier(raw: str) -> str:
+    tier = (raw or "enterprise").strip().lower()
+    if tier not in VALID_LAB_FANOUT_TIERS:
+        valid = ", ".join(sorted(VALID_LAB_FANOUT_TIERS))
+        raise SystemExit(f"validation-lab fanout tier must be one of: {valid}")
+    return tier
+
+
+def effective_rust_batching_mode(
+    requested: str, repo_override: str, *, override_label: str
+) -> tuple[str, str]:
     requested_mode = normalize_rust_batching_mode(requested)
     override = (repo_override or "").strip().lower()
     if override and override not in {"auto", "off", "force"}:
@@ -458,9 +543,9 @@ def effective_rust_batching_mode(requested: str, repo_override: str) -> tuple[st
     if requested_mode == "force":
         return "force", "forced by workflow input"
     if override == "off":
-        return "off", "disabled by SEDNA_HEAVY_RUST_BATCHING"
+        return "off", f"disabled by {override_label}"
     if override == "force":
-        return "force", "forced by SEDNA_HEAVY_RUST_BATCHING"
+        return "force", f"forced by {override_label}"
     if requested_mode == "off":
         return "off", "disabled by workflow input"
     return "auto", "auto"
@@ -578,8 +663,32 @@ def batch_lane_matrix(lanes: list[dict], *, setup_class: str) -> list[dict]:
     return sorted(batches, key=lambda batch: batch["batch_index"])
 
 
-def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> dict[str, int]:
+def cap_parallel_limits(counts: Counter[str], caps: dict[str, int]) -> dict[str, int]:
+    return {
+        setup_class: max(1, min(counts.get(setup_class, 0), cap))
+        for setup_class, cap in caps.items()
+    }
+
+
+def lab_fanout_band(profile: str) -> str:
+    if profile == "frontier":
+        return "frontier"
+    if profile in {"broad", "full"}:
+        return "checkpoint"
+    return "targeted"
+
+
+def setup_parallel_limits(
+    profile: str,
+    selected: list[dict] | None = None,
+    *,
+    fanout_tier: str = "legacy",
+) -> dict[str, int]:
     counts = Counter(lane["setup_class"] for lane in (selected or []))
+    if fanout_tier != "legacy" and profile != "smoke":
+        tier = normalize_lab_fanout_tier(fanout_tier)
+        return cap_parallel_limits(counts, LAB_FANOUT_CAPS[tier][lab_fanout_band(profile)])
+
     if profile == "frontier":
         return {
             "workflow": max(1, min(counts.get("workflow", 0), 12)),
@@ -613,9 +722,11 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
     }
 
 
-def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
+def determine_lab_matrix_policy(
+    profile: str, selected: list[dict], *, fanout_tier: str
+) -> tuple[str, str, dict[str, int]]:
     fail_fast = "false" if profile == "frontier" else "true"
-    parallel_limits = setup_parallel_limits(profile, selected)
+    parallel_limits = setup_parallel_limits(profile, selected, fanout_tier=fanout_tier)
     active_limits = [
         parallel_limits[lane["setup_class"]]
         for lane in selected
@@ -623,6 +734,33 @@ def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str
     ]
     max_parallel = str(max(active_limits) if active_limits else 1)
     return fail_fast, max_parallel, parallel_limits
+
+
+def enforce_lab_matrix_job_limit(
+    *,
+    smoke_matrix: list[dict],
+    execution_selected: list[dict],
+    rust_minimal_batch_matrix: list[dict],
+    rust_integration_batch_matrix: list[dict],
+    run_artifact: bool,
+    fanout_tier: str,
+    profile: str,
+) -> int:
+    planned_job_count = (
+        len(smoke_matrix)
+        + len(execution_selected)
+        + len(rust_minimal_batch_matrix)
+        + len(rust_integration_batch_matrix)
+        + (1 if run_artifact else 0)
+    )
+    if planned_job_count > LAB_MATRIX_JOB_LIMIT:
+        raise SystemExit(
+            "validation-lab plan would create "
+            f"{planned_job_count} matrix/artifact jobs, above the {LAB_MATRIX_JOB_LIMIT} "
+            f"job cap for profile={profile} fanout_tier={fanout_tier}; "
+            "choose a narrower lane_set, pass explicit lanes, or lower the fanout tier"
+        )
+    return planned_job_count
 
 
 def profile_metadata(profile: str) -> tuple[str, str]:
@@ -689,6 +827,7 @@ def lab_plan(args: argparse.Namespace) -> None:
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
     include_explicit_lanes = parse_bool(args.include_explicit_lanes)
+    fanout_tier = normalize_lab_fanout_tier(args.fanout_tier)
 
     smoke_matrix: list[dict] = []
 
@@ -765,8 +904,43 @@ def lab_plan(args: argparse.Namespace) -> None:
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
+    rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="VALIDATION_LAB_RUST_BATCHING",
+    )
+    execution_selected, batched_by_setup_class, rust_batching_reasons = (
+        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+    )
+    rust_minimal_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
+    )
+    rust_integration_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_integration"], setup_class="rust_integration"
+    )
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
+        rust_batching_reason = "; ".join(
+            [
+                rust_batching_reason,
+                rust_batching_reasons["rust_minimal"],
+                rust_batching_reasons["rust_integration"],
+            ]
+        )
+    planned_job_count = enforce_lab_matrix_job_limit(
+        smoke_matrix=smoke_matrix,
+        execution_selected=execution_selected,
+        rust_minimal_batch_matrix=rust_minimal_batch_matrix,
+        rust_integration_batch_matrix=rust_integration_batch_matrix,
+        run_artifact=run_artifact,
+        fanout_tier=fanout_tier,
+        profile=args.profile,
+    )
     matrix_fail_fast, matrix_max_parallel, parallel_limits = determine_lab_matrix_policy(
-        args.profile, selected
+        args.profile, selected, fanout_tier=fanout_tier
     )
     grouped = group_lanes_by_setup_class(selected)
     selected_setup_classes = [
@@ -798,6 +972,14 @@ def lab_plan(args: argparse.Namespace) -> None:
         "run_artifact": "true" if run_artifact else "false",
         "matrix_fail_fast": matrix_fail_fast,
         "matrix_max_parallel": matrix_max_parallel,
+        "fanout_tier": fanout_tier,
+        "planned_job_count": planned_job_count,
+        "rust_batching_mode": rust_batching_mode,
+        "rust_batching_reason": rust_batching_reason,
+        "selected_rust_minimal_batch_matrix": {"include": rust_minimal_batch_matrix},
+        "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
+        "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
+        "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
         "selected_setup_classes": selected_setup_classes,
         "workflow_max_parallel": str(parallel_limits["workflow"]),
         "node_max_parallel": str(parallel_limits["node"]),
@@ -806,7 +988,7 @@ def lab_plan(args: argparse.Namespace) -> None:
         "release_max_parallel": str(parallel_limits["release"]),
     }
     emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
-    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit_grouped_setup_class_payload(payload, execution_selected, key_prefix="selected")
     emit(payload)
 
 
@@ -891,7 +1073,9 @@ def heavy_plan(args: argparse.Namespace) -> None:
         "frontier" if full_heavy_harvest else "targeted", [*smoke_matrix, *selected]
     )
     rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
-        args.rust_batching, args.rust_batching_override
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="SEDNA_HEAVY_RUST_BATCHING",
     )
     execution_selected, batched_by_setup_class, rust_batching_reasons = (
         split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
@@ -902,7 +1086,11 @@ def heavy_plan(args: argparse.Namespace) -> None:
     rust_integration_batch_matrix = batch_lane_matrix(
         batched_by_setup_class["rust_integration"], setup_class="rust_integration"
     )
-    if not rust_minimal_batch_matrix and not rust_integration_batch_matrix:
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
         rust_batching_reason = "; ".join(
             [
                 rust_batching_reason,
@@ -950,6 +1138,9 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--lanes", default="")
     lab.add_argument("--artifact-build", default="false")
     lab.add_argument("--include-explicit-lanes", default="false")
+    lab.add_argument("--rust-batching", default="auto")
+    lab.add_argument("--rust-batching-override", default="")
+    lab.add_argument("--fanout-tier", default="enterprise")
     lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
 

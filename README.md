@@ -97,6 +97,10 @@ This repository has two public branch roles:
 - `origin/main`: maintained downstream branch and public PR target.
 - `origin/upstream-main`: fast-forward mirror of `upstream/main`.
 
+Completed work on a feature, bugfix, docs, or cleanup branch should be
+committed, pushed, and opened as a pull request targeting `origin/main` before
+handoff. Do not leave finished branch work only in a local worktree.
+
 Downstream syncs are merge-based from `upstream-main` into `main`. The intended
 long-term shape is minimal fork carry in high-churn upstream files, with
 downstream behavior expressed through narrow extension seams or provider

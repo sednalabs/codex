@@ -1,6 +1,9 @@
 ---
-source: tui/src/chatwidget/tests.rs
+source: tui/src/chatwidget/tests/exec_flow.rs
 expression: snapshot
 ---
-cells=1
+cells=2
+• Waiting via background terminal · just fix
+
+
 ■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.

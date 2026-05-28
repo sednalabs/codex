@@ -116,11 +116,12 @@ artifacts.
 1. Edit locally.
 2. Run the smallest relevant local smoke check.
 3. Commit and push.
-4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
+4. Open a pull request to `origin/main` for completed branch work; a pushed branch without a PR is not a handoff.
+5. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
+6. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
    `validation-lab`.
-6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
+7. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam (a pre-mapped, narrow change boundary the planner can verify
@@ -322,6 +323,11 @@ The important fields are:
 - validation-lab also keeps the target checkout shallow for ordinary
   smoke/targeted/frontier runs; it only fetches full target history when
   artifact mode needs merged Sedna tags for preview-version derivation
+- validation-lab exposes `fanout_tier=balanced|enterprise|soak`; `enterprise`
+  is the default hosted-runner tier, while `soak` is reserved for explicit
+  capacity probes, and the planner rejects plans above 256 matrix/artifact jobs
+- validation-lab exposes `rust_batching=auto|off|force` so selected Rust lanes
+  can use the shared Rust batch workflow and report batch-aware summaries
 - reusable validation-lane workflows also resolve shared helper scripts from a
   separate `.workflow-src` checkout at the workflow ref, so older PR heads can
   keep running under newer lane-helper contracts without carrying helper copies
