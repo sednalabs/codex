@@ -242,17 +242,15 @@ impl MessageProcessor {
             obj.insert("user_agent".to_string(), json!(get_codex_user_agent()));
         }
 
-        let mut result_value = match serde_json::to_value(InitializeResult {
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(true),
-                }),
-                ..Default::default()
-            },
-            instructions: None,
-            protocol_version: params.protocol_version.clone(),
-            server_info,
-        }) {
+        let mut capabilities = ServerCapabilities::default();
+        capabilities.tools = Some(ToolsCapability {
+            list_changed: Some(true),
+        });
+        let initialize_result = InitializeResult::new(capabilities)
+            .with_protocol_version(params.protocol_version.clone())
+            .with_server_info(server_info);
+
+        let mut result_value = match serde_json::to_value(initialize_result) {
             Ok(value) => value,
             Err(err) => {
                 self.outgoing
