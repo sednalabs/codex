@@ -23,6 +23,7 @@ pub use oauth::WrappedOAuthTokenResponse;
 pub use oauth::delete_oauth_tokens;
 pub(crate) use oauth::load_oauth_tokens;
 pub use oauth::save_oauth_tokens;
+pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_device_login::perform_oauth_device_login;
 pub use perform_oauth_login::OAuthProviderError;
 pub use perform_oauth_login::OauthLoginHandle;

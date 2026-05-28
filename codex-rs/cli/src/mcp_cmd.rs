@@ -26,6 +26,7 @@ use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_scopes;
 use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_rmcp_client::DeviceAuthorizationPrompt;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::perform_oauth_login;
@@ -537,6 +538,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             server.oauth_resource.as_deref(),
             device_authorization_endpoint,
             &oauth_config.token_endpoint,
+            print_device_authorization_prompt,
         )
         .await?;
         println!("Successfully logged in to MCP server '{name}'.");
@@ -558,6 +560,15 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
+}
+
+fn print_device_authorization_prompt(prompt: DeviceAuthorizationPrompt) {
+    println!(
+        "Authorize `{}` by opening this URL in your browser:\n{}\n\nEnter code: {}\n",
+        prompt.server_name(),
+        prompt.verification_uri(),
+        prompt.user_code()
+    );
 }
 
 async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutArgs) -> Result<()> {
