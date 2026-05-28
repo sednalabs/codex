@@ -869,6 +869,7 @@ jobs:
       max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
       matrix: ${{ fromJson(needs.metadata.outputs.selected_nextest_archive_matrix) }}
     steps:
+      # codeql[actions/untrusted-checkout/medium] This validation-target checkout is intentional; the job grants read-only permissions and disables persisted credentials.
       - uses: actions/checkout@v6
         with:
           fetch-depth: ${{ matrix.checkout_fetch_depth }}
