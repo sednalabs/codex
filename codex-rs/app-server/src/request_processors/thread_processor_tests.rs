@@ -479,6 +479,48 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn thread_from_stored_thread_preserves_model_and_reasoning_effort() -> Result<()> {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread");
+        let timestamp =
+            DateTime::parse_from_rfc3339("2025-01-02T03:04:05.678Z")?.with_timezone(&Utc);
+        let stored_thread = StoredThread {
+            thread_id,
+            rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
+            forked_from_id: None,
+            preview: "preview".to_string(),
+            name: None,
+            model_provider: "openai".to_string(),
+            model: Some("gpt-5.3-codex".to_string()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            created_at: timestamp,
+            updated_at: timestamp,
+            archived_at: None,
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::Cli,
+            thread_source: Some(codex_protocol::protocol::ThreadSource::User),
+            agent_nickname: None,
+            agent_role: None,
+            agent_path: None,
+            git_info: None,
+            approval_mode: AskForApproval::OnRequest,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            token_usage: None,
+            first_user_message: Some("first user message".to_string()),
+            history: None,
+        };
+
+        let fallback_cwd = AbsolutePathBuf::from_absolute_path("/")?;
+        let (thread, history) = thread_from_stored_thread(stored_thread, "fallback", &fallback_cwd);
+
+        assert!(history.is_none());
+        assert_eq!(thread.model, Some("gpt-5.3-codex".to_string()));
+        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::High));
+        Ok(())
+    }
+
+    #[test]
     fn requested_permissions_trust_project_uses_permission_profile_intent() {
         let cwd = test_path_buf("/tmp/project").abs();
         let full_access_profile = codex_protocol::models::PermissionProfile::Disabled;

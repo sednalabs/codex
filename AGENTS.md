@@ -15,6 +15,7 @@ Recommended commands:
 - use the `sedna-sync-upstream` workflow (or an equivalent fast-forward push) to update `upstream-main` from `upstream/main`.
 - downstream syncs are merge-based (`upstream-main` -> `main`), not shared-branch rebases.
 - avoid force-push on `main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
+- Finished feature, bugfix, docs, or cleanup work on a branch must be committed, pushed, and raised as a pull request targeting `origin/main` before handoff. Do not leave completed branch work as local-only changes.
 
 Branch tracking should remain:
 

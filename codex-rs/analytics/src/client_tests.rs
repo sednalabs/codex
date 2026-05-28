@@ -125,6 +125,8 @@ fn sample_thread(thread_id: &str) -> Thread {
         preview: "first prompt".to_string(),
         ephemeral: false,
         model_provider: "openai".to_string(),
+        model: None,
+        reasoning_effort: None,
         created_at: 1,
         updated_at: 2,
         status: AppServerThreadStatus::Idle,
