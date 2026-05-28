@@ -690,6 +690,7 @@ impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitatio
         Self {
             action: value.action.into(),
             content: value.content,
+            meta: value.meta.and_then(json_value_to_rmcp_meta),
         }
     }
 }
@@ -699,7 +700,18 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: None,
+            meta: value.meta.map(rmcp_meta_to_json_value),
         }
     }
+}
+
+fn json_value_to_rmcp_meta(value: JsonValue) -> Option<rmcp::model::Meta> {
+    match value {
+        JsonValue::Object(object) => Some(rmcp::model::Meta(object)),
+        _ => None,
+    }
+}
+
+fn rmcp_meta_to_json_value(meta: rmcp::model::Meta) -> JsonValue {
+    JsonValue::Object(meta.0)
 }
