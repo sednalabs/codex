@@ -3582,7 +3582,6 @@ dependencies = [
  "codex-state",
  "codex-utils-path",
  "codex-utils-string",
- "codex-utils-version",
  "pretty_assertions",
  "regex",
  "serde",

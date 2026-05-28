@@ -7,8 +7,14 @@
 mod cli;
 mod event_processor;
 mod event_processor_with_human_output;
+#[cfg(test)]
+mod event_processor_with_human_output_tests;
 pub mod event_processor_with_jsonl_output;
+#[cfg(test)]
+mod event_processor_with_jsonl_output_tests;
 pub mod exec_events;
+#[cfg(test)]
+mod lib_tests;
 
 pub use cli::Cli;
 pub use cli::Command;
