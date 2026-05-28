@@ -28,8 +28,8 @@ impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
         ToolName::plain("inspect_agent_tree")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_inspect_agent_tree_tool())
+    fn spec(&self) -> ToolSpec {
+        create_inspect_agent_tree_tool()
     }
 
     async fn handle(
