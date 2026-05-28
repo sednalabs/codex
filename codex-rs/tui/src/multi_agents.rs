@@ -348,6 +348,7 @@ pub(crate) fn tool_call_history_cell(
         sender_thread_id,
         receiver_thread_ids,
         prompt,
+        timed_out,
         agents_states,
         ..
     } = item
@@ -403,6 +404,7 @@ pub(crate) fn tool_call_history_cell(
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
+                    *timed_out,
                     &mut agent_metadata,
                 ))
             }
@@ -472,12 +474,15 @@ fn waiting_begin(
 
     let title = match receiver_agents.as_slice() {
         [(thread_id, metadata)] => title_with_agent(
-            "Waiting for",
+            "Waiting via wait_agent for",
             agent_label(*thread_id, metadata),
             /*spawn_request*/ None,
         ),
-        [] => title_text("Waiting for agents"),
-        _ => title_text(format!("Waiting for {} agents", receiver_agents.len())),
+        [] => title_text("Waiting via wait_agent"),
+        _ => title_text(format!(
+            "Waiting via wait_agent · {} agents",
+            receiver_agents.len()
+        )),
     };
 
     let details = if receiver_agents.len() > 1 {
@@ -495,10 +500,27 @@ fn waiting_begin(
 fn waiting_end(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    timed_out: bool,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
-    collab_event(title_text("Finished waiting"), details)
+    let pending = pending_wait_thread_ids(receiver_thread_ids, agents_states);
+    let title = if timed_out && agents_states.is_empty() {
+        "Waiting timed out"
+    } else if timed_out {
+        "Waiting partially timed out"
+    } else if pending.is_empty() {
+        "Finished waiting"
+    } else {
+        "Mailbox update received"
+    };
+    let details = wait_complete_lines(
+        receiver_thread_ids,
+        agents_states,
+        pending,
+        timed_out,
+        agent_metadata,
+    );
+    collab_event(title_text(title), details)
 }
 
 fn close_end(
@@ -676,6 +698,8 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
 fn wait_complete_lines(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    pending_thread_ids: Vec<String>,
+    timed_out: bool,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> Vec<Line<'static>> {
     let mut seen = HashSet::new();
@@ -700,7 +724,7 @@ fn wait_complete_lines(
     extras.sort_by_key(|entry| entry.0.to_string());
     entries.extend(extras);
 
-    if entries.is_empty() {
+    let mut lines = if entries.is_empty() {
         vec![Line::from(Span::from("No agents completed yet"))]
     } else {
         entries
@@ -712,7 +736,47 @@ fn wait_complete_lines(
                 spans.into()
             })
             .collect()
+    };
+
+    if !pending_thread_ids.is_empty() {
+        let label = if timed_out {
+            "Pending"
+        } else {
+            "Still pending"
+        };
+        lines.push(Line::from(format!(
+            "{label}: {}",
+            pending_thread_ids.join(", ")
+        )));
     }
+
+    lines
+}
+
+fn pending_wait_thread_ids(
+    receiver_thread_ids: &[String],
+    agents_states: &std::collections::HashMap<String, CollabAgentState>,
+) -> Vec<String> {
+    receiver_thread_ids
+        .iter()
+        .filter(|thread_id| {
+            agents_states
+                .get(*thread_id)
+                .is_none_or(|status| !collab_agent_state_is_terminal(status))
+        })
+        .cloned()
+        .collect()
+}
+
+fn collab_agent_state_is_terminal(status: &CollabAgentState) -> bool {
+    matches!(
+        status.status,
+        CollabAgentStatus::Interrupted
+            | CollabAgentStatus::Completed
+            | CollabAgentStatus::Errored
+            | CollabAgentStatus::Shutdown
+            | CollabAgentStatus::NotFound
+    )
 }
 
 fn first_agent_state<'a>(
@@ -1142,7 +1206,12 @@ mod tests {
         let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
 
         let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(&receiver_thread_ids, &HashMap::new(), &mut agent_metadata);
+        let finished = waiting_end(
+            &receiver_thread_ids,
+            &HashMap::new(),
+            /*timed_out*/ true,
+            &mut agent_metadata,
+        );
 
         let snapshot = [waiting, finished]
             .iter()
@@ -1167,7 +1236,12 @@ mod tests {
             agent_state(CollabAgentStatus::Completed, Some("39916800")),
         );
         let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(&receiver_thread_ids, &statuses, &mut agent_metadata);
+        let finished = waiting_end(
+            &receiver_thread_ids,
+            &statuses,
+            /*timed_out*/ false,
+            &mut agent_metadata,
+        );
 
         let snapshot = [waiting, finished]
             .iter()
@@ -1222,7 +1296,12 @@ mod tests {
             agent_state(CollabAgentStatus::Completed, Some("39916800")),
         );
         let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(&receiver_thread_ids, &statuses, &mut agent_metadata);
+        let finished = waiting_end(
+            &receiver_thread_ids,
+            &statuses,
+            /*timed_out*/ true,
+            &mut agent_metadata,
+        );
 
         let snapshot = [waiting, finished]
             .iter()

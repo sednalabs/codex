@@ -11,9 +11,22 @@ impl ChatWidget {
             return;
         };
         self.transcript.needs_final_message_separator = true;
-        let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        if self
+            .transcript
+            .active_cell
+            .as_ref()
+            .and_then(|cell| {
+                cell.as_any()
+                    .downcast_ref::<history_cell::WaitPrimitiveCell>()
+            })
+            .is_some_and(history_cell::WaitPrimitiveCell::is_background_terminal)
+        {
+            self.flush_active_cell();
+        } else {
+            let cell = history_cell::new_background_terminal_wait(wait.command_display);
+            self.app_event_tx
+                .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        }
         self.restore_reasoning_status_header();
     }
 
@@ -88,8 +101,8 @@ impl ChatWidget {
         self.flush_answer_stream_with_separator();
         if stdin.is_empty() {
             // Empty stdin means we are polling for background output.
-            // Surface this in the status indicator (single "waiting" surface) instead of
-            // the transcript. Keep the header short so the interrupt hint remains visible.
+            // Surface the wait primitive in the transcript-style active cell while keeping
+            // the bottom-pane header short so the interrupt hint remains visible.
             self.bottom_pane.ensure_status_indicator();
             self.bottom_pane
                 .set_interrupt_hint_visible(/*visible*/ true);
@@ -103,18 +116,35 @@ impl ChatWidget {
             );
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == process_id => {
-                    wait.update_command_display(command_display);
+                    wait.update_command_display(command_display.clone());
                 }
                 Some(_) => {
                     self.flush_unified_exec_wait_streak();
-                    self.unified_exec_wait_streak =
-                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
+                    self.unified_exec_wait_streak = Some(UnifiedExecWaitStreak::new(
+                        process_id,
+                        command_display.clone(),
+                    ));
                 }
                 None => {
-                    self.unified_exec_wait_streak =
-                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
+                    self.unified_exec_wait_streak = Some(UnifiedExecWaitStreak::new(
+                        process_id,
+                        command_display.clone(),
+                    ));
                 }
             }
+            if let Some(cell) = self.transcript.active_cell.as_mut().and_then(|cell| {
+                cell.as_any_mut()
+                    .downcast_mut::<history_cell::WaitPrimitiveCell>()
+            }) && cell.is_background_terminal()
+            {
+                cell.update_background_terminal_detail(command_display);
+            } else {
+                self.flush_active_cell();
+                self.transcript.active_cell = Some(Box::new(
+                    history_cell::new_background_terminal_wait(command_display),
+                ));
+            }
+            self.bump_active_cell_revision();
             self.request_redraw();
         } else {
             if self

@@ -8,7 +8,7 @@ expression: snapshot
 • Sent input to Robie [explorer]
   └ Please continue and return the answer only.
 
-• Waiting for Robie [explorer]
+• Waiting via wait_agent for Robie [explorer]
 
 • Finished waiting
   └ Robie [explorer]: Completed - 39916800

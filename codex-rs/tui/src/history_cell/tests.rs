@@ -480,6 +480,16 @@ fn unified_exec_interaction_cell_renders_wait() {
 }
 
 #[test]
+fn wait_primitive_cell_renders_background_terminal_wait() {
+    let cell = new_background_terminal_wait(Some("cargo test -p codex-core".to_string()));
+    let lines = render_transcript(&cell);
+    assert_eq!(
+        lines,
+        vec!["• Waiting via background terminal · cargo test -p codex-core"],
+    );
+}
+
+#[test]
 fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics() {
     let summary = RuntimeMetricsSummary {
         tool_calls: RuntimeMetricTotals {
