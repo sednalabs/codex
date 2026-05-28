@@ -4703,12 +4703,15 @@
           ]
         },
         "change_to_line_end": {
-          "allOf": [
+          "description": "Change from cursor to end of line and enter insert mode (`C`).",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Change from cursor to end of line and enter insert mode (`C`)."
+          ]
         },
         "delete_char": {
           "description": "Delete character under cursor (`x`).",
