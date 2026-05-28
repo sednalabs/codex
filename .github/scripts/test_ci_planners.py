@@ -2246,12 +2246,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             )
             or ""
         )
-        self.assertIn('"timeout_minutes": 120', plan_run)
+        self.assertIn('"timeout_minutes": 240', plan_run)
 
         rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
             "argument_comment_lint_prebuilt"
         ) or {}
-        self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "120")
+        self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "240")
 
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
