@@ -1135,7 +1135,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["smoke_release_lane_count"], 1)
