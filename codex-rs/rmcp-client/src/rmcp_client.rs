@@ -239,7 +239,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: None,
+            meta: value.meta.map(|meta| Value::Object(meta.0)),
         }
     }
 }
@@ -249,7 +249,15 @@ impl From<ElicitationResponse> for CreateElicitationResult {
         Self {
             action: value.action,
             content: value.content,
+            meta: value.meta.and_then(value_to_rmcp_meta),
         }
+    }
+}
+
+fn value_to_rmcp_meta(value: Value) -> Option<rmcp::model::Meta> {
+    match value {
+        Value::Object(map) => Some(rmcp::model::Meta(map)),
+        _ => None,
     }
 }
 
