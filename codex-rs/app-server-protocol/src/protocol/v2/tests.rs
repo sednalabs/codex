@@ -1694,11 +1694,16 @@ fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
 
 #[test]
 fn mcp_server_elicitation_response_round_trips_rmcp_result() {
+    let meta = serde_json::from_value::<rmcp::model::Meta>(json!({
+        "traceId": "elicitation-123",
+    }))
+    .expect("metadata should deserialize");
     let rmcp_result = rmcp::model::CreateElicitationResult {
         action: rmcp::model::ElicitationAction::Accept,
         content: Some(json!({
             "confirmed": true,
         })),
+        meta: Some(meta.clone()),
     };
 
     let v2_response = McpServerElicitationRequestResponse::from(rmcp_result.clone());
@@ -1709,7 +1714,9 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
             content: Some(json!({
                 "confirmed": true,
             })),
-            meta: None,
+            meta: Some(json!({
+                "traceId": "elicitation-123",
+            })),
         }
     );
     assert_eq!(

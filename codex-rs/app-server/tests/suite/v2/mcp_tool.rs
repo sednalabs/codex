@@ -536,10 +536,9 @@ struct ToolAppsMcpServer;
 
 impl ServerHandler for ToolAppsMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..ServerInfo::default()
-        }
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 
     async fn list_tools(

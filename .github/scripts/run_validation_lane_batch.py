@@ -35,14 +35,14 @@ def slugify(value: str) -> str:
     return slug[:64] or "validation-lane"
 
 
-def load_catalog(workflow_src: Path) -> dict[str, dict[str, Any]]:
+def load_catalog(workflow_src: Path, catalog_root: Path) -> dict[str, dict[str, Any]]:
     planner_path = workflow_src / ".github" / "scripts" / "resolve_validation_plan.py"
     spec = importlib.util.spec_from_file_location("resolve_validation_plan_for_batch", planner_path)
     if spec is None or spec.loader is None:
         raise SystemExit(f"unable to load validation planner: {planner_path}")
     planner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(planner)
-    catalog = planner.normalize_catalog(planner.load_catalog(workflow_src / ".github" / "validation-lanes.json"))
+    catalog = planner.normalize_catalog(planner.load_catalog(catalog_root / ".github" / "validation-lanes.json"))
     planner.validate_catalog(catalog)
     return {str(lane.get("lane_id")): lane for lane in catalog["lanes"] if lane.get("lane_id")}
 
@@ -167,7 +167,7 @@ def main() -> int:
     workflow_src = Path(args.workflow_src).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    catalog_by_id = load_catalog(workflow_src)
+    catalog_by_id = load_catalog(workflow_src, repo_root)
     lane_ids = json.loads(args.lane_ids_json or "[]")
     if not isinstance(lane_ids, list) or not all(isinstance(item, str) for item in lane_ids):
         raise SystemExit("lane ids must decode to a JSON array of strings")

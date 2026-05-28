@@ -50,23 +50,21 @@ fn tool_info() -> ToolInfo {
         callable_name: "_create_event".to_string(),
         callable_namespace: "mcp__calendar__".to_string(),
         namespace_description: Some("Plan events.".to_string()),
-        tool: rmcp::model::Tool {
-            name: "createEvent".to_string().into(),
-            title: Some("Create event".to_string()),
-            description: Some("Create a calendar event.".to_string().into()),
-            input_schema: Arc::new(rmcp::model::object(json!({
+        tool: {
+            let mut tool = rmcp::model::Tool::new(
+                "createEvent",
+                "Create a calendar event.",
+                Arc::new(rmcp::model::object(json!({
                 "type": "object",
                 "properties": {
                     "start_time": { "type": "string" },
                     "attendees": { "type": "string" }
                 },
                 "additionalProperties": false
-            }))),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: None,
+                }))),
+            );
+            tool.title = Some("Create event".to_string());
+            tool
         },
         connector_id: None,
         connector_name: Some("Calendar".to_string()),

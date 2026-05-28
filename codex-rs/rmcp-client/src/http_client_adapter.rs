@@ -7,6 +7,7 @@
 //! - a local HTTP client that issues requests from the orchestrator, or
 //! - a remote HTTP client that forwards requests to the remote runtime
 
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
 use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ServerJsonRpcMessage;
 use rmcp::transport::streamable_http_client::AuthRequiredError;
@@ -80,8 +82,10 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         message: ClientJsonRpcMessage,
         session_id: Option<Arc<str>>,
         auth_token: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> std::result::Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         let mut headers = self.default_headers.clone();
+        merge_custom_headers(&mut headers, custom_headers);
         self.add_auth_headers(&mut headers);
         insert_header(
             &mut headers,
@@ -137,9 +141,9 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             && let Some(header) =
                 response_header(&response.headers, reqwest::header::WWW_AUTHENTICATE)
         {
-            return Err(StreamableHttpError::AuthRequired(AuthRequiredError {
-                www_authenticate_header: header,
-            }));
+            return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                header,
+            )));
         }
         if matches!(
             StatusCode::from_u16(response.status).ok(),
@@ -177,8 +181,10 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         uri: Arc<str>,
         session: Arc<str>,
         auth_token: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> std::result::Result<(), StreamableHttpError<Self::Error>> {
         let mut headers = self.default_headers.clone();
+        merge_custom_headers(&mut headers, custom_headers);
         self.add_auth_headers(&mut headers);
         if let Some(auth_token) = auth_token {
             insert_header(
@@ -227,11 +233,13 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         session_id: Arc<str>,
         last_event_id: Option<String>,
         auth_token: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> std::result::Result<
         BoxStream<'static, std::result::Result<Sse, sse_stream::Error>>,
         StreamableHttpError<Self::Error>,
     > {
         let mut headers = self.default_headers.clone();
+        merge_custom_headers(&mut headers, custom_headers);
         self.add_auth_headers(&mut headers);
         insert_header(
             &mut headers,
@@ -312,6 +320,12 @@ impl StreamableHttpClientAdapter {
         if let Some(auth_provider) = &self.auth_provider {
             headers.extend(auth_provider.to_auth_headers());
         }
+    }
+}
+
+fn merge_custom_headers(headers: &mut HeaderMap, custom_headers: HashMap<HeaderName, HeaderValue>) {
+    for (name, value) in custom_headers {
+        headers.insert(name, value);
     }
 }
 
