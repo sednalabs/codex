@@ -126,6 +126,17 @@ pub(crate) fn apply_default_headers(
     }
 }
 
+pub(crate) fn apply_default_headers_for_rmcp_oauth(
+    builder: rmcp_reqwest::ClientBuilder,
+    default_headers: &HeaderMap,
+) -> rmcp_reqwest::ClientBuilder {
+    if default_headers.is_empty() {
+        builder
+    } else {
+        builder.default_headers(default_headers.clone())
+    }
+}
+
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",

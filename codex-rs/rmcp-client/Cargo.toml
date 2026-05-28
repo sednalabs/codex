@@ -15,7 +15,6 @@ axum = { workspace = true, default-features = false, features = [
 ] }
 base64 = { workspace = true }
 codex-api = { workspace = true }
-codex-client = { workspace = true }
 codex-config = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-keyring-store = { workspace = true }
@@ -30,6 +29,11 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "stream",
     "rustls-tls",
+] }
+rmcp-reqwest = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+    "stream",
 ] }
 rmcp = { workspace = true, default-features = false, features = [
     "auth",
