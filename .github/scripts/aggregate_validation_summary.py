@@ -27,11 +27,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-intent", default="")
     parser.add_argument("--profile-notes", default="")
     parser.add_argument("--lane-summary", default="")
+    parser.add_argument("--planner-fingerprint", default="")
     parser.add_argument("--planned-matrix-json", default="")
     parser.add_argument("--selected-lane-ids-json", default="")
     parser.add_argument("--explicit-lanes", default="")
     parser.add_argument("--supersession-mode", default="auto")
     parser.add_argument("--supersession-key", default="")
+    parser.add_argument("--dedupe-should-skip", default="false")
+    parser.add_argument("--dedupe-reason", default="")
+    parser.add_argument("--dedupe-matched-run-id", default="")
+    parser.add_argument("--dedupe-matched-run-url", default="")
     parser.add_argument("--notes-supplied", default="false")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
@@ -453,6 +458,8 @@ def summarize_runtime(
 def overall_conclusion(
     primary: list[dict], secondary: list[dict], downstream_result: str, args: argparse.Namespace
 ) -> str:
+    if parse_bool(args.dedupe_should_skip):
+        return "success" if args.dedupe_matched_run_url else "unknown"
     terminal_results = {
         args.smoke_gate_result,
         downstream_result,
@@ -502,18 +509,25 @@ def main() -> None:
         "release": args.release_result,
     }
     matrix_fail_fast = parse_bool(args.matrix_fail_fast)
+    dedupe_should_skip = parse_bool(args.dedupe_should_skip)
 
-    results = build_results(
-        planned_matrix,
-        selected_lane_ids,
-        actual_by_lane,
-        args.smoke_gate_result,
-        setup_class_results,
-        matrix_fail_fast=matrix_fail_fast,
-    )
+    if dedupe_should_skip:
+        results = []
+    else:
+        results = build_results(
+            planned_matrix,
+            selected_lane_ids,
+            actual_by_lane,
+            args.smoke_gate_result,
+            setup_class_results,
+            matrix_fail_fast=matrix_fail_fast,
+        )
     setup_rows = setup_class_rows(results, setup_class_results)
 
-    if summary_input_signals:
+    if dedupe_should_skip:
+        primary = []
+        secondary = []
+    elif summary_input_signals:
         primary = [
             {
                 "kind": "planner",
@@ -620,6 +634,7 @@ def main() -> None:
             "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
             "lane_summary": args.lane_summary or "",
+            "planner_fingerprint": args.planner_fingerprint or "",
             "explicit_lanes_supplied": bool(explicit_lanes),
             "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
@@ -675,6 +690,12 @@ def main() -> None:
                 "planned": parse_bool(args.run_artifact),
                 "result": args.artifact_result,
             },
+        },
+        "dedupe": {
+            "should_skip": dedupe_should_skip,
+            "reason": args.dedupe_reason or "",
+            "matched_run_id": args.dedupe_matched_run_id or "",
+            "matched_run_url": args.dedupe_matched_run_url or "",
         },
         "lanes": results,
         "cache_occupancy": load_optional_json(args.cache_occupancy_json),
