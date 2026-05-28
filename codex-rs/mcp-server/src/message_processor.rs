@@ -340,12 +340,9 @@ impl MessageProcessor {
                     .await
             }
             _ => {
-                let result = CallToolResult {
-                    content: vec![rmcp::model::Content::text(format!("Unknown tool '{name}'"))],
-                    structured_content: None,
-                    is_error: Some(true),
-                    meta: None,
-                };
+                let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                    "Unknown tool '{name}'"
+                ))]);
                 self.outgoing.send_response(id, result).await;
             }
         }
@@ -362,40 +359,25 @@ impl MessageProcessor {
                 Ok(tool_cfg) => match tool_cfg.into_config(self.arg0_paths.clone()).await {
                     Ok(cfg) => cfg,
                     Err(e) => {
-                        let result = CallToolResult {
-                            content: vec![rmcp::model::Content::text(format!(
-                                "Failed to load Codex configuration from overrides: {e}"
-                            ))],
-                            structured_content: None,
-                            is_error: Some(true),
-                            meta: None,
-                        };
+                        let result = CallToolResult::error(vec![rmcp::model::Content::text(
+                            format!("Failed to load Codex configuration from overrides: {e}"),
+                        )]);
                         self.outgoing.send_response(id, result).await;
                         return;
                     }
                 },
                 Err(e) => {
-                    let result = CallToolResult {
-                        content: vec![rmcp::model::Content::text(format!(
-                            "Failed to parse configuration for Codex tool: {e}"
-                        ))],
-                        structured_content: None,
-                        is_error: Some(true),
-                        meta: None,
-                    };
+                    let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                        "Failed to parse configuration for Codex tool: {e}"
+                    ))]);
                     self.outgoing.send_response(id, result).await;
                     return;
                 }
             },
             None => {
-                let result = CallToolResult {
-                    content: vec![rmcp::model::Content::text(
-                        "Missing arguments for codex tool-call; the `prompt` field is required.",
-                    )],
-                    structured_content: None,
-                    is_error: Some(true),
-                    meta: None,
-                };
+                let result = CallToolResult::error(vec![rmcp::model::Content::text(
+                    "Missing arguments for codex tool-call; the `prompt` field is required.",
+                )]);
                 self.outgoing.send_response(id, result).await;
                 return;
             }
@@ -436,14 +418,9 @@ impl MessageProcessor {
                 Ok(params) => params,
                 Err(e) => {
                     tracing::error!("Failed to parse Codex tool call reply parameters: {e}");
-                    let result = CallToolResult {
-                        content: vec![rmcp::model::Content::text(format!(
-                            "Failed to parse configuration for Codex tool: {e}"
-                        ))],
-                        structured_content: None,
-                        is_error: Some(true),
-                        meta: None,
-                    };
+                    let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                        "Failed to parse configuration for Codex tool: {e}"
+                    ))]);
                     self.outgoing.send_response(request_id, result).await;
                     return;
                 }
@@ -452,14 +429,9 @@ impl MessageProcessor {
                 tracing::error!(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required."
                 );
-                let result = CallToolResult {
-                    content: vec![rmcp::model::Content::text(
-                        "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                    )],
-                    structured_content: None,
-                    is_error: Some(true),
-                    meta: None,
-                };
+                let result = CallToolResult::error(vec![rmcp::model::Content::text(
+                    "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
+                )]);
                 self.outgoing.send_response(request_id, result).await;
                 return;
             }
@@ -469,14 +441,9 @@ impl MessageProcessor {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!("Failed to parse thread_id: {e}");
-                let result = CallToolResult {
-                    content: vec![rmcp::model::Content::text(format!(
-                        "Failed to parse thread_id: {e}"
-                    ))],
-                    structured_content: None,
-                    is_error: Some(true),
-                    meta: None,
-                };
+                let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                    "Failed to parse thread_id: {e}"
+                ))]);
                 self.outgoing.send_response(request_id, result).await;
                 return;
             }

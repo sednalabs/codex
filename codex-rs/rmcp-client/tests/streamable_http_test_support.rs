@@ -65,15 +65,13 @@ fn init_params() -> InitializeRequestParams {
 }
 
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
-    CallToolResult {
-        content: Vec::new(),
-        structured_content: Some(json!({
+    let mut result = CallToolResult::default();
+    result.structured_content = Some(json!({
             "echo": format!("ECHOING: {message}"),
             "env": null,
-        })),
-        is_error: Some(false),
-        meta: None,
-    }
+    }));
+    result.is_error = Some(false);
+    result
 }
 
 pub(crate) async fn create_client(base_url: &str) -> anyhow::Result<RmcpClient> {
