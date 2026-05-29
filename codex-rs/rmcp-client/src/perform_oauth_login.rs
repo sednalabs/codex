@@ -640,8 +640,10 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use axum::Json;
     use axum::Router;
+    use axum::http::header::CONTENT_TYPE;
+    use axum::response::IntoResponse;
+    use axum::response::Response;
     use axum::routing::get;
     use pretty_assertions::assert_eq;
     use reqwest::Url;
@@ -656,6 +658,10 @@ mod tests {
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
     use super::start_authorization;
+
+    fn json_response(value: serde_json::Value) -> Response {
+        ([(CONTENT_TYPE, "application/json")], value.to_string()).into_response()
+    }
 
     async fn spawn_oauth_metadata_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -674,14 +680,14 @@ mod tests {
                 "/.well-known/oauth-authorization-server/mcp",
                 get(move || {
                     let metadata = path_scoped_metadata.clone();
-                    async move { Json(metadata) }
+                    async move { json_response(metadata) }
                 }),
             )
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(move || {
                     let metadata = metadata.clone();
-                    async move { Json(metadata) }
+                    async move { json_response(metadata) }
                 }),
             );
 

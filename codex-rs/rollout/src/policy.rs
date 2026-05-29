@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::protocol::ComputerUseCallResponseEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 #[cfg(test)]
@@ -6,6 +8,8 @@ use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_utils_string::truncate_middle_chars;
+#[cfg(test)]
+use std::time::Duration;
 
 const PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES: usize = 10_000;
 

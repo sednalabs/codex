@@ -385,9 +385,12 @@ fn should_backfill_turn_completed_items_skips_ephemeral_threads() {
             },
         });
 
-    assert!(should_backfill_turn_completed_items(false, &notification));
+    assert!(should_backfill_turn_completed_items(
+        /*thread_is_ephemeral*/ false,
+        &notification
+    ));
     assert!(!should_backfill_turn_completed_items(
-        /*thread_ephemeral*/ true,
+        /*thread_is_ephemeral*/ true,
         &notification
     ));
 }

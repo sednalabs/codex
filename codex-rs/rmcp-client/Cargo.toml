@@ -10,7 +10,9 @@ workspace = true
 [dependencies]
 anyhow = "1"
 axum = { workspace = true, default-features = false, features = [
+    "form",
     "http1",
+    "json",
     "tokio",
 ] }
 base64 = { workspace = true }

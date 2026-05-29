@@ -73,7 +73,7 @@ pub async fn perform_oauth_device_login(
                 oauth_client_id,
                 scopes,
                 oauth_resource,
-                None,
+                /*pkce*/ None,
             )
             .await
             .context(
@@ -86,7 +86,7 @@ pub async fn perform_oauth_device_login(
                 oauth_client_id,
                 oauth_resource,
                 &details,
-                None,
+                /*pkce*/ None,
             )
             .await
             .context(
@@ -166,7 +166,7 @@ async fn request_device_authorization_with_pkce_fallback(
                 client_id,
                 scopes,
                 oauth_resource,
-                None,
+                /*pkce*/ None,
             )
             .await
             .context(
@@ -441,9 +441,11 @@ enum DevicePollOutcome {
 mod tests {
     use super::*;
     use axum::Form;
-    use axum::Json;
     use axum::Router;
     use axum::http::StatusCode;
+    use axum::http::header::CONTENT_TYPE;
+    use axum::response::IntoResponse;
+    use axum::response::Response;
     use axum::routing::post;
     use oauth2::TokenResponse;
     use pretty_assertions::assert_eq;
@@ -452,6 +454,15 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use tokio::net::TcpListener;
+
+    fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
+        (
+            status,
+            [(CONTENT_TYPE, "application/json")],
+            value.to_string(),
+        )
+            .into_response()
+    }
 
     #[derive(Clone)]
     struct RejectPkceState {
@@ -469,7 +480,7 @@ mod tests {
             &format!("{}/device", server),
             "codex-device",
             &["ops:read".to_string(), "ops:write".to_string()],
-            None,
+            /*oauth_resource*/ None,
             Some(&DevicePkce {
                 code_challenge: "pkce-challenge".to_string(),
                 code_verifier: "pkce-verifier".to_string(),
@@ -482,7 +493,7 @@ mod tests {
             &client,
             &format!("{server}/token"),
             "codex-device",
-            None,
+            /*oauth_resource*/ None,
             &details,
             Some(&DevicePkce {
                 code_challenge: "pkce-challenge".to_string(),
@@ -510,7 +521,7 @@ mod tests {
             &format!("{}/device", server),
             "codex-device",
             &["ops:read".to_string()],
-            None,
+            /*oauth_resource*/ None,
         )
         .await
         .expect("device authorization");
@@ -520,7 +531,7 @@ mod tests {
             &client,
             &format!("{server}/token"),
             "codex-device",
-            None,
+            /*oauth_resource*/ None,
             &details,
             pkce.as_ref(),
         )
@@ -533,7 +544,7 @@ mod tests {
     }
 
     async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {
-        async fn device(Form(form): Form<HashMap<String, String>>) -> Json<serde_json::Value> {
+        async fn device(Form(form): Form<HashMap<String, String>>) -> Response {
             assert_eq!(
                 form,
                 HashMap::from([
@@ -543,19 +554,22 @@ mod tests {
                     ("code_challenge_method".to_string(), "S256".to_string())
                 ])
             );
-            Json(json!({
-                "device_code": "device-code",
-                "user_code": "USER-CODE",
-                "verification_uri": "https://issuer.test/device",
-                "expires_in": 60,
-                "interval": 1
-            }))
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "device_code": "device-code",
+                    "user_code": "USER-CODE",
+                    "verification_uri": "https://issuer.test/device",
+                    "expires_in": 60,
+                    "interval": 1
+                }),
+            )
         }
 
         async fn token(
             axum::extract::State(poll_count): axum::extract::State<Arc<AtomicUsize>>,
             Form(form): Form<HashMap<String, String>>,
-        ) -> (StatusCode, Json<serde_json::Value>) {
+        ) -> Response {
             assert_eq!(
                 form,
                 HashMap::from([
@@ -566,20 +580,20 @@ mod tests {
                 ])
             );
             if poll_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                return (
+                return json_response(
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "authorization_pending"})),
+                    json!({"error": "authorization_pending"}),
                 );
             }
-            (
+            json_response(
                 StatusCode::OK,
-                Json(json!({
+                json!({
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "token_type": "Bearer",
                     "expires_in": 3600,
                     "scope": "ops:read ops:write"
-                })),
+                }),
             )
         }
 
@@ -604,16 +618,16 @@ mod tests {
         async fn device(
             axum::extract::State(state): axum::extract::State<RejectPkceState>,
             Form(form): Form<HashMap<String, String>>,
-        ) -> (StatusCode, Json<serde_json::Value>) {
+        ) -> Response {
             let request_count = state.device_request_count.fetch_add(1, Ordering::SeqCst);
             if request_count == 0 {
                 assert!(form.contains_key("code_challenge"));
-                return (
+                return json_response(
                     StatusCode::BAD_REQUEST,
-                    Json(json!({
+                    json!({
                         "error": "invalid_request",
                         "error_description": "PKCE is not supported for device authorization"
-                    })),
+                    }),
                 );
             }
             assert_eq!(
@@ -623,22 +637,22 @@ mod tests {
                     ("scope".to_string(), "ops:read".to_string())
                 ])
             );
-            (
+            json_response(
                 StatusCode::OK,
-                Json(json!({
+                json!({
                     "device_code": "device-code",
                     "user_code": "USER-CODE",
                     "verification_uri": "https://issuer.test/device",
                     "expires_in": 60,
                     "interval": 1
-                })),
+                }),
             )
         }
 
         async fn token(
             axum::extract::State(state): axum::extract::State<RejectPkceState>,
             Form(form): Form<HashMap<String, String>>,
-        ) -> (StatusCode, Json<serde_json::Value>) {
+        ) -> Response {
             assert_eq!(
                 form,
                 HashMap::from([
@@ -648,20 +662,20 @@ mod tests {
                 ])
             );
             if state.poll_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                return (
+                return json_response(
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "authorization_pending"})),
+                    json!({"error": "authorization_pending"}),
                 );
             }
-            (
+            json_response(
                 StatusCode::OK,
-                Json(json!({
+                json!({
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "token_type": "Bearer",
                     "expires_in": 3600,
                     "scope": "ops:read"
-                })),
+                }),
             )
         }
 
