@@ -404,26 +404,18 @@ impl CodexThread {
     /// Append a prebuilt message to the thread history without treating it as a user turn.
     ///
     /// If the thread already has an active turn, the message is queued as pending input for that
-    /// turn. Otherwise it is queued at session scope and a regular turn is started so the agent
-    /// can consume that pending input through the normal turn pipeline.
+    /// turn. Otherwise it is recorded without starting a new user turn.
     #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) async fn append_message(&self, message: ResponseItem) -> CodexResult<String> {
         let submission_id = uuid::Uuid::new_v4().to_string();
-        let pending_item = pending_message_input_item(&message)?;
-        if let Err(items) = self
-            .codex
+        let Err(items) = self.codex.session.inject_if_running(vec![message]).await else {
+            return Ok(submission_id);
+        };
+        self.codex
             .session
-            .inject_response_items(vec![pending_item])
-            .await
-        {
-            self.codex
-                .session
-                .input_queue
-                .queue_response_items_for_next_turn(items)
-                .await;
-            self.codex.session.maybe_start_turn_for_pending_work().await;
-        }
+            .inject_no_new_turn(items, /*current_turn_context*/ None)
+            .await;
 
         Ok(submission_id)
     }

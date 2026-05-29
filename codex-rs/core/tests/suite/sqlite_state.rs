@@ -116,6 +116,8 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
     let mut builder = test_codex().with_config(|config| {
         config
