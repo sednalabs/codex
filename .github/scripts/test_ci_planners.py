@@ -3783,6 +3783,33 @@ class RustCiModeScriptTests(unittest.TestCase):
             "${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}",
         )
 
+    def test_rust_ci_argument_comment_lint_uses_single_cached_bazel_action(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        jobs = payload.get("jobs") or {}
+
+        matrix_plan_run = (
+            next(
+                step
+                for step in (jobs.get("matrix_plan") or {}).get("steps") or []
+                if step.get("name") == "Compute platform matrices"
+            ).get("run")
+            or ""
+        )
+        self.assertIn('"timeout_minutes": 60', matrix_plan_run)
+
+        arglint_steps = (jobs.get("argument_comment_lint_prebuilt") or {}).get("steps") or []
+        lint_steps = [
+            step
+            for step in arglint_steps
+            if step.get("name") == "Run argument comment lint on codex-rs via Bazel"
+        ]
+        self.assertEqual(len(lint_steps), 1)
+        self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
+        self.assertEqual(
+            (lint_steps[0].get("with") or {}).get("buildbuddy-api-key"),
+            "${{ secrets.BUILDBUDDY_API_KEY }}",
+        )
+
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(
             SCRIPTS_DIR / "resolve_rust_ci_mode.py",
