@@ -145,6 +145,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 1,
             status: ThreadStatus::Idle,
