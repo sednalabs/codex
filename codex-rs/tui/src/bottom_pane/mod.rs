@@ -30,7 +30,9 @@ use crate::contributor_slots::contribute_status_indicator;
 use crate::contributor_slots::should_insert_bottom_pane_spacer;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
+use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::primary_binding;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
@@ -86,7 +88,9 @@ pub(crate) struct LocalImageAttachment {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MentionBinding {
-    /// Mention token text without the leading `$`.
+    /// Visible mention sigil (`$` or `@`).
+    pub(crate) sigil: char,
+    /// Mention token text without the leading sigil (`$` or `@`).
     pub(crate) mention: String,
     /// Canonical mention target (for example `app://...` or absolute SKILL.md path).
     pub(crate) path: String,
@@ -193,6 +197,7 @@ pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::ChatComposerConfig;
 pub(crate) use chat_composer::InputResult;
 pub(crate) use chat_composer::QueuedInputAction;
+pub(crate) use chat_composer_history::HistoryEntry;
 
 use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::status_indicator_widget::StatusIndicatorWidget;
@@ -370,6 +375,12 @@ impl BottomPane {
     pub fn set_keymap_bindings(&mut self, keymap: &RuntimeKeymap) {
         self.keymap = keymap.clone();
         self.composer.set_keymap_bindings(keymap);
+        let interrupt_binding = primary_binding(&keymap.chat.interrupt_turn);
+        self.pending_input_preview
+            .set_interrupt_binding(interrupt_binding);
+        if let Some(status) = self.status.as_mut() {
+            status.set_interrupt_binding(interrupt_binding);
+        }
         self.request_redraw();
     }
 
@@ -648,29 +659,31 @@ impl BottomPane {
 
             if key_event.kind == KeyEventKind::Press {
                 let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
+                let interrupt_binding_pressed = self.keymap.chat.interrupt_turn.is_pressed(key_event);
                 let esc_can_interrupt = is_bare_esc
+                    && interrupt_binding_pressed
                     && self.is_task_running
                     && !is_agent_command
                     && !self.composer.popup_active()
+                    && !self.composer_should_handle_vim_insert_escape(key_event)
                     && self.status.is_some();
                 if !esc_can_interrupt {
                     self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                 }
             }
 
-            // If a task is running and a status line is visible, allow Esc to
-            // send an interrupt even while the composer has focus.
+            // If a task is running and a status line is visible, allow the
+            // configured action to interrupt even while the composer has focus.
             // When a popup is active, prefer dismissing it over interrupting the task.
-            if key_event.code == KeyCode::Esc
-                && key_event.kind == KeyEventKind::Press
-                && key_event.modifiers.is_empty()
+            let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
+            if self.keymap.chat.interrupt_turn.is_pressed(key_event)
                 && self.is_task_running
-                && !is_agent_command
+                && !(is_agent_command && key_event.code == KeyCode::Esc)
                 && !self.composer.popup_active()
                 && !self.composer_should_handle_vim_insert_escape(key_event)
                 && self.status.is_some()
             {
-                let should_interrupt = if self.esc_interrupt_requires_double_press {
+                let should_interrupt = if self.esc_interrupt_requires_double_press && is_bare_esc {
                     if self.pending_esc_interrupt_deadline.is_some() {
                         self.set_pending_esc_interrupt_deadline(/*deadline*/ None);
                         true
@@ -1061,6 +1074,7 @@ impl BottomPane {
                 if let Some(status) = self.status.as_mut() {
                     status.set_interrupt_hint_visible(/*visible*/ true);
                     status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
+                    status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
                 }
                 self.sync_status_inline_message();
                 self.request_redraw();
@@ -1092,6 +1106,7 @@ impl BottomPane {
             ));
             if let Some(status) = self.status.as_mut() {
                 status.set_interrupt_confirmation_deadline(self.pending_esc_interrupt_deadline);
+                status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
             }
             self.sync_status_inline_message();
             self.request_redraw();
@@ -1630,6 +1645,10 @@ impl BottomPane {
             self.composer.sync_popups();
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {
+        self.composer.record_replayed_user_message_history(entry);
     }
 
     pub(crate) fn on_file_search_result(&mut self, query: String, matches: Vec<FileMatch>) {
@@ -3016,6 +3035,30 @@ mod tests {
         assert!(
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "single Esc should send Op::Interrupt when double press is disabled"
+        );
+    }
+
+    #[test]
+    fn remapped_interrupt_turn_uses_configured_key_including_agent_drafts() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = test_pane(tx);
+        let mut keymap = RuntimeKeymap::defaults();
+        keymap.chat.interrupt_turn = vec![crate::key_hint::plain(KeyCode::F(12))];
+        pane.set_keymap_bindings(&keymap);
+        pane.set_task_running(/*running*/ true);
+        pane.insert_str("/agent ");
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            rx.try_recv().is_err(),
+            "expected Esc to remain local after remapping interruption"
+        );
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            "expected configured key to interrupt while `/agent` is being edited"
         );
     }
 
