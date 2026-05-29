@@ -7,7 +7,7 @@ dry_run=false
 allow_prerelease=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG [--dry-run] [--allow-prerelease]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -45,14 +45,7 @@ if [[ "${repository,,}" != "sednalabs/codex" ]]; then
   exit 1
 fi
 
-if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
-  echo "error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got ${release_tag@Q}" >&2
-  exit 1
-fi
-
 target="x86_64-unknown-linux-gnu"
-release_version="${release_tag#v}"
-archive_name="codex-sedna-${release_version}-${target}.tar.gz"
 api_root="https://api.github.com/repos/sednalabs/codex"
 install_root="${HOME}/.codex/packages/standalone"
 bin_dir="${HOME}/.local/bin"
@@ -90,6 +83,30 @@ fetch_asset() {
     "${api_root}/releases/assets/${asset_id}" \
     --output "$output"
 }
+
+if [[ "$release_tag" == "latest" ]]; then
+  latest_json="${work_dir}/latest-release.json"
+  fetch_json "${api_root}/releases/latest" "$latest_json"
+  release_tag="$(python3 - "$latest_json" <<'PY'
+import json
+import sys
+
+release = json.loads(open(sys.argv[1], encoding="utf-8").read())
+tag = release.get("tag_name")
+if not isinstance(tag, str) or not tag:
+    raise SystemExit("error: latest release did not include tag_name")
+print(tag)
+PY
+)"
+fi
+
+if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
+  echo "error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got ${release_tag@Q}" >&2
+  exit 1
+fi
+
+release_version="${release_tag#v}"
+archive_name="codex-sedna-${release_version}-${target}.tar.gz"
 
 release_json="${work_dir}/release.json"
 fetch_json "${api_root}/releases/tags/${release_tag}" "$release_json"
