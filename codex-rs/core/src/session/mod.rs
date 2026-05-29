@@ -570,8 +570,18 @@ impl Codex {
                     } else {
                         None
                     };
-                    state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
-                        .await
+                    match state_db_ctx {
+                        Some(state_db_ctx) => match state_db_ctx.get_dynamic_tools(thread_id).await {
+                            Ok(tools) => tools,
+                            Err(err) => {
+                                warn!(
+                                    "state db dynamic tools read failed during session resume: {err}"
+                                );
+                                None
+                            }
+                        },
+                        None => None,
+                    }
                 }
                 None => None,
             }
