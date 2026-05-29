@@ -28,7 +28,6 @@ use rmcp::model::JsonRpcRequest;
 use rmcp::model::JsonRpcResponse;
 use rmcp::model::RequestId;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ToolsCapability;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -40,10 +39,7 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::outgoing_message::OutgoingMessageSender;
 
 fn tool_error_result(message: impl Into<String>) -> CallToolResult {
-    let mut result = CallToolResult::default();
-    result.content = vec![rmcp::model::Content::text(message.into())];
-    result.is_error = Some(true);
-    result
+    CallToolResult::error(vec![rmcp::model::Content::text(message.into())])
 }
 
 pub(crate) struct MessageProcessor {
@@ -226,8 +222,8 @@ impl MessageProcessor {
             *suffix = Some(user_agent_suffix);
         }
 
-        let mut server_info = Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string());
-        server_info.title = Some("Codex".to_string());
+        let server_info =
+            Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string()).with_title("Codex");
 
         // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
@@ -249,10 +245,10 @@ impl MessageProcessor {
             obj.insert("user_agent".to_string(), json!(get_codex_user_agent()));
         }
 
-        let mut capabilities = ServerCapabilities::default();
-        capabilities.tools = Some(ToolsCapability {
-            list_changed: Some(true),
-        });
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .build();
         let result = InitializeResult::new(capabilities)
             .with_protocol_version(params.protocol_version.clone())
             .with_server_info(server_info);
@@ -544,6 +540,7 @@ impl MessageProcessor {
             .submit_with_id(Submission {
                 id: request_id_string,
                 op: codex_protocol::protocol::Op::Interrupt,
+                client_user_message_id: None,
                 trace: None,
             })
             .await

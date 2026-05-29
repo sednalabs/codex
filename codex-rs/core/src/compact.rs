@@ -14,6 +14,7 @@ use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
 use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
+use crate::turn_metadata::CompactionTurnMetadata;
 use crate::util::backoff;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
@@ -135,6 +136,8 @@ async fn run_compact_task_inner(
     phase: CompactionPhase,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
+    let compaction_metadata =
+        CompactionTurnMetadata::new(trigger, reason, CompactionImplementation::Responses, phase);
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -161,6 +164,7 @@ async fn run_compact_task_inner(
         input,
         initial_context_injection,
         cancellation_token,
+        compaction_metadata,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -182,6 +186,7 @@ async fn run_compact_task_inner_impl(
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     cancellation_token: &CancellationToken,
+    compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
@@ -214,7 +219,10 @@ async fn run_compact_task_inner_impl(
             personality: turn_context.personality,
             ..Default::default()
         };
-        let turn_metadata_header = turn_context.turn_metadata_state.current_header_value();
+        let window_id = sess.services.model_client.current_window_id();
+        let turn_metadata_header = turn_context
+            .turn_metadata_state
+            .current_header_value_for_compaction(&window_id, compaction_metadata);
         let attempt_result = drain_to_completed(
             &sess,
             turn_context.as_ref(),
@@ -583,7 +591,7 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
-                sess.record_into_history(std::slice::from_ref(&item), turn_context)
+                sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
                     .await;
             }
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {

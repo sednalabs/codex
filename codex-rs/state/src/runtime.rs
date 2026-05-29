@@ -36,7 +36,6 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_extension_api::ExtensionStorageId;
 use codex_protocol::ThreadId;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::RolloutItem;
 use log::LevelFilter;
 use serde_json::Value;

@@ -35,10 +35,11 @@ fn init_params() -> InitializeRequestParams {
         }),
         url: None,
     });
-    let mut client_info = Implementation::new("codex-test", "0.0.0-test");
-    client_info.title = Some("Codex rmcp resource test".into());
-    InitializeRequestParams::new(capabilities, client_info)
-        .with_protocol_version(ProtocolVersion::V_2025_06_18)
+    InitializeRequestParams::new(
+        capabilities,
+        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp resource test"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -118,7 +119,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
 
     let read = client
         .read_resource(
-            ReadResourceRequestParams::new(RESOURCE_URI.to_string()),
+            ReadResourceRequestParams::new(RESOURCE_URI),
             Some(Duration::from_secs(5)),
         )
         .await?;

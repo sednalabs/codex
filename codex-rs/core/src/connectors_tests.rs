@@ -31,10 +31,13 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 fn annotations(destructive_hint: Option<bool>, open_world_hint: Option<bool>) -> ToolAnnotations {
-    let mut annotations = ToolAnnotations::new();
-    annotations.destructive_hint = destructive_hint;
-    annotations.open_world_hint = open_world_hint;
-    annotations
+    ToolAnnotations::from_raw(
+        /*title*/ None,
+        /*read_only_hint*/ None,
+        destructive_hint,
+        /*idempotent_hint*/ None,
+        open_world_hint,
+    )
 }
 
 fn app(id: &str) -> AppInfo {

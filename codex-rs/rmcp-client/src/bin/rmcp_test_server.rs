@@ -79,13 +79,12 @@ struct EchoArgs {
 
 impl ServerHandler for TestToolServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
                 .build(),
-            ..ServerInfo::default()
-        }
+        )
     }
 
     fn list_tools(
@@ -130,9 +129,8 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                let mut result = CallToolResult::default();
+                let mut result = CallToolResult::success(Vec::new());
                 result.structured_content = Some(structured_content);
-                result.is_error = Some(false);
                 Ok(result)
             }
             other => Err(McpError::invalid_params(

@@ -1,5 +1,5 @@
 ---
-source: tui/src/history_cell.rs
+source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 rich before:
@@ -9,13 +9,11 @@ rich before:
 
 • - first item
   - second item
-
-  ┌──────┬───────┐
-  │ Col  │ Value │
-  ├──────┼───────┤
-  │ code │ x = 1 │
-  └──────┴───────┘
-
+  
+   Col     Value
+  ━━━━━━  ━━━━━━━
+   code    x = 1
+  
   copy me
 • Called
   └ workspace.inspect({"path":"README.md
@@ -47,13 +45,11 @@ rich after:
 
 • - first item
   - second item
-
-  ┌──────┬───────┐
-  │ Col  │ Value │
-  ├──────┼───────┤
-  │ code │ x = 1 │
-  └──────┴───────┘
-
+  
+   Col     Value
+  ━━━━━━  ━━━━━━━
+   code    x = 1
+  
   copy me
 • Called
   └ workspace.inspect({"path":"README.md
