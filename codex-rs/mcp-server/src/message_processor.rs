@@ -28,7 +28,6 @@ use rmcp::model::JsonRpcRequest;
 use rmcp::model::JsonRpcResponse;
 use rmcp::model::RequestId;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ToolsCapability;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -242,17 +241,15 @@ impl MessageProcessor {
             obj.insert("user_agent".to_string(), json!(get_codex_user_agent()));
         }
 
-        let mut result_value = match serde_json::to_value(InitializeResult {
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(true),
-                }),
-                ..Default::default()
-            },
-            instructions: None,
-            protocol_version: params.protocol_version.clone(),
-            server_info,
-        }) {
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .build();
+        let mut result_value = match serde_json::to_value(
+            InitializeResult::new(capabilities)
+                .with_protocol_version(params.protocol_version.clone())
+                .with_server_info(server_info),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 self.outgoing
