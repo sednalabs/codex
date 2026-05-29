@@ -73,7 +73,7 @@
         "serverInfo": {
           "anyOf": [
             {
-              "$ref": "#/definitions/McpServerInfo"
+              "$ref": "#/$defs/McpServerInfo"
             },
             {
               "type": "null"
