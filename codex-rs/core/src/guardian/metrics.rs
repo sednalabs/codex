@@ -15,7 +15,7 @@ use codex_otel::SessionTelemetry;
 use codex_otel::sanitize_metric_tag_value;
 use codex_protocol::protocol::GuardianAssessmentOutcome;
 use codex_protocol::protocol::GuardianRiskLevel;
-use codex_protocol::protocol::GuardianUserAuthorization;
+use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::protocol::TokenUsage;
 
 pub(crate) fn emit_guardian_review_metrics(
