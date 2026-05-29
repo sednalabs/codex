@@ -29,7 +29,7 @@ use codex_tools::ResponsesApiTool;
 use codex_tools::ToolExposure;
 use codex_tools::default_namespace_description;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
