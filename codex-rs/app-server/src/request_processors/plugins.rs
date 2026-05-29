@@ -1,6 +1,7 @@
 use super::*;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::extensions::app_server_hooks;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginSharePrincipalRole;
@@ -484,14 +485,18 @@ impl PluginRequestProcessor {
             featured_plugin_ids: Vec::new(),
         };
         if !config.features.enabled(Feature::Plugins) {
-            return Ok(empty_response());
+            let mut response = empty_response();
+            app_server_hooks().augment_plugin_list(&mut response);
+            return Ok(response);
         }
         let auth = self.auth_manager.auth().await;
         if !self
             .workspace_codex_plugins_enabled(&config, auth.as_ref())
             .await
         {
-            return Ok(empty_response());
+            let mut response = empty_response();
+            app_server_hooks().augment_plugin_list(&mut response);
+            return Ok(response);
         }
         let plugins_input = config.plugins_config_input();
         if include_local || marketplace_kinds.contains(&PluginListMarketplaceKind::SharedWithMe) {
@@ -674,11 +679,13 @@ impl PluginRequestProcessor {
             Vec::new()
         };
 
-        Ok(PluginListResponse {
+        let mut response = PluginListResponse {
             marketplaces: data,
             marketplace_load_errors,
             featured_plugin_ids,
-        })
+        };
+        app_server_hooks().augment_plugin_list(&mut response);
+        Ok(response)
     }
 
     async fn plugin_installed_response(
@@ -894,7 +901,7 @@ impl PluginRequestProcessor {
         let config = self.load_latest_config(config_cwd).await?;
         let plugins_input = config.plugins_config_input();
 
-        let plugin = match read_source {
+        let mut plugin = match read_source {
             Ok(marketplace_path) => {
                 let request = PluginReadRequest {
                     plugin_name,
@@ -1050,6 +1057,7 @@ impl PluginRequestProcessor {
             }
         };
 
+        app_server_hooks().augment_plugin_read(&mut plugin);
         Ok(PluginReadResponse { plugin })
     }
 
@@ -1375,10 +1383,12 @@ impl PluginRequestProcessor {
             )
             .await;
 
-        Ok(PluginInstallResponse {
+        let mut response = PluginInstallResponse {
             auth_policy: result.auth_policy.into(),
             apps_needing_auth,
-        })
+        };
+        app_server_hooks().augment_plugin_install_response(&mut response);
+        Ok(response)
     }
 
     async fn remote_plugin_install_response(
@@ -1490,10 +1500,12 @@ impl PluginRequestProcessor {
             )
             .await;
 
-        Ok(PluginInstallResponse {
+        let mut response = PluginInstallResponse {
             auth_policy: remote_detail.summary.auth_policy,
             apps_needing_auth,
-        })
+        };
+        app_server_hooks().augment_plugin_install_response(&mut response);
+        Ok(response)
     }
 
     async fn plugin_apps_needing_auth_for_install(
@@ -1669,7 +1681,9 @@ impl PluginRequestProcessor {
                 self.clear_plugin_related_caches();
             }
         }
-        Ok(PluginUninstallResponse {})
+        let mut response = PluginUninstallResponse {};
+        app_server_hooks().augment_plugin_uninstall_response(&mut response);
+        Ok(response)
     }
 
     fn plugin_install_error(err: CorePluginInstallError) -> JSONRPCErrorError {
@@ -1772,7 +1786,9 @@ impl PluginRequestProcessor {
         uninstall_result.map_err(|err| {
             remote_plugin_catalog_error_to_jsonrpc(err, "uninstall remote plugin")
         })?;
-        Ok(PluginUninstallResponse {})
+        let mut response = PluginUninstallResponse {};
+        app_server_hooks().augment_plugin_uninstall_response(&mut response);
+        Ok(response)
     }
 }
 

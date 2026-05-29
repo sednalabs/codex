@@ -4,10 +4,10 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
-use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::multi_agents_common::tool_output_code_mode_result;
 use crate::tools::handlers::multi_agents_common::tool_output_json_text;
 use crate::tools::handlers::multi_agents_common::tool_output_response_item;
+use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -28,8 +28,8 @@ impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
         ToolName::plain("inspect_agent_tree")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_inspect_agent_tree_tool())
+    fn spec(&self) -> ToolSpec {
+        create_inspect_agent_tree_tool()
     }
 
     async fn handle(

@@ -75,7 +75,7 @@ impl UsageLogger {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) -> anyhow::Result<Self> {
-        let pool = state.usage_pool();
+        let pool = state.usage_ledger_pool();
         let parent_thread_id = Self::parent_thread_from_source(&source);
         // Reuse the first persisted root we can find so spawned and forked descendants
         // share one canonical root thread id in `usage_threads`.

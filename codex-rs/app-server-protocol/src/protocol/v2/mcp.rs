@@ -690,6 +690,9 @@ impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitatio
         Self {
             action: value.action.into(),
             content: value.content,
+            meta: value
+                .meta
+                .and_then(|meta| serde_json::from_value(meta).ok()),
         }
     }
 }
@@ -699,7 +702,7 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: None,
+            meta: value.meta.and_then(|meta| serde_json::to_value(meta).ok()),
         }
     }
 }

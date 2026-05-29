@@ -28,31 +28,17 @@ fn stdio_server_bin() -> Result<PathBuf, CargoBinError> {
 }
 
 fn init_params() -> InitializeRequestParams {
-    InitializeRequestParams {
-        meta: None,
-        capabilities: ClientCapabilities {
-            experimental: None,
-            extensions: None,
-            roots: None,
-            sampling: None,
-            elicitation: Some(ElicitationCapability {
-                form: Some(FormElicitationCapability {
-                    schema_validation: None,
-                }),
-                url: None,
-            }),
-            tasks: None,
-        },
-        client_info: Implementation {
-            name: "codex-test".into(),
-            version: "0.0.0-test".into(),
-            title: Some("Codex rmcp resource test".into()),
-            description: None,
-            icons: None,
-            website_url: None,
-        },
-        protocol_version: ProtocolVersion::V_2025_06_18,
-    }
+    let mut capabilities = ClientCapabilities::default();
+    capabilities.elicitation = Some(ElicitationCapability {
+        form: Some(FormElicitationCapability {
+            schema_validation: None,
+        }),
+        url: None,
+    });
+    let mut client_info = Implementation::new("codex-test", "0.0.0-test");
+    client_info.title = Some("Codex rmcp resource test".into());
+    InitializeRequestParams::new(capabilities, client_info)
+        .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -132,10 +118,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
 
     let read = client
         .read_resource(
-            ReadResourceRequestParams {
-                meta: None,
-                uri: RESOURCE_URI.to_string(),
-            },
+            ReadResourceRequestParams::new(RESOURCE_URI.to_string()),
             Some(Duration::from_secs(5)),
         )
         .await?;

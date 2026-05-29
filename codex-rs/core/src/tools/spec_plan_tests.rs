@@ -304,21 +304,15 @@ fn mcp_tool(server: &str, namespace: &str, name: &str) -> ToolInfo {
         callable_name: name.to_string(),
         callable_namespace: namespace.to_string(),
         namespace_description: Some(format!("Tools from {server}.")),
-        tool: rmcp::model::Tool {
-            name: name.to_string().into(),
-            title: None,
-            description: Some(format!("{name} test tool").into()),
-            input_schema: Arc::new(rmcp::model::object(json!({
+        tool: rmcp::model::Tool::new(
+            name.to_string(),
+            format!("{name} test tool"),
+            Arc::new(rmcp::model::object(json!({
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false,
             }))),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: None,
-        },
+        ),
         connector_id: None,
         connector_name: None,
         plugin_display_names: Vec::new(),
@@ -848,6 +842,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "send_message",
         "followup_task",
         "list_agents",
+        "inspect_agent_tree",
     ]);
     assert_eq!(
         v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
@@ -874,6 +869,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ]);
     v2.assert_visible_lacks(&["send_input", "resume_agent"]);
     let spawn_agent_description = match v2.visible_spec("spawn_agent") {
@@ -896,7 +892,12 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         });
     })
     .await;
-    direct_model_only.assert_visible_contains(&["spawn_agent", "send_message", "wait_agent"]);
+    direct_model_only.assert_visible_contains(&[
+        "spawn_agent",
+        "send_message",
+        "wait_agent",
+        "inspect_agent_tree",
+    ]);
     assert_eq!(
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
@@ -965,6 +966,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ] {
         namespaced.assert_visible_lacks(&[tool_name]);
         assert!(
@@ -1000,7 +1002,12 @@ async fn multi_agent_v2_namespace_is_ignored_without_provider_namespace_support(
     })
     .await;
 
-    plan.assert_visible_contains(&["spawn_agent", "send_message", "list_agents"]);
+    plan.assert_visible_contains(&[
+        "spawn_agent",
+        "send_message",
+        "list_agents",
+        "inspect_agent_tree",
+    ]);
     plan.assert_visible_lacks(&["agents"]);
     assert!(
         plan.registered_names
@@ -1039,6 +1046,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ] {
         assert!(
             plan.namespace_function_names("agents")

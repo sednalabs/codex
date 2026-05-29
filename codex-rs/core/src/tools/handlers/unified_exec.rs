@@ -8,6 +8,8 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
+use crate::tools::tool_runtime_capabilities::UnifiedExecBlockingWaitCapability;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -21,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-const MAX_TERMINAL_WAIT_MS: u64 = 2 * 60 * 60 * 1_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
 #[cfg(test)]
@@ -97,26 +98,32 @@ fn default_tty() -> bool {
     false
 }
 
-fn default_wait_budget_ms() -> u64 {
-    MAX_TERMINAL_WAIT_MS
+fn unified_exec_blocking_wait_capability() -> Option<UnifiedExecBlockingWaitCapability> {
+    registered_tool_runtime_capabilities().unified_exec_blocking_waits
+}
+
+fn default_wait_budget_ms(capability: UnifiedExecBlockingWaitCapability) -> u64 {
+    capability.max_terminal_wait_ms
 }
 
 fn resolve_wait_window_ms(
     max_wait_ms: Option<u64>,
     heartbeat_interval_ms: Option<u64>,
     fallback_ms: u64,
+    capability: UnifiedExecBlockingWaitCapability,
 ) -> u64 {
     heartbeat_interval_ms
         .or(max_wait_ms)
         .unwrap_or(fallback_ms)
         .max(MIN_YIELD_TIME_MS)
-        .min(default_wait_budget_ms())
+        .min(default_wait_budget_ms(capability))
 }
 
 async fn complete_terminal_wait(
     manager: &UnifiedExecProcessManager,
     initial_response: ExecCommandToolOutput,
     terminal_wait: TerminalWaitArgs,
+    capability: UnifiedExecBlockingWaitCapability,
     fallback_yield_time_ms: u64,
     cancellation_token: &CancellationToken,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
@@ -128,6 +135,7 @@ async fn complete_terminal_wait(
         terminal_wait.max_wait_ms,
         terminal_wait.heartbeat_interval_ms,
         fallback_yield_time_ms,
+        capability,
     );
     let max_output_tokens = initial_response.max_output_tokens;
     let mut response = initial_response;

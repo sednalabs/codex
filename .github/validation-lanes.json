@@ -2090,7 +2090,8 @@
     {
       "route_id": "downstream-docs",
       "lane_ids": [
-        "codex.downstream-docs-check"
+        "codex.downstream-docs-check",
+        "codex.downstream-divergence-audit"
       ],
       "allowed_paths": [
         "docs/downstream.md",
@@ -2099,7 +2100,8 @@
         "docs/downstream-regression-matrix.md",
         "docs/downstream-tool-surface-matrix.md",
         "docs/downstream-divergence-tracking.md",
-        "docs/divergences/index.yaml"
+        "docs/divergences/index.yaml",
+        "scripts/downstream-divergence-audit.py"
       ]
     }
   ]

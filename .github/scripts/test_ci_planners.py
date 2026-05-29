@@ -649,7 +649,13 @@ class RouteSelectionTests(unittest.TestCase):
             ],
             self.routes,
         )
-        self.assertEqual(lanes, ["codex.downstream-docs-check"])
+        self.assertEqual(
+            lanes,
+            [
+                "codex.downstream-docs-check",
+                "codex.downstream-divergence-audit",
+            ],
+        )
 
     def test_downstream_docs_lane_is_pr_local_sanity(self) -> None:
         lane = next(
@@ -3890,7 +3896,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["codex"], "false")
         self.assertEqual(outputs["workflows"], "false")
         self.assertEqual(outputs["run_incremental_validation"], "true")
-        self.assertEqual(outputs["incremental_lanes"], "codex.downstream-docs-check")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            "codex.downstream-docs-check,codex.downstream-divergence-audit",
+        )
 
     def test_skill_only_pr_is_irrelevant_to_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(
@@ -4656,6 +4665,95 @@ jobs:
             [
                 ".github/workflows/deploy.yml: public workflows must not use self-hosted "
                 "runners; use external deployment automation for host-local operations."
+            ],
+        )
+
+    def test_workflow_policy_rejects_release_install_dispatch_without_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          gh workflow run sedna-release-install.yml \\
+            -f "release_tag=v0.126.0-sedna.1" \\
+            -f "dry_run=false"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/release.yml: public workflows must dispatch "
+                "sedna-release-install.yml with dry_run=true; use external "
+                "deployment automation for host-local installs."
+            ],
+        )
+
+    def test_workflow_policy_accepts_release_install_dry_run_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          gh workflow run sedna-release-install.yml \\
+            -f "release_tag=v0.126.0-sedna.1" \\
+            -f "dry_run=true"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
+
+    def test_workflow_policy_rejects_release_install_script_without_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/install.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: install
+on: workflow_dispatch
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          scripts/install_sedna_release_asset \\
+            --repository sednalabs/codex \\
+            --release-tag v0.126.0-sedna.1
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(
+            violations,
+            [
+                ".github/workflows/install.yml: public workflows must call "
+                "scripts/install_sedna_release_asset with --dry-run; use external "
+                "deployment automation for host-local installs."
             ],
         )
 

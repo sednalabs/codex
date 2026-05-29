@@ -7,6 +7,22 @@ use std::sync::PoisonError;
 
 type ErasedData = Arc<dyn Any + Send + Sync>;
 
+/// Stable identifier for a persistent storage namespace owned by an extension.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExtensionStorageId {
+    namespace: &'static str,
+}
+
+impl ExtensionStorageId {
+    pub const fn new(namespace: &'static str) -> Self {
+        Self { namespace }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.namespace
+    }
+}
+
 /// Typed extension-owned data attached to one host object.
 #[derive(Debug)]
 pub struct ExtensionData {

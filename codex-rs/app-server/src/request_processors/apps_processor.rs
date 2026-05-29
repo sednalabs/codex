@@ -1,4 +1,5 @@
 use super::*;
+use crate::extensions::app_server_hooks;
 
 pub(crate) struct AppsRequestProcessor {
     auth_manager: Arc<AuthManager>,
@@ -69,20 +70,24 @@ impl AppsRequestProcessor {
             .features
             .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
         {
-            return Ok(Some(AppsListResponse {
+            let mut response = AppsListResponse {
                 data: Vec::new(),
                 next_cursor: None,
-            }));
+            };
+            app_server_hooks().augment_apps_list_response(&mut response);
+            return Ok(Some(response));
         }
 
         if !self
             .workspace_codex_plugins_enabled(&config, auth.as_ref())
             .await
         {
-            return Ok(Some(AppsListResponse {
+            let mut response = AppsListResponse {
                 data: Vec::new(),
                 next_cursor: None,
-            }));
+            };
+            app_server_hooks().augment_apps_list_response(&mut response);
+            return Ok(Some(response));
         }
 
         let request = request_id.clone();
@@ -267,7 +272,8 @@ impl AppsRequestProcessor {
             }
 
             if accessible_loaded && all_loaded {
-                let response = paginate_apps(merged.as_slice(), start, limit)?;
+                let mut response = paginate_apps(merged.as_slice(), start, limit)?;
+                app_server_hooks().augment_apps_list_response(&mut response);
                 return Ok((response, codex_apps_ready));
             }
         }
