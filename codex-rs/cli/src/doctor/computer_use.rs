@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 
 use codex_core::config::Config;
 use serde::Deserialize;
@@ -321,6 +322,12 @@ fn append_android_computer_use_details(
         "android providers configured: {}",
         if configured { 1 } else { 0 }
     ));
+    if configured {
+        details.push(
+            "android provider native image contract: MCP image content or android.read_artifact"
+                .to_string(),
+        );
+    }
     read_any_config
 }
 
@@ -824,6 +831,49 @@ impl BrowserProviderDoctorSummary {
                         .remedy("Install Node.js or configure CODEX_BROWSER_COMPUTER_USE_NODE.")
                         .field(format!("browser provider {} node readiness", self.id)),
                     );
+                } else if let Err(err) = playwright_module_resolves(node, self.node_path.as_deref())
+                {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!(
+                                "browser provider {} Playwright package is not resolvable",
+                                self.id
+                            ),
+                        )
+                        .measured(err)
+                        .expected("Node can resolve the playwright package")
+                        .remedy(
+                            "Install Playwright where Node can resolve it, or set browser provider node_path.",
+                        )
+                        .field(format!(
+                            "browser provider {} playwright module readiness",
+                            self.id
+                        )),
+                    );
+                } else if self.executable_path.is_none()
+                    && self.channel.is_none()
+                    && let Err(err) =
+                        playwright_default_browser_resolves(node, self.node_path.as_deref())
+                {
+                    issues.push(
+                        DoctorIssue::new(
+                            CheckStatus::Warning,
+                            format!(
+                                "browser provider {} Playwright browser executable is missing",
+                                self.id
+                            ),
+                        )
+                        .measured(err)
+                        .expected("installed Playwright browser cache or explicit executable_path/channel")
+                        .remedy(
+                            "Run `npx playwright install chromium`, or set browser provider executable_path to Chrome/Chromium.",
+                        )
+                        .field(format!(
+                            "browser provider {} playwright browser readiness",
+                            self.id
+                        )),
+                    );
                 }
                 if let Some(executable_path) = &self.executable_path
                     && stdio_command_resolves(
@@ -964,4 +1014,69 @@ fn command_readiness(command: &str) -> String {
         Ok(()) => "resolvable".to_string(),
         Err(err) => format!("not resolvable ({err})"),
     }
+}
+
+fn playwright_module_resolves(node: &str, node_path: Option<&str>) -> Result<String, String> {
+    let output = node_command(node, node_path)
+        .arg("-e")
+        .arg("process.stdout.write(require.resolve('playwright'))")
+        .output()
+        .map_err(|err| format!("failed to run node: {err}"))?;
+    command_success_output(output, "resolve playwright package")
+}
+
+fn playwright_default_browser_resolves(
+    node: &str,
+    node_path: Option<&str>,
+) -> Result<String, String> {
+    let script = r#"
+const fs = require('fs');
+const { chromium } = require('playwright');
+const executablePath = chromium.executablePath();
+process.stdout.write(executablePath);
+if (!fs.existsSync(executablePath)) {
+  process.exitCode = 2;
+}
+"#;
+    let output = node_command(node, node_path)
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|err| format!("failed to run node: {err}"))?;
+    command_success_output(output, "resolve Playwright Chromium executable")
+}
+
+fn node_command(node: &str, node_path: Option<&str>) -> Command {
+    let mut command = Command::new(node);
+    if let Some(node_path) = node_path
+        && !node_path.trim().is_empty()
+    {
+        command.env("NODE_PATH", node_path);
+    }
+    command
+}
+
+fn command_success_output(output: std::process::Output, context: &str) -> Result<String, String> {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let measured = if stdout.is_empty() {
+        stderr
+    } else if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{stdout}: {stderr}")
+    };
+    Err(format!(
+        "{context} failed with status {}: {}",
+        output.status,
+        if measured.is_empty() {
+            "<no output>".to_string()
+        } else {
+            measured
+        }
+    ))
 }

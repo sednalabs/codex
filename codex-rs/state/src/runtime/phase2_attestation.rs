@@ -9,11 +9,12 @@ impl StateRuntime {
         &self,
         memory_root_key: &str,
     ) -> anyhow::Result<bool> {
+        let pool = self.phase2_attestation_pool();
         let required = sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM phase2_attestation_roots WHERE memory_root_key = ?)"#,
         )
         .bind(memory_root_key)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(pool.as_ref())
         .await?;
 
         Ok(required)
@@ -25,6 +26,7 @@ impl StateRuntime {
         &self,
         memory_root_key: &str,
     ) -> anyhow::Result<()> {
+        let pool = self.phase2_attestation_pool();
         let now = Utc::now().timestamp();
         sqlx::query(
             r#"
@@ -40,7 +42,7 @@ ON CONFLICT(memory_root_key) DO UPDATE SET
         .bind(memory_root_key)
         .bind(now)
         .bind(now)
-        .execute(self.pool.as_ref())
+        .execute(pool.as_ref())
         .await?;
 
         Ok(())
@@ -52,8 +54,9 @@ ON CONFLICT(memory_root_key) DO UPDATE SET
         &self,
         baseline: &Phase2AttestedBaseline,
     ) -> anyhow::Result<()> {
+        let pool = self.phase2_attestation_pool();
         let now = Utc::now().timestamp();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
         sqlx::query(
             r#"
@@ -117,6 +120,7 @@ ON CONFLICT(memory_root_key) DO UPDATE SET
         memory_root_key: &str,
         output_tree_sha256: &str,
     ) -> anyhow::Result<Option<Phase2AttestedBaseline>> {
+        let pool = self.phase2_attestation_pool();
         let baseline = sqlx::query(
             r#"
 SELECT
@@ -135,7 +139,7 @@ WHERE memory_root_key = ? AND output_tree_sha256 = ?
         )
         .bind(memory_root_key)
         .bind(output_tree_sha256)
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(pool.as_ref())
         .await?
         .map(|row| {
             Ok::<_, sqlx::Error>(Phase2AttestedBaseline {
@@ -159,11 +163,12 @@ WHERE memory_root_key = ? AND output_tree_sha256 = ?
         &self,
         memory_root_key: &str,
     ) -> anyhow::Result<bool> {
+        let pool = self.phase2_attestation_pool();
         let exists = sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM phase2_attested_baselines WHERE memory_root_key = ?)"#,
         )
         .bind(memory_root_key)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(pool.as_ref())
         .await?;
 
         Ok(exists)

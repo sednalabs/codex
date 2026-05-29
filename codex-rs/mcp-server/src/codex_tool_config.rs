@@ -115,20 +115,14 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
 
     let input_schema = create_tool_input_schema(schema, "Codex tool schema should serialize");
 
-    Tool {
-        name: "codex".into(),
-        title: Some("Codex".to_string()),
+    let mut tool = Tool::new(
+        "codex",
+        "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
         input_schema,
-        output_schema: Some(codex_tool_output_schema()),
-        description: Some(
-            "Run a Codex session. Accepts configuration parameters matching the Codex Config struct."
-                .into(),
-        ),
-        annotations: None,
-        execution: None,
-        icons: None,
-        meta: None,
-    }
+    );
+    tool.title = Some("Codex".to_string());
+    tool.output_schema = Some(codex_tool_output_schema());
+    tool
 }
 
 fn codex_tool_output_schema() -> Arc<JsonObject> {
@@ -240,19 +234,14 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
 
     let input_schema = create_tool_input_schema(schema, "Codex reply tool schema should serialize");
 
-    Tool {
-        name: "codex-reply".into(),
-        title: Some("Codex Reply".to_string()),
+    let mut tool = Tool::new(
+        "codex-reply",
+        "Continue a Codex conversation by providing the thread id and prompt.",
         input_schema,
-        output_schema: Some(codex_tool_output_schema()),
-        description: Some(
-            "Continue a Codex conversation by providing the thread id and prompt.".into(),
-        ),
-        annotations: None,
-        execution: None,
-        icons: None,
-        meta: None,
-    }
+    );
+    tool.title = Some("Codex Reply".to_string());
+    tool.output_schema = Some(codex_tool_output_schema());
+    tool
 }
 
 fn create_tool_input_schema(schema: schemars::Schema, panic_message: &str) -> Arc<JsonObject> {

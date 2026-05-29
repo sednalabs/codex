@@ -178,6 +178,20 @@ fn write_stdin_tool_matches_expected_spec() {
 }
 
 #[test]
+fn unified_exec_wait_fields_are_capability_gated() {
+    let mut properties = BTreeMap::new();
+
+    add_unified_exec_blocking_wait_properties(
+        &mut properties,
+        ToolRuntimeCapabilities::upstream_default(),
+    );
+
+    assert!(!properties.contains_key("wait_until_terminal"));
+    assert!(!properties.contains_key("max_wait_ms"));
+    assert!(!properties.contains_key("heartbeat_interval_ms"));
+}
+
+#[test]
 fn request_permissions_tool_includes_full_permission_schema() {
     let tool =
         create_request_permissions_tool("Request extra permissions for this turn.".to_string());

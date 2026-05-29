@@ -8,6 +8,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
@@ -248,18 +251,28 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 }
 
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
+    create_wait_agent_tool_v2_with_capabilities(options, registered_tool_runtime_capabilities())
+}
+
+fn create_wait_agent_tool_v2_with_capabilities(
+    options: WaitAgentTimeoutOptions,
+    capabilities: ToolRuntimeCapabilities,
+) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
-            .to_string(),
+        description: wait_agent_v2_description(capabilities.wait_agent.is_some()),
         strict: false,
         defer_loading: None,
-        parameters: wait_agent_tool_parameters_v2(options),
-        output_schema: Some(wait_output_schema_v2()),
+        parameters: wait_agent_tool_parameters_v2(options, capabilities),
+        output_schema: Some(wait_output_schema_v2(capabilities)),
     })
 }
 
 pub fn create_list_agents_tool() -> ToolSpec {
+    create_list_agents_tool_with_capabilities(registered_tool_runtime_capabilities())
+}
+
+fn create_list_agents_tool_with_capabilities(capabilities: ToolRuntimeCapabilities) -> ToolSpec {
     let properties = BTreeMap::from([(
         "path_prefix".to_string(),
         JsonSchema::string(Some(
@@ -276,7 +289,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
-        output_schema: Some(list_agents_output_schema()),
+        output_schema: Some(list_agents_output_schema(capabilities)),
     })
 }
 
@@ -466,7 +479,57 @@ fn send_input_output_schema() -> Value {
     })
 }
 
-fn list_agents_output_schema() -> Value {
+fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
+    let include_active_descendants = capabilities
+        .subagent_inventory
+        .is_some_and(|capability| capability.include_active_descendants);
+    let mut agent_properties = serde_json::Map::from_iter([
+        (
+            "agent_name".to_string(),
+            json!({
+                "type": "string",
+                "description": "Canonical task name for the agent when available, otherwise the agent id."
+            }),
+        ),
+        (
+            "agent_status".to_string(),
+            json!({
+                "description": "Last known status of the agent.",
+                "allOf": [agent_status_output_schema()]
+            }),
+        ),
+        (
+            "last_task_message".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Most recent user or inter-agent instruction received by the agent, when available."
+            }),
+        ),
+    ]);
+    let mut agent_required = vec![
+        "agent_name".to_string(),
+        "agent_status".to_string(),
+        "last_task_message".to_string(),
+    ];
+    if include_active_descendants {
+        agent_properties.insert(
+            "has_active_subagents".to_string(),
+            json!({
+                "type": "boolean",
+                "description": "Whether this agent has active live descendants."
+            }),
+        );
+        agent_properties.insert(
+            "active_subagent_count".to_string(),
+            json!({
+                "type": "number",
+                "description": "Number of active live descendants below this agent."
+            }),
+        );
+        agent_required.push("has_active_subagents".to_string());
+        agent_required.push("active_subagent_count".to_string());
+    }
+
     json!({
         "type": "object",
         "properties": {
@@ -474,21 +537,8 @@ fn list_agents_output_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "agent_name": {
-                            "type": "string",
-                            "description": "Canonical task name for the agent when available, otherwise the agent id."
-                        },
-                        "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
-                        },
-                        "last_task_message": {
-                            "type": ["string", "null"],
-                            "description": "Most recent user or inter-agent instruction received by the agent, when available."
-                        }
-                    },
-                    "required": ["agent_name", "agent_status", "last_task_message"],
+                    "properties": agent_properties,
+                    "required": agent_required,
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -630,39 +680,71 @@ fn wait_output_schema_v1() -> Value {
     })
 }
 
-fn wait_output_schema_v2() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "message": {
+fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
+    let wait_capability = capabilities.wait_agent;
+    let include_pending_ids = wait_capability.is_some_and(|capability| capability.pending_ids);
+    let include_completion_reason =
+        wait_capability.is_some_and(|capability| capability.completion_reason);
+    let mut properties = serde_json::Map::from_iter([
+        (
+            "message".to_string(),
+            json!({
                 "type": "string",
                 "description": "Brief wait summary without the agent's final content."
-            },
-            "requested_ids": {
+            }),
+        ),
+        (
+            "requested_ids".to_string(),
+            json!({
                 "type": "array",
                 "items": {
                     "type": "string"
                 },
                 "description": "Agent ids requested by the wait call."
-            },
-            "pending_ids": {
+            }),
+        ),
+        (
+            "timed_out".to_string(),
+            json!({
+                "type": "boolean",
+                "description": "Whether the wait call returned because it hit the timeout."
+            }),
+        ),
+    ]);
+    let mut required = vec![
+        "message".to_string(),
+        "requested_ids".to_string(),
+        "timed_out".to_string(),
+    ];
+    if include_pending_ids {
+        properties.insert(
+            "pending_ids".to_string(),
+            json!({
                 "type": "array",
                 "items": {
                     "type": "string"
                 },
                 "description": "Requested agent ids that were still non-terminal when the wait call returned."
-            },
-            "completion_reason": {
+            }),
+        );
+        required.push("pending_ids".to_string());
+    }
+    if include_completion_reason {
+        properties.insert(
+            "completion_reason".to_string(),
+            json!({
                 "type": "string",
                 "enum": ["terminal", "mailbox", "timeout"],
                 "description": "Why the wait call returned."
-            },
-            "timed_out": {
-                "type": "boolean",
-                "description": "Whether the wait call returned because it hit the timeout."
-            }
-        },
-        "required": ["message", "requested_ids", "pending_ids", "completion_reason", "timed_out"],
+            }),
+        );
+        required.push("completion_reason".to_string());
+    }
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
         "additionalProperties": false
     })
 }
@@ -1049,8 +1131,11 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
     )
 }
 
-fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([
+fn wait_agent_tool_parameters_v2(
+    options: WaitAgentTimeoutOptions,
+    capabilities: ToolRuntimeCapabilities,
+) -> JsonSchema {
+    let mut properties = BTreeMap::from([
         (
             "targets".to_string(),
             JsonSchema::array(
@@ -1068,7 +1153,13 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
             ))),
         ),
-        (
+    ]);
+
+    if capabilities
+        .wait_agent
+        .is_some_and(|capability| capability.return_when)
+    {
+        properties.insert(
             "return_when".to_string(),
             JsonSchema::string_enum(
                 vec![
@@ -1077,14 +1168,24 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
                 ],
                 Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
             ),
-        ),
-    ]);
+        );
+    }
 
     JsonSchema::object(
         properties,
         Some(vec!["targets".to_string()]),
         Some(false.into()),
     )
+}
+
+fn wait_agent_v2_description(include_runtime_capability: bool) -> String {
+    if include_runtime_capability {
+        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
+            .to_string()
+    } else {
+        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until an agent reaches terminal status or the timeout expires. Prefer longer timeouts to avoid busy polling."
+            .to_string()
+    }
 }
 
 #[cfg(test)]

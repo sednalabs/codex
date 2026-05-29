@@ -8,6 +8,7 @@ license.workspace = true
 anyhow = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
+codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
 dirs = { workspace = true }
 log = { workspace = true }

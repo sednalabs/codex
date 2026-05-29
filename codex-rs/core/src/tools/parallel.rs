@@ -24,6 +24,7 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
@@ -96,8 +97,15 @@ impl ToolCallRuntime {
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
-        let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
-        let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
+        let terminal_outcome_reached = registered_tool_runtime_capabilities()
+            .terminal_outcome
+            .map(|capability| {
+                capability
+                    .preserve_completed_lifecycle_after_cancellation
+                    .then(|| Arc::new(AtomicBool::new(false)))
+            })
+            .flatten();
+        let dispatch_terminal_outcome_reached = terminal_outcome_reached.clone();
         let dispatch_call = call.clone();
 
         let dispatch_span = trace_span!(
@@ -117,25 +125,42 @@ impl ToolCallRuntime {
                     Either::Right(lock.write().await)
                 };
 
-                router
-                    .dispatch_tool_call_with_terminal_outcome(
-                        session,
-                        turn,
-                        invocation_cancellation_token,
-                        tracker,
-                        dispatch_call,
-                        source,
-                        dispatch_terminal_outcome_reached,
-                    )
-                    .instrument(dispatch_span.clone())
-                    .await
+                if let Some(terminal_outcome_reached) = dispatch_terminal_outcome_reached {
+                    router
+                        .dispatch_tool_call_with_terminal_outcome(
+                            session,
+                            turn,
+                            invocation_cancellation_token,
+                            tracker,
+                            dispatch_call,
+                            source,
+                            terminal_outcome_reached,
+                        )
+                        .instrument(dispatch_span.clone())
+                        .await
+                } else {
+                    router
+                        .dispatch_tool_call_with_code_mode_result(
+                            session,
+                            turn,
+                            invocation_cancellation_token,
+                            tracker,
+                            dispatch_call,
+                            source,
+                        )
+                        .instrument(dispatch_span.clone())
+                        .await
+                }
             }));
 
         async move {
             tokio::select! {
                 res = &mut handle => res.map_err(Self::tool_task_join_error)?,
                 _ = cancellation_token.cancelled() => {
-                    if terminal_outcome_reached.load(Ordering::Acquire) || handle.is_finished() {
+                    if terminal_outcome_reached_or_finished(
+                        terminal_outcome_reached.as_ref(),
+                        handle.is_finished(),
+                    ) {
                         handle.await.map_err(Self::tool_task_join_error)?
                     } else {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
@@ -220,6 +245,15 @@ impl ToolCallRuntime {
             format!("aborted by user after {secs:.1}s")
         }
     }
+}
+
+fn terminal_outcome_reached_or_finished(
+    terminal_outcome_reached: Option<&Arc<AtomicBool>>,
+    handle_finished: bool,
+) -> bool {
+    terminal_outcome_reached
+        .is_some_and(|terminal_outcome_reached| terminal_outcome_reached.load(Ordering::Acquire))
+        || handle_finished
 }
 
 #[cfg(test)]
@@ -405,5 +439,20 @@ mod tests {
             ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
+    }
+
+    #[test]
+    fn terminal_outcome_helper_defaults_to_handle_state_without_capability_flag() {
+        assert!(!terminal_outcome_reached_or_finished(None, false));
+        assert!(terminal_outcome_reached_or_finished(None, true));
+    }
+
+    #[test]
+    fn terminal_outcome_helper_honors_capability_flag() {
+        let reached = Arc::new(AtomicBool::new(false));
+        assert!(!terminal_outcome_reached_or_finished(Some(&reached), false));
+
+        reached.store(true, Ordering::Release);
+        assert!(terminal_outcome_reached_or_finished(Some(&reached), false));
     }
 }

@@ -484,22 +484,20 @@ impl ServerHandler for TestToolServer {
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
-            "sandbox_meta" => Ok(CallToolResult {
-                content: Vec::new(),
-                structured_content: Some(serde_json::Value::Object(context.meta.0)),
-                is_error: Some(false),
-                meta: None,
-            }),
+            "sandbox_meta" => {
+                let mut result = CallToolResult::default();
+                result.structured_content = Some(serde_json::Value::Object(context.meta.0));
+                result.is_error = Some(false);
+                Ok(result)
+            }
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                Ok(CallToolResult {
-                    content: Vec::new(),
-                    structured_content: Some(json!({ "cwd": cwd })),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                let mut result = CallToolResult::default();
+                result.structured_content = Some(json!({ "cwd": cwd }));
+                result.is_error = Some(false);
+                Ok(result)
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -522,12 +520,10 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                Ok(CallToolResult {
-                    content: Vec::new(),
-                    structured_content: Some(structured_content),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                let mut result = CallToolResult::default();
+                result.structured_content = Some(structured_content);
+                result.is_error = Some(false);
+                Ok(result)
             }
             "image" => {
                 // Read a data URL (e.g. data:image/png;base64,AAA...) from env and convert to
@@ -677,12 +673,10 @@ impl TestToolServer {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        Ok(CallToolResult {
-            content: Vec::new(),
-            structured_content: Some(json!({ "result": "ok" })),
-            is_error: Some(false),
-            meta: None,
-        })
+        let mut result = CallToolResult::default();
+        result.structured_content = Some(json!({ "result": "ok" }));
+        result.is_error = Some(false);
+        Ok(result)
     }
 }
 

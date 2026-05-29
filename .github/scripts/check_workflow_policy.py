@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ WORKFLOW_PATTERNS = (
     ".github/workflows/*.yaml",
     "codex-rs/.github/workflows/*.yml",
     "codex-rs/.github/workflows/*.yaml",
+)
+RELEASE_INSTALL_WORKFLOW = "sedna-release-install.yml"
+RELEASE_INSTALL_SCRIPT = "scripts/install_sedna_release_asset"
+DRY_RUN_FIELD_PATTERN = re.compile(
+    r"(?:^|\s)(?:-f|--field|-F|--raw-field)\s+['\"]?dry_run=true['\"]?(?:\s|$)"
 )
 
 
@@ -120,6 +126,18 @@ def command_text(step: dict[str, Any]) -> str:
     return run if isinstance(run, str) else ""
 
 
+def dispatches_release_install_without_dry_run(command: str) -> bool:
+    return (
+        "gh workflow run" in command
+        and RELEASE_INSTALL_WORKFLOW in command
+        and DRY_RUN_FIELD_PATTERN.search(command) is None
+    )
+
+
+def invokes_release_install_script_without_dry_run(command: str) -> bool:
+    return RELEASE_INSTALL_SCRIPT in command and "--dry-run" not in command
+
+
 def job_has_direct_release_create(job: dict[str, Any]) -> bool:
     return any(
         "gh release create" in command_text(step)
@@ -215,6 +233,20 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                 violations.append(
                     f"{relative_path}: taiki-e/install-action does not support "
                     f"with.version; use tool: {tool}@{version} instead."
+                )
+
+            run_text = command_text(node)
+            if dispatches_release_install_without_dry_run(run_text):
+                violations.append(
+                    f"{relative_path}: public workflows must dispatch "
+                    f"{RELEASE_INSTALL_WORKFLOW} with dry_run=true; use external "
+                    "deployment automation for host-local installs."
+                )
+            if invokes_release_install_script_without_dry_run(run_text):
+                violations.append(
+                    f"{relative_path}: public workflows must call "
+                    f"{RELEASE_INSTALL_SCRIPT} with --dry-run; use external "
+                    "deployment automation for host-local installs."
                 )
 
         if workflow_has_trigger(payload, "pull_request_target"):

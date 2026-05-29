@@ -40,6 +40,7 @@ use super::complete_terminal_wait;
 use super::effective_max_output_tokens;
 use super::get_command;
 use super::post_unified_exec_tool_use_payload;
+use super::unified_exec_blocking_wait_capability;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
@@ -285,6 +286,9 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         {
             Ok(response) => {
                 let response = if wait_until_terminal {
+                    let Some(capability) = unified_exec_blocking_wait_capability() else {
+                        return Ok(boxed_tool_output(response));
+                    };
                     complete_terminal_wait(
                         manager,
                         response,
@@ -293,6 +297,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                             max_wait_ms,
                             heartbeat_interval_ms,
                         },
+                        capability,
                         yield_time_ms,
                         &cancellation_token,
                     )

@@ -5,6 +5,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandToolOptions {
     pub allow_login_shell: bool,
@@ -57,26 +60,11 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
                 "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
             )),
         ),
-        (
-            "wait_until_terminal".to_string(),
-            JsonSchema::boolean(Some(
-                "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to 7200000 ms.".to_string(),
-            )),
-        ),
-        (
-            "max_wait_ms".to_string(),
-            JsonSchema::number(Some(
-                "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
-            )),
-        ),
-        (
-            "heartbeat_interval_ms".to_string(),
-            JsonSchema::number(Some(
-                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                    .to_string(),
-            )),
-        ),
     ]);
+    add_unified_exec_blocking_wait_properties(
+        &mut properties,
+        registered_tool_runtime_capabilities(),
+    );
     if options.allow_login_shell {
         properties.insert(
             "login".to_string(),
@@ -120,7 +108,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 }
 
 pub fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
@@ -145,26 +133,11 @@ pub fn create_write_stdin_tool() -> ToolSpec {
                 "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
             )),
         ),
-        (
-            "wait_until_terminal".to_string(),
-            JsonSchema::boolean(Some(
-                "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to 7200000 ms.".to_string(),
-            )),
-        ),
-        (
-            "max_wait_ms".to_string(),
-            JsonSchema::number(Some(
-                "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
-            )),
-        ),
-        (
-            "heartbeat_interval_ms".to_string(),
-            JsonSchema::number(Some(
-                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                    .to_string(),
-            )),
-        ),
     ]);
+    add_unified_exec_blocking_wait_properties(
+        &mut properties,
+        registered_tool_runtime_capabilities(),
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
@@ -180,6 +153,38 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         ),
         output_schema: Some(unified_exec_output_schema()),
     })
+}
+
+fn add_unified_exec_blocking_wait_properties(
+    properties: &mut BTreeMap<String, JsonSchema>,
+    capabilities: ToolRuntimeCapabilities,
+) {
+    let Some(capability) = capabilities.unified_exec_blocking_waits else {
+        return;
+    };
+
+    properties.insert(
+        "wait_until_terminal".to_string(),
+        JsonSchema::boolean(Some(format!(
+            "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to {} ms.",
+            capability.max_terminal_wait_ms
+        ))),
+    );
+    properties.insert(
+        "max_wait_ms".to_string(),
+        JsonSchema::number(Some(
+            "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
+        )),
+    );
+    if capability.heartbeat_interval {
+        properties.insert(
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::number(Some(
+                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                    .to_string(),
+            )),
+        );
+    }
 }
 
 pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {

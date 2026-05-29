@@ -20,6 +20,7 @@ use super::TerminalWaitArgs;
 use super::complete_terminal_wait;
 use super::effective_max_output_tokens;
 use super::post_unified_exec_tool_use_payload;
+use super::unified_exec_blocking_wait_capability;
 
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
@@ -89,10 +90,14 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
         let response = if args.terminal_wait.wait_until_terminal {
+            let Some(capability) = unified_exec_blocking_wait_capability() else {
+                return Ok(boxed_tool_output(response));
+            };
             complete_terminal_wait(
                 &session.services.unified_exec_manager,
                 response,
                 args.terminal_wait,
+                capability,
                 args.yield_time_ms,
                 &cancellation_token,
             )

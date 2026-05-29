@@ -1699,6 +1699,12 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
         content: Some(json!({
             "confirmed": true,
         })),
+        meta: Some(
+            serde_json::from_value(json!({
+                "source": "test",
+            }))
+            .unwrap(),
+        ),
     };
 
     let v2_response = McpServerElicitationRequestResponse::from(rmcp_result.clone());
@@ -1709,7 +1715,9 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
             content: Some(json!({
                 "confirmed": true,
             })),
-            meta: None,
+            meta: Some(json!({
+                "source": "test",
+            })),
         }
     );
     assert_eq!(

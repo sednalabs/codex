@@ -1,5 +1,6 @@
 use super::*;
 use crate::error_code::method_not_found;
+use crate::extensions::app_server_hooks;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 
@@ -2159,8 +2160,18 @@ impl ThreadRequestProcessor {
             )));
         };
 
+        let active_turn = if loaded_thread.is_some() {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.active_turn_snapshot()
+        } else {
+            None
+        };
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
+                || active_turn
+                    .as_ref()
+                    .is_some_and(|turn| matches!(turn.status, TurnStatus::InProgress))
         } else {
             false
         };
@@ -2173,6 +2184,11 @@ impl ThreadRequestProcessor {
         set_thread_status_and_interrupt_stale_turns(
             &mut thread,
             thread_status,
+            has_live_in_progress_turn,
+        );
+        app_server_hooks().augment_thread_read(
+            &mut thread,
+            active_turn.as_ref(),
             has_live_in_progress_turn,
         );
         Ok(thread)
@@ -2722,6 +2738,11 @@ impl ThreadRequestProcessor {
                 set_thread_status_and_interrupt_stale_turns(
                     &mut thread,
                     thread_status,
+                    /*has_live_in_progress_turn*/ false,
+                );
+                app_server_hooks().augment_thread_resume(
+                    &mut thread,
+                    /*active_turn*/ None,
                     /*has_live_in_progress_turn*/ false,
                 );
                 let config_snapshot = codex_thread.config_snapshot().await;

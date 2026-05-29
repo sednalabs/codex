@@ -23,6 +23,11 @@ use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::pending_input_preview::PendingInputPreview;
 use crate::bottom_pane::pending_thread_approvals::PendingThreadApprovals;
 use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
+use crate::contributor_slots::BottomPaneLayoutContext;
+use crate::contributor_slots::BottomPaneSpacerPlacement;
+use crate::contributor_slots::StatusIndicatorContribution;
+use crate::contributor_slots::contribute_status_indicator;
+use crate::contributor_slots::should_insert_bottom_pane_spacer;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::keymap::RuntimeKeymap;
@@ -663,7 +668,7 @@ impl BottomPane {
                 && !is_agent_command
                 && !self.composer.popup_active()
                 && !self.composer_should_handle_vim_insert_escape(key_event)
-                && let Some(status) = &self.status
+                && self.status.is_some()
             {
                 let should_interrupt = if self.esc_interrupt_requires_double_press {
                     if self.pending_esc_interrupt_deadline.is_some() {
@@ -952,8 +957,18 @@ impl BottomPane {
         details_max_lines: usize,
     ) {
         if let Some(status) = self.status.as_mut() {
-            status.update_header(header);
-            status.update_details(details, details_capitalization, details_max_lines.max(1));
+            let contribution = contribute_status_indicator(StatusIndicatorContribution::new(
+                header,
+                details,
+                details_capitalization,
+                details_max_lines,
+            ));
+            status.update_header(contribution.header);
+            status.update_details(
+                contribution.details,
+                contribution.details_capitalization,
+                contribution.details_max_lines,
+            );
             self.request_redraw();
         }
     }
@@ -1678,7 +1693,14 @@ impl BottomPane {
             let has_status_or_footer =
                 self.status.is_some() || !self.unified_exec_footer.is_empty();
             let has_inline_previews = has_pending_thread_approvals || has_pending_input;
-            if has_inline_previews && has_status_or_footer {
+            let layout_context = BottomPaneLayoutContext {
+                has_status_or_footer,
+                has_inline_previews,
+            };
+            if should_insert_bottom_pane_spacer(
+                BottomPaneSpacerPlacement::BetweenStatusAndInlinePreviews,
+                layout_context,
+            ) {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
             }
             flex.push(
@@ -1692,7 +1714,10 @@ impl BottomPane {
                 /*flex*/ 1,
                 RenderableItem::Borrowed(&self.pending_input_preview),
             );
-            if !has_inline_previews && has_status_or_footer {
+            if should_insert_bottom_pane_spacer(
+                BottomPaneSpacerPlacement::BeforeComposerAfterStatusOrFooter,
+                layout_context,
+            ) {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
             }
             let mut flex2 = FlexRenderable::new();

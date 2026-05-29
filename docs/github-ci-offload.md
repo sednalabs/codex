@@ -96,6 +96,8 @@ artifacts.
   - trigger: Sedna release tags or manual dispatch
   - purpose: official public Linux `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
+  - public boundary: builds, signs, publishes, and verifies public release assets only; host-local
+    installation is intentionally left to external deployment automation
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
   - purpose: fast-forward `upstream-main` from `upstream/main` and run the
@@ -158,6 +160,22 @@ artifacts.
 - Parked but unsupported for now: macOS, Windows, Linux arm64, and other historical upstream targets
 - Scheduled and routine heavyweight CI should stay Linux `x86_64` only until Sedna deliberately
   re-enables another platform with matching docs, workflow, and release-policy updates
+
+## Public/operator boundary
+
+Tracked GitHub workflows are public architecture and release-governance
+surfaces. They may build artifacts, publish GitHub Releases, verify already
+published assets, and run upstreamability or validation checks.
+
+Tracked workflows must not become the host-local deployment surface. Keep
+hostnames, tunnel details, runner labels, service managers, installation paths,
+and operator machine routing out of public workflow files, public logs, public
+docs, branch names, and release notes. Use generalized wording such as
+external deployment automation when public docs need to name the boundary.
+
+The workflow policy checker enforces the high-risk parts of this boundary:
+public workflows may not use self-hosted runners, and release-install
+verification must stay dry-run-only from the public Actions surface.
 
 ## Validation ladder
 

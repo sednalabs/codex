@@ -9,6 +9,7 @@ use crate::config_manager::ConfigManager;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::error_code::invalid_request;
 use crate::extensions::app_server_extension_event_sink;
+use crate::extensions::app_server_hooks;
 use crate::extensions::guardian_agent_spawner;
 use crate::extensions::thread_extensions;
 use crate::fs_watch::FsWatchManager;
@@ -449,13 +450,12 @@ impl MessageProcessor {
             // Keep plugin startup warmups aligned at app-server startup.
             let on_effective_plugins_changed =
                 plugin_processor.effective_plugins_changed_callback();
-            thread_manager
-                .plugins_manager()
-                .maybe_start_plugin_startup_tasks_for_config(
-                    &config.plugins_config_input(),
-                    auth_manager.clone(),
-                    Some(on_effective_plugins_changed),
-                );
+            app_server_hooks().on_app_server_start(
+                &thread_manager,
+                &config,
+                auth_manager.clone(),
+                Some(on_effective_plugins_changed),
+            );
         }
         let config_processor = ConfigRequestProcessor::new(
             outgoing.clone(),

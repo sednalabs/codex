@@ -1,4 +1,5 @@
 use super::*;
+use crate::extensions::app_server_hooks;
 
 #[derive(Clone)]
 pub(crate) struct MarketplaceRequestProcessor {
@@ -105,7 +106,7 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceAddParams,
     ) -> Result<MarketplaceAddResponse, JSONRPCErrorError> {
-        add_marketplace_to_codex_home(
+        let mut response = add_marketplace_to_codex_home(
             self.config.codex_home.to_path_buf(),
             MarketplaceAddRequest {
                 source: params.source,
@@ -114,15 +115,17 @@ impl MarketplaceRequestProcessor {
             },
         )
         .await
-        .map(|outcome| MarketplaceAddResponse {
-            marketplace_name: outcome.marketplace_name,
-            installed_root: outcome.installed_root,
-            already_added: outcome.already_added,
-        })
         .map_err(|err| match err {
             MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
             MarketplaceAddError::Internal(message) => internal_error(message),
         })
+        .map(|outcome| MarketplaceAddResponse {
+            marketplace_name: outcome.marketplace_name,
+            installed_root: outcome.installed_root,
+            already_added: outcome.already_added,
+        })?;
+        app_server_hooks().augment_marketplace_add_response(&mut response);
+        Ok(response)
     }
 
     async fn load_latest_config(

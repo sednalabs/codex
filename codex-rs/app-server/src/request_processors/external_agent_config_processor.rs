@@ -9,6 +9,7 @@ use crate::config::external_agent_config::PendingPluginImport;
 use crate::config_manager::ConfigManager;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
+use crate::extensions::ConfigMutationKind;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::CommandMigration;
@@ -186,7 +187,12 @@ impl ExternalAgentConfigRequestProcessor {
         let pending_session_imports = self.validate_pending_session_imports(&params)?;
         let pending_plugin_imports = self.import_external_agent_config(params).await?;
         if needs_runtime_refresh {
-            self.config_processor.handle_config_mutation().await;
+            let kind = if has_plugin_imports {
+                ConfigMutationKind::PluginInstall
+            } else {
+                ConfigMutationKind::BatchWrite
+            };
+            self.config_processor.handle_config_mutation(kind).await;
         }
         self.outgoing
             .send_response(request_id, ExternalAgentConfigImportResponse {})

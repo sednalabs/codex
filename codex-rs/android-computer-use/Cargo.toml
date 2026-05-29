@@ -1,11 +1,11 @@
 [package]
-name = "codex-browser-computer-use"
+name = "codex-android-computer-use"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "codex_browser_computer_use"
+name = "codex_android_computer_use"
 path = "src/lib.rs"
 doctest = false
 
@@ -13,15 +13,15 @@ doctest = false
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-protocol = { workspace = true }
 codex-tools = { workspace = true }
 codex-utils-home-dir = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-shlex = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "process", "time"] }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
