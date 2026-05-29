@@ -1,5 +1,6 @@
 use super::*;
 use crate::SortDirection;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::Ordering;
 
