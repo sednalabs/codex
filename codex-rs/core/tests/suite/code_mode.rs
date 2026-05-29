@@ -186,7 +186,7 @@ async fn run_code_mode_turn_with_config(
     )
     .await;
 
-    test.submit_turn(prompt).await?;
+    Box::pin(test.submit_turn(prompt)).await?;
     Ok((test, second_mock))
 }
 
@@ -307,7 +307,7 @@ async fn run_code_mode_turn_with_rmcp_config(
     )
     .await;
 
-    test.submit_turn(prompt).await?;
+    Box::pin(test.submit_turn(prompt)).await?;
     Ok((test, second_mock))
 }
 
