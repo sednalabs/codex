@@ -29,6 +29,7 @@ futures = { workspace = true, default-features = false, features = ["std"] }
 keyring = { workspace = true, features = ["crypto-rust"] }
 oauth2 = "5"
 reqwest = { version = "0.13", default-features = false, features = [
+    "form",
     "json",
     "stream",
     "rustls",
