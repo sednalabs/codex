@@ -443,16 +443,26 @@ mod tests {
 
     #[test]
     fn terminal_outcome_helper_defaults_to_handle_state_without_capability_flag() {
-        assert!(!terminal_outcome_reached_or_finished(None, false));
-        assert!(terminal_outcome_reached_or_finished(None, true));
+        assert!(!terminal_outcome_reached_or_finished(
+            /*terminal_outcome_reached*/ None, /*handle_finished*/ false
+        ));
+        assert!(terminal_outcome_reached_or_finished(
+            /*terminal_outcome_reached*/ None, /*handle_finished*/ true
+        ));
     }
 
     #[test]
     fn terminal_outcome_helper_honors_capability_flag() {
         let reached = Arc::new(AtomicBool::new(false));
-        assert!(!terminal_outcome_reached_or_finished(Some(&reached), false));
+        assert!(!terminal_outcome_reached_or_finished(
+            Some(&reached),
+            /*handle_finished*/ false
+        ));
 
         reached.store(true, Ordering::Release);
-        assert!(terminal_outcome_reached_or_finished(Some(&reached), false));
+        assert!(terminal_outcome_reached_or_finished(
+            Some(&reached),
+            /*handle_finished*/ false
+        ));
     }
 }
