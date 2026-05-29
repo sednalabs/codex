@@ -4,6 +4,8 @@ use crate::config_manager::ConfigManager;
 use crate::config_manager_service::ConfigManagerError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::extensions::ConfigMutationKind;
+use crate::extensions::app_server_hooks;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_analytics::AnalyticsEventsClient;
@@ -131,18 +133,24 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigValueWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.write_value(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigValueWrite)
+        self.handle_config_mutation_result(
+            self.write_value(params).await,
+            ConfigMutationKind::ValueWrite,
+        )
+        .await
+        .map(ClientResponsePayload::ConfigValueWrite)
     }
 
     pub(crate) async fn batch_write(
         &self,
         params: ConfigBatchWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.batch_write_inner(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigBatchWrite)
+        self.handle_config_mutation_result(
+            self.batch_write_inner(params).await,
+            ConfigMutationKind::BatchWrite,
+        )
+        .await
+        .map(ClientResponsePayload::ConfigBatchWrite)
     }
 
     pub(crate) async fn experimental_feature_enablement_set(
@@ -152,7 +160,10 @@ impl ConfigRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let should_refresh_apps_list = params.enablement.get("apps").copied() == Some(true);
         let response = self
-            .handle_config_mutation_result(self.set_experimental_feature_enablement(params).await)
+            .handle_config_mutation_result(
+                self.set_experimental_feature_enablement(params).await,
+                ConfigMutationKind::ExperimentalFeatureEnablementSet,
+            )
             .await?;
         self.outgoing
             .send_response_as(
@@ -180,17 +191,40 @@ impl ConfigRequestProcessor {
         })
     }
 
-    pub(crate) async fn handle_config_mutation(&self) {
-        self.thread_manager.plugins_manager().clear_cache();
-        self.thread_manager.skills_manager().clear_cache();
+    pub(crate) async fn handle_config_mutation(&self, kind: ConfigMutationKind) {
+        let follow_up = app_server_hooks().config_mutation_follow_up(kind);
+        if follow_up.clear_plugin_related_caches {
+            self.thread_manager.plugins_manager().clear_cache();
+            self.thread_manager.skills_manager().clear_cache();
+        }
+        if follow_up.maybe_start_plugin_startup_tasks_for_latest_config {
+            match self.load_latest_config(/*fallback_cwd*/ None).await {
+                Ok(config) => {
+                    self.thread_manager
+                        .plugins_manager()
+                        .maybe_start_plugin_startup_tasks_for_config(
+                            &config.plugins_config_input(),
+                            self.auth_manager.clone(),
+                            /*on_effective_plugins_changed*/ None,
+                        );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to reload config for app-server config mutation follow-up: {}",
+                        err.message
+                    );
+                }
+            }
+        }
     }
 
     async fn handle_config_mutation_result<T>(
         &self,
         result: std::result::Result<T, JSONRPCErrorError>,
+        kind: ConfigMutationKind,
     ) -> Result<T, JSONRPCErrorError> {
         let response = result?;
-        self.handle_config_mutation().await;
+        self.handle_config_mutation(kind).await;
         Ok(response)
     }
 

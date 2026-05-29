@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use reqwest::ClientBuilder;
 use reqwest::Url;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
@@ -26,6 +27,7 @@ use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::save_oauth_tokens;
+use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -478,11 +480,18 @@ impl OauthLoginFlow {
             http_headers,
             env_http_headers,
         } = headers;
-        let _default_headers = build_default_headers(http_headers, env_http_headers)?;
+        let default_headers = build_default_headers(http_headers, env_http_headers)?;
+        let http_client = apply_default_headers(ClientBuilder::new(), &default_headers).build()?;
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let oauth_state =
-            start_authorization(server_url, &scope_refs, &redirect_uri, oauth_client_id).await?;
+        let oauth_state = start_authorization(
+            server_url,
+            http_client,
+            &scope_refs,
+            &redirect_uri,
+            oauth_client_id,
+        )
+        .await?;
         let auth_url = append_query_param(
             &oauth_state.get_authorization_url().await?,
             "resource",
@@ -594,6 +603,7 @@ impl OauthLoginFlow {
 
 async fn start_authorization(
     server_url: &str,
+    _http_client: reqwest::Client,
     scopes: &[&str],
     redirect_uri: &str,
     oauth_client_id: Option<&str>,
@@ -610,10 +620,10 @@ async fn start_authorization(
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
     let metadata = auth_manager.discover_metadata().await?;
     auth_manager.set_metadata(metadata);
-    let client_config =
-        OAuthClientConfig::new(oauth_client_id.to_string(), redirect_uri.to_string())
-            .with_scopes(scopes.iter().map(|scope| (*scope).to_string()).collect());
-    auth_manager.configure_client(client_config)?;
+    auth_manager.configure_client(
+        OAuthClientConfig::new(oauth_client_id, redirect_uri)
+            .with_scopes(scopes.iter().map(|scope| (*scope).to_string()).collect()),
+    )?;
     let auth_url = auth_manager.get_authorization_url(scopes).await?;
 
     Ok(OAuthState::Session(
@@ -705,6 +715,7 @@ mod tests {
         let base_url = spawn_oauth_metadata_server().await;
         let oauth_state = start_authorization(
             &format!("{base_url}/mcp"),
+            reqwest::Client::new(),
             &[],
             "http://127.0.0.1/callback",
             Some("eci-prd-pub-codex-123"),

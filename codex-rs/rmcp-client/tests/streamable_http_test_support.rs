@@ -67,8 +67,8 @@ fn init_params() -> InitializeRequestParams {
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
     let mut result = CallToolResult::default();
     result.structured_content = Some(json!({
-            "echo": format!("ECHOING: {message}"),
-            "env": null,
+        "echo": format!("ECHOING: {message}"),
+        "env": null,
     }));
     result.is_error = Some(false);
     result

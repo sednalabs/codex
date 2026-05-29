@@ -34,6 +34,7 @@ use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_extension_api::ExtensionStorageId;
 use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::RolloutItem;
@@ -62,6 +63,7 @@ use tracing::warn;
 
 mod agent_jobs;
 mod backfill;
+mod extension_storage;
 mod goals;
 mod logs;
 mod memories;
@@ -240,6 +242,17 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let started = Instant::now();
+        let extension_migrations_result =
+            extension_storage::run_state_extension_migrations(pool.as_ref()).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            extension_storage::state_extension_migration_phase(),
+            started.elapsed(),
+            &extension_migrations_result,
+        );
+        extension_migrations_result?;
         let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator, telemetry_override).await
         {
             Ok(db) => Arc::new(db),
@@ -328,6 +341,29 @@ impl StateRuntime {
 
     pub fn usage_pool(&self) -> Arc<SqlitePool> {
         Arc::clone(&self.usage_pool)
+    }
+
+    pub fn extension_storage_pool(
+        &self,
+        storage_id: ExtensionStorageId,
+    ) -> Option<Arc<SqlitePool>> {
+        if storage_id == extension_storage::USAGE_LEDGER_STORAGE_ID {
+            return Some(Arc::clone(&self.usage_pool));
+        }
+        if storage_id == extension_storage::PHASE2_ATTESTATION_STORAGE_ID {
+            return Some(Arc::clone(&self.pool));
+        }
+        None
+    }
+
+    pub(crate) fn usage_ledger_pool(&self) -> Arc<SqlitePool> {
+        self.extension_storage_pool(extension_storage::USAGE_LEDGER_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.usage_pool))
+    }
+
+    pub(crate) fn phase2_attestation_pool(&self) -> Arc<SqlitePool> {
+        self.extension_storage_pool(extension_storage::PHASE2_ATTESTATION_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.pool))
     }
 
     pub fn thread_goals(&self) -> &GoalStore {

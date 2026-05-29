@@ -312,7 +312,7 @@ fn mcp_tool_info(
         namespace_description: None,
         tool: rmcp::model::Tool::new(
             tool_name.to_string(),
-            "Test MCP tool".to_string(),
+            "Test MCP tool",
             Arc::new(rmcp::model::object(json!({
                 "type": "object",
             }))),

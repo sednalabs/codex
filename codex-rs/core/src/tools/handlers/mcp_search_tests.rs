@@ -51,8 +51,8 @@ fn tool_info() -> ToolInfo {
         callable_namespace: "mcp__calendar__".to_string(),
         namespace_description: Some("Plan events.".to_string()),
         tool: rmcp::model::Tool::new(
-            "createEvent".to_string(),
-            "Create a calendar event.".to_string(),
+            "createEvent",
+            "Create a calendar event.",
             Arc::new(rmcp::model::object(json!({
                 "type": "object",
                 "properties": {

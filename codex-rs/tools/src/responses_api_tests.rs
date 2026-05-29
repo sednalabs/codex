@@ -90,8 +90,8 @@ fn dynamic_tool_to_responses_api_tool_preserves_defer_loading() {
 #[test]
 fn mcp_tool_to_deferred_responses_api_tool_sets_defer_loading() {
     let tool = rmcp::model::Tool::new(
-        "lookup_order".to_string(),
-        "Look up an order".to_string(),
+        "lookup_order",
+        "Look up an order",
         std::sync::Arc::new(rmcp::model::object(json!({
             "type": "object",
             "properties": {

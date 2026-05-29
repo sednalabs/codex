@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use crate::contributor_slots::contribute_computer_use_surface_name;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComputerUseDisplayState {
     InProgress,
@@ -8,7 +10,7 @@ pub(crate) enum ComputerUseDisplayState {
 }
 
 pub(crate) fn computer_use_action_label(adapter: &str, state: ComputerUseDisplayState) -> String {
-    let surface = computer_use_surface_name(adapter);
+    let surface = computer_use_surface_name_for_state(adapter, state);
     match state {
         ComputerUseDisplayState::InProgress => format!("Using {surface}"),
         ComputerUseDisplayState::Completed => format!("Used {surface}"),
@@ -16,13 +18,12 @@ pub(crate) fn computer_use_action_label(adapter: &str, state: ComputerUseDisplay
     }
 }
 
-pub(crate) fn computer_use_surface_name(adapter: &str) -> Cow<'_, str> {
-    match adapter {
-        "android" | "android_emulator" | "android-emulator" => Cow::Borrowed("Android emulator"),
-        "browser" => Cow::Borrowed("browser"),
-        "desktop" | "computer" => Cow::Borrowed("computer"),
-        other => Cow::Owned(other.replace(['_', '-'], " ")),
-    }
+fn computer_use_surface_name_for_state(
+    adapter: &str,
+    state: ComputerUseDisplayState,
+) -> Cow<'_, str> {
+    contribute_computer_use_surface_name(adapter, state)
+        .unwrap_or_else(|| Cow::Owned(adapter.replace(['_', '-'], " ")))
 }
 
 #[cfg(test)]

@@ -635,8 +635,8 @@ mod tests {
 
     fn tool_with_connector_meta() -> RmcpTool {
         RmcpTool::new(
-            "capture_file_upload".to_string(),
-            "test tool".to_string(),
+            "capture_file_upload",
+            "test tool",
             Arc::new(JsonObject::default()),
         )
         .with_meta(Meta(

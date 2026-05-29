@@ -564,6 +564,11 @@ pub(super) async fn handle_pending_thread_resume_request(
         thread_status,
         has_live_in_progress_turn,
     );
+    crate::extensions::app_server_hooks().augment_thread_resume(
+        &mut thread,
+        active_turn.as_ref(),
+        has_live_in_progress_turn,
+    );
     let token_usage_thread = pending.include_turns.then(|| thread.clone());
     if pending.redact_resume_payloads {
         redact_thread_resume_payloads(&mut thread);

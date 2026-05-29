@@ -228,7 +228,7 @@ fn accessible_connectors_from_mcp_tools_preserves_description() {
         callable_namespace: "mcp__codex_apps__calendar".to_string(),
         namespace_description: Some("Plan events".to_string()),
         tool: Tool::new(
-            "calendar_create_event".to_string(),
+            "calendar_create_event",
             "Create a calendar event",
             Arc::new(JsonObject::default()),
         ),

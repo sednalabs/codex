@@ -39,6 +39,10 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::outgoing_message::OutgoingMessageSender;
 
+fn tool_error_result(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![rmcp::model::Content::text(message.into())])
+}
+
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
@@ -338,9 +342,7 @@ impl MessageProcessor {
                     .await
             }
             _ => {
-                let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
-                    "Unknown tool '{name}'"
-                ))]);
+                let result = tool_error_result(format!("Unknown tool '{name}'"));
                 self.outgoing.send_response(id, result).await;
             }
         }
@@ -357,25 +359,25 @@ impl MessageProcessor {
                 Ok(tool_cfg) => match tool_cfg.into_config(self.arg0_paths.clone()).await {
                     Ok(cfg) => cfg,
                     Err(e) => {
-                        let result = CallToolResult::error(vec![rmcp::model::Content::text(
-                            format!("Failed to load Codex configuration from overrides: {e}"),
-                        )]);
+                        let result = tool_error_result(format!(
+                            "Failed to load Codex configuration from overrides: {e}"
+                        ));
                         self.outgoing.send_response(id, result).await;
                         return;
                     }
                 },
                 Err(e) => {
-                    let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                    let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
-                    ))]);
+                    ));
                     self.outgoing.send_response(id, result).await;
                     return;
                 }
             },
             None => {
-                let result = CallToolResult::error(vec![rmcp::model::Content::text(
+                let result = tool_error_result(
                     "Missing arguments for codex tool-call; the `prompt` field is required.",
-                )]);
+                );
                 self.outgoing.send_response(id, result).await;
                 return;
             }
@@ -416,9 +418,9 @@ impl MessageProcessor {
                 Ok(params) => params,
                 Err(e) => {
                     tracing::error!("Failed to parse Codex tool call reply parameters: {e}");
-                    let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
+                    let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
-                    ))]);
+                    ));
                     self.outgoing.send_response(request_id, result).await;
                     return;
                 }
@@ -427,9 +429,9 @@ impl MessageProcessor {
                 tracing::error!(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required."
                 );
-                let result = CallToolResult::error(vec![rmcp::model::Content::text(
+                let result = tool_error_result(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                )]);
+                );
                 self.outgoing.send_response(request_id, result).await;
                 return;
             }
@@ -439,9 +441,7 @@ impl MessageProcessor {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!("Failed to parse thread_id: {e}");
-                let result = CallToolResult::error(vec![rmcp::model::Content::text(format!(
-                    "Failed to parse thread_id: {e}"
-                ))]);
+                let result = tool_error_result(format!("Failed to parse thread_id: {e}"));
                 self.outgoing.send_response(request_id, result).await;
                 return;
             }
