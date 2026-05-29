@@ -633,32 +633,27 @@ mod tests {
     use rmcp::model::Meta;
 
     fn tool_with_connector_meta() -> RmcpTool {
-        RmcpTool {
-            name: "capture_file_upload".to_string().into(),
-            title: None,
-            description: Some("test tool".to_string().into()),
-            input_schema: Arc::new(JsonObject::default()),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: Some(Meta(
-                serde_json::json!({
-                    "connector_id": "connector_gmail",
-                    "connector_name": "Gmail",
-                    "connector_display_name": "Gmail",
-                    "connector_description": "Mail connector",
-                    "connectorDescription": "Mail connector",
-                    "connectorFutureField": "future connector metadata",
-                    "CONNECTOR_UPPERCASE": "uppercase connector metadata",
-                    "openai/fileParams": ["file"],
-                    "custom": "kept"
-                })
-                .as_object()
-                .expect("object")
-                .clone(),
-            )),
-        }
+        RmcpTool::new(
+            "capture_file_upload",
+            "test tool",
+            Arc::new(JsonObject::default()),
+        )
+        .with_meta(Meta(
+            serde_json::json!({
+                "connector_id": "connector_gmail",
+                "connector_name": "Gmail",
+                "connector_display_name": "Gmail",
+                "connector_description": "Mail connector",
+                "connectorDescription": "Mail connector",
+                "connectorFutureField": "future connector metadata",
+                "CONNECTOR_UPPERCASE": "uppercase connector metadata",
+                "openai/fileParams": ["file"],
+                "custom": "kept"
+            })
+            .as_object()
+            .expect("object")
+            .clone(),
+        ))
     }
 
     #[test]
