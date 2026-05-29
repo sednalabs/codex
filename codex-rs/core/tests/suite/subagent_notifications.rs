@@ -928,7 +928,7 @@ async fn spawned_child_receives_forked_parent_context() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -1109,7 +1109,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
