@@ -167,8 +167,12 @@ impl ToolCallRuntime {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
                         abort_dispatch_span.record("aborted", true);
                         if wait_for_runtime_cancellation {
-                            if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
-                                return handle.await.map_err(Self::tool_task_join_error)?;
+                            if let Some(terminal_outcome_reached) =
+                                terminal_outcome_reached.as_ref()
+                            {
+                                if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
+                                    return handle.await.map_err(Self::tool_task_join_error)?;
+                                }
                             }
                             // The abort owns the terminal outcome; await only so
                             // the runtime can finish process teardown.
