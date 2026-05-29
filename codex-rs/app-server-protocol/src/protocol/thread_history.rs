@@ -1565,6 +1565,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
