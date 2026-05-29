@@ -95,7 +95,7 @@ async fn column_exists(
     let sql = format!(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{quoted_table_name}') WHERE name = ?)"
     );
-    let exists = sqlx::query_scalar::<_, bool>(&sql)
+    let exists = sqlx::query_scalar::<_, bool>(&*sql)
         .bind(column_name)
         .fetch_one(pool)
         .await?;
