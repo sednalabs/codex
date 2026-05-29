@@ -24,6 +24,8 @@ use codex_config::types::OAuthCredentialsStoreMode;
 
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const DEFAULT_DEVICE_EXPIRES_IN_SECS: u64 = 900;
+const MIN_DEVICE_EXPIRES_IN_SECS: u64 = 1;
+const MAX_DEVICE_EXPIRES_IN_SECS: u64 = 86_400;
 const DEFAULT_DEVICE_POLL_INTERVAL_SECS: u64 = 5;
 const MIN_DEVICE_POLL_INTERVAL_SECS: u64 = 1;
 const MAX_ERROR_BODY_PREVIEW_CHARS: usize = 500;
@@ -229,10 +231,7 @@ async fn poll_device_token(
     details: &DeviceAuthorizationResponse,
     pkce: Option<&DevicePkce>,
 ) -> Result<OAuthTokenResponse> {
-    let expires_in = details
-        .expires_in
-        .unwrap_or(DEFAULT_DEVICE_EXPIRES_IN_SECS)
-        .max(1);
+    let expires_in = device_authorization_expires_in(details);
     let deadline = Instant::now() + Duration::from_secs(expires_in);
     let mut interval = Duration::from_secs(
         details
@@ -266,6 +265,13 @@ async fn poll_device_token(
             }
         }
     }
+}
+
+fn device_authorization_expires_in(details: &DeviceAuthorizationResponse) -> u64 {
+    details
+        .expires_in
+        .unwrap_or(DEFAULT_DEVICE_EXPIRES_IN_SECS)
+        .clamp(MIN_DEVICE_EXPIRES_IN_SECS, MAX_DEVICE_EXPIRES_IN_SECS)
 }
 
 async fn poll_device_token_once(
@@ -541,6 +547,36 @@ mod tests {
         assert_eq!(token.access_token().secret(), "access-token");
         assert_eq!(device_request_count.load(Ordering::SeqCst), 2);
         assert_eq!(poll_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn device_authorization_expiry_uses_safe_bounds() {
+        let mut details = DeviceAuthorizationResponse {
+            device_code: "device-code".to_string(),
+            user_code: "USER-CODE".to_string(),
+            verification_uri: "https://issuer.test/device".to_string(),
+            verification_uri_complete: None,
+            expires_in: None,
+            interval: None,
+        };
+
+        assert_eq!(
+            device_authorization_expires_in(&details),
+            DEFAULT_DEVICE_EXPIRES_IN_SECS
+        );
+
+        let below_min_expires_in = MIN_DEVICE_EXPIRES_IN_SECS - 1;
+        details.expires_in = Some(below_min_expires_in);
+        assert_eq!(
+            device_authorization_expires_in(&details),
+            MIN_DEVICE_EXPIRES_IN_SECS
+        );
+
+        details.expires_in = Some(u64::MAX);
+        assert_eq!(
+            device_authorization_expires_in(&details),
+            MAX_DEVICE_EXPIRES_IN_SECS
+        );
     }
 
     async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {
