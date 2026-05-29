@@ -856,6 +856,8 @@ mod tests {
             ignore_missing: STATE_MIGRATOR.ignore_missing,
             locking: STATE_MIGRATOR.locking,
             no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         };
         partial_migrator
             .run(&pool)
