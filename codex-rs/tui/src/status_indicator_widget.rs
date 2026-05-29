@@ -455,6 +455,7 @@ mod tests {
             tx,
             crate::tui::FrameRequester::test_dummy(),
             /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
         );
         w.set_interrupt_binding(Some(key_hint::plain(KeyCode::F(12))));
         w.is_paused = true;
