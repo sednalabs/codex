@@ -3186,7 +3186,7 @@
       "properties": {
         "extraRoots": {
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": "array"
         }
@@ -3944,7 +3944,7 @@
         "itemsView": {
           "anyOf": [
             {
-              "$ref": "#/definitions/TurnItemsView"
+              "$ref": "#/$defs/TurnItemsView"
             },
             {
               "type": "null"
@@ -3955,7 +3955,7 @@
         "limit": {
           "description": "Optional turn page size.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -3964,7 +3964,7 @@
         "sortDirection": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SortDirection"
+              "$ref": "#/$defs/SortDirection"
             },
             {
               "type": "null"
@@ -4047,6 +4047,17 @@
             "array",
             "null"
           ]
+        },
+        "initialTurnsPage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadResumeInitialTurnsPageParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When present, include a `thread/turns/list` page in the resume response\nso clients can bootstrap recent turns without a second request."
         },
         "model": {
           "description": "Configuration overrides for the resumed thread, if any.",
@@ -5584,14 +5595,12 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "skills/extraRoots/set"
-          ],
+          "const": "skills/extraRoots/set",
           "title": "Skills/extraRoots/setRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/SkillsExtraRootsSetParams"
+          "$ref": "#/$defs/SkillsExtraRootsSetParams"
         }
       },
       "required": [
@@ -5605,12 +5614,10 @@
     {
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "hooks/list"
-          ],
+          "const": "hooks/list",
           "title": "Hooks/listRequestMethod",
           "type": "string"
         },
