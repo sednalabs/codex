@@ -1406,9 +1406,7 @@
               "$ref": "#/definitions/RequestId"
             },
             "method": {
-              "enum": [
-                "skills/extraRoots/set"
-              ],
+              "const": "skills/extraRoots/set",
               "title": "Skills/extraRoots/setRequestMethod",
               "type": "string"
             },
@@ -1430,9 +1428,7 @@
               "$ref": "#/definitions/RequestId"
             },
             "method": {
-              "enum": [
-                "hooks/list"
-              ],
+              "const": "hooks/list",
               "title": "Hooks/listRequestMethod",
               "type": "string"
             },
@@ -12504,7 +12500,7 @@
       "type": "object"
     },
     "SkillsExtraRootsSetParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "extraRoots": {
           "items": {
@@ -12520,7 +12516,7 @@
       "type": "object"
     },
     "SkillsExtraRootsSetResponse": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "SkillsExtraRootsSetResponse",
       "type": "object"
     },
@@ -14637,7 +14633,7 @@
         "limit": {
           "description": "Optional turn page size.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
