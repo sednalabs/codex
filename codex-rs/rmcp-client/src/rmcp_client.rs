@@ -12,6 +12,7 @@ use std::time::Instant;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_api::SharedAuthProvider;
+use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
 use futures::FutureExt;
@@ -70,6 +71,7 @@ use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
+use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -586,7 +588,6 @@ impl RmcpClient {
                 async move {
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
-
                     let result = service
                         .peer()
                         .send_request_with_option(
@@ -1022,10 +1023,16 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
+    let mut builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
+    if let Some(tls_config) = maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
+    let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
-    // shared HTTP client abstraction instead of RMCP's internal reqwest
-    // metadata client.
-    let mut oauth_state = OAuthState::new(url.to_string(), None).await?;
+    // shared HTTP client abstraction instead of always creating the local
+    // reqwest metadata client here.
+    let mut oauth_state =
+        OAuthState::new(url.to_string(), Some(oauth_metadata_client.clone())).await?;
 
     oauth_state
         .set_credentials(
@@ -1037,10 +1044,9 @@ async fn create_oauth_transport_and_runtime(
     let manager = match oauth_state {
         OAuthState::Authorized(manager) => manager,
         OAuthState::Unauthorized(manager) => manager,
-        OAuthState::Session(_) | OAuthState::AuthorizedHttpClient(_) => {
+        _ => {
             return Err(anyhow!("unexpected OAuth state during client setup"));
         }
-        _ => return Err(anyhow!("unexpected OAuth state during client setup")),
     };
 
     let auth_client = AuthClient::new(

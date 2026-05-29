@@ -119,7 +119,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
 
     let read = client
         .read_resource(
-            ReadResourceRequestParams::new(RESOURCE_URI.to_string()),
+            ReadResourceRequestParams::new(RESOURCE_URI),
             Some(Duration::from_secs(5)),
         )
         .await?;

@@ -65,12 +65,11 @@ fn init_params() -> InitializeRequestParams {
 }
 
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::default();
+    let mut result = CallToolResult::success(Vec::new());
     result.structured_content = Some(json!({
         "echo": format!("ECHOING: {message}"),
         "env": null,
     }));
-    result.is_error = Some(false);
     result
 }
 
@@ -163,12 +162,14 @@ pub(crate) async fn arm_session_post_failure(
     base_url: &str,
     status: u16,
     remaining: usize,
+    www_authenticate_headers: &[&str],
 ) -> anyhow::Result<()> {
     let response = reqwest::Client::new()
         .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
         .json(&json!({
             "status": status,
             "remaining": remaining,
+            "www_authenticate_headers": www_authenticate_headers,
         }))
         .send()
         .await?;

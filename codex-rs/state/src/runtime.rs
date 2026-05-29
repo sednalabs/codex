@@ -36,7 +36,6 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_extension_api::ExtensionStorageId;
 use codex_protocol::ThreadId;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::RolloutItem;
 use log::LevelFilter;
 use serde_json::Value;
@@ -857,6 +856,8 @@ mod tests {
             ignore_missing: STATE_MIGRATOR.ignore_missing,
             locking: STATE_MIGRATOR.locking,
             no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         };
         partial_migrator
             .run(&pool)

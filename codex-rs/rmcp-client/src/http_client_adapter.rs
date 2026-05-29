@@ -31,11 +31,16 @@ use reqwest::header::HeaderValue;
 use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ServerJsonRpcMessage;
 use rmcp::transport::streamable_http_client::AuthRequiredError;
+use rmcp::transport::streamable_http_client::InsufficientScopeError;
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 use sse_stream::Sse;
 use sse_stream::SseStream;
+
+mod www_authenticate;
+
+use self::www_authenticate::insufficient_scope_challenge;
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
@@ -144,6 +149,16 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
                 header,
             )));
+        }
+        if response.status == StatusCode::FORBIDDEN.as_u16()
+            && let Some(challenge) = insufficient_scope_challenge(&response.headers)
+        {
+            return Err(StreamableHttpError::InsufficientScope(
+                InsufficientScopeError::new(
+                    challenge.www_authenticate_header,
+                    challenge.required_scope,
+                ),
+            ));
         }
         if matches!(
             StatusCode::from_u16(response.status).ok(),
