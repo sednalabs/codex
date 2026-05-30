@@ -91,14 +91,13 @@ async fn column_exists(
     table_name: &str,
     column_name: &str,
 ) -> anyhow::Result<bool> {
-    let quoted_table_name = table_name.replace('\'', "''");
-    let sql = format!(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{quoted_table_name}') WHERE name = ?)"
-    );
-    let exists = sqlx::query_scalar::<_, bool>(&sql)
-        .bind(column_name)
-        .fetch_one(pool)
-        .await?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)",
+    )
+    .bind(table_name)
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
     Ok(exists)
 }
 

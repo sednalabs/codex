@@ -481,20 +481,14 @@ impl ServerHandler for TestToolServer {
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
-            "sandbox_meta" => {
-                let mut result = CallToolResult::default();
-                result.structured_content = Some(serde_json::Value::Object(context.meta.0));
-                result.is_error = Some(false);
-                Ok(result)
-            }
+            "sandbox_meta" => Ok(Self::structured_result(serde_json::Value::Object(
+                context.meta.0,
+            ))),
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                let mut result = CallToolResult::default();
-                result.structured_content = Some(json!({ "cwd": cwd }));
-                result.is_error = Some(false);
-                Ok(result)
+                Ok(Self::structured_result(json!({ "cwd": cwd })))
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -517,10 +511,7 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                let mut result = CallToolResult::default();
-                result.structured_content = Some(structured_content);
-                result.is_error = Some(false);
-                Ok(result)
+                Ok(Self::structured_result(structured_content))
             }
             "image" => {
                 // Read a data URL (e.g. data:image/png;base64,AAA...) from env and convert to
@@ -670,10 +661,13 @@ impl TestToolServer {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        let mut result = CallToolResult::default();
-        result.structured_content = Some(json!({ "result": "ok" }));
-        result.is_error = Some(false);
-        Ok(result)
+        Ok(Self::structured_result(json!({ "result": "ok" })))
+    }
+
+    fn structured_result(value: serde_json::Value) -> CallToolResult {
+        let mut result = CallToolResult::success(Vec::new());
+        result.structured_content = Some(value);
+        result
     }
 }
 
