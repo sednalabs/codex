@@ -46,7 +46,7 @@ Accept any of the following:
 
 - exact run id (legacy single target mode): `--run-id`
 - workflow name or workflow file plus a ref
-- optional head SHA pin when a workflow/ref target may have several recent runs
+- optional head SHA pin when a workflow/ref target may have several recent runs, or when an exact run id should be classified against the latest target head
 - optional host-ref when the run host branch differs from the logical ref (common for `workflow_dispatch` with an input ref)
 - optional `--min-run-id` when using a workflow target directly to skip older stale matching runs
 - no ref argument: infer the current branch when possible
@@ -59,6 +59,7 @@ Accept any of the following:
 Multi-target mode:
 
 - `--target "run-id=<id>"`
+- `--target "run-id=<id>,head-sha=<sha>"`
 - `--target "workflow=<name>,ref=<ref>"`
 - `--target "workflow=<name>,ref=<ref>,host-ref=<branch>"`
 - `--target "workflow=<name>,ref=<ref>,head-sha=<sha>"`
@@ -218,6 +219,7 @@ Gemini failure summaries are collected with the direct Gemini REST API using `ge
 - For downstream-style dispatches with a logical `ref=` input, keep `--ref auto` so the workflow dispatches from the repo default branch; the helper validates the logical input ref head before dispatch and then watches the newly created host-branch run.
 - When the parent only knows workflow plus ref, let the helper follow the newest matching run so cancelled superseded runs do not create noise.
 - When the parent knows the exact branch head it just dispatched, pass `--head-sha` so the watcher cannot latch onto an older completed run on the same ref.
+- When inspecting an exact failed run after the branch advanced, include the latest known `head-sha` so the watcher can classify stale evidence and recommend the smallest targeted latest-head proof rerun.
 - If a `workflow_dispatch` run is hosted on a branch different from the logical ref (for example hosted on `main` while testing `validation/...` input), pass `--host-ref` (or `host-ref=` in `--target`) so the watcher can select it deterministically.
 - Host-branch mismatch probing is throttled after the first no-match check, so repeated empty polls do not keep re-running the fallback discovery path on every cycle.
 - When dispatching `validation-lab`, leave `--supersession-mode auto` unless the run is an intentional comparison or checkpoint. Retained evidence runs must opt out explicitly with `compare`, `milestone`, or `retain`.

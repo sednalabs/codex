@@ -224,7 +224,7 @@ def parse_args():
         default=[],
         help=(
             "Target spec to watch. Repeatable. Supported forms: "
-            "'run-id=<id>' or "
+            "'run-id=<id>[,head-sha=<sha>]' or "
             "'workflow=<name>,ref=<ref>[,host-ref=<branch>][,head-sha=<sha>][,min-run-id=<id>]'."
         ),
     )
@@ -389,19 +389,27 @@ def parse_target_arg(spec):
         raise GhCommandError(f"Target spec '{raw}' is missing key=value pairs.")
 
     if "run-id" in fields or "run_id" in fields:
-        if len(fields) > 1:
-            raise GhCommandError(f"'run-id' target cannot include other fields: '{raw}'.")
         key = "run-id" if "run-id" in fields else "run_id"
+        allowed_keys = {key, "head-sha", "head_sha"}
+        unexpected_keys = sorted(set(fields) - allowed_keys)
+        if unexpected_keys:
+            raise GhCommandError(
+                f"'run-id' target only accepts optional head-sha; got {unexpected_keys}: '{raw}'."
+            )
         run_id = fields[key]
         try:
             value = int(run_id)
         except ValueError as err:
             raise GhCommandError(f"Invalid run-id '{run_id}' in target '{raw}'.") from err
-        return {
+        target = {
             "kind": TARGET_KIND_RUN_ID,
             "run_id": value,
             "spec": raw,
         }
+        head_sha = fields.get("head-sha") or fields.get("head_sha")
+        if head_sha:
+            target["head_sha"] = head_sha
+        return target
 
     workflow = fields.get("workflow")
     if not workflow:
@@ -451,7 +459,15 @@ def build_targets(args):
                 {
                     "kind": TARGET_KIND_RUN_ID,
                     "run_id": args.run_id,
-                    "spec": f"run-id={args.run_id}",
+                    "head_sha": args.head_sha,
+                    "spec": ",".join(
+                        part
+                        for part in (
+                            f"run-id={args.run_id}",
+                            f"head-sha={args.head_sha}" if args.head_sha else "",
+                        )
+                        if part
+                    ),
                 }
             )
         else:
@@ -760,6 +776,7 @@ def _focused_validation_summary_text(summary, limit=5000):
             "failed_lane_count": context.get("failed_lane_count"),
             "failure_structure": context.get("failure_structure"),
             "recommended_follow_up": context.get("recommended_follow_up"),
+            "head_freshness": context.get("head_freshness"),
             "first_blocker": context.get("first_blocker"),
             "candidate_next_slices": context.get("candidate_next_slices"),
         },
@@ -805,7 +822,64 @@ def _list_or_empty(value):
     return value if isinstance(value, list) else []
 
 
-def _derive_validation_mode_context(validation_summary, *, run_view=None, failed_jobs=None):
+def _compact_head_freshness(summary_head_freshness, *, run_view=None, target=None, has_failure=False, candidate_next_slices=None):
+    head_freshness = dict(_dict_or_empty(summary_head_freshness))
+    run_head_sha = str(_dict_or_empty(run_view).get("headSha") or "").strip()
+    target_head_sha = str(_dict_or_empty(target).get("head_sha") or "").strip()
+    if not head_freshness and not (run_head_sha and target_head_sha):
+        return None
+
+    if run_head_sha and target_head_sha:
+        run_head_status = "current" if _matches_head_sha_prefix(run_head_sha, target_head_sha) else "stale"
+        head_freshness["run_head_status"] = run_head_status
+        head_freshness["latest_head_sha_supplied"] = True
+        if run_head_status == "stale" and has_failure:
+            rerun = dict(_dict_or_empty(head_freshness.get("recommended_rerun")))
+            rerun_lanes = _list_or_empty(rerun.get("lane_ids"))
+            candidate_lanes = [
+                str(candidate.get("lane_id") or "").strip()
+                for candidate in _list_or_empty(candidate_next_slices)
+                if isinstance(candidate, dict)
+                and str(candidate.get("lane_id") or "").strip()
+                and not str(candidate.get("lane_id") or "").strip().startswith("setup-class:")
+            ]
+            if rerun_lanes or candidate_lanes:
+                head_freshness["failed_lane_classification"] = "needs_targeted_latest_head_proof"
+                if not rerun_lanes:
+                    rerun["lane_ids"] = candidate_lanes[:5]
+                    rerun["lane_count"] = len(rerun["lane_ids"])
+                    rerun["profile"] = "targeted"
+                    rerun["needed"] = True
+                    rerun["reason"] = "stale failed lane evidence needs latest-head proof before repair"
+                    head_freshness["recommended_rerun"] = rerun
+            else:
+                head_freshness["failed_lane_classification"] = "stale"
+
+    rerun = _dict_or_empty(head_freshness.get("recommended_rerun"))
+    compact_rerun = {
+        "needed": bool(rerun.get("needed")),
+        "profile": str(rerun.get("profile") or "").strip() or None,
+        "lane_ids": [
+            str(item).strip()
+            for item in _list_or_empty(rerun.get("lane_ids"))
+            if str(item).strip()
+        ],
+        "reason": str(rerun.get("reason") or "").strip() or None,
+    }
+    compact = {
+        "run_head_status": str(head_freshness.get("run_head_status") or "").strip() or None,
+        "failed_lane_classification": str(head_freshness.get("failed_lane_classification") or "").strip() or None,
+        "latest_head_sha_supplied": bool(head_freshness.get("latest_head_sha_supplied")),
+        "recommended_rerun": {
+            key: value
+            for key, value in compact_rerun.items()
+            if value not in (None, "", [], {})
+        },
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})} or None
+
+
+def _derive_validation_mode_context(validation_summary, *, run_view=None, failed_jobs=None, target=None):
     summary_root = _dict_or_empty(validation_summary)
     selection = _dict_or_empty(summary_root.get("selection"))
     summary_branch = _dict_or_empty(summary_root.get("summary"))
@@ -848,6 +922,26 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         failure_structure = "cascading"
     else:
         failure_structure = "unknown"
+
+    has_failure = bool(
+        failed_lane_count
+        or first_failure
+        or direct_non_meta_jobs
+        or non_cancelled_jobs
+        or cancelled_job_count
+    )
+    head_freshness = _compact_head_freshness(
+        summary_branch.get("head_freshness"),
+        run_view=run_view,
+        target=target,
+        has_failure=has_failure,
+        candidate_next_slices=candidate_next_slices,
+    )
+    if head_freshness and has_failure and not head_freshness.get("failed_lane_classification"):
+        if cancelled_job_count and not non_cancelled_jobs:
+            head_freshness["failed_lane_classification"] = "cancelled"
+        elif head_freshness.get("run_head_status") == "current":
+            head_freshness["failed_lane_classification"] = "active"
 
     if normalized_profile == "targeted":
         recommended_follow_up = "targeted_repair"
@@ -913,6 +1007,9 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         "candidate_next_slice_count": len(candidate_next_slices),
         "failure_structure": failure_structure,
         "recommended_follow_up": recommended_follow_up,
+        "head_freshness": head_freshness,
+        "failed_lane_classification": _dict_or_empty(head_freshness).get("failed_lane_classification"),
+        "recommended_rerun": _dict_or_empty(head_freshness).get("recommended_rerun"),
         "preferred_signal_source": "validation_summary" if summary_root else "logs",
         "first_blocker": first_blocker,
         "candidate_next_slices": summarized_candidates,
@@ -2527,7 +2624,11 @@ def summarize_jobs(run_view):
 
 def target_to_display_key(target):
     if target["kind"] == TARGET_KIND_RUN_ID:
-        return f"run-id:{target['run_id']}"
+        key = f"run-id:{target['run_id']}"
+        head_sha = str(target.get("head_sha") or "").strip()
+        if head_sha:
+            key = f"{key}|head-sha:{head_sha}"
+        return key
     parts = [f"workflow:{target['workflow']}", f"ref:{target['ref']}"]
     host_ref = str(target.get("host_ref") or "").strip()
     if host_ref:
@@ -2637,6 +2738,7 @@ def normalize_snapshot(
         validation_summary,
         run_view=run_view,
         failed_jobs=failed_jobs,
+        target=target,
     )
     diagnosis_status = _build_diagnosis_status(
         actions=actions,
@@ -2829,6 +2931,7 @@ def _compact_validation_context(validation_context):
         "first_blocker": context.get("first_blocker"),
         "candidate_next_slices": context.get("candidate_next_slices"),
         "failed_lane_count": context.get("failed_lane_count"),
+        "head_freshness": context.get("head_freshness"),
     }
     return {key: value for key, value in compact.items() if value not in (None, [], {}, "")} or None
 

@@ -61,11 +61,26 @@ class GeminiWatcherTests(unittest.TestCase):
             "workflow:validation-lab|ref:integration/test|head-sha:abc123|min-run-id:456",
         )
 
+    def test_target_display_key_includes_run_id_head_sha(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 123,
+            "head_sha": "abc123",
+        }
+        self.assertEqual(MODULE.target_to_display_key(target), "run-id:123|head-sha:abc123")
+
     def test_parse_target_arg_accepts_min_run_id(self):
         target = MODULE.parse_target_arg(
             "workflow=validation-lab,ref=integration/test,head-sha=abc123,min-run-id=456"
         )
         self.assertEqual(target["min_run_id"], 456)
+
+    def test_parse_target_arg_accepts_run_id_head_sha(self):
+        target = MODULE.parse_target_arg("run-id=123,head-sha=abc123")
+
+        self.assertEqual(target["kind"], MODULE.TARGET_KIND_RUN_ID)
+        self.assertEqual(target["run_id"], 123)
+        self.assertEqual(target["head_sha"], "abc123")
 
     def test_parse_target_arg_accepts_host_ref(self):
         target = MODULE.parse_target_arg(
@@ -1219,6 +1234,31 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(context["failure_structure"], "independent")
         self.assertEqual(context["recommended_follow_up"], "frontier_harvest")
         self.assertEqual(context["first_blocker"]["lane_id"], "lane-a")
+
+    def test_derive_validation_mode_context_marks_stale_run_for_latest_head_proof(self):
+        context = MODULE._derive_validation_mode_context(
+            {
+                "selection": {"profile": "frontier", "lane_set": "subagents"},
+                "summary": {
+                    "failed_lane_count": 1,
+                    "first_failure": {"lane_id": "lane-a", "signal": "panic"},
+                    "candidate_next_slices": [{"lane_id": "lane-a", "signal": "panic"}],
+                },
+            },
+            run_view={"headSha": "1111111111111111111111111111111111111111"},
+            target={"head_sha": "2222222222222222222222222222222222222222"},
+            failed_jobs=[{"id": 10, "name": "lane-a", "conclusion": "failure"}],
+        )
+
+        self.assertEqual(context["head_freshness"]["run_head_status"], "stale")
+        self.assertEqual(
+            context["failed_lane_classification"],
+            "needs_targeted_latest_head_proof",
+        )
+        self.assertEqual(
+            context["recommended_rerun"]["lane_ids"],
+            ["lane-a"],
+        )
 
     def test_derive_validation_mode_context_prefers_targeted_repair_for_one_direct_failure(self):
         context = MODULE._derive_validation_mode_context(

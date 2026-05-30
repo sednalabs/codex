@@ -1083,6 +1083,7 @@ jobs:
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.head_sha }}" \
+            --latest-head-sha "${{ needs.metadata.outputs.head_sha }}" \
             --profile "${{ inputs.profile }}" \
             --lane-set "${{ inputs.lane_set }}" \
             --profile-intent "${{ needs.metadata.outputs.profile_intent }}" \
@@ -1153,6 +1154,13 @@ jobs:
               print(f"- Exact-plan reuse: `skipped`, reused {dedupe.get('matched_run_url') or 'prior run'}")
           elif dedupe.get("matched_run_url"):
               print(f"- Exact-plan reuse: `advisory`, prior match {dedupe.get('matched_run_url')}")
+          head_freshness = summary.get("head_freshness") or {}
+          if head_freshness:
+              print(f"- Failed-lane freshness: `{head_freshness.get('failed_lane_classification', 'unknown')}`")
+              rerun = head_freshness.get("recommended_rerun") or {}
+              if rerun.get("needed"):
+                  lanes = ", ".join(rerun.get("lane_ids") or []) or "selected lane"
+                  print(f"- Latest-head proof: `{rerun.get('profile', 'targeted')}` lanes `{lanes}`")
           timing_breakdown = summary.get("timing_breakdown_ms") or {}
           if timing_breakdown:
               print("- Timing breakdown (ms):")
