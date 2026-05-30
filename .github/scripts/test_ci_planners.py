@@ -1020,7 +1020,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex.blocking-waits-mcp-targeted",
             "codex.blocking-waits-unified-exec-targeted",
         }
-        self.assertLessEqual(blocking_wait_lanes, set(payload["selected_lane_ids"]))
+        selected_lane_ids = set(payload["selected_lane_ids"])
+        self.assertTrue(
+            blocking_wait_lanes.issubset(selected_lane_ids),
+            f"missing blocking wait lanes: {blocking_wait_lanes - selected_lane_ids}",
+        )
         blocking_wait_batches = {}
         for batch in payload["selected_rust_integration_batch_matrix"]["include"]:
             lane_ids = batch["lane_ids"]
