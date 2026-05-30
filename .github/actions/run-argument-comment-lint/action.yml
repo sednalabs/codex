@@ -18,4 +18,4 @@ runs:
     - name: Run prebuilt argument comment lint on codex-rs
       shell: bash
       run: |
-        ./tools/argument-comment-lint/run-prebuilt-linter.py -- --all-targets
+        ./tools/argument-comment-lint/run-prebuilt-linter.py -- --all-targets --ignore-rust-version
