@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 anyhow = "1"
 axum = { workspace = true, default-features = false, features = [
+    "form",
     "http1",
     "json",
     "tokio",
@@ -28,6 +29,7 @@ futures = { workspace = true, default-features = false, features = ["std"] }
 keyring = { workspace = true, features = ["crypto-rust"] }
 oauth2 = "5"
 reqwest = { version = "0.13", default-features = false, features = [
+    "form",
     "json",
     "stream",
     "rustls",
@@ -69,6 +71,7 @@ codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "test-util", "time"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { workspace = true, features = ["linux-native-async-persistent"] }
 

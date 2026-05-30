@@ -23,7 +23,11 @@ const OAUTH_DISCOVERY_VERSION: &str = "2024-11-05";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: String,
     pub scopes_supported: Option<Vec<String>>,
+    pub device_authorization_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 /// Determine the authentication status for a streamable HTTP MCP server.
@@ -119,9 +123,17 @@ async fn discover_streamable_http_oauth_with_headers(
             }
         };
 
-        if metadata.authorization_endpoint.is_some() && metadata.token_endpoint.is_some() {
+        let authorization_endpoint = metadata.authorization_endpoint;
+        let device_authorization_endpoint = metadata.device_authorization_endpoint;
+        if let Some(token_endpoint) = metadata.token_endpoint
+            && (authorization_endpoint.is_some() || device_authorization_endpoint.is_some())
+        {
             return Ok(Some(StreamableHttpOAuthDiscovery {
+                authorization_endpoint,
+                token_endpoint,
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
+                device_authorization_endpoint,
+                grant_types_supported: normalize_scopes(metadata.grant_types_supported),
             }));
         }
     }
@@ -141,6 +153,10 @@ struct OAuthDiscoveryMetadata {
     token_endpoint: Option<String>,
     #[serde(default)]
     scopes_supported: Option<Vec<String>>,
+    #[serde(default)]
+    device_authorization_endpoint: Option<String>,
+    #[serde(default)]
+    grant_types_supported: Option<Vec<String>>,
 }
 
 fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -194,8 +210,10 @@ fn discovery_paths(base_path: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Json;
     use axum::Router;
+    use axum::http::header::CONTENT_TYPE;
+    use axum::response::IntoResponse;
+    use axum::response::Response;
     use axum::routing::get;
     use pretty_assertions::assert_eq;
     use serial_test::serial;
@@ -214,6 +232,10 @@ mod tests {
         }
     }
 
+    fn json_response(value: serde_json::Value) -> Response {
+        ([(CONTENT_TYPE, "application/json")], value.to_string()).into_response()
+    }
+
     async fn spawn_oauth_discovery_server(metadata: serde_json::Value) -> TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -225,7 +247,7 @@ mod tests {
                 let metadata = metadata.clone();
                 move || {
                     let metadata = metadata.clone();
-                    async move { Json(metadata) }
+                    async move { json_response(metadata) }
                 }
             }),
         );
@@ -317,6 +339,12 @@ mod tests {
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
             "scopes_supported": ["profile", " email ", "profile", "", "   "],
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": [
+                "authorization_code",
+                " urn:ietf:params:oauth:grant-type:device_code ",
+                "authorization_code"
+            ],
         }))
         .await;
 
@@ -330,8 +358,17 @@ mod tests {
         .expect("oauth support should be detected");
 
         assert_eq!(
-            discovery.scopes_supported,
-            Some(vec!["profile".to_string(), "email".to_string()])
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                grant_types_supported: Some(vec![
+                    "authorization_code".to_string(),
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string()
+                ]),
+            }
         );
     }
 
@@ -353,7 +390,16 @@ mod tests {
         .expect("discovery should succeed")
         .expect("oauth support should be detected");
 
-        assert_eq!(discovery.scopes_supported, None);
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: None,
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
+            }
+        );
     }
 
     #[tokio::test]
@@ -369,5 +415,37 @@ mod tests {
             .expect("support check should succeed");
 
         assert!(supported);
+    }
+
+    #[tokio::test]
+    async fn discover_streamable_http_oauth_accepts_device_only_metadata() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+        )
+        .await
+        .expect("discovery should succeed")
+        .expect("device-only oauth support should be detected");
+
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: None,
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: None,
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                grant_types_supported: Some(vec![
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string()
+                ]),
+            }
+        );
     }
 }

@@ -36,6 +36,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -928,30 +929,52 @@ async fn spawned_child_receives_forked_parent_context() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role()
--> Result<()> {
-    skip_if_no_network!(Ok(()));
+fn run_spawn_model_snapshot_test<Fut>(test_body: Fut) -> Result<()>
+where
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("spawn-model-snapshot-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(test_body)
+        })?;
 
-    let server = start_mock_server().await;
-    let child_snapshot = spawn_child_and_capture_snapshot(
-        &server,
-        json!({
-            "message": CHILD_PROMPT,
-            "model": REQUESTED_MODEL,
-            "reasoning_effort": REQUESTED_REASONING_EFFORT,
-        }),
-        |builder| builder,
-    )
-    .await?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
 
-    assert_eq!(child_snapshot.model, REQUESTED_MODEL);
-    assert_eq!(
-        child_snapshot.reasoning_effort,
-        Some(REQUESTED_REASONING_EFFORT)
-    );
+#[test]
+fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role() -> Result<()>
+{
+    run_spawn_model_snapshot_test(async {
+        skip_if_no_network!(Ok(()));
 
-    Ok(())
+        let server = start_mock_server().await;
+        let child_snapshot = spawn_child_and_capture_snapshot(
+            &server,
+            json!({
+                "message": CHILD_PROMPT,
+                "model": REQUESTED_MODEL,
+                "reasoning_effort": REQUESTED_REASONING_EFFORT,
+            }),
+            |builder| builder,
+        )
+        .await?;
+
+        assert_eq!(child_snapshot.model, REQUESTED_MODEL);
+        assert_eq!(
+            child_snapshot.reasoning_effort,
+            Some(REQUESTED_REASONING_EFFORT)
+        );
+
+        Ok(())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1109,46 +1132,48 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
-    skip_if_no_network!(Ok(()));
+#[test]
+fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
+    run_spawn_model_snapshot_test(async {
+        skip_if_no_network!(Ok(()));
 
-    let server = start_mock_server().await;
-    let child_snapshot = spawn_child_and_capture_snapshot(
-        &server,
-        json!({
-            "message": CHILD_PROMPT,
-            "agent_type": "custom",
-            "model": REQUESTED_MODEL,
-            "reasoning_effort": REQUESTED_REASONING_EFFORT,
-        }),
-        |builder| {
-            builder.with_config(|config| {
-                let role_path = config.codex_home.join("custom-role.toml");
-                std::fs::write(
-                    &role_path,
-                    format!(
-                        "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
-                    ),
-                )
-                .expect("write role config");
-                config.agent_roles.insert(
-                    "custom".to_string(),
-                    AgentRoleConfig {
-                        description: Some("Custom role".to_string()),
-                        config_file: Some(role_path.to_path_buf()),
-                        nickname_candidates: None,
-                    },
-                );
-            })
-        },
-    )
-    .await?;
+        let server = start_mock_server().await;
+        let child_snapshot = spawn_child_and_capture_snapshot(
+            &server,
+            json!({
+                "message": CHILD_PROMPT,
+                "agent_type": "custom",
+                "model": REQUESTED_MODEL,
+                "reasoning_effort": REQUESTED_REASONING_EFFORT,
+            }),
+            |builder| {
+                builder.with_config(|config| {
+                    let role_path = config.codex_home.join("custom-role.toml");
+                    std::fs::write(
+                        &role_path,
+                        format!(
+                            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+                        ),
+                    )
+                    .expect("write role config");
+                    config.agent_roles.insert(
+                        "custom".to_string(),
+                        AgentRoleConfig {
+                            description: Some("Custom role".to_string()),
+                            config_file: Some(role_path.to_path_buf()),
+                            nickname_candidates: None,
+                        },
+                    );
+                })
+            },
+        )
+        .await?;
 
-    assert_eq!(child_snapshot.model, ROLE_MODEL);
-    assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
+        assert_eq!(child_snapshot.model, ROLE_MODEL);
+        assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

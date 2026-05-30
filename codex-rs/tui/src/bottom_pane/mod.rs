@@ -659,7 +659,8 @@ impl BottomPane {
 
             if key_event.kind == KeyEventKind::Press {
                 let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
-                let interrupt_binding_pressed = self.keymap.chat.interrupt_turn.is_pressed(key_event);
+                let interrupt_binding_pressed =
+                    self.keymap.chat.interrupt_turn.is_pressed(key_event);
                 let esc_can_interrupt = is_bare_esc
                     && interrupt_binding_pressed
                     && self.is_task_running

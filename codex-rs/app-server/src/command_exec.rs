@@ -1116,6 +1116,7 @@ mod tests {
                     ExecExpiration::DefaultTimeout,
                     codex_core::exec::ExecCapturePolicy::ShellTool,
                     SandboxType::None,
+                    /*windows_sandbox_workspace_roots*/ Vec::new(),
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
                     permission_profile,

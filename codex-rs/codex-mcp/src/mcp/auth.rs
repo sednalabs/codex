@@ -21,7 +21,11 @@ pub struct McpOAuthLoginConfig {
     pub url: String,
     pub http_headers: Option<HashMap<String, String>>,
     pub env_http_headers: Option<HashMap<String, String>>,
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: String,
     pub discovered_scopes: Option<Vec<String>>,
+    pub device_authorization_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -72,7 +76,11 @@ pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAu
             url: url.clone(),
             http_headers: http_headers.clone(),
             env_http_headers: env_http_headers.clone(),
+            authorization_endpoint: discovery.authorization_endpoint,
+            token_endpoint: discovery.token_endpoint,
             discovered_scopes: discovery.scopes_supported,
+            device_authorization_endpoint: discovery.device_authorization_endpoint,
+            grant_types_supported: discovery.grant_types_supported,
         }),
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),

@@ -35,6 +35,7 @@ use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
+use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
@@ -239,7 +240,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.and_then(|meta| serde_json::to_value(meta).ok()),
+            meta: value.meta.map(|meta| serde_json::Value::Object(meta.0)),
         }
     }
 }
@@ -249,10 +250,15 @@ impl From<ElicitationResponse> for CreateElicitationResult {
         Self {
             action: value.action,
             content: value.content,
-            meta: value
-                .meta
-                .and_then(|meta| serde_json::from_value(meta).ok()),
+            meta: value.meta.and_then(value_to_meta),
         }
+    }
+}
+
+fn value_to_meta(value: serde_json::Value) -> Option<Meta> {
+    match value {
+        serde_json::Value::Object(object) => Some(Meta(object)),
+        _ => None,
     }
 }
 
@@ -572,7 +578,9 @@ impl RmcpClient {
             None => None,
         };
         let mut rmcp_params = CallToolRequestParams::new(name);
-        rmcp_params.arguments = arguments;
+        if let Some(arguments) = arguments {
+            rmcp_params = rmcp_params.with_arguments(arguments);
+        }
         let result = self
             .run_service_operation("tools/call", timeout, move |service| {
                 let rmcp_params = rmcp_params.clone();

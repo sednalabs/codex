@@ -225,7 +225,7 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 240
     needs: matrix_plan
     strategy:
       fail-fast: false

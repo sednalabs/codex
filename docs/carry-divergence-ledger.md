@@ -318,6 +318,34 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
+### MCP OAuth Device Login For Headless Servers
+
+- `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
+  login from SSH-only or browserless hosts through the OAuth Device
+  Authorization Grant instead of relying on a local browser callback.
+- Streamable HTTP OAuth discovery preserves `token_endpoint`,
+  `device_authorization_endpoint`, and `grant_types_supported`, so the CLI can
+  fail loudly when a server does not actually advertise device-login support.
+- The device-login flow uses the configured public MCP OAuth `client_id`, PKCE,
+  the identity-provider verification URL/user code, token-endpoint polling, and
+  the existing MCP OAuth token cache.
+- This is an intentional downstream carry for headless MCP server login until
+  upstream ships an equivalent headless MCP OAuth login contract. During
+  upstream syncs, preserve this behavior unless the upstream replacement covers
+  the same discovery, grant-validation, PKCE, polling, and token-cache path.
+- Primary files:
+  - `codex-rs/cli/src/mcp_cmd.rs`
+  - `codex-rs/codex-mcp/src/mcp/auth.rs`
+  - `codex-rs/rmcp-client/src/auth_status.rs`
+  - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
+  - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `justfile`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.

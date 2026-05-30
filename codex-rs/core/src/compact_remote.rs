@@ -191,12 +191,7 @@ async fn run_remote_compact_task_inner_impl(
     // whose prompt will repeat current developer/context prefix items.
     let trace_input_history = history.raw_items().to_vec();
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
-    let tool_router = built_tools(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        cancellation_token,
-    )
-    .await?;
+    let tool_router = built_tools(sess.as_ref(), turn_context.as_ref(), cancellation_token).await?;
     let prompt = Prompt {
         input: prompt_input,
         tools: tool_router.model_visible_specs(),

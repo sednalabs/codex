@@ -804,6 +804,10 @@ impl EventProcessor for EventProcessorWithJsonOutput {
 }
 
 #[cfg(test)]
+#[path = "event_processor_with_jsonl_output_tests.rs"]
+mod event_processor_with_jsonl_output_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;

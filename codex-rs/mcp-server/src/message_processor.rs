@@ -223,7 +223,7 @@ impl MessageProcessor {
         }
 
         let server_info =
-            Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string()).with_title("Codex");
+            Implementation::new("codex-mcp-server", RELEASE_VERSION).with_title("Codex");
 
         // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
@@ -249,10 +249,11 @@ impl MessageProcessor {
             .enable_tools()
             .enable_tool_list_changed()
             .build();
-        let result = InitializeResult::new(capabilities)
+        let initialize_result = InitializeResult::new(capabilities)
             .with_protocol_version(params.protocol_version.clone())
             .with_server_info(server_info);
-        let mut result_value = match serde_json::to_value(result) {
+
+        let mut result_value = match serde_json::to_value(initialize_result) {
             Ok(value) => value,
             Err(err) => {
                 self.outgoing

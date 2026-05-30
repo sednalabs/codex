@@ -1273,7 +1273,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["smoke_release_lane_count"], 1)
@@ -2711,6 +2711,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("scheduled_duplicate_skip", results_run)
         self.assertIn("Equivalent rust-ci run already passed", results_run)
 
+    def test_rust_ci_argument_comment_lint_timeout_matches_lane_contract(self) -> None:
+        rust_ci = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        rust_ci_full = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+
+        plan_run = (
+            (((rust_ci.get("jobs") or {}).get("matrix_plan") or {}).get("steps") or [])[0].get(
+                "run"
+            )
+            or ""
+        )
+        self.assertIn('"timeout_minutes": 240', plan_run)
+
+        rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
+            "argument_comment_lint_prebuilt"
+        ) or {}
+        self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "240")
+
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
@@ -3045,18 +3062,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 33)
+        self.assertEqual(payload["planned_job_count"], 34)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "21")
-        self.assertEqual(payload["rust_integration_max_parallel"], "19")
+        self.assertEqual(payload["rust_integration_max_parallel"], "20")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -3079,16 +3096,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 36)
+        self.assertEqual(payload["planned_job_count"], 37)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "23")
-        self.assertEqual(payload["rust_integration_max_parallel"], "20")
+        self.assertEqual(payload["rust_integration_max_parallel"], "21")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
