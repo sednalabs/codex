@@ -255,7 +255,7 @@ User-visible behavior:
 Why:
 - Let operators authenticate MCP servers from SSH-only or browserless hosts without installing temporary login helpers or copying fallback credential files by hand.
 - Preserve OAuth discovery metadata needed for standards-based Device Authorization Grant flows instead of flattening the authorization-server response down to browser-only fields.
-- Keep the Ops MCP EC2 lab path on a normal `codex mcp login --device-auth <server>` contract, with a public client id in config and user approval happening in the browser shown by the identity provider.
+- Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with a public client id in config and user approval happening in the browser shown by the identity provider.
 
 User-visible behavior:
 - `codex mcp login --device-auth <server>` uses the discovered `device_authorization_endpoint` and requires `grant_types_supported` to include `urn:ietf:params:oauth:grant-type:device_code`.

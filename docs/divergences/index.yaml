@@ -472,7 +472,7 @@
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
-      "notes": "Keeps the Ops MCP EC2 lab login path on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support."
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support."
     },
     {
       "id": "startup-plugin-sync-bounded-wait",

@@ -23,6 +23,7 @@ const OAUTH_DISCOVERY_VERSION: &str = "2024-11-05";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
+    pub authorization_endpoint: Option<String>,
     pub token_endpoint: String,
     pub scopes_supported: Option<Vec<String>>,
     pub device_authorization_endpoint: Option<String>,
@@ -122,13 +123,16 @@ async fn discover_streamable_http_oauth_with_headers(
             }
         };
 
-        if metadata.authorization_endpoint.is_some()
-            && let Some(token_endpoint) = metadata.token_endpoint
+        let authorization_endpoint = metadata.authorization_endpoint;
+        let device_authorization_endpoint = metadata.device_authorization_endpoint;
+        if let Some(token_endpoint) = metadata.token_endpoint
+            && (authorization_endpoint.is_some() || device_authorization_endpoint.is_some())
         {
             return Ok(Some(StreamableHttpOAuthDiscovery {
+                authorization_endpoint,
                 token_endpoint,
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
-                device_authorization_endpoint: metadata.device_authorization_endpoint,
+                device_authorization_endpoint,
                 grant_types_supported: normalize_scopes(metadata.grant_types_supported),
             }));
         }
@@ -356,6 +360,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
                 device_authorization_endpoint: Some("https://example.com/device".to_string()),
@@ -388,6 +393,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: None,
                 device_authorization_endpoint: None,
@@ -409,5 +415,37 @@ mod tests {
             .expect("support check should succeed");
 
         assert!(supported);
+    }
+
+    #[tokio::test]
+    async fn discover_streamable_http_oauth_accepts_device_only_metadata() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+        )
+        .await
+        .expect("discovery should succeed")
+        .expect("device-only oauth support should be detected");
+
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: None,
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: None,
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                grant_types_supported: Some(vec![
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string()
+                ]),
+            }
+        );
     }
 }

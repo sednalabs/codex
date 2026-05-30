@@ -329,7 +329,7 @@ docs-only refresh commit that records this snapshot.
 - The device-login flow uses the configured public MCP OAuth `client_id`, PKCE,
   the identity-provider verification URL/user code, token-endpoint polling, and
   the existing MCP OAuth token cache.
-- This is an intentional downstream carry for the Ops MCP EC2 lab path until
+- This is an intentional downstream carry for headless MCP server login until
   upstream ships an equivalent headless MCP OAuth login contract. During
   upstream syncs, preserve this behavior unless the upstream replacement covers
   the same discovery, grant-validation, PKCE, polling, and token-cache path.
