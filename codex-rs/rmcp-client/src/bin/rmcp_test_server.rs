@@ -79,13 +79,12 @@ struct EchoArgs {
 
 impl ServerHandler for TestToolServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
                 .build(),
-            ..ServerInfo::default()
-        }
+        )
     }
 
     fn list_tools(

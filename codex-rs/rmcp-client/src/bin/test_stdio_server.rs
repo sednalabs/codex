@@ -407,11 +407,8 @@ impl ServerHandler for TestToolServer {
             JsonObject::new(),
         )]));
 
-        ServerInfo {
-            instructions: Some("Use these tools to exercise the rmcp test server.".to_string()),
-            capabilities,
-            ..ServerInfo::default()
-        }
+        ServerInfo::new(capabilities)
+            .with_instructions("Use these tools to exercise the rmcp test server.")
     }
 
     fn list_tools(
@@ -462,14 +459,14 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         if uri == MEMO_URI {
-            Ok(ReadResourceResult {
-                contents: vec![ResourceContents::TextResourceContents {
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
                     uri,
                     mime_type: Some("text/plain".to_string()),
                     text: Self::memo_text().to_string(),
                     meta: None,
-                }],
-            })
+                },
+            ]))
         } else {
             Err(McpError::resource_not_found(
                 "resource_not_found",
