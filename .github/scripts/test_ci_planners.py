@@ -699,6 +699,13 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/app-server-protocol/schema/json/ServerNotification.json"],
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.app-server-protocol-test"])
+
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/tui/src/app/app_server_adapter.rs"],
@@ -3044,6 +3051,118 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary["cache_backend"], "gha")
         self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
         self.assertNotIn("run_command", summary)
+
+    def test_lane_summary_detects_server_notification_schema_fixture_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log = root / "lane.log"
+            output = root / "summary.json"
+            log.write_text(
+                "\n".join(
+                    [
+                        "thread 'json_schema_fixtures_match_generated' panicked at tests/schema_fixtures.rs:98:9:",
+                        "Vendored json app-server schema fixture ServerNotification.json differs from generated output. Run `just write-app-server-schema` to overwrite with your changes.",
+                        "--- fixture",
+                        "+++ generated",
+                        '-        "threadGoalUpdated": {',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.app-server-protocol-test",
+                    "--summary-title",
+                    "app-server protocol",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+                    "--outcome",
+                    "failure",
+                    "--log-file",
+                    str(log),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        drift = summary["schema_fixture_drift"]
+        self.assertEqual(drift["kind"], "app_server_schema_fixture_drift")
+        self.assertEqual(drift["fixture_family"], "json")
+        self.assertEqual(drift["fixture_path"], "ServerNotification.json")
+        self.assertEqual(drift["direction"], "vendored_differs_from_generated")
+        self.assertEqual(drift["recommended_fix"], "just write-app-server-schema")
+        self.assertEqual(
+            drift["recommended_proof"],
+            {"profile": "targeted", "lane_ids": ["codex.app-server-protocol-test"]},
+        )
+        self.assertEqual(
+            summary["primary_signal"],
+            "json app-server schema fixture ServerNotification.json differs from generated output",
+        )
+
+    def test_aggregate_summary_surfaces_schema_fixture_drift_in_candidates(self) -> None:
+        drift = {
+            "kind": "app_server_schema_fixture_drift",
+            "fixture_family": "json",
+            "fixture_path": "ServerNotification.json",
+            "direction": "vendored_differs_from_generated",
+            "recommended_proof": {
+                "profile": "targeted",
+                "lane_ids": ["codex.app-server-protocol-test"],
+            },
+            "summary": "json app-server schema fixture ServerNotification.json differs from generated output",
+        }
+        results = AGGREGATE_VALIDATION_SUMMARY.build_results(
+            planned_matrix=[
+                {
+                    "lane_id": "codex.app-server-protocol-test",
+                    "setup_class": "rust_minimal",
+                    "summary_family": "app-server-protocol",
+                    "frontier_role": "sentinel",
+                    "status_class": "active",
+                }
+            ],
+            selected_lane_ids=["codex.app-server-protocol-test"],
+            actual_by_lane={
+                "codex.app-server-protocol-test": {
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                    "exit_code": 101,
+                    "schema_fixture_drift": drift,
+                }
+            },
+            smoke_gate_result="skipped",
+            setup_class_results={"rust_minimal": "failure"},
+            matrix_fail_fast=False,
+        )
+        setup_rows = AGGREGATE_VALIDATION_SUMMARY.setup_class_rows(
+            results, {"rust_minimal": "failure"}
+        )
+        primary, secondary = AGGREGATE_VALIDATION_SUMMARY.derive_primary_and_secondary(
+            results, setup_rows
+        )
+        queue = [*primary, *secondary]
+        candidates = []
+        for item in queue:
+            candidates.append(
+                {
+                    "kind": "lane",
+                    "lane_id": item["lane_id"],
+                    "signal": item.get("signal", ""),
+                    "schema_fixture_drift": item.get("schema_fixture_drift") or {},
+                }
+            )
+
+        self.assertEqual(primary[0]["signal"], drift["summary"])
+        self.assertEqual(primary[0]["schema_fixture_drift"], drift)
+        self.assertEqual(candidates[0]["schema_fixture_drift"], drift)
 
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
