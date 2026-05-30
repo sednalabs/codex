@@ -15,6 +15,13 @@ runs:
   steps:
     - uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v0.5.9
 
+    - name: Install Linux build dependencies
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
     - name: Run prebuilt argument comment lint on codex-rs
       shell: bash
       run: |
