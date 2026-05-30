@@ -14,7 +14,10 @@ python3 -m py_compile \
   .github/scripts/summarize_rust_ci_full.py \
   .github/scripts/sync_upstream_mirror.py \
   .github/scripts/test_ci_planners.py \
+  .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py \
+  .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py \
   scripts/downstream-divergence-audit.py
 python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
+python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
 python3 .github/scripts/check_workflow_policy.py
 ruby -e 'require "yaml"; paths = Dir.glob([".github/workflows/*.{yml,yaml}", "codex-rs/.github/workflows/*.{yml,yaml}"]).sort; paths.each { |path| YAML.load_file(path) }; puts "yaml-ok #{paths.length}"'

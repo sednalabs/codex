@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::protocol::ComputerUseCallResponseEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 #[cfg(test)]

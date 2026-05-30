@@ -237,7 +237,7 @@ jobs:
         id: sccache_backend
         if: ${{ inputs.setup_class != 'light' }}
         shell: bash
-        run: bash .workflow-src/.github/scripts/configure_sccache_backend.sh '${{ inputs.cache_policy }}'
+        run: bash ../.workflow-src/.github/scripts/configure_sccache_backend.sh '${{ inputs.cache_policy }}'
 
       - name: Enable sccache wrapper
         if: ${{ inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend != 'off' }}
