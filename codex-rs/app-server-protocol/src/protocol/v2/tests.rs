@@ -11,6 +11,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::items::WebSearchItem;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
@@ -109,6 +110,87 @@ fn thread_turns_list_params_accepts_items_view() {
 
     assert_eq!(params.thread_id, "thr_123");
     assert_eq!(params.items_view, Some(TurnItemsView::NotLoaded));
+}
+
+#[test]
+fn thread_resume_params_accept_turns_page_bootstrap() {
+    let params = serde_json::from_value::<ThreadResumeParams>(json!({
+        "threadId": "thr_123",
+        "initialTurnsPage": {
+            "limit": 25,
+            "sortDirection": "asc",
+            "itemsView": "full",
+        },
+    }))
+    .expect("thread resume params should deserialize");
+
+    assert_eq!(params.thread_id, "thr_123");
+    assert_eq!(
+        params.initial_turns_page,
+        Some(ThreadResumeInitialTurnsPageParams {
+            limit: Some(25),
+            sort_direction: Some(SortDirection::Asc),
+            items_view: Some(TurnItemsView::Full),
+        })
+    );
+}
+
+#[test]
+fn thread_resume_response_round_trips_initial_turns_page() {
+    let response = ThreadResumeResponse {
+        thread: Thread {
+            id: "thr_123".to_string(),
+            session_id: "thr_123".to_string(),
+            forked_from_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
+            created_at: 1,
+            updated_at: 1,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd: absolute_path("tmp"),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::Exec,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        },
+        model: "gpt-5".to_string(),
+        model_provider: "openai".to_string(),
+        service_tier: None,
+        cwd: absolute_path("tmp"),
+        runtime_workspace_roots: Vec::new(),
+        instruction_sources: Vec::new(),
+        approval_policy: AskForApproval::OnFailure,
+        approvals_reviewer: ApprovalsReviewer::User,
+        sandbox: SandboxPolicy::DangerFullAccess,
+        active_permission_profile: None,
+        reasoning_effort: None,
+        initial_turns_page: Some(TurnsPage {
+            data: Vec::new(),
+            next_cursor: Some("cursor_next".to_string()),
+            backwards_cursor: Some("cursor_back".to_string()),
+        }),
+    };
+
+    let value = serde_json::to_value(&response).expect("serialize thread resume response");
+    assert_eq!(
+        value.get("initialTurnsPage"),
+        Some(&json!({
+            "data": [],
+            "nextCursor": "cursor_next",
+            "backwardsCursor": "cursor_back",
+        }))
+    );
+    let decoded = serde_json::from_value::<ThreadResumeResponse>(value)
+        .expect("deserialize thread resume response");
+    assert_eq!(decoded, response);
 }
 
 #[test]
@@ -1676,6 +1758,7 @@ fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
             request_id: crate::RequestId::Integer(4),
             params: TurnStartParams {
                 thread_id: "thr_123".to_string(),
+                client_user_message_id: None,
                 input: Vec::new(),
                 approval_policy: Some(AskForApproval::Granular {
                     sandbox_approval: false,
@@ -1694,16 +1777,17 @@ fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
 
 #[test]
 fn mcp_server_elicitation_response_round_trips_rmcp_result() {
-    let meta = serde_json::from_value::<rmcp::model::Meta>(json!({
-        "traceId": "elicitation-123",
-    }))
-    .expect("metadata should deserialize");
     let rmcp_result = rmcp::model::CreateElicitationResult {
         action: rmcp::model::ElicitationAction::Accept,
         content: Some(json!({
             "confirmed": true,
         })),
-        meta: Some(meta.clone()),
+        meta: Some(
+            serde_json::from_value(json!({
+                "source": "test",
+            }))
+            .unwrap(),
+        ),
     };
 
     let v2_response = McpServerElicitationRequestResponse::from(rmcp_result.clone());
@@ -1715,7 +1799,7 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
                 "confirmed": true,
             })),
             meta: Some(json!({
-                "traceId": "elicitation-123",
+                "source": "test",
             })),
         }
     );
@@ -1931,6 +2015,80 @@ fn mcp_server_elicitation_response_serializes_nullable_content() {
 }
 
 #[test]
+fn mcp_server_status_serializes_absent_server_info_as_null() {
+    let response = ListMcpServerStatusResponse {
+        data: vec![McpServerStatus {
+            name: "not-ready".to_string(),
+            server_info: None,
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: McpAuthStatus::Unsupported,
+        }],
+        next_cursor: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(response).expect("response should serialize"),
+        json!({
+            "data": [{
+                "name": "not-ready",
+                "serverInfo": null,
+                "tools": {},
+                "resources": [],
+                "resourceTemplates": [],
+                "authStatus": "unsupported",
+            }],
+            "nextCursor": null,
+        })
+    );
+}
+
+#[test]
+fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
+    let response = ListMcpServerStatusResponse {
+        data: vec![McpServerStatus {
+            name: "initialized".to_string(),
+            server_info: Some(McpServerInfo {
+                name: "lookup-server".to_string(),
+                title: None,
+                version: "1.0.0".to_string(),
+                description: None,
+                icons: None,
+                website_url: None,
+            }),
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: McpAuthStatus::Unsupported,
+        }],
+        next_cursor: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(response).expect("response should serialize"),
+        json!({
+            "data": [{
+                "name": "initialized",
+                "serverInfo": {
+                    "name": "lookup-server",
+                    "title": null,
+                    "version": "1.0.0",
+                    "description": null,
+                    "icons": null,
+                    "websiteUrl": null,
+                },
+                "tools": {},
+                "resources": [],
+                "resourceTemplates": [],
+                "authStatus": "unsupported",
+            }],
+            "nextCursor": null,
+        })
+    );
+}
+
+#[test]
 fn sandbox_policy_round_trips_workspace_write_access() {
     let v2_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![],
@@ -2129,7 +2287,7 @@ fn network_requirements_serializes_canonical_and_legacy_fields() {
             ),
             (
                 "/tmp/ignored.sock".to_string(),
-                NetworkUnixSocketPermission::None,
+                NetworkUnixSocketPermission::Deny,
             ),
         ])),
         allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
@@ -2153,7 +2311,7 @@ fn network_requirements_serializes_canonical_and_legacy_fields() {
             "allowedDomains": ["api.openai.com"],
             "deniedDomains": ["blocked.example.com"],
             "unixSockets": {
-                "/tmp/ignored.sock": "none",
+                "/tmp/ignored.sock": "deny",
                 "/tmp/proxy.sock": "allow"
             },
             "allowUnixSockets": ["/tmp/proxy.sock"],
@@ -2166,6 +2324,7 @@ fn network_requirements_serializes_canonical_and_legacy_fields() {
 fn core_turn_item_into_thread_item_converts_supported_variants() {
     let user_item = TurnItem::UserMessage(UserMessageItem {
         id: "user-1".to_string(),
+        client_id: Some("client-message-1".to_string()),
         content: vec![
             CoreUserInput::Text {
                 text: "hello".to_string(),
@@ -2194,6 +2353,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ThreadItem::from(user_item),
         ThreadItem::UserMessage {
             id: "user-1".to_string(),
+            client_id: Some("client-message-1".to_string()),
             content: vec![
                 UserInput::Text {
                     text: "hello".to_string(),
@@ -2473,6 +2633,27 @@ fn skills_list_params_serialization_uses_force_reload() {
             "forceReload": true,
         }),
     );
+}
+
+#[test]
+fn skills_extra_roots_set_params_serialization_uses_extra_roots() {
+    assert_eq!(
+        serde_json::to_value(SkillsExtraRootsSetParams {
+            extra_roots: vec![absolute_path("tmp/skills")],
+        })
+        .unwrap(),
+        json!({
+            "extraRoots": [absolute_path_string("tmp/skills")],
+        }),
+    );
+}
+
+#[test]
+fn skills_extra_roots_set_params_rejects_relative_roots() {
+    let result = serde_json::from_value::<SkillsExtraRootsSetParams>(json!({
+        "extraRoots": ["relative/path"],
+    }));
+    assert!(result.is_err());
 }
 
 #[test]
@@ -3415,6 +3596,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
+    assert_eq!(resume.initial_turns_page, None);
     assert_eq!(fork.active_permission_profile, None);
 }
 
@@ -3436,6 +3618,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
 
     let without_override = TurnStartParams {
         thread_id: "thread_123".to_string(),
+        client_user_message_id: None,
         input: vec![],
         responsesapi_client_metadata: None,
         additional_context: None,

@@ -351,19 +351,16 @@ mod tests {
             callable_name: tool_name.to_string(),
             callable_namespace: "mcp__cloudflare__".to_string(),
             namespace_description: Some("Cloudflare account and data tools.".to_string()),
-            tool: {
-                let mut tool = Tool::new(
-                    tool_name.to_string(),
-                    description.to_string(),
-                    Arc::new(rmcp::model::object(serde_json::json!({
+            tool: Tool::new(
+                tool_name.to_string(),
+                description.to_string(),
+                Arc::new(rmcp::model::object(serde_json::json!({
                     "type": "object",
                     "properties": properties,
                     "additionalProperties": false,
-                    }))),
-                );
-                tool.annotations = Some(annotations);
-                tool
-            },
+                }))),
+            )
+            .with_annotations(annotations),
             connector_id: None,
             connector_name: Some("Cloudflare".to_string()),
             plugin_display_names: Vec::new(),

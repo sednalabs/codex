@@ -31,7 +31,13 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 fn annotations(destructive_hint: Option<bool>, open_world_hint: Option<bool>) -> ToolAnnotations {
-    ToolAnnotations::from_raw(None, None, destructive_hint, None, open_world_hint)
+    ToolAnnotations::from_raw(
+        /*title*/ None,
+        /*read_only_hint*/ None,
+        destructive_hint,
+        /*idempotent_hint*/ None,
+        open_world_hint,
+    )
 }
 
 fn app(id: &str) -> AppInfo {

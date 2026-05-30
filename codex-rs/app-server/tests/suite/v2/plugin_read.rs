@@ -1768,9 +1768,7 @@ struct PluginReadMcpServer {
 
 impl ServerHandler for PluginReadMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
-        info
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     fn list_tools(

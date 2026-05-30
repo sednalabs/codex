@@ -79,12 +79,12 @@ struct EchoArgs {
 
 impl ServerHandler for TestToolServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .enable_tool_list_changed()
-            .build();
-        info
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
     }
 
     fn list_tools(
@@ -93,7 +93,13 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
-        async move { Ok(ListToolsResult::with_all_items((*tools).clone())) }
+        async move {
+            Ok(ListToolsResult {
+                tools: (*tools).clone(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
     }
 
     async fn call_tool(

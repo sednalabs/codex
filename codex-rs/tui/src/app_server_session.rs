@@ -668,6 +668,7 @@ impl AppServerSession {
                 request_id,
                 params: TurnStartParams {
                     thread_id: thread_id.to_string(),
+                    client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
                     additional_context: None,
@@ -732,6 +733,7 @@ impl AppServerSession {
                 request_id,
                 params: TurnSteerParams {
                     thread_id: thread_id.to_string(),
+                    client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
                     additional_context: None,
@@ -1382,7 +1384,7 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         session_start_source,
         thread_source: Some(ThreadSource::User),
-        dynamic_tools: configured_browser_dynamic_tools(),
+        dynamic_tools: configured_native_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadStartParams::default()
     }
@@ -1422,7 +1424,7 @@ fn thread_resume_params_from_config(
         sandbox,
         permissions,
         config: config_request_overrides_from_config(&config),
-        dynamic_tools: configured_browser_dynamic_tools(),
+        dynamic_tools: configured_native_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadResumeParams::default()
     }
@@ -1466,14 +1468,16 @@ fn thread_fork_params_from_config(
         developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         thread_source: Some(ThreadSource::User),
-        dynamic_tools: configured_browser_dynamic_tools(),
+        dynamic_tools: configured_native_dynamic_tools(),
         persist_extended_history: false,
         ..ThreadForkParams::default()
     }
 }
 
-fn configured_browser_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let tools = crate::browser_computer_use_provider::configured_browser_dynamic_tools();
+fn configured_native_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let mut tools = crate::browser_computer_use_provider::configured_browser_dynamic_tools();
+    tools.extend(crate::android_computer_use_provider::configured_android_dynamic_tools());
+    tools.extend(crate::desktop_computer_use_provider::configured_desktop_dynamic_tools());
     (!tools.is_empty()).then_some(tools)
 }
 
@@ -2291,6 +2295,7 @@ mod tests {
                     items: vec![
                         codex_app_server_protocol::ThreadItem::UserMessage {
                             id: "user-1".to_string(),
+                            client_id: None,
                             content: vec![codex_app_server_protocol::UserInput::Text {
                                 text: "hello from history".to_string(),
                                 text_elements: Vec::new(),
@@ -2327,6 +2332,7 @@ mod tests {
                 .into(),
             active_permission_profile: None,
             reasoning_effort: None,
+            initial_turns_page: None,
         };
 
         let started = started_thread_from_resume_response(

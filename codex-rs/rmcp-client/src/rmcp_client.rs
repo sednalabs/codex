@@ -239,7 +239,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.map(|meta| serde_json::Value::Object(meta.0)),
+            meta: value.meta.and_then(|meta| serde_json::to_value(meta).ok()),
         }
     }
 }
@@ -571,24 +571,22 @@ impl RmcpClient {
             }
             None => None,
         };
-        let rmcp_params = match arguments {
-            Some(arguments) => CallToolRequestParams::new(name).with_arguments(arguments),
-            None => CallToolRequestParams::new(name),
-        };
+        let mut rmcp_params = CallToolRequestParams::new(name);
+        rmcp_params.arguments = arguments;
         let result = self
             .run_service_operation("tools/call", timeout, move |service| {
                 let rmcp_params = rmcp_params.clone();
                 let meta = meta.clone();
                 async move {
-                    let mut request_options = rmcp::service::PeerRequestOptions::no_options();
-                    request_options.meta = meta;
+                    let mut options = rmcp::service::PeerRequestOptions::no_options();
+                    options.meta = meta;
                     let result = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
                                 rmcp_params,
                             )),
-                            request_options,
+                            options,
                         )
                         .await?
                         .await_response()
@@ -1017,8 +1015,11 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
-    let oauth_metadata_client = build_reqwest_client_with_custom_ca(builder)?;
+    let mut builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
+    if let Some(tls_config) = maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
+    let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
     // shared HTTP client abstraction instead of always creating the local
     // reqwest metadata client here.
@@ -1060,16 +1061,6 @@ async fn create_oauth_transport_and_runtime(
     );
 
     Ok((transport, runtime))
-}
-
-fn build_reqwest_client_with_custom_ca(builder: reqwest::ClientBuilder) -> Result<reqwest::Client> {
-    if let Some(config) = maybe_build_rustls_client_config_with_custom_ca()? {
-        return Ok(builder
-            .tls_backend_preconfigured((*config).clone())
-            .build()?);
-    }
-
-    Ok(builder.build()?)
 }
 
 #[cfg(test)]

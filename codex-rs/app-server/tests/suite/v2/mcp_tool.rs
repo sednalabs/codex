@@ -461,6 +461,7 @@ url = "{mcp_server_url}/mcp"
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Call the large MCP tool".to_string(),
                 text_elements: Vec::new(),
@@ -536,9 +537,7 @@ struct ToolAppsMcpServer;
 
 impl ServerHandler for ToolAppsMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
-        info
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(

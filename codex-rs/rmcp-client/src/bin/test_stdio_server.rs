@@ -407,10 +407,8 @@ impl ServerHandler for TestToolServer {
             JsonObject::new(),
         )]));
 
-        let mut info = ServerInfo::default();
-        info.instructions = Some("Use these tools to exercise the rmcp test server.".to_string());
-        info.capabilities = capabilities;
-        info
+        ServerInfo::new(capabilities)
+            .with_instructions("Use these tools to exercise the rmcp test server.")
     }
 
     fn list_tools(
@@ -419,7 +417,13 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
-        async move { Ok(ListToolsResult::with_all_items((*tools).clone())) }
+        async move {
+            Ok(ListToolsResult {
+                tools: (*tools).clone(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
     }
 
     fn list_resources(
@@ -428,7 +432,13 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
         let resources = self.resources.clone();
-        async move { Ok(ListResourcesResult::with_all_items((*resources).clone())) }
+        async move {
+            Ok(ListResourcesResult {
+                resources: (*resources).clone(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
     }
 
     async fn list_resource_templates(
@@ -436,9 +446,11 @@ impl ServerHandler for TestToolServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        Ok(ListResourceTemplatesResult::with_all_items(
-            (*self.resource_templates).clone(),
-        ))
+        Ok(ListResourceTemplatesResult {
+            resource_templates: (*self.resource_templates).clone(),
+            next_cursor: None,
+            meta: None,
+        })
     }
 
     async fn read_resource(
@@ -469,18 +481,14 @@ impl ServerHandler for TestToolServer {
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
-            "sandbox_meta" => {
-                let mut result = CallToolResult::success(Vec::new());
-                result.structured_content = Some(serde_json::Value::Object(context.meta.0));
-                Ok(result)
-            }
+            "sandbox_meta" => Ok(Self::structured_result(serde_json::Value::Object(
+                context.meta.0,
+            ))),
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                let mut result = CallToolResult::success(Vec::new());
-                result.structured_content = Some(json!({ "cwd": cwd }));
-                Ok(result)
+                Ok(Self::structured_result(json!({ "cwd": cwd })))
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -503,9 +511,7 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                let mut result = CallToolResult::success(Vec::new());
-                result.structured_content = Some(structured_content);
-                Ok(result)
+                Ok(Self::structured_result(structured_content))
             }
             "image" => {
                 // Read a data URL (e.g. data:image/png;base64,AAA...) from env and convert to
@@ -655,9 +661,13 @@ impl TestToolServer {
             sleep(Duration::from_millis(delay)).await;
         }
 
+        Ok(Self::structured_result(json!({ "result": "ok" })))
+    }
+
+    fn structured_result(value: serde_json::Value) -> CallToolResult {
         let mut result = CallToolResult::success(Vec::new());
-        result.structured_content = Some(json!({ "result": "ok" }));
-        Ok(result)
+        result.structured_content = Some(value);
+        result
     }
 }
 

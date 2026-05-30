@@ -288,10 +288,8 @@ struct ResourceAppsMcpServer;
 
 impl ServerHandler for ResourceAppsMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::V_2025_06_18;
-        info.capabilities = ServerCapabilities::builder().enable_resources().build();
-        info
+        ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
     }
 
     async fn read_resource(

@@ -3349,6 +3349,10 @@ mod tests {
                 .iter()
                 .any(|detail| detail == "android providers configured: 1")
         );
+        assert!(check.details.iter().any(|detail| {
+            detail
+                == "android provider native image contract: MCP image content or android.read_artifact"
+        }));
         assert!(
             check
                 .details

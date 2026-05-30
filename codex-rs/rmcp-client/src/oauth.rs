@@ -1018,8 +1018,8 @@ mod tests {
         );
         assert_eq!(actual_response.scopes(), expected_response.scopes());
         assert_eq!(
-            actual_response.extra_fields(),
-            expected_response.extra_fields()
+            actual_response.extra_fields().0,
+            expected_response.extra_fields().0
         );
         assert_eq!(
             actual_response.expires_in().is_some(),

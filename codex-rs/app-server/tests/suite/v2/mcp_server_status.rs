@@ -20,6 +20,7 @@ use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::TrustLevel;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
+use rmcp::model::Implementation;
 use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
@@ -91,6 +92,13 @@ url = "{mcp_server_url}/mcp"
     assert_eq!(
         status.tools.keys().cloned().collect::<BTreeSet<_>>(),
         BTreeSet::from(["lookup".to_string()])
+    );
+    assert_eq!(
+        status
+            .server_info
+            .as_ref()
+            .and_then(|info| info.title.as_deref()),
+        Some("Lookup Server")
     );
 
     mcp_server_handle.abort();
@@ -198,9 +206,9 @@ struct McpStatusServer {
 
 impl ServerHandler for McpStatusServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
-        info
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+            Implementation::new("lookup-server", "1.0.0").with_title("Lookup Server"),
+        )
     }
 
     async fn list_tools(
@@ -236,12 +244,12 @@ struct SlowInventoryServer {
 
 impl ServerHandler for SlowInventoryServer {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .enable_resources()
-            .build();
-        info
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
     }
 
     async fn list_tools(

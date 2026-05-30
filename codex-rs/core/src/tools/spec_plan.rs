@@ -10,6 +10,7 @@ use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
 use crate::tools::handlers::GetGoalHandler;
+use crate::tools::handlers::InspectAgentTreeHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
@@ -55,6 +56,7 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
@@ -86,6 +88,8 @@ use std::sync::Arc;
 use tracing::warn;
 
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
+const IMAGE_GEN_NAMESPACE: &str = "image_gen";
+const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 
@@ -258,7 +262,9 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     }) {
         specs.push(web_search_tool);
     }
-    if image_generation_tool_enabled(turn_context) {
+    if image_generation_tool_enabled(turn_context)
+        && !standalone_image_generation_available(turn_context, context.extension_tool_executors)
+    {
         specs.push(create_image_generation_tool("png"));
     }
     specs
@@ -317,19 +323,39 @@ fn agent_jobs_worker_tools_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn image_generation_tool_enabled(turn_context: &TurnContext) -> bool {
+    image_generation_runtime_enabled(turn_context)
+        && turn_context
+            .features
+            .get()
+            .enabled(Feature::ImageGeneration)
+}
+
+fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
     turn_context
         .auth_manager
         .as_deref()
         .is_some_and(AuthManager::current_auth_uses_codex_backend)
         && turn_context.provider.capabilities().image_generation
         && turn_context
-            .features
-            .get()
-            .enabled(Feature::ImageGeneration)
-        && turn_context
             .model_info
             .input_modalities
             .contains(&InputModality::Image)
+}
+
+fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool {
+    image_generation_runtime_enabled(turn_context)
+        && turn_context.features.get().enabled(Feature::ImageGenExt)
+        && namespace_tools_enabled(turn_context)
+}
+
+fn standalone_image_generation_available(
+    turn_context: &TurnContext,
+    extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+) -> bool {
+    standalone_image_generation_model_visible(turn_context)
+        && extension_tools.iter().any(|executor| {
+            executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+        })
 }
 
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
@@ -679,6 +705,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 multi_agent_v2_handler(ListAgentsHandlerV2, tool_namespace),
                 exposure,
             ));
+            if registered_tool_runtime_capabilities()
+                .subagent_inventory
+                .is_some_and(|capability| capability.inspect_tree)
+            {
+                planned_tools.add_arc(override_tool_exposure(
+                    multi_agent_v2_handler(InspectAgentTreeHandler, tool_namespace),
+                    exposure,
+                ));
+            }
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
@@ -849,6 +884,11 @@ fn append_extension_tool_executors(
 
     for executor in executors.iter().cloned() {
         let tool_name = executor.tool_name();
+        if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+            && !standalone_image_generation_model_visible(turn_context)
+        {
+            continue;
+        }
         if !reserved_tool_names.insert(tool_name.clone()) {
             warn!("Skipping extension tool `{tool_name}`: tool already registered");
             continue;

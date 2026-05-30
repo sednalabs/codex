@@ -6,6 +6,10 @@ use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_protocol::dynamic_tools::DynamicToolCapability;
+use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
+use codex_tools::BROWSER_STEP_TOOL_NAME;
+use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+use codex_tools::native_computer_use_provider_for_call;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -40,8 +44,6 @@ const ENV_PLAYWRIGHT_SERVICE_PROFILES: &str = "CODEX_BROWSER_PLAYWRIGHT_SERVICE_
 const PROVIDER_COMMAND: &str = "command";
 const PROVIDER_NONE: &str = "none";
 const PROVIDER_PLAYWRIGHT: &str = "playwright";
-const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
-const TOOL_BROWSER_STEP: &str = "browser_step";
 const BACKEND_AUTO: &str = "auto";
 const BACKEND_BROWSER: &str = "browser";
 const BACKEND_CHROME: &str = "chrome";
@@ -70,12 +72,12 @@ pub fn configured_browser_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec
 
     vec![
         browser_dynamic_tool(
-            TOOL_BROWSER_OBSERVE,
+            BROWSER_OBSERVE_TOOL_NAME,
             "Capture the current browser viewport as a model-visible screenshot.",
             "non_mutating",
         ),
         browser_dynamic_tool(
-            TOOL_BROWSER_STEP,
+            BROWSER_STEP_TOOL_NAME,
             "Perform bounded browser actions, then return a fresh browser screenshot.",
             "mutating",
         ),
@@ -94,7 +96,7 @@ fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> 
         defer_loading: false,
         persist_on_resume: false,
         capability: Some(DynamicToolCapability {
-            family: Some("browser".to_string()),
+            family: Some(COMPUTER_USE_ADAPTER_BROWSER.to_string()),
             capability_scope: Some("session".to_string()),
             mutation_class: Some(mutation_class.to_string()),
             lease_mode: None,
@@ -129,11 +131,9 @@ pub async fn handle_browser_computer_use_for_codex_home(
     params: &ComputerUseCallParams,
     codex_home: &Path,
 ) -> BrowserComputerUseOutcome {
-    if params.adapter != "browser"
-        || !matches!(
-            params.tool.as_str(),
-            TOOL_BROWSER_OBSERVE | TOOL_BROWSER_STEP
-        )
+    if params.adapter != COMPUTER_USE_ADAPTER_BROWSER
+        || native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_BROWSER, &params.tool)
+            .is_none()
     {
         return BrowserComputerUseOutcome::Unavailable;
     }
@@ -1357,12 +1357,12 @@ mod tests {
     #[test]
     fn configured_browser_tools_are_session_scoped_native_tools() {
         let tools = [
-            browser_dynamic_tool(TOOL_BROWSER_OBSERVE, "observe", "non_mutating"),
-            browser_dynamic_tool(TOOL_BROWSER_STEP, "step", "mutating"),
+            browser_dynamic_tool(BROWSER_OBSERVE_TOOL_NAME, "observe", "non_mutating"),
+            browser_dynamic_tool(BROWSER_STEP_TOOL_NAME, "step", "mutating"),
         ];
 
-        assert_eq!(tools[0].name, TOOL_BROWSER_OBSERVE);
-        assert_eq!(tools[1].name, TOOL_BROWSER_STEP);
+        assert_eq!(tools[0].name, BROWSER_OBSERVE_TOOL_NAME);
+        assert_eq!(tools[1].name, BROWSER_STEP_TOOL_NAME);
         assert!(tools.iter().all(|tool| tool.namespace.is_none()));
         assert!(tools.iter().all(|tool| !tool.defer_loading));
         assert!(tools.iter().all(|tool| !tool.persist_on_resume));
@@ -1370,7 +1370,7 @@ mod tests {
             tool.capability
                 .as_ref()
                 .and_then(|capability| capability.family.as_deref())
-                == Some("browser")
+                == Some(COMPUTER_USE_ADAPTER_BROWSER)
         }));
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec![TOOL_BROWSER_OBSERVE, TOOL_BROWSER_STEP]
+            vec![BROWSER_OBSERVE_TOOL_NAME, BROWSER_STEP_TOOL_NAME]
         );
     }
 
@@ -1519,8 +1519,8 @@ JSON
             turn_id: "turn-1".to_string(),
             call_id: "call-1".to_string(),
             environment_id: Some("env-1".to_string()),
-            adapter: "browser".to_string(),
-            tool: TOOL_BROWSER_OBSERVE.to_string(),
+            adapter: COMPUTER_USE_ADAPTER_BROWSER.to_string(),
+            tool: BROWSER_OBSERVE_TOOL_NAME.to_string(),
             arguments: json!({}),
         };
 

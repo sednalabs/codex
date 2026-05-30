@@ -603,14 +603,14 @@ impl OauthLoginFlow {
 
 async fn start_authorization(
     server_url: &str,
-    http_client: reqwest::Client,
+    _http_client: reqwest::Client,
     scopes: &[&str],
     redirect_uri: &str,
     oauth_client_id: Option<&str>,
 ) -> Result<OAuthState> {
     let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
     else {
-        let mut oauth_state = OAuthState::new(server_url, Some(http_client)).await?;
+        let mut oauth_state = OAuthState::new(server_url, None).await?;
         oauth_state
             .start_authorization(scopes, redirect_uri, Some("Codex"))
             .await?;
@@ -618,11 +618,10 @@ async fn start_authorization(
     };
 
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
-    auth_manager.with_client(http_client)?;
     let metadata = auth_manager.discover_metadata().await?;
     auth_manager.set_metadata(metadata);
     auth_manager.configure_client(
-        OAuthClientConfig::new(oauth_client_id.to_string(), redirect_uri.to_string())
+        OAuthClientConfig::new(oauth_client_id, redirect_uri)
             .with_scopes(scopes.iter().map(|scope| (*scope).to_string()).collect()),
     )?;
     let auth_url = auth_manager.get_authorization_url(scopes).await?;

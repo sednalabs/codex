@@ -121,10 +121,11 @@ impl McpProcess {
             }),
             url: None,
         });
-        let mut client_info = Implementation::new("elicitation test", "0.0.0");
-        client_info.title = Some("Elicitation Test".into());
-        let params = InitializeRequestParams::new(capabilities, client_info)
-            .with_protocol_version(ProtocolVersion::V_2025_03_26);
+        let params = InitializeRequestParams::new(
+            capabilities,
+            Implementation::new("elicitation test", "0.0.0").with_title("Elicitation Test"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_03_26);
         let params_value = serde_json::to_value(params)?;
 
         self.send_jsonrpc_message(JsonRpcMessage::Request(JsonRpcRequest {
@@ -189,11 +190,12 @@ impl McpProcess {
         &mut self,
         params: CodexToolCallParam,
     ) -> anyhow::Result<i64> {
-        let arguments = match serde_json::to_value(params)? {
-            serde_json::Value::Object(map) => map,
-            _ => unreachable!("params serialize to object"),
-        };
-        let codex_tool_call_params = CallToolRequestParams::new("codex").with_arguments(arguments);
+        let codex_tool_call_params = CallToolRequestParams::new("codex").with_arguments(
+            match serde_json::to_value(params)? {
+                serde_json::Value::Object(map) => map,
+                _ => unreachable!("params serialize to object"),
+            },
+        );
         self.send_request(
             "tools/call",
             Some(serde_json::to_value(codex_tool_call_params)?),
