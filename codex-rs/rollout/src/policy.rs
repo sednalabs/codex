@@ -7,8 +7,6 @@ use codex_protocol::computer_use::ComputerUseCallRequest;
 #[cfg(test)]
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
-#[cfg(test)]
-use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_utils_string::truncate_middle_chars;
 #[cfg(test)]
 use std::time::Duration;
