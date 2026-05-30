@@ -28,7 +28,8 @@ else
   du -h "${archive_file}"
 fi
 
-CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-$(command -v node)}" \
+RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}" \
+  CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-$(command -v node)}" \
   cargo nextest run \
     --archive-file "${archive_file}" \
     --workspace-remap "${PWD}" \
