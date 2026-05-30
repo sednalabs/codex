@@ -12,6 +12,7 @@ use std::time::Instant;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_api::SharedAuthProvider;
+use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
 use futures::FutureExt;
@@ -69,7 +70,7 @@ use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
-use crate::utils::apply_default_headers_for_rmcp_oauth;
+use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -238,7 +239,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.map(|meta| Value::Object(meta.0)),
+            meta: value.meta.and_then(|meta| serde_json::to_value(meta).ok()),
         }
     }
 }
@@ -248,15 +249,10 @@ impl From<ElicitationResponse> for CreateElicitationResult {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.and_then(value_to_rmcp_meta),
+            meta: value
+                .meta
+                .and_then(|meta| serde_json::from_value(meta).ok()),
         }
-    }
-}
-
-fn value_to_rmcp_meta(value: Value) -> Option<rmcp::model::Meta> {
-    match value {
-        Value::Object(map) => Some(rmcp::model::Meta(map)),
-        _ => None,
     }
 }
 
@@ -575,22 +571,22 @@ impl RmcpClient {
             }
             None => None,
         };
-        let mut rmcp_params = CallToolRequestParams::new(name.to_string());
+        let mut rmcp_params = CallToolRequestParams::new(name);
         rmcp_params.arguments = arguments;
         let result = self
             .run_service_operation("tools/call", timeout, move |service| {
                 let rmcp_params = rmcp_params.clone();
                 let meta = meta.clone();
                 async move {
-                    let mut request_options = rmcp::service::PeerRequestOptions::default();
-                    request_options.meta = meta;
+                    let mut options = rmcp::service::PeerRequestOptions::no_options();
+                    options.meta = meta;
                     let result = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
                                 rmcp_params,
                             )),
-                            request_options,
+                            options,
                         )
                         .await?
                         .await_response()
@@ -1019,8 +1015,10 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let builder =
-        apply_default_headers_for_rmcp_oauth(reqwest::Client::builder(), &default_headers);
+    let mut builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
+    if let Some(tls_config) = maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
     let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
     // shared HTTP client abstraction instead of always creating the local
@@ -1038,13 +1036,8 @@ async fn create_oauth_transport_and_runtime(
     let manager = match oauth_state {
         OAuthState::Authorized(manager) => manager,
         OAuthState::Unauthorized(manager) => manager,
-        OAuthState::Session(_) | OAuthState::AuthorizedHttpClient(_) => {
-            return Err(anyhow!("unexpected OAuth state during client setup"));
-        }
         _ => {
-            return Err(anyhow!(
-                "unexpected OAuth state variant during client setup"
-            ));
+            return Err(anyhow!("unexpected OAuth state during client setup"));
         }
     };
 

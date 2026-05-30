@@ -129,7 +129,9 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                Ok(structured_tool_result(structured_content))
+                let mut result = CallToolResult::success(Vec::new());
+                result.structured_content = Some(structured_content);
+                Ok(result)
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
@@ -137,12 +139,6 @@ impl ServerHandler for TestToolServer {
             )),
         }
     }
-}
-
-fn structured_tool_result(value: serde_json::Value) -> CallToolResult {
-    let mut result = CallToolResult::success(Vec::new());
-    result.structured_content = Some(value);
-    result
 }
 
 #[tokio::main]

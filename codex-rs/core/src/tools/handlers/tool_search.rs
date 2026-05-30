@@ -269,9 +269,7 @@ mod tests {
             "cloudflare d1 execute query",
             "Cloudflare D1 read only query execute SQL database",
         ] {
-            let tools = handler
-                .search(query, /*limit*/ 1)
-                .expect("search should succeed");
+            let tools = handler.search(query, 1).expect("search should succeed");
             assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
         }
     }
@@ -298,31 +296,31 @@ mod tests {
                 "api_read",
                 "Execute a read-only Cloudflare REST API GET operation.",
                 &["operation_id", "query"],
-                /*read_only*/ true,
+                true,
             ),
             cloudflare_tool_info(
                 "api_mutate",
                 "Execute a mutating Cloudflare REST API operation.",
                 &["operation_id", "body"],
-                /*read_only*/ false,
+                false,
             ),
             cloudflare_tool_info(
                 "d1_validate_query",
                 "Validate one read-only D1 SQL statement without executing it.",
                 &["database_id", "sql"],
-                /*read_only*/ true,
+                true,
             ),
             cloudflare_tool_info(
                 "d1_execute_write",
                 "Execute one audited D1 row-write SQL statement.",
                 &["database_id", "sql"],
-                /*read_only*/ false,
+                false,
             ),
             cloudflare_tool_info(
                 "d1_query_read_only",
                 "Run or execute one read-only D1 SQL SELECT query against a database and return rows.",
                 &["database_id", "sql", "max_rows"],
-                /*read_only*/ true,
+                true,
             ),
         ]
     }

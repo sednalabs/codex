@@ -63,11 +63,7 @@ fn plugin_names(names: &[&str]) -> Vec<String> {
 }
 
 fn test_tool_definition(tool_name: &str) -> Tool {
-    Tool::new_with_raw(
-        tool_name.to_string(),
-        /*description*/ None,
-        Arc::new(JsonObject::default()),
-    )
+    Tool::new_with_raw(tool_name.to_string(), None, Arc::new(JsonObject::default()))
 }
 
 fn codex_app_tool(

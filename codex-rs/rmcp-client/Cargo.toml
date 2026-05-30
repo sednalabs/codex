@@ -16,6 +16,7 @@ axum = { workspace = true, default-features = false, features = [
 ] }
 base64 = { workspace = true }
 codex-api = { workspace = true }
+codex-client = { workspace = true }
 codex-config = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-keyring-store = { workspace = true }
@@ -28,8 +29,8 @@ keyring = { workspace = true, features = ["crypto-rust"] }
 oauth2 = "5"
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
-    "rustls",
     "stream",
+    "rustls",
 ] }
 rmcp = { workspace = true, default-features = false, features = [
     "auth",

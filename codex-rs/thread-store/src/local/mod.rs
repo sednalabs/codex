@@ -493,8 +493,6 @@ mod tests {
                 codex_protocol::protocol::TokenCountEvent {
                     info: None,
                     rate_limits: None,
-                    provider: None,
-                    model_used: None,
                 },
             ))])
             .await
@@ -1044,6 +1042,7 @@ mod tests {
 
     fn user_message_item(message: &str) -> RolloutItem {
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: message.to_string(),
             images: None,
             local_images: Vec::new(),

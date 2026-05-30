@@ -529,7 +529,7 @@ mod tests {
             namespace_description: None,
             tool: rmcp::model::Tool::new_with_raw(
                 tool_name.to_string(),
-                /*description*/ None,
+                None,
                 Arc::new(rmcp::model::object(serde_json::json!({
                     "type": "object",
                 }))),

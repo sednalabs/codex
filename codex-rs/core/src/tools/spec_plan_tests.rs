@@ -435,15 +435,11 @@ async fn android_dynamic_tools_use_native_computer_use_runtime() {
         ToolPlanInputs {
             dynamic_tools: vec![
                 dynamic_tool(
-                    /*namespace*/ None,
+                    None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
-                dynamic_tool(
-                    /*namespace*/ None,
-                    ANDROID_STEP_TOOL_NAME,
-                    /*defer_loading*/ false,
-                ),
+                dynamic_tool(None, ANDROID_STEP_TOOL_NAME, /*defer_loading*/ false),
             ],
             ..ToolPlanInputs::default()
         },
@@ -478,12 +474,12 @@ async fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
         ToolPlanInputs {
             dynamic_tools: vec![
                 dynamic_tool(
-                    /*namespace*/ None,
+                    None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
                 dynamic_tool(
-                    /*namespace*/ None,
+                    None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
@@ -510,7 +506,7 @@ async fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
         },
         ToolPlanInputs {
             dynamic_tools: vec![dynamic_tool(
-                /*namespace*/ None,
+                None,
                 ANDROID_OBSERVE_TOOL_NAME,
                 /*defer_loading*/ true,
             )],
@@ -624,7 +620,7 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         "read_mcp_resource",
     ]);
 
-    let missing_namespace_capability = probe_with(
+    let bedrock_namespace_capability = probe_with(
         |turn| {
             turn.model_info.supports_search_tool = true;
             use_bedrock_provider(turn);
@@ -635,7 +631,7 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         },
     )
     .await;
-    missing_namespace_capability.assert_visible_lacks(&["tool_search"]);
+    bedrock_namespace_capability.assert_visible_contains(&["tool_search"]);
 
     let enabled = probe_with(
         |turn| {
@@ -846,6 +842,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "send_message",
         "followup_task",
         "list_agents",
+        "inspect_agent_tree",
     ]);
     assert_eq!(
         v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
@@ -872,6 +869,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ]);
     v2.assert_visible_lacks(&["send_input", "resume_agent"]);
     let spawn_agent_description = match v2.visible_spec("spawn_agent") {
@@ -894,7 +892,12 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         });
     })
     .await;
-    direct_model_only.assert_visible_contains(&["spawn_agent", "send_message", "wait_agent"]);
+    direct_model_only.assert_visible_contains(&[
+        "spawn_agent",
+        "send_message",
+        "wait_agent",
+        "inspect_agent_tree",
+    ]);
     assert_eq!(
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
@@ -963,6 +966,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ] {
         namespaced.assert_visible_lacks(&[tool_name]);
         assert!(
@@ -988,7 +992,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_namespace_is_ignored_without_provider_namespace_support() {
+async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         update_config(turn, |config| {
@@ -998,15 +1002,15 @@ async fn multi_agent_v2_namespace_is_ignored_without_provider_namespace_support(
     })
     .await;
 
-    plan.assert_visible_contains(&["spawn_agent", "send_message", "list_agents"]);
-    plan.assert_visible_lacks(&["agents"]);
-    assert!(
-        plan.registered_names
-            .contains(&ToolName::plain("spawn_agent").to_string())
-    );
+    plan.assert_visible_contains(&["agents"]);
+    plan.assert_visible_lacks(&["spawn_agent", "send_message", "list_agents"]);
     assert!(
         !plan
             .registered_names
+            .contains(&ToolName::plain("spawn_agent").to_string())
+    );
+    assert!(
+        plan.registered_names
             .contains(&ToolName::namespaced("agents", "spawn_agent").to_string())
     );
 }
@@ -1037,6 +1041,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         "wait_agent",
         "close_agent",
         "list_agents",
+        "inspect_agent_tree",
     ] {
         assert!(
             plan.namespace_function_names("agents")
@@ -1063,6 +1068,16 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     })
     .await;
     image_generation.assert_visible_contains(&["image_generation"]);
+
+    let extension_flag_without_imagegen_tool = probe(|turn| {
+        use_chatgpt_auth(turn);
+        set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+        set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
+        turn.model_info.input_modalities = vec![InputModality::Image];
+    })
+    .await;
+    extension_flag_without_imagegen_tool.assert_visible_contains(&["image_generation"]);
+    extension_flag_without_imagegen_tool.assert_visible_lacks(&["image_gen"]);
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);

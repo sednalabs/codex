@@ -323,21 +323,65 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .properties
         .as_ref()
         .expect("wait_agent should use object params");
-    assert!(!properties.contains_key("targets"));
+    assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(properties.contains_key("return_when"));
+    assert!(description.contains("When `return_when` is `all`"));
     assert_eq!(
         properties
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
+        Some(
+            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits to avoid busy polling."
+        )
     );
-    assert_eq!(parameters.required.as_ref(), None);
+    assert_eq!(
+        parameters.required.as_ref(),
+        Some(&vec!["targets".to_string()])
+    );
     assert_eq!(
         output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
+    );
+}
+
+#[test]
+fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        output_schema,
+        ..
+    }) = create_wait_agent_tool_v2_with_capabilities(
+        WaitAgentTimeoutOptions::default(),
+        ToolRuntimeCapabilities::upstream_default(),
+    )
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    assert!(!properties.contains_key("return_when"));
+    assert!(!description.contains("return_when"));
+
+    let output_schema = output_schema.expect("wait output schema");
+    assert!(
+        !output_schema["properties"]
+            .as_object()
+            .expect("properties should be object")
+            .contains_key("pending_ids")
+    );
+    assert!(
+        !output_schema["properties"]
+            .as_object()
+            .expect("properties should be object")
+            .contains_key("completion_reason")
+    );
+    assert_eq!(
+        output_schema["required"],
+        json!(["message", "requested_ids", "timed_out"])
     );
 }
 
@@ -370,7 +414,13 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     );
     assert_eq!(
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "has_active_subagents",
+            "active_subagent_count"
+        ])
     );
 }
 
@@ -390,6 +440,60 @@ fn list_agents_tool_status_schema_includes_interrupted() {
             "interrupted",
             "shutdown",
             "not_found"
+        ])
+    );
+}
+
+#[test]
+fn list_agents_tool_omits_active_descendants_without_capability_provider() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) =
+        create_list_agents_tool_with_capabilities(ToolRuntimeCapabilities::upstream_default())
+    else {
+        panic!("list_agents should be a function tool");
+    };
+
+    let output_schema = output_schema.expect("list_agents output schema");
+    let agent_properties = output_schema["properties"]["agents"]["items"]["properties"]
+        .as_object()
+        .expect("agent item properties should be object");
+    assert!(!agent_properties.contains_key("has_active_subagents"));
+    assert!(!agent_properties.contains_key("active_subagent_count"));
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["required"],
+        json!(["agent_name", "agent_status", "last_task_message"])
+    );
+}
+
+#[test]
+fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_inspect_agent_tree_tool()
+    else {
+        panic!("inspect_agent_tree should be a function tool");
+    };
+
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("inspect_agent_tree should use object params");
+    assert!(properties.contains_key("scope"));
+    assert!(properties.contains_key("agent_roots"));
+    let output_schema = output_schema.expect("inspect_agent_tree output schema");
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["required"],
+        json!([
+            "agent_name",
+            "depth",
+            "session_state",
+            "agent_status",
+            "nickname",
+            "role",
+            "direct_child_count",
+            "descendant_count",
+            "last_task_message_preview"
         ])
     );
 }

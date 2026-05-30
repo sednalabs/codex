@@ -314,11 +314,7 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            packages=(pkg-config libcap-dev)
-            if [[ "${{ matrix.target }}" == 'x86_64-unknown-linux-musl' || "${{ matrix.target }}" == 'aarch64-unknown-linux-musl' ]]; then
-              packages+=(libubsan1)
-            fi
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
           fi
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
@@ -396,14 +392,6 @@ jobs:
           restore-keys: |
             sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-
             sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-
-
-      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
-        name: Disable sccache wrapper (musl)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
 
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Prepare APT cache directories (musl)

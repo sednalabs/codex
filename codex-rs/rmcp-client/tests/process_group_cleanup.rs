@@ -25,10 +25,11 @@ fn stdio_server_bin() -> Result<std::path::PathBuf> {
 }
 
 fn init_params() -> InitializeRequestParams {
-    let client_info =
-        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp shutdown test");
-    InitializeRequestParams::new(ClientCapabilities::default(), client_info)
-        .with_protocol_version(ProtocolVersion::V_2025_06_18)
+    InitializeRequestParams::new(
+        ClientCapabilities::default(),
+        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp shutdown test"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 fn process_exists(pid: u32) -> bool {

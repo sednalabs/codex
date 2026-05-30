@@ -1,5 +1,7 @@
 #![cfg(not(debug_assertions))]
 
+use crate::contributor_slots::UpdatePromptContribution;
+use crate::contributor_slots::contribute_update_prompt;
 use crate::history_cell::padded_emoji;
 use crate::key_hint;
 use crate::legacy_core::config::Config;
@@ -28,6 +30,8 @@ use ratatui::text::Line;
 use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
+
+const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
 
 pub(crate) enum UpdatePromptOutcome {
     Continue,
@@ -95,8 +99,7 @@ enum UpdateSelection {
 struct UpdatePromptScreen {
     request_frame: FrameRequester,
     latest_version: String,
-    current_version: String,
-    update_action: UpdateAction,
+    copy: UpdatePromptContribution,
     highlighted: UpdateSelection,
     selection: Option<UpdateSelection>,
 }
@@ -107,11 +110,16 @@ impl UpdatePromptScreen {
         latest_version: String,
         update_action: UpdateAction,
     ) -> Self {
+        let update_command = update_action.command_str();
+        let copy = contribute_update_prompt(UpdatePromptContribution::new(
+            CODEX_DISPLAY_VERSION,
+            latest_version.as_str(),
+            update_command.as_str(),
+        ));
         Self {
             request_frame,
             latest_version,
-            current_version: CODEX_DISPLAY_VERSION.to_string(),
-            update_action,
+            copy,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,
         }
@@ -188,25 +196,19 @@ impl WidgetRef for &UpdatePromptScreen {
         Clear.render(area, buf);
         let mut column = ColumnRenderable::new();
 
-        let update_command = self.update_action.command_str();
         let release_notes_url = latest_release_notes_url();
 
         column.push("");
         column.push(Line::from(vec![
             padded_emoji("  ✨").bold().cyan(),
-            "Update available!".bold(),
+            self.copy.title.clone().bold(),
             " ".into(),
-            format!(
-                "{current} -> {latest}",
-                current = self.current_version,
-                latest = self.latest_version
-            )
-            .dim(),
+            self.copy.version_label.clone().dim(),
         ]));
         column.push("");
         column.push(
             Line::from(vec![
-                "Release notes: ".dim(),
+                self.copy.release_notes_label.clone().dim(),
                 release_notes_url.dim().underlined(),
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
@@ -214,17 +216,17 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push("");
         column.push(selection_option_row(
             0,
-            format!("Update now (runs `{update_command}`)"),
+            self.copy.update_now_label.clone(),
             self.highlighted == UpdateSelection::UpdateNow,
         ));
         column.push(selection_option_row(
             1,
-            "Skip".to_string(),
+            self.copy.skip_label.clone(),
             self.highlighted == UpdateSelection::NotNow,
         ));
         column.push(selection_option_row(
             2,
-            "Skip until next version".to_string(),
+            self.copy.skip_until_next_version_label.clone(),
             self.highlighted == UpdateSelection::DontRemind,
         ));
         column.push("");
@@ -232,11 +234,12 @@ impl WidgetRef for &UpdatePromptScreen {
             Line::from(vec![
                 "Press ".dim(),
                 key_hint::plain(KeyCode::Enter).into(),
-                " to continue".dim(),
+                format!(" {}", self.copy.continue_hint).dim(),
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
         column.render(area, buf);
+        crate::terminal_hyperlinks::mark_underlined_hyperlink(buf, area, RELEASE_NOTES_URL);
     }
 }
 

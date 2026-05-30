@@ -38,6 +38,10 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::outgoing_message::OutgoingMessageSender;
 
+fn tool_error_result(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![rmcp::model::Content::text(message.into())])
+}
+
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
@@ -219,7 +223,7 @@ impl MessageProcessor {
         }
 
         let server_info =
-            Implementation::new("codex-mcp-server", RELEASE_VERSION).with_title("Codex");
+            Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string()).with_title("Codex");
 
         // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
@@ -245,11 +249,10 @@ impl MessageProcessor {
             .enable_tools()
             .enable_tool_list_changed()
             .build();
-        let mut result_value = match serde_json::to_value(
-            InitializeResult::new(capabilities)
-                .with_protocol_version(params.protocol_version.clone())
-                .with_server_info(server_info),
-        ) {
+        let result = InitializeResult::new(capabilities)
+            .with_protocol_version(params.protocol_version.clone())
+            .with_server_info(server_info);
+        let mut result_value = match serde_json::to_value(result) {
             Ok(value) => value,
             Err(err) => {
                 self.outgoing
@@ -337,7 +340,7 @@ impl MessageProcessor {
                     .await
             }
             _ => {
-                let result = error_tool_result(format!("Unknown tool '{name}'"));
+                let result = tool_error_result(format!("Unknown tool '{name}'"));
                 self.outgoing.send_response(id, result).await;
             }
         }
@@ -354,7 +357,7 @@ impl MessageProcessor {
                 Ok(tool_cfg) => match tool_cfg.into_config(self.arg0_paths.clone()).await {
                     Ok(cfg) => cfg,
                     Err(e) => {
-                        let result = error_tool_result(format!(
+                        let result = tool_error_result(format!(
                             "Failed to load Codex configuration from overrides: {e}"
                         ));
                         self.outgoing.send_response(id, result).await;
@@ -362,7 +365,7 @@ impl MessageProcessor {
                     }
                 },
                 Err(e) => {
-                    let result = error_tool_result(format!(
+                    let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
                     self.outgoing.send_response(id, result).await;
@@ -370,7 +373,7 @@ impl MessageProcessor {
                 }
             },
             None => {
-                let result = error_tool_result(
+                let result = tool_error_result(
                     "Missing arguments for codex tool-call; the `prompt` field is required.",
                 );
                 self.outgoing.send_response(id, result).await;
@@ -413,7 +416,7 @@ impl MessageProcessor {
                 Ok(params) => params,
                 Err(e) => {
                     tracing::error!("Failed to parse Codex tool call reply parameters: {e}");
-                    let result = error_tool_result(format!(
+                    let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
                     self.outgoing.send_response(request_id, result).await;
@@ -424,7 +427,7 @@ impl MessageProcessor {
                 tracing::error!(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required."
                 );
-                let result = error_tool_result(
+                let result = tool_error_result(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
                 );
                 self.outgoing.send_response(request_id, result).await;
@@ -436,7 +439,7 @@ impl MessageProcessor {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!("Failed to parse thread_id: {e}");
-                let result = error_tool_result(format!("Failed to parse thread_id: {e}"));
+                let result = tool_error_result(format!("Failed to parse thread_id: {e}"));
                 self.outgoing.send_response(request_id, result).await;
                 return;
             }
@@ -537,6 +540,7 @@ impl MessageProcessor {
             .submit_with_id(Submission {
                 id: request_id_string,
                 op: codex_protocol::protocol::Op::Interrupt,
+                client_user_message_id: None,
                 trace: None,
             })
             .await
@@ -562,8 +566,4 @@ impl MessageProcessor {
     fn handle_initialized_notification(&self) {
         tracing::info!("notifications/initialized");
     }
-}
-
-fn error_tool_result(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![rmcp::model::Content::text(message)])
 }

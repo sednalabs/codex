@@ -121,10 +121,11 @@ impl McpProcess {
             }),
             url: None,
         });
-        let client_info =
-            Implementation::new("elicitation test", "0.0.0").with_title("Elicitation Test");
-        let params = InitializeRequestParams::new(capabilities, client_info)
-            .with_protocol_version(ProtocolVersion::V_2025_03_26);
+        let params = InitializeRequestParams::new(
+            capabilities,
+            Implementation::new("elicitation test", "0.0.0").with_title("Elicitation Test"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_03_26);
         let params_value = serde_json::to_value(params)?;
 
         self.send_jsonrpc_message(JsonRpcMessage::Request(JsonRpcRequest {
