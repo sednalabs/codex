@@ -553,6 +553,15 @@ def infer_lane_set_for_lanes(
     return "all"
 
 
+def require_known_route_lanes(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> None:
+    missing_lanes = [lane_id for lane_id in lane_ids if lane_id not in catalog_by_id]
+    if missing_lanes:
+        raise SystemExit(
+            "matched follow-up route contains unknown lane IDs: "
+            + ", ".join(missing_lanes)
+        )
+
+
 def recommendation_payload(
     *,
     profile: str,
@@ -616,6 +625,7 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
 
     route_lanes = select_followup_lanes(changed_files, catalog.get("followup_routes", []))
     if route_lanes:
+        require_known_route_lanes(catalog_by_id, route_lanes)
         route_domains = sorted(
             {
                 group

@@ -1066,6 +1066,42 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["source"], "conservative_fallback")
         self.assertIn("metadata was empty", payload["reason"])
 
+    def test_recommend_lab_rejects_route_with_unknown_lane(self) -> None:
+        catalog = json.loads((REPO_ROOT / ".github/validation-lanes.json").read_text())
+        catalog["followup_routes"].append(
+            {
+                "route_id": "synthetic-missing-lane",
+                "lane_ids": ["codex.synthetic-missing-lane"],
+                "allowed_paths": ["synthetic/missing-lane.txt"],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(catalog, handle)
+            handle.flush()
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "resolve_validation_plan.py"),
+                    "recommend-lab",
+                    "--changed-files-json",
+                    json.dumps(["synthetic/missing-lane.txt"]),
+                    "--catalog-path",
+                    handle.name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            "matched follow-up route contains unknown lane IDs: "
+            "codex.synthetic-missing-lane",
+            proc.stderr,
+        )
+
     def test_lab_targeted_ui_protocol_lane_set_returns_selected_matrix(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
