@@ -3592,6 +3592,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "codex-api",
+ "codex-client",
  "codex-config",
  "codex-exec-server",
  "codex-keyring-store",
