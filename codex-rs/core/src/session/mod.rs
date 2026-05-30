@@ -571,7 +571,8 @@ impl Codex {
                         None
                     };
                     match state_db_ctx {
-                        Some(state_db_ctx) => match state_db_ctx.get_dynamic_tools(thread_id).await {
+                        Some(state_db_ctx) => match state_db_ctx.get_dynamic_tools(thread_id).await
+                        {
                             Ok(tools) => tools,
                             Err(err) => {
                                 warn!(
