@@ -37,6 +37,35 @@ RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
 LAB_MATRIX_JOB_LIMIT = 256
 VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
+RECOMMENDATION_DOMAIN_ORDER = [
+    "workflow",
+    "docs",
+    "release",
+    "ui_protocol",
+    "core",
+]
+RECOMMENDATION_DOMAIN_LANE_SETS = {
+    "workflow": "docs",
+    "docs": "docs",
+    "release": "release",
+    "ui_protocol": "ui-protocol",
+    "core": "core-carry",
+}
+RECOMMENDATION_DOMAIN_LANES = {
+    "workflow": ["codex.workflow-ci-sanity", "codex.downstream-docs-check"],
+    "docs": ["codex.downstream-docs-check"],
+}
+RELEASE_RECOMMENDATION_PATTERNS = (
+    ".github/workflows/sedna-branch-build.yml",
+    ".github/workflows/sedna-release.yml",
+    ".github/workflows/release*.yml",
+    ".github/workflows/release*.yaml",
+    "codex-rs/cli/src/version.rs",
+    "codex-rs/cli/src/version/**",
+    "scripts/install/**",
+    "scripts/resolve_sedna_release_version",
+    "scripts/resolve_sedna_release_version/**",
+)
 LAB_FANOUT_CAPS = {
     "balanced": {
         "targeted": {
@@ -436,6 +465,218 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     if len(matching_routes) != 1:
         return []
     return list(matching_routes[0].get("lane_ids", []))
+
+
+def parse_changed_files(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("changed-files-json must be a JSON array of strings") from exc
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        raise SystemExit("changed-files-json must be a JSON array of strings")
+    return [item.strip() for item in payload if item.strip()]
+
+
+def parse_recommendation_changed_files(raw: str) -> tuple[list[str], str]:
+    if not raw.strip():
+        return [], "changed-file metadata was empty"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return [], "changed-file metadata was not valid JSON"
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        return [], "changed-file metadata was not a JSON array of strings"
+    changed_files = [item.strip() for item in payload if item.strip()]
+    if not changed_files:
+        return [], "changed-file metadata was empty"
+    return changed_files, ""
+
+
+def recommendation_domain(path: str) -> str:
+    if any(path_matches(path, pattern) for pattern in RELEASE_RECOMMENDATION_PATTERNS):
+        return "release"
+    if path.startswith("docs/") or path == "README.md":
+        return "docs"
+    if path.startswith(".github/") or path.startswith(".codex/skills/"):
+        return "workflow"
+    if path.startswith("codex-rs/app-server") or path.startswith("codex-rs/tui/"):
+        return "ui_protocol"
+    if path.startswith("codex-rs/protocol/"):
+        return "ui_protocol"
+    if (
+        path.startswith("codex-rs/core/")
+        or path.startswith("codex-rs/exec/")
+        or path.startswith("codex-rs/cli/")
+    ):
+        return "core"
+    return "unknown"
+
+
+def ordered_recommendation_domains(domains: list[str]) -> list[str]:
+    return sorted(
+        set(domains),
+        key=lambda item: (
+            RECOMMENDATION_DOMAIN_ORDER.index(item)
+            if item in RECOMMENDATION_DOMAIN_ORDER
+            else 99
+        ),
+    )
+
+
+def infer_lane_set_for_lanes(
+    catalog_by_id: dict[str, dict], lane_ids: list[str], changed_files: list[str]
+) -> str:
+    path_domains = ordered_recommendation_domains(
+        [recommendation_domain(path) for path in changed_files]
+    )
+    known_path_domains = [domain for domain in path_domains if domain != "unknown"]
+    if len(known_path_domains) == 1 and "unknown" not in path_domains:
+        return RECOMMENDATION_DOMAIN_LANE_SETS[known_path_domains[0]]
+
+    groups = {
+        group
+        for lane_id in lane_ids
+        for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+    }
+    if groups <= {"workflow", "docs"}:
+        return "docs"
+    if "release" in groups:
+        return "release"
+    if "ui_protocol" in groups:
+        return "ui-protocol"
+    if "attestation" in groups:
+        return "attestation"
+    if "core" in groups:
+        return "core-carry"
+    return "all"
+
+
+def require_known_route_lanes(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> None:
+    missing_lanes = [lane_id for lane_id in lane_ids if lane_id not in catalog_by_id]
+    if missing_lanes:
+        raise SystemExit(
+            "matched follow-up route contains unknown lane IDs: "
+            + ", ".join(missing_lanes)
+        )
+
+
+def recommendation_payload(
+    *,
+    profile: str,
+    lane_set: str,
+    lane_ids: list[str],
+    reason: str,
+    confidence: str,
+    source: str,
+    domains: list[str],
+    changed_files: list[str],
+    include_explicit_lanes: bool = False,
+) -> dict:
+    return {
+        "profile": profile,
+        "lane_set": lane_set,
+        "lane_ids": lane_ids,
+        "lanes": ",".join(lane_ids),
+        "lanes_csv": ",".join(lane_ids),
+        "reason": reason,
+        "confidence": confidence,
+        "source": source,
+        "domains": domains,
+        "changed_file_count": len(changed_files),
+        "include_explicit_lanes": include_explicit_lanes,
+        "dispatch_inputs": {
+            "profile": profile,
+            "lane_set": lane_set,
+            "lanes": ",".join(lane_ids),
+            "include_explicit_lanes": "true" if include_explicit_lanes else "false",
+        },
+        "advisory": True,
+    }
+
+
+def recommend_lab_plan(args: argparse.Namespace) -> None:
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
+    catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
+    changed_files, metadata_issue = parse_recommendation_changed_files(
+        args.changed_files_json
+    )
+
+    def emit_fallback(reason: str, domains: list[str] | None = None) -> None:
+        emit(
+            recommendation_payload(
+                profile="frontier",
+                lane_set="all",
+                lane_ids=[],
+                reason=reason,
+                confidence="low",
+                source="conservative_fallback",
+                domains=domains or ["unknown"],
+                changed_files=changed_files,
+            )
+        )
+
+    if metadata_issue:
+        emit_fallback(metadata_issue)
+        return
+
+    route_lanes = select_followup_lanes(changed_files, catalog.get("followup_routes", []))
+    if route_lanes:
+        require_known_route_lanes(catalog_by_id, route_lanes)
+        route_domains = sorted(
+            {
+                group
+                for lane_id in route_lanes
+                for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+            }
+        )
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=infer_lane_set_for_lanes(
+                    catalog_by_id, route_lanes, changed_files
+                ),
+                lane_ids=route_lanes,
+                reason="changed files matched one exact validation follow-up route",
+                confidence="high",
+                source="followup_route",
+                domains=route_domains,
+                changed_files=changed_files,
+                include_explicit_lanes=any(
+                    bool(catalog_by_id.get(lane_id, {}).get("explicit_only"))
+                    for lane_id in route_lanes
+                ),
+            )
+        )
+        return
+
+    domains = [recommendation_domain(path) for path in changed_files]
+    unique_domains = ordered_recommendation_domains(domains)
+    known_domains = [domain for domain in unique_domains if domain != "unknown"]
+    if len(known_domains) == 1 and "unknown" not in unique_domains:
+        domain = known_domains[0]
+        lane_ids = RECOMMENDATION_DOMAIN_LANES.get(domain, [])
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=RECOMMENDATION_DOMAIN_LANE_SETS[domain],
+                lane_ids=lane_ids,
+                reason=f"changed files stayed within the {domain} validation domain",
+                confidence="medium",
+                source="domain_rules",
+                domains=[domain],
+                changed_files=changed_files,
+            )
+        )
+        return
+
+    emit_fallback(
+        "changed files crossed domains or did not match a known validation route",
+        unique_domains or ["unknown"],
+    )
 
 
 def select_for_lane_set(
@@ -1143,6 +1384,11 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--fanout-tier", default="enterprise")
     lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
+
+    recommend = subparsers.add_parser("recommend-lab")
+    recommend.add_argument("--changed-files-json", default="")
+    recommend.add_argument("--catalog-path", default="")
+    recommend.set_defaults(func=recommend_lab_plan)
 
     heavy = subparsers.add_parser("heavy")
     heavy.add_argument("--event-name", required=True)

@@ -984,6 +984,131 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("missing selection metadata env: SELECTION_META", proc.stderr)
 
+    def recommend_lab_for_files(self, files: list[str]) -> dict:
+        return run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "recommend-lab",
+            "--changed-files-json",
+            json.dumps(files),
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+    def test_recommend_lab_workflow_only_uses_workflow_route(self) -> None:
+        payload = self.recommend_lab_for_files([".github/workflows/validation-lab.yml"])
+
+        self.assertTrue(payload["advisory"])
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "docs")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+        self.assertEqual(
+            payload["dispatch_inputs"]["lanes"],
+            "codex.workflow-ci-sanity,codex.downstream-docs-check",
+        )
+
+    def test_recommend_lab_rust_core_path_keeps_core_lane_set(self) -> None:
+        payload = self.recommend_lab_for_files(["codex-rs/core/src/lib.rs"])
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "core-carry")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(payload["lane_ids"], ["codex.blocking-waits-targeted"])
+
+    def test_recommend_lab_ui_protocol_path_uses_exact_route(self) -> None:
+        payload = self.recommend_lab_for_files(
+            ["codex-rs/app-server-protocol/src/protocol/v2/thread.rs"]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "ui-protocol")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-thread-cwd-targeted",
+                "codex.blocking-waits-targeted",
+            ],
+        )
+
+    def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "docs")
+        self.assertEqual(payload["source"], "domain_rules")
+        self.assertEqual(payload["lane_ids"], ["codex.downstream-docs-check"])
+
+    def test_recommend_lab_release_path_uses_release_domain_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [".github/workflows/sedna-branch-build.yml"]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "release")
+        self.assertEqual(payload["source"], "domain_rules")
+        self.assertEqual(payload["lane_ids"], [])
+
+    def test_recommend_lab_unknown_path_uses_frontier_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(["unknown/place/example.txt"])
+
+        self.assertEqual(payload["profile"], "frontier")
+        self.assertEqual(payload["lane_set"], "all")
+        self.assertEqual(payload["source"], "conservative_fallback")
+        self.assertEqual(payload["lane_ids"], [])
+        self.assertEqual(payload["domains"], ["unknown"])
+
+    def test_recommend_lab_missing_metadata_uses_frontier_fallback(self) -> None:
+        payload = self.recommend_lab_for_files([])
+
+        self.assertEqual(payload["profile"], "frontier")
+        self.assertEqual(payload["lane_set"], "all")
+        self.assertEqual(payload["source"], "conservative_fallback")
+        self.assertIn("metadata was empty", payload["reason"])
+
+    def test_recommend_lab_rejects_route_with_unknown_lane(self) -> None:
+        catalog = json.loads((REPO_ROOT / ".github/validation-lanes.json").read_text())
+        catalog["followup_routes"].append(
+            {
+                "route_id": "synthetic-missing-lane",
+                "lane_ids": ["codex.synthetic-missing-lane"],
+                "allowed_paths": ["synthetic/missing-lane.txt"],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(catalog, handle)
+            handle.flush()
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "resolve_validation_plan.py"),
+                    "recommend-lab",
+                    "--changed-files-json",
+                    json.dumps(["synthetic/missing-lane.txt"]),
+                    "--catalog-path",
+                    handle.name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            "matched follow-up route contains unknown lane IDs: "
+            "codex.synthetic-missing-lane",
+            proc.stderr,
+        )
+
     def test_lab_targeted_ui_protocol_lane_set_returns_selected_matrix(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",

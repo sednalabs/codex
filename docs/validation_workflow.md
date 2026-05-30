@@ -146,6 +146,27 @@ This is an intentional `validation-lab` use case, not a workaround. It reduces
 runner-minutes, wait time, and unnecessary compute while preserving hosted,
 attributable proof.
 
+## Advisory route recommendations
+
+Use the lab recommendation helper when changed-file metadata is available but
+the final dispatch should remain an explicit operator choice:
+
+```bash
+python3 .github/scripts/resolve_validation_plan.py recommend-lab \
+  --changed-files-json '[".github/workflows/validation-lab.yml"]'
+```
+
+The helper returns an advisory `profile`, `lane_set`, and optional comma
+separated `lanes` input. It prefers exact catalog follow-up routes when one
+route covers the changed files. If no exact route is available, it falls back to
+single-domain rules for workflow, docs, release, UI protocol, or Rust core
+changes. Empty, incomplete, cross-domain, or unknown metadata recommends
+`profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+
+The recommendation output is planner guidance only. It does not change default
+or required gates, does not make checkout-trust decisions, and does not dispatch
+GitHub Actions by itself.
+
 ## Lane catalog contract
 
 The validation planners now consume an explicit lane catalog rather than
