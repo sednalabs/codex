@@ -5086,6 +5086,37 @@ jobs:
             ["codex.app-server-protocol-test"],
         )
 
+    def test_aggregate_summary_keeps_unknown_head_failure_active(self) -> None:
+        args = mock.Mock(
+            head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+            latest_head_sha="",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="targeted",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "signal": "schema fixture drift",
+                }
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "unknown")
+        self.assertEqual(freshness["failed_lane_classification"], "active")
+        self.assertFalse(freshness["recommended_rerun"]["needed"])
+
     def test_aggregate_summary_marks_cancelled_release_smoke_as_cancelled(self) -> None:
         args = mock.Mock(
             head_sha="1234567890abcdef1234567890abcdef12345678",

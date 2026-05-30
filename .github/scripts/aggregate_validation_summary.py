@@ -557,7 +557,7 @@ def classify_head_freshness(
     elif run_head_status == "stale":
         classification = "stale"
     else:
-        classification = "needs_targeted_latest_head_proof" if rerun_lane_ids else "active"
+        classification = "active"
 
     rerun_needed = classification in {
         "cancelled",
