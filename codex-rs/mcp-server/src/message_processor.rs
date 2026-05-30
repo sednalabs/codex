@@ -222,8 +222,8 @@ impl MessageProcessor {
             *suffix = Some(user_agent_suffix);
         }
 
-        let server_info =
-            Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string()).with_title("Codex");
+        let server_info = Implementation::new("codex-mcp-server", RELEASE_VERSION.to_string())
+            .with_title("Codex");
 
         // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
