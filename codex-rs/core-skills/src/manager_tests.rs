@@ -657,7 +657,10 @@ fn preferred_user_skill_names_from_stack_collects_user_and_session_layers() {
     let user_file = AbsolutePathBuf::try_from(tempdir.path().join("config.toml"))
         .expect("user config path should be absolute");
     let user_layer = ConfigLayerEntry::new(
-        ConfigLayerSource::User { file: user_file },
+        ConfigLayerSource::User {
+            file: user_file,
+            profile: None,
+        },
         toml::from_str(
             r#"[skills]
 prefer_user_skill_names = ["babysit-pr"]
@@ -799,7 +802,10 @@ fn finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured
     let user_file = AbsolutePathBuf::try_from(tempdir.path().join("config.toml"))
         .expect("user config path should be absolute");
     let user_layer = ConfigLayerEntry::new(
-        ConfigLayerSource::User { file: user_file },
+        ConfigLayerSource::User {
+            file: user_file,
+            profile: None,
+        },
         toml::from_str(
             r#"[skills]
 prefer_user_skill_names = ["babysit-pr"]
@@ -830,6 +836,7 @@ prefer_user_skill_names = ["babysit-pr"]
                 policy: None,
                 path_to_skills_md: repo_skill_path.abs(),
                 scope: SkillScope::Repo,
+                plugin_id: None,
             },
             SkillMetadata {
                 name: "babysit-pr".to_string(),
@@ -840,6 +847,7 @@ prefer_user_skill_names = ["babysit-pr"]
                 policy: None,
                 path_to_skills_md: user_skill_path.abs(),
                 scope: SkillScope::User,
+                plugin_id: None,
             },
         ],
         ..Default::default()
