@@ -285,6 +285,13 @@ ownership boundary:
 - Solar Gravity Lab validation is appropriate when proving a consumer workflow,
   not when the question is the generic Codex computer-use contract.
 
+App-server protocol schema fixture drift should stay on the narrow
+`codex.app-server-protocol-test` proof lane. When that lane reports vendored
+schema fixtures diverging from freshly generated output, the lane summary
+artifact records the fixture family, fixture path when available, the
+vendored-versus-generated direction, and the targeted proof lane to rerun after
+regenerating fixtures.
+
 ## Documentation boundaries
 
 Keep tracked repository docs contributor-safe and generalized.
