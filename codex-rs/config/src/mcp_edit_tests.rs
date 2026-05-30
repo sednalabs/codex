@@ -115,6 +115,10 @@ async fn replace_mcp_servers_serializes_oauth_client_id() -> anyhow::Result<()> 
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
+            enable_elicitation: false,
+            read_only: false,
+            strict_tool_classification: false,
+            require_approval_for_mutating: false,
             scopes: None,
             oauth: Some(McpServerOAuthConfig {
                 client_id: Some("eci-prd-pub-codex-123".to_string()),
