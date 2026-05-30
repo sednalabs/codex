@@ -227,7 +227,7 @@ mod tests {
             "Working".to_string(),
             Some("checking".to_string()),
             StatusDetailsCapitalization::Preserve,
-            2,
+            /*details_max_lines*/ 2,
         ));
         assert_eq!(status.header, "Working");
         assert_eq!(status.details.as_deref(), Some("checking"));

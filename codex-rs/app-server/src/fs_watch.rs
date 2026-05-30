@@ -20,6 +20,8 @@ use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
@@ -454,7 +456,7 @@ mod tests {
         let (subscriber, raw_rx) = file_watcher.add_subscriber();
         let _subscription =
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&watched_file));
-        let mut rx = DebouncedReceiver::new(raw_rx, Duration::from_millis(20));
+        let mut rx = DebouncedWatchReceiver::new(raw_rx, Duration::from_millis(20));
 
         file_watcher
             .send_paths_for_test(vec![watched_file.to_path_buf()])
