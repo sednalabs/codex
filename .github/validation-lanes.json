@@ -1862,6 +1862,22 @@
       ]
     },
     {
+      "route_id": "app-server-protocol-schema-fixtures",
+      "lane_ids": [
+        "codex.app-server-protocol-test"
+      ],
+      "allowed_paths": [
+        "codex-rs/app-server-protocol/schema/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md"
+      ],
+      "required_any_paths": [
+        "codex-rs/app-server-protocol/schema/**"
+      ]
+    },
+    {
       "route_id": "app-server-computer-use",
       "lane_ids": [
         "codex.app-server-protocol-test",

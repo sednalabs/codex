@@ -121,6 +121,11 @@ def lane_status(lane: dict) -> str:
 
 
 def lane_signal(lane: dict) -> str:
+    schema_drift = lane.get("schema_fixture_drift")
+    if isinstance(schema_drift, dict):
+        summary = str(schema_drift.get("summary") or "").strip()
+        if summary:
+            return summary
     signal = str(lane.get("primary_signal") or "").strip()
     if signal:
         return signal
@@ -368,6 +373,7 @@ def derive_primary_and_secondary(
                 "outcome": chosen["outcome"],
                 "exit_code": chosen.get("exit_code"),
                 "signal": lane_signal(chosen),
+                "schema_fixture_drift": chosen.get("schema_fixture_drift") or {},
             }
         )
 
@@ -389,6 +395,7 @@ def derive_primary_and_secondary(
                 "outcome": lane["outcome"],
                 "exit_code": lane.get("exit_code"),
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
         )
 
@@ -593,6 +600,7 @@ def main() -> None:
                     "summary_family": item.get("summary_family"),
                     "setup_class": item.get("setup_class"),
                     "signal": item.get("signal", ""),
+                    "schema_fixture_drift": item.get("schema_fixture_drift") or {},
                 }
             )
 
@@ -615,6 +623,7 @@ def main() -> None:
                 "lane_id": lane["lane_id"],
                 "outcome": lane["outcome"],
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
             for lane in results
             if lane["outcome"] in BLOCKER_OUTCOMES
