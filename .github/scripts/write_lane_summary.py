@@ -111,36 +111,35 @@ def sanitize_line(raw: str) -> str:
 
 
 def detect_schema_fixture_drift(lines: list[str]) -> dict:
+    file_set_match: re.Match[str] | None = None
     for line in lines:
         match = SCHEMA_CONTENT_DRIFT_RE.search(line)
-        if not match:
-            continue
-        family = match.group("family")
-        fixture = sanitize_line(match.group("fixture"))
-        return {
-            "kind": "app_server_schema_fixture_drift",
-            "fixture_family": family,
-            "fixture_path": fixture,
-            "direction": "vendored_differs_from_generated",
-            "recommended_fix": sanitize_line(match.group("command")),
-            "recommended_proof": {
-                "profile": "targeted",
-                "lane_ids": ["codex.app-server-protocol-test"],
-            },
-            "summary": f"{family} app-server schema fixture {fixture} differs from generated output",
-        }
+        if match:
+            family = match.group("family")
+            fixture = sanitize_line(match.group("fixture"))
+            return {
+                "kind": "app_server_schema_fixture_drift",
+                "fixture_family": family,
+                "fixture_path": fixture,
+                "direction": "vendored_differs_from_generated",
+                "recommended_fix": sanitize_line(match.group("command")),
+                "recommended_proof": {
+                    "profile": "targeted",
+                    "lane_ids": ["codex.app-server-protocol-test"],
+                },
+                "summary": f"{family} app-server schema fixture {fixture} differs from generated output",
+            }
+        if file_set_match is None:
+            file_set_match = SCHEMA_FILE_SET_DRIFT_RE.search(line)
 
-    for line in lines:
-        match = SCHEMA_FILE_SET_DRIFT_RE.search(line)
-        if not match:
-            continue
-        family = match.group("family")
+    if file_set_match:
+        family = file_set_match.group("family")
         return {
             "kind": "app_server_schema_fixture_drift",
             "fixture_family": family,
             "fixture_path": "",
             "direction": "vendored_file_set_differs_from_generated",
-            "recommended_fix": sanitize_line(match.group("command")),
+            "recommended_fix": sanitize_line(file_set_match.group("command")),
             "recommended_proof": {
                 "profile": "targeted",
                 "lane_ids": ["codex.app-server-protocol-test"],
