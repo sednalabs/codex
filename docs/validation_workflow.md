@@ -221,6 +221,9 @@ That summary should identify:
 - one primary blocker per exercised summary family, rather than a raw duplicate
   list of every failing sentinel and depth lane
 - secondary findings for remaining cancelled or missing depth lanes
+- whether failed lane evidence is active, stale, cancelled, or needs a targeted
+  latest-head proof rerun
+- the smallest lane set to rerun when stale failure evidence is still plausible
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
 - enough structured failure context to route debugging without embedding raw

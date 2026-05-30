@@ -1728,6 +1728,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '--dedupe-matched-run-url "${{ needs.metadata.outputs.dedupe_matched_run_url }}"',
             run_script,
         )
+        self.assertIn(
+            '--latest-head-sha "${{ needs.metadata.outputs.head_sha }}"',
+            run_script,
+        )
 
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
@@ -3448,6 +3452,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
         self.assertIn(
+            '--latest-head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
             '--workflow-result "${WORKFLOW_RESULT}"',
             report_step.get("run") or "",
         )
@@ -5025,6 +5033,138 @@ jobs:
             ),
             "success",
         )
+
+    def test_aggregate_summary_marks_stale_frontier_failures_for_targeted_latest_head_proof(self) -> None:
+        args = mock.Mock(
+            head_sha="1111111111111111111111111111111111111111",
+            latest_head_sha="2222222222222222222222222222222222222222",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="frontier",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {"kind": "lane", "lane_id": "codex.api-client-targeted", "outcome": "failure"},
+                {"kind": "lane", "lane_id": "codex.api-types-targeted", "outcome": "failure"},
+            ],
+            candidate_next_slices=[
+                {"kind": "lane", "lane_id": "codex.api-client-targeted", "signal": "API fixture failed"},
+                {"kind": "lane", "lane_id": "codex.api-types-targeted", "signal": "API type drift"},
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "stale")
+        self.assertEqual(
+            freshness["failed_lane_classification"],
+            "needs_targeted_latest_head_proof",
+        )
+        self.assertEqual(
+            freshness["recommended_rerun"]["lane_ids"],
+            ["codex.api-client-targeted", "codex.api-types-targeted"],
+        )
+        self.assertEqual(freshness["recommended_rerun"]["profile"], "targeted")
+
+    def test_aggregate_summary_marks_schema_fixture_failure_for_latest_head_proof(self) -> None:
+        args = mock.Mock(
+            head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+            latest_head_sha="ffffffffeeeeeeeeddddddddccccccccbbbbbbbb",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="targeted",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "signal": "schema fixture drift",
+                }
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "stale")
+        self.assertEqual(
+            freshness["failed_lane_classification"],
+            "needs_targeted_latest_head_proof",
+        )
+        self.assertEqual(
+            freshness["recommended_rerun"]["lane_ids"],
+            ["codex.app-server-protocol-test"],
+        )
+
+    def test_aggregate_summary_keeps_unknown_head_failure_active(self) -> None:
+        args = mock.Mock(
+            head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+            latest_head_sha="",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="targeted",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "signal": "schema fixture drift",
+                }
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "unknown")
+        self.assertEqual(freshness["failed_lane_classification"], "active")
+        self.assertFalse(freshness["recommended_rerun"]["needed"])
+
+    def test_aggregate_summary_marks_cancelled_release_smoke_as_cancelled(self) -> None:
+        args = mock.Mock(
+            head_sha="1234567890abcdef1234567890abcdef12345678",
+            latest_head_sha="1234567890abcdef1234567890abcdef12345678",
+            smoke_gate_result="cancelled",
+            artifact_result="skipped",
+            profile="checkpoint",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.release-smoke",
+                    "outcome": "cancelled",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.release-smoke",
+                    "signal": "release smoke cancelled",
+                }
+            ],
+            downstream_result="cancelled",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "current")
+        self.assertEqual(freshness["failed_lane_classification"], "cancelled")
+        self.assertTrue(freshness["recommended_rerun"]["needed"])
+        self.assertEqual(freshness["recommended_rerun"]["lane_ids"], ["codex.release-smoke"])
 
     def test_markdown_link_regex_excludes_optional_title(self) -> None:
         match = CHECK_MARKDOWN_LINKS.INLINE_LINK_RE.search(
