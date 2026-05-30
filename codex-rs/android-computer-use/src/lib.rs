@@ -776,7 +776,7 @@ impl AndroidRuntimeConfig {
                 ])
                 .or_else(|| {
                     file.as_ref()
-                        .and_then(|config| config.default_serial.clone())
+                        .and_then(|config| non_blank_config_value(&config.default_serial))
                 }),
                 package_name: env_lookup(&[
                     "CODEX_ANDROID_DEFAULT_PACKAGE_NAME",
@@ -784,7 +784,7 @@ impl AndroidRuntimeConfig {
                 ])
                 .or_else(|| {
                     file.as_ref()
-                        .and_then(|config| config.default_package_name.clone())
+                        .and_then(|config| non_blank_config_value(&config.default_package_name))
                 }),
                 activity: env_lookup(&[
                     "CODEX_ANDROID_DEFAULT_ACTIVITY",
@@ -792,11 +792,18 @@ impl AndroidRuntimeConfig {
                 ])
                 .or_else(|| {
                     file.as_ref()
-                        .and_then(|config| config.default_activity.clone())
+                        .and_then(|config| non_blank_config_value(&config.default_activity))
                 }),
             },
         })
     }
+}
+
+fn non_blank_config_value(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
 }
 
 #[derive(serde::Deserialize)]
@@ -1406,13 +1413,14 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
 }
 
 fn failed_response(error: String) -> ComputerUseCallResponse {
-    let text = match provider_unavailable_retryability(&error) {
+    let retryability = provider_unavailable_retryability(&error);
+    let text = match retryability {
         Some(retryability) => {
             format!("Android provider unavailable\nretryability: {retryability}\nreason: {error}")
         }
         None => error.clone(),
     };
-    let response_error = if provider_unavailable_retryability(&error).is_some() {
+    let response_error = if retryability.is_some() {
         format!("Android provider unavailable: {error}")
     } else {
         error
@@ -1453,12 +1461,8 @@ fn launch_app_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result
     let mut args = json!({
         "package_name": package_name,
     });
-    let launched_package = args
-        .get("package_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     if let Some(activity) = first_string(action, &["activity"]).or_else(|| {
-        (defaults.package_name.as_deref() == Some(launched_package))
+        (defaults.package_name.as_ref() == Some(&package_name))
             .then(|| defaults.activity.clone())
             .flatten()
     }) {
@@ -1842,6 +1846,27 @@ mod tests {
                 activity: Some(".MainActivity".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn android_config_ignores_blank_provider_defaults_from_config_file() {
+        let codex_home = tempfile::tempdir().expect("create temp codex home");
+        std::fs::write(
+            codex_home.path().join("android-computer-use.json"),
+            r#"{
+                "mcp_url":"https://android-provider.example/mcp",
+                "default_serial":" ",
+                "default_package_name":"",
+                "default_activity":"\t"
+            }"#,
+        )
+        .expect("write android provider config");
+
+        let config = AndroidRuntimeConfig::load_with_env(codex_home.path(), |_| None)
+            .expect("android provider config should load");
+
+        assert_eq!(config.mcp_url, "https://android-provider.example/mcp");
+        assert_eq!(config.defaults, AndroidProviderDefaults::default());
     }
 
     #[test]
