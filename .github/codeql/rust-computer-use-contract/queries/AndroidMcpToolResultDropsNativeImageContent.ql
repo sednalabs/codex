@@ -13,7 +13,7 @@
 import rust
 
 predicate androidComputerUseProviderFile(File file) {
-  file.getRelativePath() = "codex-rs/tui/src/android_computer_use_provider.rs"
+  file.getRelativePath() = "codex-rs/computer-use-runtime/src/lib.rs"
 }
 
 predicate referencesStructuredContent(Function function) {

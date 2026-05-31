@@ -1,0 +1,1 @@
+| codex-rs/tools/src/tool_registry_plan.rs:16:1:20:1 | fn bad | This native Android promotion path references canonical Android tools without registering ToolHandlerKind::ComputerUse. |

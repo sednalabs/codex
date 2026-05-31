@@ -1,0 +1,1 @@
+| codex-rs/computer-use-runtime/src/lib.rs:9:1:13:1 | fn handle_android_computer_use | The Android computer-use runtime no longer constructs native InputImage output. Provider screenshots must be converted into model-facing image content. |
