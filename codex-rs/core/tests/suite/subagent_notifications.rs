@@ -59,6 +59,33 @@ const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
 const SUBAGENT_STOP_CONTINUATION: &str = "continue only the child";
 const INTERNAL_SUBAGENT_PROMPT: &str = "internal subagent: review";
 
+fn run_snapshot_test<F>(future: F) -> Result<()>
+where
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("subagent-snapshot-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()?
+                .block_on(future)
+        })?
+        .join()
+        .map_err(|payload| {
+            if let Some(message) = payload.downcast_ref::<&str>() {
+                anyhow::anyhow!("subagent snapshot test panicked: {message}")
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                anyhow::anyhow!("subagent snapshot test panicked: {message}")
+            } else {
+                anyhow::anyhow!("subagent snapshot test panicked")
+            }
+        })?
+}
+
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     let is_zstd = req
         .headers

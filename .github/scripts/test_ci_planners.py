@@ -2204,7 +2204,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     for step in run_job.get("steps") or []
                     if step.get("name") == "Configure sccache backend"
                 )
-                self.assertIn("configure_sccache_backend.sh", configure_step.get("run") or "")
+                workflow_src_prefix = (
+                    "../.workflow-src"
+                    if workflow_name == "_sedna-linux-rust.yml"
+                    else ".workflow-src"
+                )
+                self.assertEqual(
+                    configure_step.get("run"),
+                    f"bash {workflow_src_prefix}/.github/scripts/configure_sccache_backend.sh '${{{{ inputs.cache_policy }}}}'",
+                )
 
                 save_step = next(
                     step

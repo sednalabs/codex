@@ -78,6 +78,19 @@ browser backend registry: Android is a peer native adapter, while the browser
 registry is the routing layer for browser-specific backends such as
 Playwright, in-app browser, and Chrome extension.
 
+Local Android bridge configuration lives in
+`~/.codex/android-computer-use.json`; the legacy
+`~/.codex/android-dynamic-tools.json` and
+`~/.codex/solarlab-android-dynamic-tools.json` names are still accepted while
+older provider configs converge. The bridge requires `mcp_url`, and may also read
+`default_serial`, `default_package_name`, and `default_activity`. Explicit tool
+arguments always win. When a serial is not supplied, the bridge applies
+`default_serial` to observe, step, screenshot fallback, and build-install
+provider calls. When `launch_app` omits a package, the bridge uses
+`default_package_name`; `default_activity` is applied only for the configured
+default package so an explicit package does not accidentally inherit the wrong
+activity.
+
 When an Android action fails, the native bridge should return the action error
 with a fresh post-failure observation when the provider can still capture one:
 current screenshot, compact UI digest or selector candidates, and any completed
@@ -86,6 +99,13 @@ from blindly replaying mutating input after a partially completed flow. If
 post-failure screenshot capture is unavailable, the response must say that the
 current state is unproven and instruct the agent to recover with
 `android_observe` before making visual claims.
+
+When the Android provider itself is temporarily unreachable, including hosted
+provider tunnel failures surfaced as HTTP 530, Codex returns a failed
+computer-use response labeled `Android provider unavailable` with
+`retryability: retry_same_request`. That classification is an operator hint:
+the tool call did not prove anything about the Android screen, and retrying the
+same non-mutating observe call is reasonable after the provider is restored.
 
 Performance, memory, and jank analysis belong in a companion Android
 performance workflow rather than the hot `android_step` path. Use adb-backed

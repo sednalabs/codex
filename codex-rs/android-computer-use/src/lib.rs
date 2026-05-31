@@ -149,14 +149,17 @@ async fn handle_with_config(
     params: &ComputerUseCallParams,
     config: AndroidRuntimeConfig,
 ) -> Result<ComputerUseCallResponse, String> {
+    let defaults = config.defaults.clone();
     let mut client = AndroidRuntimeClient::connect(config).await?;
     let tools = client.list_tools().await?;
 
     let response = match params.tool.as_str() {
-        ANDROID_OBSERVE_TOOL_NAME => observe(&mut client, &tools, &params.arguments).await,
-        ANDROID_STEP_TOOL_NAME => step(&mut client, &tools, &params.arguments).await,
+        ANDROID_OBSERVE_TOOL_NAME => {
+            observe(&mut client, &tools, &defaults, &params.arguments).await
+        }
+        ANDROID_STEP_TOOL_NAME => step(&mut client, &tools, &defaults, &params.arguments).await,
         ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME => {
-            install_build_from_run(&mut client, &tools, &params.arguments).await
+            install_build_from_run(&mut client, &tools, &defaults, &params.arguments).await
         }
         _ => Err(format!(
             "Unsupported Android computer-use tool `{}`.",
@@ -170,9 +173,10 @@ async fn handle_with_config(
 async fn observe(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
 ) -> Result<ComputerUseCallResponse, String> {
-    let mut response = match observe_ui(client, tools, arguments).await {
+    let mut response = match observe_ui(client, tools, defaults, arguments).await {
         Ok(observation) => {
             observation_response(client, tools, observation, "Android observation").await
         }
@@ -180,6 +184,7 @@ async fn observe(
             screenshot_fallback_response(
                 client,
                 tools,
+                defaults,
                 arguments,
                 "Android observation",
                 &err,
@@ -198,6 +203,7 @@ async fn observe(
 async fn step(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
 ) -> Result<ComputerUseCallResponse, String> {
     let actions = canonical_actions(arguments);
@@ -207,18 +213,18 @@ async fn step(
 
     let mut summaries = Vec::new();
     for action in actions {
-        match run_action(client, tools, &action).await {
+        match run_action(client, tools, defaults, &action).await {
             Ok(summary) => summaries.push(summary),
             Err(err) => {
                 return Ok(action_failure_response(
-                    client, tools, arguments, &action, err, &summaries,
+                    client, tools, defaults, arguments, &action, err, &summaries,
                 )
                 .await);
             }
         }
     }
 
-    let mut response = match observe_ui(client, tools, arguments).await {
+    let mut response = match observe_ui(client, tools, defaults, arguments).await {
         Ok(observation) => {
             observation_response(
                 client,
@@ -232,6 +238,7 @@ async fn step(
             screenshot_fallback_response(
                 client,
                 tools,
+                defaults,
                 arguments,
                 "Android post-action observation",
                 &err,
@@ -260,6 +267,7 @@ async fn step(
 async fn action_failure_response(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
     failed_action: &Value,
     action_error: String,
@@ -272,7 +280,7 @@ async fn action_failure_response(
     );
     let recovery_hint = "The current Android state is included below when available. The failed action may already have changed the device state; inspect the post-failure screen before retrying mutating input.";
 
-    let mut response = match observe_ui(client, tools, arguments).await {
+    let mut response = match observe_ui(client, tools, defaults, arguments).await {
         Ok(observation) => {
             match observation_response(
                 client,
@@ -292,6 +300,7 @@ async fn action_failure_response(
             match screenshot_fallback_response(
                 client,
                 tools,
+                defaults,
                 arguments,
                 "Android action failure observation",
                 &observe_err,
@@ -327,6 +336,7 @@ async fn action_failure_response(
 async fn install_build_from_run(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
 ) -> Result<ComputerUseCallResponse, String> {
     if !tools.contains(MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN) {
@@ -338,12 +348,12 @@ async fn install_build_from_run(
     let install_result = client
         .call_tool(
             MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN,
-            arguments.clone(),
+            arguments_with_default_serial(arguments, defaults),
         )
         .await?;
     let install_summary = summarize_install_result(install_result.structured_content());
 
-    let mut response = match observe_ui(client, tools, arguments).await {
+    let mut response = match observe_ui(client, tools, defaults, arguments).await {
         Ok(observation) => {
             observation_response(
                 client,
@@ -357,6 +367,7 @@ async fn install_build_from_run(
             match screenshot_fallback_response(
                 client,
                 tools,
+                defaults,
                 arguments,
                 "Android post-install observation",
                 &err,
@@ -387,6 +398,7 @@ async fn install_build_from_run(
 async fn observe_ui(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
 ) -> Result<AndroidToolResult, String> {
     let tool_name = if tools.contains("android.wait_for_stable_ui") && prefer_stable_ui(arguments) {
@@ -398,7 +410,7 @@ async fn observe_ui(
     let mut inspect_args = json!({
         "include_screenshot": true,
     });
-    copy_if_present(arguments, &mut inspect_args, "serial");
+    copy_serial_or_default(arguments, &mut inspect_args, defaults);
     copy_if_present(arguments, &mut inspect_args, "timeout_secs");
     copy_if_present(arguments, &mut inspect_args, "screenshot_filename");
     copy_if_present(arguments, &mut inspect_args, "hierarchy_filename");
@@ -491,6 +503,7 @@ async fn observation_response(
 async fn screenshot_fallback_response(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     arguments: &Value,
     title: &str,
     observe_error: &str,
@@ -509,7 +522,7 @@ async fn screenshot_fallback_response(
 
     if tools.contains("android.capture_screenshot") {
         let mut args = json!({});
-        copy_if_present(arguments, &mut args, "serial");
+        copy_serial_or_default(arguments, &mut args, defaults);
         copy_inspect_screenshot_filename_for_capture(arguments, &mut args);
         match client.call_tool("android.capture_screenshot", args).await {
             Ok(capture) => {
@@ -551,25 +564,22 @@ async fn screenshot_fallback_response(
 async fn run_action(
     client: &mut AndroidRuntimeClient,
     tools: &BTreeSet<String>,
+    defaults: &AndroidProviderDefaults,
     action: &Value,
 ) -> Result<String, String> {
     match action_kind(action) {
         "launch_app" => {
-            let mut args = json!({});
-            copy_first_present(action, &mut args, &["package_name", "package"]);
-            copy_if_present(action, &mut args, "activity");
-            copy_if_present(action, &mut args, "serial");
-            copy_if_present(action, &mut args, "wait_for_activity");
-            copy_if_present(action, &mut args, "wait_for_package");
-            copy_if_present(action, &mut args, "wait_for_selector");
-            copy_if_present(action, &mut args, "timeout_secs");
+            let args = launch_app_args(action, defaults)?;
             client.call_tool("android.launch_app", args).await?;
             Ok("launched Android app".to_string())
         }
         "tap" | "click" => {
             if has_xy(action) {
                 client
-                    .call_tool("android.input.tap", input_args(action, &["x", "y"]))
+                    .call_tool(
+                        "android.input.tap",
+                        input_args(action, &["x", "y"], defaults),
+                    )
                     .await?;
                 Ok(format!(
                     "tapped at {},{}",
@@ -577,7 +587,7 @@ async fn run_action(
                     value_display(action.get("y"))
                 ))
             } else {
-                let args = element_args(action)?;
+                let args = element_args(action, defaults)?;
                 client.call_tool("android.tap_element", args).await?;
                 Ok("tapped matching UI element".to_string())
             }
@@ -588,10 +598,13 @@ async fn run_action(
             }
             if tools.contains("android.input.double_tap") {
                 client
-                    .call_tool("android.input.double_tap", input_args(action, &["x", "y"]))
+                    .call_tool(
+                        "android.input.double_tap",
+                        input_args(action, &["x", "y"], defaults),
+                    )
                     .await?;
             } else {
-                let args = input_args(action, &["x", "y"]);
+                let args = input_args(action, &["x", "y"], defaults);
                 client.call_tool("android.input.tap", args.clone()).await?;
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 client.call_tool("android.input.tap", args).await?;
@@ -609,7 +622,7 @@ async fn run_action(
             client
                 .call_tool(
                     "android.input.long_press",
-                    input_args(action, &["x", "y", "duration_ms"]),
+                    input_args(action, &["x", "y", "duration_ms"], defaults),
                 )
                 .await?;
             Ok("long pressed Android coordinates".to_string())
@@ -618,26 +631,26 @@ async fn run_action(
             client
                 .call_tool(
                     "android.input.swipe",
-                    input_args(action, &["x1", "y1", "x2", "y2", "duration_ms"]),
+                    input_args(action, &["x1", "y1", "x2", "y2", "duration_ms"], defaults),
                 )
                 .await?;
             Ok("swiped Android screen".to_string())
         }
         "scroll" => {
-            let args = scroll_args(action)?;
+            let args = scroll_args(action, defaults)?;
             client.call_tool("android.input.swipe", args).await?;
             Ok("scrolled Android screen".to_string())
         }
         "type" | "type_text" => {
             if action.get("selector").is_some() || action.get("target").is_some() {
-                let mut args = element_args(action)?;
+                let mut args = element_args(action, defaults)?;
                 copy_if_present(action, &mut args, "text");
                 client.call_tool("android.type_into_element", args).await?;
                 Ok("typed into matching UI element".to_string())
             } else {
                 let mut args = json!({});
                 copy_if_present(action, &mut args, "text");
-                copy_if_present(action, &mut args, "serial");
+                copy_serial_or_default(action, &mut args, defaults);
                 copy_if_present(action, &mut args, "wait_for_selector");
                 copy_if_present(action, &mut args, "timeout_secs");
                 client.call_tool("android.input.text", args).await?;
@@ -650,7 +663,7 @@ async fn run_action(
             {
                 let mut args = json!({});
                 copy_if_present(action, &mut args, "keys");
-                copy_if_present(action, &mut args, "serial");
+                copy_serial_or_default(action, &mut args, defaults);
                 client
                     .call_tool("android.input.keycombination", args)
                     .await?;
@@ -658,7 +671,7 @@ async fn run_action(
             } else {
                 let mut args = json!({});
                 copy_first_present(action, &mut args, &["keycode", "key"]);
-                copy_if_present(action, &mut args, "serial");
+                copy_serial_or_default(action, &mut args, defaults);
                 copy_if_present(action, &mut args, "wait_for_activity");
                 copy_if_present(action, &mut args, "wait_for_package");
                 copy_if_present(action, &mut args, "wait_for_selector");
@@ -677,7 +690,7 @@ async fn run_action(
                 Ok(format!("waited {ms} ms"))
             } else {
                 let mut args = json!({ "include_screenshot": true });
-                copy_if_present(action, &mut args, "serial");
+                copy_serial_or_default(action, &mut args, defaults);
                 copy_if_present(action, &mut args, "timeout_secs");
                 client.call_tool("android.wait_for_stable_ui", args).await?;
                 Ok("waited for stable Android UI".to_string())
@@ -710,14 +723,29 @@ struct AndroidRuntimeConfig {
     mcp_url: String,
     cf_access_client_id: Option<String>,
     cf_access_client_secret: Option<String>,
+    defaults: AndroidProviderDefaults,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AndroidProviderDefaults {
+    serial: Option<String>,
+    package_name: Option<String>,
+    activity: Option<String>,
 }
 
 impl AndroidRuntimeConfig {
     fn load(codex_home: &Path) -> Option<Self> {
+        Self::load_with_env(codex_home, first_env)
+    }
+
+    fn load_with_env(
+        codex_home: &Path,
+        mut env_lookup: impl FnMut(&[&str]) -> Option<String>,
+    ) -> Option<Self> {
         let file = AndroidRuntimeConfigFile::load(codex_home);
-        let mcp_url = first_env(&["CODEX_ANDROID_MCP_URL", "SOLARLAB_ANDROID_MCP_URL"])
+        let mcp_url = env_lookup(&["CODEX_ANDROID_MCP_URL", "SOLARLAB_ANDROID_MCP_URL"])
             .or_else(|| {
-                first_env(&[
+                env_lookup(&[
                     "CODEX_ANDROID_MCP_HOSTNAME",
                     "SOLARLAB_ANDROID_MCP_HOSTNAME",
                 ])
@@ -733,21 +761,57 @@ impl AndroidRuntimeConfig {
             .or_else(|| file.as_ref().and_then(|config| config.mcp_url.clone()))?;
         Some(Self {
             mcp_url,
-            cf_access_client_id: first_env(&[
+            cf_access_client_id: env_lookup(&[
                 "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
                 "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_ID",
             ]),
-            cf_access_client_secret: first_env(&[
+            cf_access_client_secret: env_lookup(&[
                 "CODEX_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
                 "SOLARLAB_ANDROID_MCP_CF_ACCESS_CLIENT_SECRET",
             ]),
+            defaults: AndroidProviderDefaults {
+                serial: env_lookup(&[
+                    "CODEX_ANDROID_DEFAULT_SERIAL",
+                    "SOLARLAB_ANDROID_DEFAULT_SERIAL",
+                ])
+                .or_else(|| {
+                    file.as_ref()
+                        .and_then(|config| non_blank_config_value(&config.default_serial))
+                }),
+                package_name: env_lookup(&[
+                    "CODEX_ANDROID_DEFAULT_PACKAGE_NAME",
+                    "SOLARLAB_ANDROID_DEFAULT_PACKAGE_NAME",
+                ])
+                .or_else(|| {
+                    file.as_ref()
+                        .and_then(|config| non_blank_config_value(&config.default_package_name))
+                }),
+                activity: env_lookup(&[
+                    "CODEX_ANDROID_DEFAULT_ACTIVITY",
+                    "SOLARLAB_ANDROID_DEFAULT_ACTIVITY",
+                ])
+                .or_else(|| {
+                    file.as_ref()
+                        .and_then(|config| non_blank_config_value(&config.default_activity))
+                }),
+            },
         })
     }
+}
+
+fn non_blank_config_value(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
 }
 
 #[derive(serde::Deserialize)]
 struct AndroidRuntimeConfigFile {
     mcp_url: Option<String>,
+    default_serial: Option<String>,
+    default_package_name: Option<String>,
+    default_activity: Option<String>,
 }
 
 impl AndroidRuntimeConfigFile {
@@ -1349,21 +1413,75 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
 }
 
 fn failed_response(error: String) -> ComputerUseCallResponse {
+    let retryability = provider_unavailable_retryability(&error);
+    let text = match retryability {
+        Some(retryability) => {
+            format!("Android provider unavailable\nretryability: {retryability}\nreason: {error}")
+        }
+        None => error.clone(),
+    };
+    let response_error = if retryability.is_some() {
+        format!("Android provider unavailable: {error}")
+    } else {
+        error
+    };
     ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText {
-            text: error.clone(),
-        }],
+        content_items: vec![ComputerUseCallOutputContentItem::InputText { text }],
         success: false,
-        error: Some(error),
+        error: Some(response_error),
     }
 }
 
-fn input_args(action: &Value, fields: &[&str]) -> Value {
+fn provider_unavailable_retryability(error: &str) -> Option<&'static str> {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("android provider http 530")
+        || normalized.contains("error code: 1033")
+        || normalized.contains("cloudflare tunnel")
+        || normalized.contains("tunnel error")
+        || normalized.contains("failed to reach android provider")
+        || normalized.contains("connection refused")
+        || normalized.contains("connection reset")
+        || normalized.contains("timed out")
+        || normalized.contains("temporary failure")
+    {
+        Some("retry_same_request")
+    } else {
+        None
+    }
+}
+
+fn launch_app_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result<Value, String> {
+    let package_name = first_string(action, &["package_name", "package"])
+        .or_else(|| defaults.package_name.clone())
+        .ok_or_else(|| {
+            "launch_app requires package_name/package or configured default_package_name."
+                .to_string()
+        })?;
+
+    let mut args = json!({
+        "package_name": package_name,
+    });
+    if let Some(activity) = first_string(action, &["activity"]).or_else(|| {
+        (defaults.package_name.as_ref() == Some(&package_name))
+            .then(|| defaults.activity.clone())
+            .flatten()
+    }) {
+        args["activity"] = Value::String(activity);
+    }
+    copy_serial_or_default(action, &mut args, defaults);
+    copy_if_present(action, &mut args, "wait_for_activity");
+    copy_if_present(action, &mut args, "wait_for_package");
+    copy_if_present(action, &mut args, "wait_for_selector");
+    copy_if_present(action, &mut args, "timeout_secs");
+    Ok(args)
+}
+
+fn input_args(action: &Value, fields: &[&str], defaults: &AndroidProviderDefaults) -> Value {
     let mut args = json!({});
     for field in fields {
         copy_if_present(action, &mut args, field);
     }
-    copy_if_present(action, &mut args, "serial");
+    copy_serial_or_default(action, &mut args, defaults);
     copy_if_present(action, &mut args, "expect_scroll_change");
     copy_if_present(action, &mut args, "wait_for_activity");
     copy_if_present(action, &mut args, "wait_for_package");
@@ -1372,14 +1490,14 @@ fn input_args(action: &Value, fields: &[&str]) -> Value {
     args
 }
 
-fn element_args(action: &Value) -> Result<Value, String> {
+fn element_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result<Value, String> {
     let mut args = json!({});
     if let Some(selector) = action.get("selector").or_else(|| action.get("target")) {
         args["selector"] = selector.clone();
     } else {
         return Err("element action requires selector or target.".to_string());
     }
-    copy_if_present(action, &mut args, "serial");
+    copy_serial_or_default(action, &mut args, defaults);
     copy_if_present(action, &mut args, "match_index");
     copy_if_present(action, &mut args, "wait_for_selector");
     copy_if_present(action, &mut args, "wait_until_absent");
@@ -1387,12 +1505,16 @@ fn element_args(action: &Value) -> Result<Value, String> {
     Ok(args)
 }
 
-fn scroll_args(action: &Value) -> Result<Value, String> {
+fn scroll_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result<Value, String> {
     if ["x1", "y1", "x2", "y2"]
         .iter()
         .all(|field| action.get(field).is_some())
     {
-        return Ok(input_args(action, &["x1", "y1", "x2", "y2", "duration_ms"]));
+        return Ok(input_args(
+            action,
+            &["x1", "y1", "x2", "y2", "duration_ms"],
+            defaults,
+        ));
     }
     let scroll_y = action
         .get("scroll_y")
@@ -1407,8 +1529,29 @@ fn scroll_args(action: &Value) -> Result<Value, String> {
         "y2": y - scroll_y,
     });
     copy_if_present(action, &mut args, "duration_ms");
-    copy_if_present(action, &mut args, "serial");
+    copy_serial_or_default(action, &mut args, defaults);
     Ok(args)
+}
+
+fn arguments_with_default_serial(arguments: &Value, defaults: &AndroidProviderDefaults) -> Value {
+    let mut args = arguments.clone();
+    copy_serial_or_default(arguments, &mut args, defaults);
+    args
+}
+
+fn copy_serial_or_default(
+    source: &Value,
+    target: &mut Value,
+    defaults: &AndroidProviderDefaults,
+) -> bool {
+    if copy_if_present(source, target, "serial") {
+        true
+    } else if let Some(serial) = &defaults.serial {
+        target["serial"] = Value::String(serial.clone());
+        true
+    } else {
+        false
+    }
 }
 
 fn copy_first_present(source: &Value, target: &mut Value, fields: &[&str]) {
@@ -1676,6 +1819,57 @@ mod tests {
     }
 
     #[test]
+    fn android_config_loads_provider_defaults_from_config_file() {
+        let codex_home = tempfile::tempdir().expect("create temp codex home");
+        std::fs::write(
+            codex_home
+                .path()
+                .join("solarlab-android-dynamic-tools.json"),
+            r#"{
+                "mcp_url":"https://android-provider.example/mcp",
+                "default_serial":"emulator-5554",
+                "default_package_name":"com.example.app",
+                "default_activity":".MainActivity"
+            }"#,
+        )
+        .expect("write android provider config");
+
+        let config = AndroidRuntimeConfig::load_with_env(codex_home.path(), |_| None)
+            .expect("android provider config should load");
+
+        assert_eq!(config.mcp_url, "https://android-provider.example/mcp");
+        assert_eq!(
+            config.defaults,
+            AndroidProviderDefaults {
+                serial: Some("emulator-5554".to_string()),
+                package_name: Some("com.example.app".to_string()),
+                activity: Some(".MainActivity".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn android_config_ignores_blank_provider_defaults_from_config_file() {
+        let codex_home = tempfile::tempdir().expect("create temp codex home");
+        std::fs::write(
+            codex_home.path().join("android-computer-use.json"),
+            r#"{
+                "mcp_url":"https://android-provider.example/mcp",
+                "default_serial":" ",
+                "default_package_name":"",
+                "default_activity":"\t"
+            }"#,
+        )
+        .expect("write android provider config");
+
+        let config = AndroidRuntimeConfig::load_with_env(codex_home.path(), |_| None)
+            .expect("android provider config should load");
+
+        assert_eq!(config.mcp_url, "https://android-provider.example/mcp");
+        assert_eq!(config.defaults, AndroidProviderDefaults::default());
+    }
+
+    #[test]
     fn prefer_stable_ui_defaults_to_true_unless_disabled() {
         assert!(prefer_stable_ui(&json!({})));
         assert!(prefer_stable_ui(&json!({"stable": true})));
@@ -1863,9 +2057,101 @@ mod tests {
     }
 
     #[test]
+    fn launch_app_args_uses_configured_default_package_and_activity() {
+        let defaults = AndroidProviderDefaults {
+            serial: Some("emulator-5554".to_string()),
+            package_name: Some("com.example.app".to_string()),
+            activity: Some(".MainActivity".to_string()),
+        };
+
+        let args = launch_app_args(&json!({"type": "launch_app"}), &defaults)
+            .expect("launch args should use configured defaults");
+
+        assert_eq!(
+            args,
+            json!({
+                "package_name": "com.example.app",
+                "activity": ".MainActivity",
+                "serial": "emulator-5554"
+            })
+        );
+    }
+
+    #[test]
+    fn launch_app_args_does_not_leak_default_activity_to_other_package() {
+        let defaults = AndroidProviderDefaults {
+            serial: None,
+            package_name: Some("com.example.app".to_string()),
+            activity: Some(".MainActivity".to_string()),
+        };
+
+        let args = launch_app_args(
+            &json!({"type": "launch_app", "package": "com.other.app"}),
+            &defaults,
+        )
+        .expect("explicit package should build launch args");
+
+        assert_eq!(args, json!({"package_name": "com.other.app"}));
+    }
+
+    #[test]
+    fn input_args_applies_default_serial_without_clobbering_explicit_serial() {
+        let defaults = AndroidProviderDefaults {
+            serial: Some("emulator-5554".to_string()),
+            ..AndroidProviderDefaults::default()
+        };
+
+        assert_eq!(
+            input_args(&json!({"x": 1, "y": 2}), &["x", "y"], &defaults),
+            json!({"x": 1, "y": 2, "serial": "emulator-5554"})
+        );
+        assert_eq!(
+            input_args(
+                &json!({"x": 1, "y": 2, "serial": "device-1"}),
+                &["x", "y"],
+                &defaults
+            ),
+            json!({"x": 1, "y": 2, "serial": "device-1"})
+        );
+    }
+
+    #[test]
+    fn install_args_applies_default_serial() {
+        let defaults = AndroidProviderDefaults {
+            serial: Some("emulator-5554".to_string()),
+            ..AndroidProviderDefaults::default()
+        };
+
+        assert_eq!(
+            arguments_with_default_serial(&json!({"workflow_run_id": 123}), &defaults),
+            json!({"workflow_run_id": 123, "serial": "emulator-5554"})
+        );
+    }
+
+    #[test]
+    fn failed_response_classifies_transient_provider_unavailability() {
+        let response = failed_response("Android provider HTTP 530: error code: 1033".to_string());
+
+        assert!(!response.success);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("Android provider unavailable: Android provider HTTP 530: error code: 1033")
+        );
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("expected text response");
+        };
+        assert!(text.contains("Android provider unavailable"));
+        assert!(text.contains("retryability: retry_same_request"));
+    }
+
+    #[test]
     fn scroll_args_maps_scroll_delta_to_swipe() {
-        let args = scroll_args(&json!({"type": "scroll", "scroll_y": 300, "x": 500, "y": 1000}))
-            .expect("scroll args");
+        let args = scroll_args(
+            &json!({"type": "scroll", "scroll_y": 300, "x": 500, "y": 1000}),
+            &AndroidProviderDefaults::default(),
+        )
+        .expect("scroll args");
         assert_eq!(args["x1"], 500);
         assert_eq!(args["y1"], 1000);
         assert_eq!(args["x2"], 500);
