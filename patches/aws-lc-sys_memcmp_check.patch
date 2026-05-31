@@ -1,10 +1,11 @@
 diff --git a/builder/cc_builder.rs b/builder/cc_builder.rs
 --- a/builder/cc_builder.rs
 +++ b/builder/cc_builder.rs
-@@ -26,7 +26,7 @@
+@@ -26,8 +26,8 @@
  };
  use std::cell::Cell;
  use std::collections::HashMap;
+ use std::env;
 -use std::path::PathBuf;
 +use std::path::{Path, PathBuf};
  
@@ -87,11 +88,11 @@ diff --git a/builder/cc_builder.rs b/builder/cc_builder.rs
 diff --git a/builder/main.rs b/builder/main.rs
 --- a/builder/main.rs
 +++ b/builder/main.rs
-@@ -944,10 +944,12 @@
+@@ -1106,10 +1106,12 @@
      // iterate over all the include paths and copy them into the final output
      for path in include_paths {
          for child in std::fs::read_dir(path).into_iter().flatten().flatten() {
--            if child.file_type().map_or(false, |t| t.is_file()) {
+-            if child.path().is_file() {
 +            let child_path = child.path();
 +
 +            if child_path.is_file() {
@@ -103,7 +104,7 @@ diff --git a/builder/main.rs b/builder/main.rs
                  )
                  .expect("Failed to copy include file during build setup");
                  continue;
-@@ -957,7 +959,7 @@
+@@ -1119,7 +1121,7 @@
              let options = fs_extra::dir::CopyOptions::new()
                  .skip_exist(true)
                  .copy_inside(true);

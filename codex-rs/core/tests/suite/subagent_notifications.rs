@@ -956,10 +956,30 @@ async fn spawned_child_receives_forked_parent_context() -> Result<()> {
     Ok(())
 }
 
+fn run_spawn_model_snapshot_test<Fut>(test_body: Fut) -> Result<()>
+where
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("spawn-model-snapshot-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(test_body)
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 #[test]
 fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role() -> Result<()>
 {
-    run_snapshot_test(async {
+    run_spawn_model_snapshot_test(async {
         skip_if_no_network!(Ok(()));
 
         let server = start_mock_server().await;
@@ -1141,7 +1161,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
 
 #[test]
 fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
-    run_snapshot_test(async {
+    run_spawn_model_snapshot_test(async {
         skip_if_no_network!(Ok(()));
 
         let server = start_mock_server().await;

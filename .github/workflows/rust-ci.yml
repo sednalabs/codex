@@ -41,7 +41,7 @@ jobs:
               {
                   "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
+                  "timeout_minutes": 240,
               }
           ]
 

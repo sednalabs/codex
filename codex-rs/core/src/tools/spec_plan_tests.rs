@@ -435,11 +435,15 @@ async fn android_dynamic_tools_use_native_computer_use_runtime() {
         ToolPlanInputs {
             dynamic_tools: vec![
                 dynamic_tool(
-                    None,
+                    /*namespace*/ None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
-                dynamic_tool(None, ANDROID_STEP_TOOL_NAME, /*defer_loading*/ false),
+                dynamic_tool(
+                    /*namespace*/ None,
+                    ANDROID_STEP_TOOL_NAME,
+                    /*defer_loading*/ false,
+                ),
             ],
             ..ToolPlanInputs::default()
         },
@@ -474,12 +478,12 @@ async fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
         ToolPlanInputs {
             dynamic_tools: vec![
                 dynamic_tool(
-                    None,
+                    /*namespace*/ None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
                 dynamic_tool(
-                    None,
+                    /*namespace*/ None,
                     ANDROID_OBSERVE_TOOL_NAME,
                     /*defer_loading*/ false,
                 ),
@@ -506,7 +510,7 @@ async fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
         },
         ToolPlanInputs {
             dynamic_tools: vec![dynamic_tool(
-                None,
+                /*namespace*/ None,
                 ANDROID_OBSERVE_TOOL_NAME,
                 /*defer_loading*/ true,
             )],

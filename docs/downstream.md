@@ -250,6 +250,19 @@ User-visible behavior:
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
 
+### MCP OAuth: device-code login for headless servers
+
+Why:
+- Let operators authenticate MCP servers from SSH-only or browserless hosts without installing temporary login helpers or copying fallback credential files by hand.
+- Preserve OAuth discovery metadata needed for standards-based Device Authorization Grant flows instead of flattening the authorization-server response down to browser-only fields.
+- Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with a public client id in config and user approval happening in the browser shown by the identity provider.
+
+User-visible behavior:
+- `codex mcp login --device-auth <server>` uses the discovered `device_authorization_endpoint` and requires `grant_types_supported` to include `urn:ietf:params:oauth:grant-type:device_code`.
+- The command uses the configured public MCP OAuth `client_id`, requests a device code with PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
+- Discovery keeps `token_endpoint`, `device_authorization_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- This is an intentional downstream carry until upstream has an equivalent headless MCP OAuth login path. If upstream lands native device-login support, compare behavior and drop or re-home this carry rather than keeping both paths.
+
 ### App-server transport: raw-byte websocket auth secrets
 
 Why:
