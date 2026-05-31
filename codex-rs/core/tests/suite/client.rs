@@ -5,6 +5,9 @@ use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ThreadManager;
+use codex_core::resolve_installation_id;
+use codex_core::thread_store_from_config;
+use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -13,7 +16,6 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
@@ -50,6 +52,7 @@ use core_test_support::PathBufExt;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ResponsesRequest;
+use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_message_item_added;
@@ -57,6 +60,7 @@ use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
+use core_test_support::responses::mount_sse_repeating;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
@@ -389,6 +393,8 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -724,7 +730,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn includes_conversation_id_and_model_headers_in_request() {
+async fn includes_session_id_thread_id_and_model_headers_in_request() {
     skip_if_no_network!();
 
     // Mock server
@@ -742,7 +748,8 @@ async fn includes_conversation_id_and_model_headers_in_request() {
         .await
         .expect("create new conversation");
     let codex = test.codex.clone();
-    let session_id = test.session_configured.session_id;
+    let expected_session_id = test.session_configured.session_id;
+    let expected_thread_id = test.session_configured.thread_id;
 
     codex
         .submit(Op::UserInput {
@@ -753,6 +760,8 @@ async fn includes_conversation_id_and_model_headers_in_request() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -761,7 +770,8 @@ async fn includes_conversation_id_and_model_headers_in_request() {
 
     let request = resp_mock.single_request();
     assert_eq!(request.path(), "/v1/responses");
-    let request_session_id = request.header("session_id").expect("session_id header");
+    let request_session_id = request.header("session-id").expect("session-id header");
+    let request_thread_id = request.header("thread-id").expect("thread-id header");
     let request_authorization = request
         .header("authorization")
         .expect("authorization header");
@@ -770,10 +780,16 @@ async fn includes_conversation_id_and_model_headers_in_request() {
     let installation_id =
         std::fs::read_to_string(test.codex_home_path().join(INSTALLATION_ID_FILENAME))
             .expect("read installation id");
+    let thread_id_string = expected_thread_id.to_string();
 
-    assert_eq!(request_session_id, session_id.to_string());
+    assert_eq!(request_session_id, expected_session_id.to_string());
+    assert_eq!(request_thread_id, thread_id_string.as_str());
     assert_eq!(request_originator, originator().value);
     assert_eq!(request_authorization, "Bearer Test API Key");
+    assert_eq!(
+        request_body["prompt_cache_key"].as_str(),
+        Some(thread_id_string.as_str())
+    );
     assert_eq!(
         request_body["client_metadata"]["x-codex-installation-id"].as_str(),
         Some(installation_id.as_str())
@@ -865,9 +881,9 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
     let config = Arc::new(config);
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let session_telemetry = SessionTelemetry::new(
-        conversation_id,
+        thread_id,
         model.as_str(),
         model_info.slug.as_str(),
         /*account_id*/ None,
@@ -882,7 +898,8 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
             "unused-api-key",
         ))),
-        conversation_id,
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider,
         SessionSource::Exec,
@@ -890,6 +907,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
     );
     let mut client_session = client.new_session();
     let mut prompt = Prompt::default();
@@ -954,6 +972,8 @@ async fn includes_base_instructions_override_in_request() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -998,7 +1018,8 @@ async fn chatgpt_auth_sends_correct_request() {
         .await
         .expect("create new conversation");
     let codex = test.codex.clone();
-    let thread_id = test.session_configured.session_id;
+    let expected_session_id = test.session_configured.session_id;
+    let expected_thread_id = test.session_configured.thread_id;
 
     codex
         .submit(Op::UserInput {
@@ -1009,6 +1030,8 @@ async fn chatgpt_auth_sends_correct_request() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1026,11 +1049,13 @@ async fn chatgpt_auth_sends_correct_request() {
         .expect("chatgpt-account-id header");
     let request_body = request.body_json();
 
-    let session_id = request.header("session_id").expect("session_id header");
+    let request_session_id = request.header("session-id").expect("session-id header");
+    let request_thread_id = request.header("thread-id").expect("thread-id header");
     let installation_id =
         std::fs::read_to_string(test.codex_home_path().join(INSTALLATION_ID_FILENAME))
             .expect("read installation id");
-    assert_eq!(session_id, thread_id.to_string());
+    assert_eq!(request_session_id, expected_session_id.to_string());
+    assert_eq!(request_thread_id, expected_thread_id.to_string());
 
     assert_eq!(request_originator, originator().value);
     assert_eq!(request_authorization, "Bearer Access Token");
@@ -1090,26 +1115,34 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider = model_provider;
 
-    let auth_manager =
-        match CodexAuth::from_auth_storage(codex_home.path(), AuthCredentialsStoreMode::File) {
-            Ok(Some(auth)) => codex_core::test_support::auth_manager_from_auth(auth),
-            Ok(None) => panic!("No CodexAuth found in codex_home"),
-            Err(e) => panic!("Failed to load CodexAuth: {e}"),
-        };
+    let auth_manager = match CodexAuth::from_auth_storage(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+    )
+    .await
+    {
+        Ok(Some(auth)) => codex_core::test_support::auth_manager_from_auth(auth),
+        Ok(None) => panic!("No CodexAuth found in codex_home"),
+        Err(e) => panic!("Failed to load CodexAuth: {e}"),
+    };
+    let installation_id = resolve_installation_id(&config.codex_home)
+        .await
+        .expect("resolve installation id");
     let thread_manager = ThreadManager::new(
         &config,
         auth_manager,
         SessionSource::Exec,
-        CollaborationModesConfig {
-            default_mode_request_user_input: config
-                .features
-                .enabled(Feature::DefaultModeRequestUserInput),
-        },
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
         /*analytics_events_client*/ None,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
+        installation_id,
+        /*attestation_provider*/ None,
     );
     let NewThread { thread: codex, .. } = thread_manager
-        .start_thread(config)
+        .start_thread(config.clone())
         .await
         .expect("create new conversation");
 
@@ -1122,6 +1155,8 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1160,6 +1195,8 @@ async fn includes_user_instructions_message_in_request() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1247,6 +1284,8 @@ async fn includes_apps_guidance_as_developer_message_for_chatgpt_auth() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1309,6 +1348,8 @@ async fn omits_apps_guidance_for_api_key_auth_even_when_feature_enabled() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1367,6 +1408,8 @@ async fn omits_apps_guidance_when_configured_off() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1408,6 +1451,8 @@ async fn omits_environment_context_when_configured_off() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1464,6 +1509,8 @@ async fn skills_append_to_developer_message() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1546,6 +1593,8 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1606,6 +1655,8 @@ async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1647,6 +1698,8 @@ async fn includes_no_effort_in_request() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1661,7 +1714,7 @@ async fn includes_no_effort_in_request() -> anyhow::Result<()> {
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("xhigh")
+        Some("medium")
     );
 
     Ok(())
@@ -1689,6 +1742,8 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1703,7 +1758,7 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
             .get("reasoning")
             .and_then(|t| t.get("effort"))
             .and_then(|v| v.as_str()),
-        Some("xhigh")
+        Some("medium")
     );
 
     Ok(())
@@ -1719,12 +1774,7 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex {
-        codex,
-        config,
-        session_configured,
-        ..
-    } = test_codex().with_model("gpt-5.4").build(&server).await?;
+    let TestCodex { codex, config, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Default,
@@ -1736,28 +1786,27 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
     };
 
     codex
-        .submit(Op::UserTurn {
-            environments: None,
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
-            cwd: config.cwd.to_path_buf(),
-            approval_policy: config.permissions.approval_policy.value(),
-            approvals_reviewer: None,
-            sandbox_policy: config.legacy_sandbox_policy(),
-            permission_profile: None,
-            model: session_configured.model.clone(),
-            effort: Some(ReasoningEffort::Low),
-            summary: Some(
-                config
-                    .model_reasoning_summary
-                    .unwrap_or(ReasoningSummary::Auto),
-            ),
-            service_tier: None,
-            collaboration_mode: Some(collaboration_mode),
+            environments: None,
             final_output_json_schema: None,
-            personality: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                cwd: Some(config.cwd.to_path_buf()),
+                approval_policy: Some(config.permissions.approval_policy.value()),
+                sandbox_policy: Some(config.legacy_sandbox_policy()),
+                summary: Some(
+                    config
+                        .model_reasoning_summary
+                        .unwrap_or(ReasoningSummary::Auto),
+                ),
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
         })
         .await?;
 
@@ -1802,6 +1851,8 @@ async fn configured_reasoning_summary_is_sent() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1858,24 +1909,30 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
         .await?;
 
     codex
-        .submit(Op::UserTurn {
-            environments: None,
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
             }],
-            cwd: config.cwd.to_path_buf(),
-            approval_policy: config.permissions.approval_policy.value(),
-            approvals_reviewer: None,
-            sandbox_policy: config.legacy_sandbox_policy(),
-            permission_profile: None,
-            model: session_configured.model,
-            effort: None,
-            summary: Some(ReasoningSummary::Concise),
-            service_tier: None,
-            collaboration_mode: None,
+            environments: None,
             final_output_json_schema: None,
-            personality: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                cwd: Some(config.cwd.to_path_buf()),
+                approval_policy: Some(config.permissions.approval_policy.value()),
+                sandbox_policy: Some(config.legacy_sandbox_policy()),
+                summary: Some(ReasoningSummary::Concise),
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: session_configured.model,
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
         })
         .await
         .unwrap();
@@ -1921,6 +1978,8 @@ async fn reasoning_summary_is_omitted_when_disabled() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1979,6 +2038,8 @@ async fn reasoning_summary_none_overrides_model_catalog_default() -> anyhow::Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -2017,6 +2078,8 @@ async fn includes_default_verbosity_in_request() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -2064,6 +2127,8 @@ async fn configured_verbosity_not_sent_for_models_without_support() -> anyhow::R
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -2110,6 +2175,8 @@ async fn configured_verbosity_is_sent() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -2161,6 +2228,8 @@ async fn includes_developer_instructions_message_in_request() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -2267,11 +2336,11 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
     let config = Arc::new(config);
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let auth_manager =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("Test API Key"));
     let session_telemetry = SessionTelemetry::new(
-        conversation_id,
+        thread_id,
         model.as_str(),
         model_info.slug.as_str(),
         /*account_id*/ None,
@@ -2285,7 +2354,8 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        conversation_id,
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider.clone(),
         SessionSource::Exec,
@@ -2293,6 +2363,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
     );
     let mut client_session = client.new_session();
 
@@ -2452,43 +2523,11 @@ async fn token_count_includes_rate_limits_snapshot() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
-
-    let first_token_event =
-        wait_for_event(&codex, |msg| matches!(msg, EventMsg::TokenCount(_))).await;
-    let rate_limit_only = match first_token_event {
-        EventMsg::TokenCount(ev) => ev,
-        _ => unreachable!(),
-    };
-
-    let rate_limit_json = serde_json::to_value(&rate_limit_only).unwrap();
-    pretty_assertions::assert_eq!(
-        rate_limit_json,
-        json!({
-            "info": null,
-            "rate_limits": {
-                "limit_id": "codex",
-                "limit_name": null,
-                "primary": {
-                    "used_percent": 12.5,
-                    "window_minutes": 10,
-                    "resets_at": 1704069000
-                },
-                "secondary": {
-                    "used_percent": 40.0,
-                    "window_minutes": 60,
-                    "resets_at": 1704074400
-                },
-                "credits": null,
-                "plan_type": null,
-                "rate_limit_reached_type": null
-            },
-            "provider": "openai",
-            "model_used": session_model.clone()
-        })
-    );
 
     let token_event = wait_for_event(
         &codex,
@@ -2627,6 +2666,8 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .expect("submission should succeed while emitting usage limit error events");
@@ -2705,6 +2746,8 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -2719,6 +2762,8 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -2803,6 +2848,8 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -2820,6 +2867,131 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
     assert_eq!(responses_mock.requests().len(), 1);
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+
+    let responses_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse_failed(
+                "resp_capacity_1",
+                "server_is_overloaded",
+                "Selected model is at capacity.",
+            ),
+            sse_failed(
+                "resp_capacity_2",
+                "slow_down",
+                "Selected model is temporarily busy.",
+            ),
+            sse(vec![
+                ev_response_created("resp_ok"),
+                ev_completed("resp_ok"),
+            ]),
+        ],
+    )
+    .await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(|config| {
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "survive capacity".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let mut stream_error_messages = Vec::new();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
+            .await
+            .expect("timeout waiting for capacity retry event")
+            .expect("event stream ended unexpectedly")
+            .msg;
+        match event {
+            EventMsg::StreamError(error) => stream_error_messages.push(error.message),
+            EventMsg::Error(error) => panic!("capacity retry should not be terminal: {error:?}"),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(responses_mock.requests().len(), 3);
+    assert_eq!(stream_error_messages.len(), 2);
+    assert!(
+        stream_error_messages
+            .iter()
+            .all(|message| message.starts_with("Model at capacity; retrying in ")),
+        "unexpected retry messages: {stream_error_messages:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+
+    let responses_mock = mount_sse_repeating(
+        &server,
+        sse_failed(
+            "resp_capacity",
+            "server_is_overloaded",
+            "Selected model is at capacity.",
+        ),
+    )
+    .await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(|config| {
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "interrupt capacity backoff".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::StreamError(_))).await;
+    codex.submit(Op::Interrupt).await?;
+
+    let aborted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await
+    })
+    .await
+    .expect("capacity retry backoff did not observe interrupt promptly");
+    assert!(matches!(aborted, EventMsg::TurnAborted(_)));
+    assert!(
+        responses_mock.requests().len() >= 1,
+        "expected at least one capacity request"
+    );
+
     Ok(())
 }
 
@@ -2913,6 +3085,8 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -3001,6 +3175,8 @@ async fn env_var_overrides_loaded_auth() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -3028,22 +3204,15 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     let server = MockServer::start().await;
 
     // Build a small SSE stream with deltas and a final assistant message.
-    // We emit the same body for all 3 turns; ids vary but are unused by assertions.
-    let sse_raw = r##"[
-        {"type":"response.output_item.added", "item":{
-            "type":"message", "role":"assistant",
-            "content":[{"type":"output_text","text":""}]
-        }},
-        {"type":"response.output_text.delta", "delta":"Hey "},
-        {"type":"response.output_text.delta", "delta":"there"},
-        {"type":"response.output_text.delta", "delta":"!\n"},
-        {"type":"response.output_item.done", "item":{
-            "type":"message", "role":"assistant",
-            "content":[{"type":"output_text","text":"Hey there!\n"}]
-        }},
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"##;
-    let sse1 = core_test_support::load_sse_fixture_with_id_from_str(sse_raw, "resp1");
+    // We emit the same body for all 3 turns.
+    let sse1 = sse(vec![
+        ev_message_item_added("msg-1", ""),
+        ev_output_text_delta("Hey "),
+        ev_output_text_delta("there"),
+        ev_output_text_delta("!\n"),
+        ev_assistant_message("msg-1", "Hey there!\n"),
+        ev_completed("resp1"),
+    ]);
 
     let request_log = mount_sse_sequence(&server, vec![sse1.clone(), sse1.clone(), sse1]).await;
 
@@ -3064,6 +3233,8 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -3079,6 +3250,8 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -3094,6 +3267,8 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();

@@ -23,7 +23,6 @@ use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::fs;
@@ -33,6 +32,10 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use toml::Value as TomlValue;
+
+#[cfg(windows)]
+#[path = "exec_policy_windows_tests.rs"]
+mod windows_tests;
 
 fn config_stack_for_dot_codex_folder(dot_codex_folder: &Path) -> ConfigLayerStack {
     let dot_codex_folder =
@@ -111,7 +114,11 @@ fn read_only_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
 }
 
 fn workspace_write_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
-    FileSystemSandboxPolicy::from_legacy_sandbox_policy(&SandboxPolicy::new_workspace_write_policy())
+    FileSystemSandboxPolicy::workspace_write(
+        &[],
+        /*exclude_tmpdir_env_var*/ false,
+        /*exclude_slash_tmp*/ false,
+    )
 }
 
 fn unrestricted_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
@@ -120,10 +127,6 @@ fn unrestricted_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
 
 fn external_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
     FileSystemSandboxPolicy::external_sandbox()
-}
-
-fn permission_profile_from_sandbox_policy(sandbox_policy: &SandboxPolicy) -> PermissionProfile {
-    PermissionProfile::from_legacy_sandbox_policy(sandbox_policy)
 }
 
 async fn test_config() -> (TempDir, Config) {
@@ -250,6 +253,26 @@ async fn returns_empty_policy_when_no_policy_files_exist() {
         policy.check_multiple(commands.iter(), &|_| Decision::Allow)
     );
     assert!(!temp_dir.path().join(RULES_DIR_NAME).exists());
+}
+
+#[tokio::test]
+async fn rules_path_file_returns_read_dir_error() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let rules_path = temp_dir.path().join(RULES_DIR_NAME);
+    fs::write(&rules_path, "rules should be a directory").expect("write malformed rules path");
+    let config_stack = config_stack_for_dot_codex_folder(temp_dir.path());
+
+    let err = load_exec_policy(&config_stack)
+        .await
+        .expect_err("rules file should fail policy loading");
+
+    assert!(
+        matches!(
+            err,
+            ExecPolicyError::ReadDir { ref dir, .. } if dir == &rules_path
+        ),
+        "expected malformed rules path to surface as ReadDir, got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -584,6 +607,7 @@ async fn loads_policies_from_multiple_config_layers() -> anyhow::Result<()> {
         ConfigLayerEntry::new(
             ConfigLayerSource::User {
                 file: user_config_toml,
+                profile: None,
             },
             TomlValue::Table(Default::default()),
         ),
@@ -640,7 +664,7 @@ async fn evaluates_bash_lc_inner_commands() {
                 "rm -rf /some/important/folder".to_string(),
             ],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -656,7 +680,14 @@ async fn evaluates_bash_lc_inner_commands() {
 fn commands_for_exec_policy_falls_back_for_empty_shell_script() {
     let command = vec!["bash".to_string(), "-lc".to_string(), "".to_string()];
 
-    assert_eq!(commands_for_exec_policy(&command), (vec![command], false));
+    assert_eq!(
+        commands_for_exec_policy(&command),
+        ExecPolicyCommands {
+            commands: vec![command],
+            used_complex_parsing: false,
+            command_origin: ExecPolicyCommandOrigin::Generic,
+        }
+    );
 }
 
 #[test]
@@ -667,7 +698,14 @@ fn commands_for_exec_policy_falls_back_for_whitespace_shell_script() {
         "  \n\t  ".to_string(),
     ];
 
-    assert_eq!(commands_for_exec_policy(&command), (vec![command], false));
+    assert_eq!(
+        commands_for_exec_policy(&command),
+        ExecPolicyCommands {
+            commands: vec![command],
+            used_complex_parsing: false,
+            command_origin: ExecPolicyCommandOrigin::Generic,
+        }
+    );
 }
 
 #[tokio::test]
@@ -722,7 +760,7 @@ async fn evaluates_heredoc_script_against_prefix_rules() {
             policy_src: Some(r#"prefix_rule(pattern=["python3"], decision="allow")"#.to_string()),
             command,
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -746,7 +784,7 @@ async fn omits_auto_amendment_for_heredoc_fallback_prompts() {
                 "python3 <<'PY'\nprint('hello')\nPY".to_string(),
             ],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -770,7 +808,7 @@ async fn drops_requested_amendment_for_heredoc_fallback_prompts_when_it_wont_mat
                 "python3 <<'PY'\nprint('hello')\nPY".to_string(),
             ],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: Some(vec![
@@ -782,6 +820,127 @@ async fn drops_requested_amendment_for_heredoc_fallback_prompts_when_it_wont_mat
         ExecApprovalRequirement::NeedsApproval {
             reason: None,
             proposed_execpolicy_amendment: None,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn drops_requested_amendment_for_heredoc_fallback_prompts_when_it_matches() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: None,
+            command: vec![
+                "bash".to_string(),
+                "-lc".to_string(),
+                "python3 <<'PY'\nprint('hello')\nPY".to_string(),
+            ],
+            approval_policy: AskForApproval::UnlessTrusted,
+            permission_profile: PermissionProfile::read_only(),
+            file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            prefix_rule: Some(vec!["python3".to_string()]),
+        },
+        ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: None,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+#[cfg(not(windows))]
+async fn heredoc_with_variable_assignment_is_not_reduced_to_allowed_prefix() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: Some(r#"prefix_rule(pattern=["cat"], decision="allow")"#.to_string()),
+            command: vec![
+                "bash".to_string(),
+                "-lc".to_string(),
+                "PATH=/tmp/evil:$PATH cat <<'EOF'\nhello\nEOF".to_string(),
+            ],
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::read_only(),
+            file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+                "bash".to_string(),
+                "-lc".to_string(),
+                "PATH=/tmp/evil:$PATH cat <<'EOF'\nhello\nEOF".to_string(),
+            ])),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn heredoc_redirect_without_escalation_runs_inside_sandbox() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: None,
+            command: vec![
+                "zsh".to_string(),
+                "-lc".to_string(),
+                r#"cat <<'EOF' > /some/important/folder/test.txt
+hello world
+EOF"#
+                    .to_string(),
+            ],
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::workspace_write(),
+            file_system_sandbox_policy: workspace_write_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+                "zsh".to_string(),
+                "-lc".to_string(),
+                r#"cat <<'EOF' > /some/important/folder/test.txt
+hello world
+EOF"#
+                    .to_string(),
+            ])),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn heredoc_redirect_with_escalation_requires_approval() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: Some(r#"prefix_rule(pattern=["cat"], decision="allow")"#.to_string()),
+            command: vec![
+                "zsh".to_string(),
+                "-lc".to_string(),
+                r#"cat <<'EOF' > /some/important/folder/test.txt
+hello world
+EOF"#
+                    .to_string(),
+            ],
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::workspace_write(),
+            file_system_sandbox_policy: workspace_write_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::RequireEscalated,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+                "zsh".to_string(),
+                "-lc".to_string(),
+                r#"cat <<'EOF' > /some/important/folder/test.txt
+hello world
+EOF"#
+                    .to_string(),
+            ])),
         },
     )
     .await;
@@ -807,7 +966,7 @@ prefix_rule(
                 "/some/important/folder".to_string(),
             ],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -826,7 +985,7 @@ async fn exec_approval_requirement_prefers_execpolicy_match() {
             policy_src: Some(r#"prefix_rule(pattern=["rm"], decision="prompt")"#.to_string()),
             command: vec!["rm".to_string()],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -854,7 +1013,7 @@ prefix_rule(pattern=["git"], decision="allow")
             policy_src: Some(policy_src),
             command: vec![git_path, "status".to_string()],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -888,7 +1047,7 @@ prefix_rule(pattern=["git"], decision="prompt")
             policy_src: Some(policy_src),
             command: vec![disallowed_git_path.clone(), "status".to_string()],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -915,7 +1074,7 @@ async fn requested_prefix_rule_can_approve_absolute_path_commands() {
                 "cargo-insta".to_string(),
             ],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: Some(vec!["cargo".to_string(), "install".to_string()]),
@@ -938,7 +1097,7 @@ async fn exec_approval_requirement_respects_approval_policy() {
             policy_src: Some(r#"prefix_rule(pattern=["rm"], decision="prompt")"#.to_string()),
             command: vec!["rm".to_string()],
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -957,19 +1116,22 @@ fn unmatched_granular_policy_still_prompts_for_restricted_sandbox_escalation() {
     assert_eq!(
         Decision::Prompt,
         render_decision_for_unmatched_command(
-            AskForApproval::Granular(GranularApprovalConfig {
-                sandbox_approval: true,
-                rules: true,
-                skill_approval: true,
-                request_permissions: true,
-                mcp_elicitations: true,
-            }),
-            &permission_profile_from_sandbox_policy(&SandboxPolicy::new_read_only_policy()),
-            &read_only_file_system_sandbox_policy(),
-            Path::new("/tmp"),
             &command,
-            SandboxPermissions::RequireEscalated,
-            /*used_complex_parsing*/ false,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::Granular(GranularApprovalConfig {
+                    sandbox_approval: true,
+                    rules: true,
+                    skill_approval: true,
+                    request_permissions: true,
+                    mcp_elicitations: true,
+                }),
+                permission_profile: &PermissionProfile::read_only(),
+                file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+                sandbox_cwd: Path::new("/tmp"),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
         )
     );
 }
@@ -982,13 +1144,37 @@ fn unmatched_on_request_uses_split_filesystem_policy_for_escalation_prompts() {
     assert_eq!(
         Decision::Prompt,
         render_decision_for_unmatched_command(
-            AskForApproval::OnRequest,
-            &PermissionProfile::Disabled,
-            &restricted_file_system_policy,
-            Path::new("/tmp"),
             &command,
-            SandboxPermissions::RequireEscalated,
-            /*used_complex_parsing*/ false,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::OnRequest,
+                permission_profile: &PermissionProfile::Disabled,
+                file_system_sandbox_policy: &restricted_file_system_policy,
+                sandbox_cwd: Path::new("/tmp"),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
+        )
+    );
+}
+
+#[test]
+fn known_safe_on_request_still_prompts_for_restricted_sandbox_escalation() {
+    let command = vec!["echo".to_string(), "hello".to_string()];
+
+    assert_eq!(
+        Decision::Prompt,
+        render_decision_for_unmatched_command(
+            &command,
+            UnmatchedCommandContext {
+                approval_policy: AskForApproval::OnRequest,
+                permission_profile: &PermissionProfile::workspace_write(),
+                file_system_sandbox_policy: &workspace_write_file_system_sandbox_policy(),
+                sandbox_cwd: Path::new("/tmp"),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
+                used_complex_parsing: false,
+                command_origin: ExecPolicyCommandOrigin::Generic,
+            },
         )
     );
 }
@@ -1004,7 +1190,7 @@ fn managed_cwd_write_profile_is_not_read_only() {
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
-                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
         },
@@ -1063,7 +1249,7 @@ async fn exec_approval_requirement_prompts_for_inline_additional_permissions_und
                 "touch requested-dir/requested-but-unused.txt".to_string(),
             ],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
             prefix_rule: None,
@@ -1074,6 +1260,55 @@ async fn exec_approval_requirement_prompts_for_inline_additional_permissions_und
                 "touch".to_string(),
                 "requested-dir/requested-but-unused.txt".to_string(),
             ])),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn exec_approval_requirement_prompts_for_known_safe_escalation_under_on_request() {
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: None,
+            command: vec!["echo".to_string(), "hello".to_string()],
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::workspace_write(),
+            file_system_sandbox_policy: workspace_write_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::RequireEscalated,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::NeedsApproval {
+            reason: None,
+            proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec![
+                "echo".to_string(),
+                "hello".to_string(),
+            ])),
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn exec_approval_requirement_rejects_known_safe_escalation_when_granular_sandbox_is_disabled()
+{
+    assert_exec_approval_requirement_for_command(
+        ExecApprovalRequirementScenario {
+            policy_src: None,
+            command: vec!["echo".to_string(), "hello".to_string()],
+            approval_policy: AskForApproval::Granular(GranularApprovalConfig {
+                sandbox_approval: false,
+                rules: true,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: true,
+            }),
+            permission_profile: PermissionProfile::workspace_write(),
+            file_system_sandbox_policy: workspace_write_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::RequireEscalated,
+            prefix_rule: None,
+        },
+        ExecApprovalRequirement::Forbidden {
+            reason: REJECT_SANDBOX_APPROVAL_REASON.to_string(),
         },
     )
     .await;
@@ -1093,7 +1328,7 @@ async fn exec_approval_requirement_rejects_unmatched_sandbox_escalation_when_gra
                 request_permissions: true,
                 mcp_elicitations: true,
             }),
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             prefix_rule: None,
@@ -1129,9 +1364,7 @@ async fn mixed_rule_and_sandbox_prompt_prioritizes_rule_for_rejection_decision()
                 request_permissions: true,
                 mcp_elicitations: true,
             }),
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::RequireEscalated,
@@ -1169,9 +1402,7 @@ async fn mixed_rule_and_sandbox_prompt_rejects_when_granular_rules_are_disabled(
                 request_permissions: true,
                 mcp_elicitations: true,
             }),
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::RequireEscalated,
@@ -1196,9 +1427,7 @@ async fn exec_approval_requirement_falls_back_to_heuristics() {
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy: AskForApproval::UnlessTrusted,
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::UseDefault,
@@ -1224,9 +1453,7 @@ async fn empty_bash_lc_script_falls_back_to_original_command() {
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy: AskForApproval::UnlessTrusted,
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::UseDefault,
@@ -1256,9 +1483,7 @@ async fn whitespace_bash_lc_script_falls_back_to_original_command() {
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy: AskForApproval::UnlessTrusted,
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::UseDefault,
@@ -1288,9 +1513,7 @@ async fn request_rule_uses_prefix_rule() {
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy: AskForApproval::OnRequest,
-            permission_profile: permission_profile_from_sandbox_policy(
-                &SandboxPolicy::new_read_only_policy(),
-            ),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
             sandbox_cwd: Path::new("/tmp"),
             sandbox_permissions: SandboxPermissions::RequireEscalated,
@@ -1439,7 +1662,7 @@ async fn proposed_execpolicy_amendment_is_present_for_single_command_without_pol
             policy_src: None,
             command: command.clone(),
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1459,7 +1682,7 @@ async fn proposed_execpolicy_amendment_is_omitted_when_policy_prompts() {
             policy_src: Some(r#"prefix_rule(pattern=["rm"], decision="prompt")"#.to_string()),
             command: vec!["rm".to_string()],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1483,7 +1706,7 @@ async fn proposed_execpolicy_amendment_is_present_for_multi_command_scripts() {
                 "cargo build && echo ok".to_string(),
             ],
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1513,7 +1736,7 @@ async fn proposed_execpolicy_amendment_uses_first_no_match_in_multi_command_scri
             policy_src: Some(policy_src.to_string()),
             command,
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1537,7 +1760,7 @@ async fn proposed_execpolicy_amendment_is_present_when_heuristics_allow() {
             policy_src: None,
             command: command.clone(),
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1554,10 +1777,14 @@ async fn proposed_execpolicy_amendment_is_present_when_heuristics_allow() {
 async fn proposed_execpolicy_amendment_is_suppressed_when_policy_matches_allow() {
     assert_exec_approval_requirement_for_command(
         ExecApprovalRequirementScenario {
-            policy_src: Some(r#"prefix_rule(pattern=["echo"], decision="allow")"#.to_string()),
-            command: vec!["echo".to_string(), "safe".to_string()],
+            policy_src: Some(r#"prefix_rule(pattern=["python3"], decision="allow")"#.to_string()),
+            command: vec![
+                "python3".to_string(),
+                "-c".to_string(),
+                "print(1)".to_string(),
+            ],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1588,7 +1815,7 @@ prefix_rule(pattern=["cat"], decision="allow")
                 policy_src: Some(policy_src.to_string()),
                 command: command.clone(),
                 approval_policy,
-                sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
+                permission_profile: PermissionProfile::workspace_write(),
                 file_system_sandbox_policy: workspace_write_file_system_sandbox_policy(),
                 sandbox_permissions: SandboxPermissions::UseDefault,
                 prefix_rule: None,
@@ -1620,7 +1847,7 @@ prefix_rule(pattern=["bash"], decision="allow")
                     .to_string(),
             ],
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1786,7 +2013,7 @@ async fn dangerous_rm_rf_requires_approval_in_danger_full_access() {
             policy_src: None,
             command: command.clone(),
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: PermissionProfile::Disabled,
             file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
@@ -1850,9 +2077,7 @@ async fn verify_approval_requirement_for_unsafe_powershell_command() {
             .create_exec_approval_requirement_for_command(ExecApprovalRequest {
                 command: &sneaky_command,
                 approval_policy: AskForApproval::OnRequest,
-                permission_profile: permission_profile_from_sandbox_policy(
-                    &SandboxPolicy::new_read_only_policy(),
-                ),
+                permission_profile: PermissionProfile::read_only(),
                 file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
                 sandbox_cwd: Path::new("/tmp"),
                 sandbox_permissions: permissions,
@@ -1877,9 +2102,7 @@ async fn verify_approval_requirement_for_unsafe_powershell_command() {
             .create_exec_approval_requirement_for_command(ExecApprovalRequest {
                 command: &dangerous_command,
                 approval_policy: AskForApproval::OnRequest,
-                permission_profile: permission_profile_from_sandbox_policy(
-                    &SandboxPolicy::new_read_only_policy(),
-                ),
+                permission_profile: PermissionProfile::read_only(),
                 file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
                 sandbox_cwd: Path::new("/tmp"),
                 sandbox_permissions: permissions,
@@ -1900,9 +2123,7 @@ async fn verify_approval_requirement_for_unsafe_powershell_command() {
             .create_exec_approval_requirement_for_command(ExecApprovalRequest {
                 command: &dangerous_command,
                 approval_policy: AskForApproval::Never,
-                permission_profile: permission_profile_from_sandbox_policy(
-                    &SandboxPolicy::new_read_only_policy(),
-                ),
+                permission_profile: PermissionProfile::read_only(),
                 file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
                 sandbox_cwd: Path::new("/tmp"),
                 sandbox_permissions: permissions,
@@ -1922,8 +2143,8 @@ async fn dangerous_command_allowed_when_sandbox_is_explicitly_disabled() {
             policy_src: None,
             command,
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ExternalSandbox {
-                network_access: Default::default(),
+            permission_profile: PermissionProfile::External {
+                network: NetworkSandboxPolicy::Restricted,
             },
             file_system_sandbox_policy: external_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
@@ -1947,8 +2168,8 @@ async fn dangerous_command_forbidden_in_external_sandbox_when_policy_matches() {
             policy_src: Some("prefix_rule(pattern=['rm'], decision='prompt')".to_string()),
             command,
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ExternalSandbox {
-                network_access: Default::default(),
+            permission_profile: PermissionProfile::External {
+                network: NetworkSandboxPolicy::Restricted,
             },
             file_system_sandbox_policy: external_file_system_sandbox_policy(),
             sandbox_permissions: SandboxPermissions::UseDefault,
@@ -1966,39 +2187,39 @@ struct ExecApprovalRequirementScenario {
     policy_src: Option<String>,
     command: Vec<String>,
     approval_policy: AskForApproval,
-    sandbox_policy: SandboxPolicy,
+    permission_profile: PermissionProfile,
     file_system_sandbox_policy: FileSystemSandboxPolicy,
     sandbox_permissions: SandboxPermissions,
     prefix_rule: Option<Vec<String>>,
 }
 
-async fn assert_exec_approval_requirement_for_command(
+fn policy_from_src(policy_src: Option<&str>) -> Arc<Policy> {
+    match policy_src {
+        Some(src) => {
+            let mut parser = PolicyParser::new();
+            parser.parse("test.rules", src).expect("parse policy");
+            Arc::new(parser.build())
+        }
+        None => Arc::new(Policy::empty()),
+    }
+}
+
+async fn exec_approval_requirement_for_command(
     test: ExecApprovalRequirementScenario,
-    expected_requirement: ExecApprovalRequirement,
-) {
+) -> ExecApprovalRequirement {
     let ExecApprovalRequirementScenario {
         policy_src,
         command,
         approval_policy,
-        sandbox_policy,
+        permission_profile,
         file_system_sandbox_policy,
         sandbox_permissions,
         prefix_rule,
     } = test;
 
-    let policy = match policy_src {
-        Some(src) => {
-            let mut parser = PolicyParser::new();
-            parser
-                .parse("test.rules", src.as_str())
-                .expect("parse policy");
-            Arc::new(parser.build())
-        }
-        None => Arc::new(Policy::empty()),
-    };
+    let policy = policy_from_src(policy_src.as_deref());
 
-    let permission_profile = permission_profile_from_sandbox_policy(&sandbox_policy);
-    let requirement = ExecPolicyManager::new(policy)
+    ExecPolicyManager::new(policy)
         .create_exec_approval_requirement_for_command(ExecApprovalRequest {
             command: &command,
             approval_policy,
@@ -2008,8 +2229,14 @@ async fn assert_exec_approval_requirement_for_command(
             sandbox_permissions,
             prefix_rule,
         })
-        .await;
+        .await
+}
 
+async fn assert_exec_approval_requirement_for_command(
+    test: ExecApprovalRequirementScenario,
+    expected_requirement: ExecApprovalRequirement,
+) {
+    let requirement = exec_approval_requirement_for_command(test).await;
     assert_eq!(requirement, expected_requirement);
 }
 

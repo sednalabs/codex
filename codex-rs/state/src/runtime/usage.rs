@@ -75,7 +75,7 @@ impl UsageLogger {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) -> anyhow::Result<Self> {
-        let pool = state.usage_pool();
+        let pool = state.usage_ledger_pool();
         let parent_thread_id = Self::parent_thread_from_source(&source);
         // Reuse the first persisted root we can find so spawned and forked descendants
         // share one canonical root thread id in `usage_threads`.
@@ -859,6 +859,7 @@ ORDER BY rowid
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation.clone(),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
             }),
         };
         logger.record_event(&tool_begin).await;
@@ -869,6 +870,7 @@ ORDER BY rowid
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation,
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 duration: Duration::from_millis(42),
                 result: Ok(CallToolResult {
                     content: vec![],
@@ -941,6 +943,7 @@ WHERE tool_call_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                started_at_ms: 0,
             }),
         };
         logger.record_event(&spawn_begin).await;
@@ -957,6 +960,7 @@ WHERE tool_call_id = ?
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
                 status: AgentStatus::Completed(None),
+                completed_at_ms: 0,
             }),
         };
         logger.record_event(&spawn_end).await;
@@ -1060,6 +1064,7 @@ WHERE child_thread_id = ?
                     prompt: String::new(),
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
+                    started_at_ms: 0,
                 }),
             })
             .await;
@@ -1076,6 +1081,7 @@ WHERE child_thread_id = ?
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
                     status: AgentStatus::Completed(None),
+                    completed_at_ms: 0,
                 }),
             })
             .await;
@@ -1432,6 +1438,7 @@ WHERE thread_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                started_at_ms: 0,
             }),
         };
         parent_logger.record_event(&spawn_begin).await;
@@ -1448,6 +1455,7 @@ WHERE thread_id = ?
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
                 status: AgentStatus::Completed(None),
+                completed_at_ms: 0,
             }),
         };
         parent_logger.record_event(&spawn_end).await;

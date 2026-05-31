@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(
             parse_realtime_event(payload.as_str(), RealtimeEventParser::V1),
             Some(RealtimeEvent::SessionUpdated {
-                session_id: "sess_123".to_string(),
+                realtime_session_id: "sess_123".to_string(),
                 instructions: Some("backend prompt".to_string()),
             })
         );
@@ -989,6 +989,22 @@ mod tests {
             parse_realtime_event(payload.as_str(), RealtimeEventParser::V1),
             Some(RealtimeEvent::InputTranscriptDone(RealtimeTranscriptDone {
                 text: "hello world".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_v1_input_transcript_turn_marked_event() {
+        let payload = json!({
+            "type": "conversation.input_transcript.turn_marked",
+            "transcript": "hello realtime"
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_realtime_event(payload.as_str(), RealtimeEventParser::V1),
+            Some(RealtimeEvent::InputTranscriptDone(RealtimeTranscriptDone {
+                text: "hello realtime".to_string(),
             }))
         );
     }
@@ -1581,6 +1597,10 @@ mod tests {
                 .expect("text");
             let third_json: Value = serde_json::from_str(&third).expect("json");
             assert_eq!(third_json["type"], "conversation.item.create");
+            assert_eq!(
+                third_json["item"]["content"][0]["type"],
+                Value::String("input_text".to_string())
+            );
             assert_eq!(third_json["item"]["content"][0]["text"], "hello agent");
 
             let fourth = ws
@@ -1698,7 +1718,7 @@ mod tests {
         assert_eq!(
             created,
             RealtimeEvent::SessionUpdated {
-                session_id: "sess_mock".to_string(),
+                realtime_session_id: "sess_mock".to_string(),
                 instructions: Some("backend prompt".to_string()),
             }
         );
@@ -1992,7 +2012,7 @@ mod tests {
         assert_eq!(
             created,
             RealtimeEvent::SessionUpdated {
-                session_id: "sess_v2".to_string(),
+                realtime_session_id: "sess_v2".to_string(),
                 instructions: Some("backend prompt".to_string()),
             }
         );
@@ -2107,7 +2127,7 @@ mod tests {
         assert_eq!(
             created,
             RealtimeEvent::SessionUpdated {
-                session_id: "sess_transcription".to_string(),
+                realtime_session_id: "sess_transcription".to_string(),
                 instructions: None,
             }
         );
@@ -2211,7 +2231,7 @@ mod tests {
         assert_eq!(
             created,
             RealtimeEvent::SessionUpdated {
-                session_id: "sess_v1_mode".to_string(),
+                realtime_session_id: "sess_v1_mode".to_string(),
                 instructions: None,
             }
         );
@@ -2317,7 +2337,7 @@ mod tests {
         assert_eq!(
             next_event,
             RealtimeEvent::SessionUpdated {
-                session_id: "sess_after_send".to_string(),
+                realtime_session_id: "sess_after_send".to_string(),
                 instructions: Some("backend prompt".to_string()),
             }
         );

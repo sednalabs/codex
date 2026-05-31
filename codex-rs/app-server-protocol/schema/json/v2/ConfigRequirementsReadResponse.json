@@ -59,8 +59,31 @@
         }
       ]
     },
+    "ComputerUseRequirements": {
+      "properties": {
+        "allowLockedComputerUse": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ConfigRequirements": {
       "properties": {
+        "allowAppshots": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowManagedHooksOnly": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "allowedApprovalPolicies": {
           "items": {
             "$ref": "#/$defs/AskForApproval"
@@ -73,6 +96,15 @@
         "allowedApprovalsReviewers": {
           "items": {
             "$ref": "#/$defs/ApprovalsReviewer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "allowedPermissions": {
+          "items": {
+            "type": "string"
           },
           "type": [
             "array",
@@ -95,6 +127,16 @@
           "type": [
             "array",
             "null"
+          ]
+        },
+        "computerUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComputerUseRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "enforceResidency": {
@@ -148,6 +190,12 @@
             },
             "command": {
               "type": "string"
+            },
+            "commandWindows": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "statusMessage": {
               "type": [
@@ -235,7 +283,19 @@
           },
           "type": "array"
         },
+        "PostCompact": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
         "PostToolUse": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "PreCompact": {
           "items": {
             "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
@@ -254,6 +314,18 @@
           "type": "array"
         },
         "Stop": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "SubagentStart": {
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "SubagentStop": {
           "items": {
             "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
@@ -282,8 +354,12 @@
         "PreToolUse",
         "PermissionRequest",
         "PostToolUse",
+        "PreCompact",
+        "PostCompact",
         "SessionStart",
         "UserPromptSubmit",
+        "SubagentStart",
+        "SubagentStop",
         "Stop"
       ],
       "type": "object"
@@ -408,7 +484,7 @@
     "NetworkUnixSocketPermission": {
       "enum": [
         "allow",
-        "none"
+        "deny"
       ],
       "type": "string"
     },

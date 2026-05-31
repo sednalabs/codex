@@ -10,3 +10,6 @@ workspace = true
 [dependencies]
 runfiles = { workspace = true }
 thiserror = { workspace = true }
+
+[lib]
+doctest = false

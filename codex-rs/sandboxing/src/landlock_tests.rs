@@ -2,8 +2,9 @@ use super::*;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
-use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
@@ -59,20 +60,16 @@ fn proxy_flag_is_included_when_requested() {
 }
 
 #[test]
-fn split_policy_flags_are_included() {
+fn permission_profile_flag_is_included() {
     let command = vec!["/bin/true".to_string()];
     let command_cwd = Path::new("/tmp/link");
     let cwd = Path::new("/tmp");
-    let sandbox_policy = SandboxPolicy::new_read_only_policy();
-    let file_system_sandbox_policy = FileSystemSandboxPolicy::from(&sandbox_policy);
-    let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
+    let permission_profile = PermissionProfile::read_only();
 
-    let args = create_linux_sandbox_command_args_for_policies(
+    let args = create_linux_sandbox_command_args_for_permission_profile(
         command,
         command_cwd,
-        &sandbox_policy,
-        &file_system_sandbox_policy,
-        network_sandbox_policy,
+        &permission_profile,
         cwd,
         /*use_legacy_landlock*/ true,
         /*allow_network_for_proxy*/ false,
@@ -80,12 +77,7 @@ fn split_policy_flags_are_included() {
 
     assert_eq!(
         args.windows(2)
-            .any(|window| { window[0] == "--file-system-sandbox-policy" && !window[1].is_empty() }),
-        true
-    );
-    assert_eq!(
-        args.windows(2)
-            .any(|window| window[0] == "--network-sandbox-policy" && window[1] == "\"restricted\""),
+            .any(|window| { window[0] == "--permission-profile" && !window[1].is_empty() }),
         true
     );
     assert_eq!(
@@ -96,21 +88,15 @@ fn split_policy_flags_are_included() {
 }
 
 #[test]
-fn incompatible_split_policies_skip_legacy_landlock_flag() {
+fn permission_profile_can_model_split_policy_without_legacy_landlock_flag() {
     let cwd = tempdir().expect("tempdir");
     let command = vec!["/bin/true".to_string()];
     let nested = AbsolutePathBuf::try_from(cwd.path().join("nested")).expect("absolute nested");
     let command_cwd = nested.as_path();
-    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![nested.clone()],
-        network_access: false,
-        exclude_tmpdir_env_var: true,
-        exclude_slash_tmp: true,
-    };
     let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
-                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                value: FileSystemSpecialPath::ProjectRoots { subpath: None },
             },
             access: FileSystemAccessMode::Write,
         },
@@ -122,15 +108,17 @@ fn incompatible_split_policies_skip_legacy_landlock_flag() {
         },
     ]);
     let network_sandbox_policy = NetworkSandboxPolicy::Restricted;
-
-    let args = create_linux_sandbox_command_args_for_policies(
-        command,
-        command_cwd,
-        &sandbox_policy,
+    let permission_profile = PermissionProfile::from_runtime_permissions(
         &file_system_sandbox_policy,
         network_sandbox_policy,
+    );
+
+    let args = create_linux_sandbox_command_args_for_permission_profile(
+        command,
+        command_cwd,
+        &permission_profile,
         cwd.path(),
-        /*use_legacy_landlock*/ true,
+        /*use_legacy_landlock*/ false,
         /*allow_network_for_proxy*/ false,
     );
 

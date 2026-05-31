@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "remoteMarketplaceName": {
+      "type": "string"
+    },
+    "remotePluginId": {
+      "type": "string"
+    },
+    "skillName": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "remoteMarketplaceName",
+    "remotePluginId",
+    "skillName"
+  ],
+  "title": "PluginSkillReadParams",
+  "type": "object"
+}

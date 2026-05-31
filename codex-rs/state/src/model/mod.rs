@@ -19,6 +19,7 @@ pub use graph::DirectionalThreadSpawnEdgeStatus;
 pub use log::LogEntry;
 pub use log::LogQuery;
 pub use log::LogRow;
+pub use memories::Phase2AttestedBaseline;
 pub use memories::Phase2JobClaimOutcome;
 pub use memories::Stage1JobClaim;
 pub use memories::Stage1JobClaimOutcome;
@@ -37,7 +38,6 @@ pub use thread_metadata::ThreadsPage;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;
-pub(crate) use memories::Stage1OutputRow;
 pub(crate) use thread_goal::ThreadGoalRow;
 pub(crate) use thread_metadata::ThreadRow;
 pub(crate) use thread_metadata::anchor_from_item;

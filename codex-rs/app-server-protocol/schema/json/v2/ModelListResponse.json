@@ -19,6 +19,7 @@
       "properties": {
         "additionalSpeedTiers": {
           "default": [],
+          "description": "Deprecated: use `serviceTiers` instead.",
           "items": {
             "type": "string"
           },
@@ -36,6 +37,14 @@
         },
         "defaultReasoningEffort": {
           "$ref": "#/$defs/ReasoningEffort"
+        },
+        "defaultServiceTier": {
+          "default": null,
+          "description": "Catalog default service tier id for this model, when one is configured.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "description": {
           "type": "string"
@@ -64,6 +73,13 @@
         },
         "model": {
           "type": "string"
+        },
+        "serviceTiers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelServiceTier"
+          },
+          "type": "array"
         },
         "supportedReasoningEfforts": {
           "items": {
@@ -112,6 +128,25 @@
       },
       "required": [
         "message"
+      ],
+      "type": "object"
+    },
+    "ModelServiceTier": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description"
       ],
       "type": "object"
     },

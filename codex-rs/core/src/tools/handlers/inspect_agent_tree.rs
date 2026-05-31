@@ -3,13 +3,17 @@ use crate::agent::control::AgentTreeScope;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::multi_agents_common::tool_output_code_mode_result;
 use crate::tools::handlers::multi_agents_common::tool_output_json_text;
 use crate::tools::handlers::multi_agents_common::tool_output_response_item;
+use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
 use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -18,21 +22,21 @@ const DEFAULT_TREE_MAX_AGENTS: usize = 25;
 
 pub struct InspectAgentTreeHandler;
 
-impl ToolHandler for InspectAgentTreeHandler {
-    type Output = AgentTreeInspection;
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("inspect_agent_tree")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> ToolSpec {
+        create_inspect_agent_tree_tool()
     }
 
     async fn handle(
         &self,
         invocation: ToolInvocation,
-    ) -> Result<Self::Output, crate::function_tool::FunctionCallError> {
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, crate::function_tool::FunctionCallError>
+    {
         let ToolInvocation {
             session,
             turn,
@@ -76,6 +80,13 @@ impl ToolHandler for InspectAgentTreeHandler {
             )
             .await
             .map_err(|err| crate::function_tool::FunctionCallError::RespondToModel(err.to_string()))
+            .map(boxed_tool_output)
+    }
+}
+
+impl CoreToolRuntime for InspectAgentTreeHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 

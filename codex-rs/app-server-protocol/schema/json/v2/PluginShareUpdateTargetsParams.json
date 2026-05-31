@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "PluginSharePrincipalType": {
+      "enum": [
+        "user",
+        "group",
+        "workspace"
+      ],
+      "type": "string"
+    },
+    "PluginShareTarget": {
+      "properties": {
+        "principalId": {
+          "type": "string"
+        },
+        "principalType": {
+          "$ref": "#/$defs/PluginSharePrincipalType"
+        },
+        "role": {
+          "$ref": "#/$defs/PluginShareTargetRole"
+        }
+      },
+      "required": [
+        "principalType",
+        "principalId",
+        "role"
+      ],
+      "type": "object"
+    },
+    "PluginShareTargetRole": {
+      "enum": [
+        "reader",
+        "editor"
+      ],
+      "type": "string"
+    },
+    "PluginShareUpdateDiscoverability": {
+      "enum": [
+        "UNLISTED",
+        "PRIVATE"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "discoverability": {
+      "$ref": "#/$defs/PluginShareUpdateDiscoverability"
+    },
+    "remotePluginId": {
+      "type": "string"
+    },
+    "shareTargets": {
+      "items": {
+        "$ref": "#/$defs/PluginShareTarget"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "remotePluginId",
+    "discoverability",
+    "shareTargets"
+  ],
+  "title": "PluginShareUpdateTargetsParams",
+  "type": "object"
+}

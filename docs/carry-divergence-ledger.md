@@ -99,10 +99,10 @@ docs-only refresh commit that records this snapshot.
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
   support has been initialized for a memory root.
-- Consolidated memory artifacts are fingerprinted against the prepared immutable
-  input tree and the effective consolidator contract, then recorded in
-  attestation sidecars plus runtime state so unchanged selections can safely
-  reuse existing outputs while drifted or tampered artifacts are rejected.
+- Consolidated memory artifacts are fingerprinted against the prepared input
+  tree, the effective consolidator contract, and the output tree, then recorded
+  in runtime state so unchanged workspaces can safely reuse existing outputs
+  while drifted or tampered artifacts are rejected after bootstrap.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
 - Because these downstream state migrations occupy slots that upstream did not
@@ -114,11 +114,13 @@ docs-only refresh commit that records this snapshot.
   upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
   already-shipped downstream `0028` through `0031` migration versions.
 - Primary files:
-  - `codex-rs/core/src/memories/phase2.rs`
-  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
-  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/memories/write/src/phase2.rs`
+  - `codex-rs/memories/write/src/phase2_attestation.rs`
+  - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
+  - `codex-rs/memories/write/src/startup_tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `docs/memories.md`
@@ -202,47 +204,67 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### Native Computer-Use And Android Tool Bridge
+### Native Computer-Use Adapter Bridge
 
-- Downstream promotes bare `android_observe`, `android_step`, and
-  `android_install_build_from_run` dynamic tools into first-party native
+- Downstream promotes bare `android_observe`, `android_step`,
+  `android_install_build_from_run`, `browser_observe`, `browser_step`,
+  `desktop_observe`, and `desktop_step` dynamic tools into first-party native
   computer-use function tools with Codex-owned schemas.
-- Namespaced Android-like tools remain ordinary dynamic tools so
-  app-specific providers can keep their own tool surfaces without taking over
-  the native Codex contract.
+- Namespaced Android-like or browser-like tools remain ordinary dynamic tools
+  so app-specific providers can keep their own tool surfaces without taking
+  over the native Codex contract.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
-  cleanup, success/error projection, mutating classification, install-specific
-  timeout selection, and hook payload formatting.
+  cleanup, success/error projection, adapter selection, mutating
+  classification, install-specific timeout selection, and hook payload
+  formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
-  protocol events and snapshots.
-- Android screenshots are expected to reach the model as native image content
-  items. Provider artifact paths are kept for diagnostics, audit, or replay;
-  they are not the normal model-facing visual channel.
-- `codex-computer-use-runtime` owns the Codex-side provider bridge: runtime
-  config, provider session initialization, JSON-RPC/event-stream parsing,
-  provider tool calls, image preservation, and normalized
-  `ComputerUseCallResponse` values.
+  protocol events and snapshots. The TUI provider registry handles Android and
+  routes browser calls to either a configured provider command or the built-in
+  Playwright provider for `backend=auto`; when that browser provider is
+  configured, CLI/TUI thread start, resume, and fork requests advertise
+  `browser_observe` and `browser_step` automatically. The Playwright bridge
+  supports accessibility-oriented selectors plus human-like mouse and keyboard
+  primitives, defaults to per-thread browser profile isolation for concurrent
+  sidecars, can return visible-control metadata and selector candidates for UX
+  loops, can save redacted audit artifacts, can use locally configured
+  service-account navigation headers for allowed hosts, and can still be
+  configured for shared, environment-scoped, or per-call profiles when that
+  lifecycle is intentional. Thread-spawned agents
+  inherit the parent thread's native dynamic tools, so browser-capable sidecars
+  receive the native browser surface rather than silently dropping to a
+  compatibility adapter.
+- The Android adapter is retained as the reference MCP-backed runtime provider:
+  reuse `android-emulator-mcp` or a successor when it exposes the current
+  Android MCP contract, and adapt harness-specific behavior provider-side
+  rather than in hot Codex core paths.
+- The desktop adapter is the cleanroom provider seam for macOS Screen
+  Recording/Accessibility-style runtimes and future native desktop providers.
+  TUI dispatch stays behind an operator-configured command provider.
+- `codex doctor` includes read-only native provider diagnostics for browser
+  provider configuration, headed display/Chrome fields, and Android provider
+  endpoint/credential shape without launching browsers, connecting to profiles,
+  or starting emulator sessions.
+- Android screenshots and browser viewport captures are expected to reach the
+  model as native image content items. Provider artifact paths are kept for
+  diagnostics, audit, or replay; they are not the normal model-facing visual
+  channel.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
-- Runtime providers own Android sessions, screenshots, UI digests, input
-  execution, and provider-side build installation. Solar Gravity Lab is a
-  proving and consumer app, not the generic owner of Codex computer-use tooling.
-- Fresh interactive Codex sessions reacquire the bare native Android tools from
-  a shared `codex-tools` runtime-config loader, and resumed legacy bare Android
-  tools are denied unless the current runtime is revalidated or explicitly
-  supplied again.
+- Runtime providers own Android sessions, browser sessions, screenshots,
+  viewport capture, UI digests, input execution, and provider-side build
+  installation. Solar Gravity Lab is a proving and consumer app, not the
+  generic owner of Codex computer-use tooling.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/computer-use-runtime/src/lib.rs`
-  - `codex-rs/tools/src/android_runtime_config.rs`
   - `codex-rs/tools/src/android_tool.rs`
-  - `codex-rs/tools/src/tool_registry_plan.rs`
-  - `codex-rs/core/src/native_android_computer_use.rs`
-  - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/tools/src/browser_tool.rs`
+  - `codex-rs/tools/src/computer_use_tool.rs`
+  - `codex-rs/tools/src/desktop_tool.rs`
+  - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
   - `codex-rs/core/src/tools/tool_search_entry.rs`
   - `codex-rs/app-server/src/computer_use.rs`
@@ -250,17 +272,26 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/tui/src/android_computer_use_provider.rs`
+  - `codex-rs/browser-computer-use/src/lib.rs`
+  - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
+  - `codex-rs/tui/src/browser_computer_use_provider.rs`
+  - `codex-rs/tui/src/computer_use_provider.rs`
+  - `codex-rs/tui/src/desktop_computer_use_provider.rs`
+  - `codex-rs/exec/src/lib.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
   - `codex-rs/tui/src/history_cell.rs`
   - `codex-rs/rollout/src/policy.rs`
   - `codex-rs/rollout-trace/src/protocol_event.rs`
-  - `codex-rs/core/src/session/tests.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
   - `codex-rs/tools/src/android_tool_tests.rs`
-  - `codex-rs/tools/src/tool_registry_plan_tests.rs`
+  - `codex-rs/tools/src/browser_tool_tests.rs`
+  - `codex-rs/tools/src/computer_use_tool_tests.rs`
   - `docs/native-computer-use.md`
+  - `docs/native-computer-use-cleanroom.md`
 
 ### Review And History Accounting Alignment
 
@@ -286,6 +317,34 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/config/edit.rs`
   - `docs/config.md`
   - `docs/downstream.md`
+
+### MCP OAuth Device Login For Headless Servers
+
+- `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
+  login from SSH-only or browserless hosts through the OAuth Device
+  Authorization Grant instead of relying on a local browser callback.
+- Streamable HTTP OAuth discovery preserves `token_endpoint`,
+  `device_authorization_endpoint`, and `grant_types_supported`, so the CLI can
+  fail loudly when a server does not actually advertise device-login support.
+- The device-login flow uses the configured public MCP OAuth `client_id`, PKCE,
+  the identity-provider verification URL/user code, token-endpoint polling, and
+  the existing MCP OAuth token cache.
+- This is an intentional downstream carry for headless MCP server login until
+  upstream ships an equivalent headless MCP OAuth login contract. During
+  upstream syncs, preserve this behavior unless the upstream replacement covers
+  the same discovery, grant-validation, PKCE, polling, and token-cache path.
+- Primary files:
+  - `codex-rs/cli/src/mcp_cmd.rs`
+  - `codex-rs/codex-mcp/src/mcp/auth.rs`
+  - `codex-rs/rmcp-client/src/auth_status.rs`
+  - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
+  - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `justfile`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
 
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 

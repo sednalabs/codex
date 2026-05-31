@@ -1,9 +1,12 @@
-//! Shared argument parsing and dispatch for the v2 text-only agent messaging tools.
+//! Shared argument parsing and dispatch for the v2 agent messaging tools.
 //!
-//! `send_message` and `assign_task` share the same submission path and differ only in whether the
-//! resulting `InterAgentCommunication` should wake the target immediately.
+//! `send_message` accepts text items plus optional interruption, while `followup_task`
+//! keeps the plain-text message path. Both share the same submission plumbing once the prompt is
+//! assembled.
 
 use super::*;
+use crate::tools::context::FunctionToolOutput;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::protocol::InterAgentCommunication;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,9 +46,7 @@ pub(crate) struct SendMessageArgs {
 /// Input for the MultiAgentV2 `assign_task` tool.
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
-    pub(crate) items: Vec<UserInput>,
-    #[serde(default)]
-    pub(crate) interrupt: bool,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +80,23 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
         ));
     }
     Ok(message)
+}
+
+/// Handles the shared MultiAgentV2 plain-text message flow for `followup_task`.
+pub(crate) async fn handle_message_string_tool(
+    invocation: ToolInvocation,
+    mode: MessageDeliveryMode,
+    target: String,
+    message: String,
+) -> Result<MessageToolResult, FunctionCallError> {
+    handle_message_submission(
+        invocation,
+        mode,
+        target,
+        message_content(message)?,
+        /*interrupt*/ false,
+    )
+    .await
 }
 
 fn message_content_from_items(
@@ -154,6 +172,7 @@ async fn handle_message_submission(
             &turn,
             CollabAgentInteractionBeginEvent {
                 call_id: call_id.clone(),
+                started_at_ms: now_unix_timestamp_ms(),
                 sender_thread_id: session.conversation_id,
                 receiver_thread_id,
                 prompt: prompt.clone(),
@@ -180,6 +199,7 @@ async fn handle_message_submission(
                         receiver_agent_role: receiver_agent.agent_role,
                         prompt: prompt.clone(),
                         status,
+                        completed_at_ms: now_unix_timestamp_ms(),
                     }
                     .into(),
                 )
@@ -214,6 +234,7 @@ async fn handle_message_submission(
             &turn,
             CollabAgentInteractionEndEvent {
                 call_id,
+                completed_at_ms: now_unix_timestamp_ms(),
                 sender_thread_id: session.conversation_id,
                 receiver_thread_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname,

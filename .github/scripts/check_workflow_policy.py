@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ WORKFLOW_PATTERNS = (
     ".github/workflows/*.yaml",
     "codex-rs/.github/workflows/*.yml",
     "codex-rs/.github/workflows/*.yaml",
+)
+RELEASE_INSTALL_WORKFLOW = "sedna-release-install.yml"
+RELEASE_INSTALL_SCRIPT = "scripts/install_sedna_release_asset"
+DRY_RUN_FIELD_PATTERN = re.compile(
+    r"(?:^|\s)(?:-f|--field|-F|--raw-field)\s+['\"]?dry_run=true['\"]?(?:\s|$)"
 )
 
 
@@ -120,12 +126,63 @@ def command_text(step: dict[str, Any]) -> str:
     return run if isinstance(run, str) else ""
 
 
+def dispatches_release_install_without_dry_run(command: str) -> bool:
+    return (
+        "gh workflow run" in command
+        and RELEASE_INSTALL_WORKFLOW in command
+        and DRY_RUN_FIELD_PATTERN.search(command) is None
+    )
+
+
+def invokes_release_install_script_without_dry_run(command: str) -> bool:
+    return RELEASE_INSTALL_SCRIPT in command and "--dry-run" not in command
+
+
 def job_has_direct_release_create(job: dict[str, Any]) -> bool:
     return any(
         "gh release create" in command_text(step)
         for step in job_steps(job)
         if isinstance(step, dict)
     )
+
+
+def job_uses_action(job: dict[str, Any], action: str) -> bool:
+    return any(
+        is_action_ref(step.get("uses"), action)
+        for step in job_steps(job)
+        if isinstance(step, dict)
+    )
+
+
+def job_release_create_uses_github_app_token(job: dict[str, Any]) -> bool:
+    token_step_ids = {
+        str(step.get("id"))
+        for step in job_steps(job)
+        if isinstance(step, dict)
+        and is_action_ref(step.get("uses"), "actions/create-github-app-token")
+        and isinstance(step.get("id"), str)
+        and str(step.get("id"))
+    }
+    if not token_step_ids:
+        return False
+
+    for step in job_steps(job):
+        if not isinstance(step, dict):
+            continue
+        if "gh release create" not in command_text(step):
+            continue
+        env = step.get("env")
+        if not isinstance(env, dict):
+            continue
+        for value in env.values():
+            if not isinstance(value, str):
+                continue
+            if any(
+                f"steps.{token_step_id}.outputs.token" in value
+                for token_step_id in token_step_ids
+            ):
+                return True
+    return False
 
 
 def job_environment_name(job: dict[str, Any]) -> str | None:
@@ -178,6 +235,20 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                     f"with.version; use tool: {tool}@{version} instead."
                 )
 
+            run_text = command_text(node)
+            if dispatches_release_install_without_dry_run(run_text):
+                violations.append(
+                    f"{relative_path}: public workflows must dispatch "
+                    f"{RELEASE_INSTALL_WORKFLOW} with dry_run=true; use external "
+                    "deployment automation for host-local installs."
+                )
+            if invokes_release_install_script_without_dry_run(run_text):
+                violations.append(
+                    f"{relative_path}: public workflows must call "
+                    f"{RELEASE_INSTALL_SCRIPT} with --dry-run; use external "
+                    "deployment automation for host-local installs."
+                )
+
         if workflow_has_trigger(payload, "pull_request_target"):
             for _job_id, job in iter_jobs(payload):
                 if job_uses_checkout(job):
@@ -191,21 +262,31 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                 continue
 
             permissions = job_permissions(job, payload)
+            uses_app_token = job_release_create_uses_github_app_token(job)
             if job_environment_name(job) != "release":
                 violations.append(
                     f"{relative_path}: job '{job_id}' creates a GitHub release without "
                     "the release environment."
                 )
-            if not grants_permission(permissions, "contents", "write"):
-                violations.append(
-                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
-                    "contents: write scoped to the publishing job."
-                )
-            if not grants_permission(permissions, "id-token", "write"):
-                violations.append(
-                    f"{relative_path}: job '{job_id}' creates a GitHub release without "
-                    "id-token: write for release signing or provenance."
-                )
+            if uses_app_token:
+                if job_uses_action(job, "actions/download-artifact") and not grants_permission(
+                    permissions, "actions", "read"
+                ):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release with "
+                        "a GitHub App token without actions: read for artifact download."
+                    )
+            else:
+                if not grants_permission(permissions, "contents", "write"):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                        "contents: write scoped to the publishing job."
+                    )
+                if not grants_permission(permissions, "id-token", "write"):
+                    violations.append(
+                        f"{relative_path}: job '{job_id}' creates a GitHub release without "
+                        "id-token: write for release signing or provenance."
+                    )
     return violations
 
 

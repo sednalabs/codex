@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -7,7 +8,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_function_call;
@@ -20,7 +20,9 @@ use core_test_support::responses::sse_completed;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use wiremock::ResponseTemplate;
@@ -32,8 +34,38 @@ const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 const CYBER_POLICY_MESSAGE: &str =
     "This request has been flagged for potentially high-risk cyber activity.";
 
+fn disabled_text_turn(test: &TestCodex, text: &str) -> Op {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
+    Op::UserInput {
+        items: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+        environments: None,
+        final_output_json_schema: None,
+        responsesapi_client_metadata: None,
+        additional_context: Default::default(),
+        thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+            cwd: Some(test.cwd_path().to_path_buf()),
+            approval_policy: Some(AskForApproval::Never),
+            sandbox_policy: Some(sandbox_policy),
+            permission_profile,
+            collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                mode: codex_protocol::config_types::ModeKind::Default,
+                settings: codex_protocol::config_types::Settings {
+                    model: REQUESTED_MODEL.to_string(),
+                    reasoning_effort: test.config.model_reasoning_effort,
+                    developer_instructions: None,
+                },
+            }),
+            ..Default::default()
+        },
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn openai_model_header_mismatch_emits_warning_event_and_warning_item() -> Result<()> {
+async fn openai_model_header_mismatch_emits_warning_event() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -45,25 +77,7 @@ async fn openai_model_header_mismatch_emits_warning_event_and_warning_item() -> 
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger safety check".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger safety check"))
         .await?;
 
     let reroute = wait_for_event(&test.codex, |event| {
@@ -83,36 +97,6 @@ async fn openai_model_header_mismatch_emits_warning_event_and_warning_item() -> 
     };
     assert!(warning.message.contains(REQUESTED_MODEL));
     assert!(warning.message.contains(SERVER_MODEL));
-
-    let warning_item = wait_for_event(&test.codex, |event| {
-        matches!(
-            event,
-            EventMsg::RawResponseItem(raw)
-                if matches!(
-                    &raw.item,
-                    ResponseItem::Message { content, .. }
-                        if content.iter().any(|item| matches!(
-                            item,
-                            ContentItem::InputText { text } if text.starts_with("Warning: ")
-                        ))
-                )
-        )
-    })
-    .await;
-    let EventMsg::RawResponseItem(raw) = warning_item else {
-        panic!("expected raw response item event");
-    };
-    let ResponseItem::Message { role, content, .. } = raw.item else {
-        panic!("expected warning to be recorded as a message item");
-    };
-    assert_eq!(role, "user");
-    let warning_text = content.iter().find_map(|item| match item {
-        ContentItem::InputText { text } => Some(text.as_str()),
-        _ => None,
-    });
-    let warning_text = warning_text.expect("warning message should include input_text content");
-    assert!(warning_text.contains(REQUESTED_MODEL));
-    assert!(warning_text.contains(SERVER_MODEL));
 
     let _ = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -141,25 +125,7 @@ async fn cyber_policy_response_emits_typed_error_without_retry() -> Result<()> {
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger cyber policy error".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger cyber policy error"))
         .await?;
 
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
@@ -198,25 +164,7 @@ async fn response_model_field_mismatch_emits_warning_when_header_matches_request
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger response model check".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger response model check"))
         .await?;
 
     let reroute = wait_for_event(&test.codex, |event| {
@@ -286,25 +234,7 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger follow-up turn".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger follow-up turn"))
         .await?;
 
     let mut warning_count = 0;
@@ -338,25 +268,7 @@ async fn openai_model_header_casing_only_mismatch_does_not_warn() -> Result<()> 
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger casing check".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger casing check"))
         .await?;
 
     let mut reroute_count = 0;
@@ -399,25 +311,7 @@ async fn model_verification_emits_structured_event_without_reroute_or_warning() 
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger model verification".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(&test, "trigger model verification"))
         .await?;
 
     let mut verification_count = 0;
@@ -493,25 +387,10 @@ async fn model_verification_only_emits_once_per_turn() -> Result<()> {
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(Op::UserTurn {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "trigger follow-up model verification".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd_path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            model: REQUESTED_MODEL.to_string(),
-            effort: test.config.model_reasoning_effort,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
+        .submit(disabled_text_turn(
+            &test,
+            "trigger follow-up model verification",
+        ))
         .await?;
 
     let mut verification_count = 0;

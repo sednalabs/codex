@@ -44,6 +44,18 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     pr = sample_pr()
 
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "detect_local_git_context",
+        lambda: {
+            "cwd": "",
+            "git_root": "",
+            "origin_repo": "openai/codex",
+            "origin_url": "",
+            "upstream_repo": "",
+            "upstream_url": "",
+        },
+    )
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
     monkeypatch.setattr(
         gh_pr_watch,
@@ -54,6 +66,21 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
         gh_pr_watch,
         "fetch_new_review_items",
         lambda *args, **kwargs: call_order.append("review") or [],
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_review_threads",
+        lambda *args, **kwargs: call_order.append("threads") or [],
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "partition_unresolved_review_threads",
+        lambda *args, **kwargs: ([], []),
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "build_actionable_review_items",
+        lambda *args, **kwargs: call_order.append("actionable") or [],
     )
     monkeypatch.setattr(
         gh_pr_watch,
@@ -77,6 +104,11 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         gh_pr_watch,
+        "failed_jobs_from_workflow_runs",
+        lambda *args, **kwargs: call_order.append("failed_jobs") or [],
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
         "recommend_actions",
         lambda *args, **kwargs: call_order.append("recommend") or ["idle"],
     )
@@ -86,7 +118,9 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
         pr="123",
         repo=None,
         state_file=str(tmp_path / "watcher-state.json"),
+        ignore_review_thread=[],
         max_flaky_retries=3,
+        reset_seen_feedback=False,
     )
 
     gh_pr_watch.collect_snapshot(args)
@@ -100,7 +134,9 @@ def test_recommend_actions_prioritizes_review_comments():
         sample_pr(),
         sample_checks(failed_count=1),
         [{"run_id": 99}],
+        [],
         [{"kind": "review_comment", "id": "1"}],
+        {},
         0,
         3,
     )
@@ -119,6 +155,7 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
         "pr": sample_pr(),
         "checks": sample_checks(),
         "failed_runs": [],
+        "failed_jobs": [],
         "new_review_items": [],
         "actions": ["ready_to_merge"],
         "retry_state": {
@@ -151,5 +188,60 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     with pytest.raises(StopWatch):
         gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=30))
 
-    assert sleeps == [30, 30]
+    assert sleeps == [30, 60]
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
+
+
+def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
+    jobs_by_run = {
+        99: [
+            {
+                "id": 555,
+                "name": "unit tests",
+                "status": "completed",
+                "conclusion": "failure",
+                "html_url": "https://github.com/openai/codex/actions/runs/99/job/555",
+            },
+            {
+                "id": 556,
+                "name": "lint",
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+    }
+
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_jobs_for_run",
+        lambda repo, run_id: jobs_by_run[run_id],
+    )
+
+    failed_jobs = gh_pr_watch.failed_jobs_from_workflow_runs(
+        "openai/codex",
+        [
+            {
+                "id": 99,
+                "name": "CI",
+                "status": "in_progress",
+                "conclusion": "",
+                "head_sha": "abc123",
+            }
+        ],
+        "abc123",
+    )
+
+    assert failed_jobs == [
+        {
+            "run_id": 99,
+            "workflow_name": "CI",
+            "run_status": "in_progress",
+            "run_conclusion": "",
+            "job_id": 555,
+            "job_name": "unit tests",
+            "status": "completed",
+            "conclusion": "failure",
+            "html_url": "https://github.com/openai/codex/actions/runs/99/job/555",
+            "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
+        }
+    ]

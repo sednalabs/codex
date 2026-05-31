@@ -34,7 +34,7 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
         RolloutItem::EventMsg(
-            EventMsg::TokenCount(_) | EventMsg::UserMessage(_) | EventMsg::ThreadNameUpdated(_),
+            EventMsg::TokenCount(_) | EventMsg::UserMessage(_) | EventMsg::ThreadGoalUpdated(_),
         ) => true,
         RolloutItem::EventMsg(_) | RolloutItem::ResponseItem(_) | RolloutItem::Compacted(_) => {
             false
@@ -50,6 +50,7 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     }
     metadata.id = meta_line.meta.id;
     metadata.source = enum_to_string(&meta_line.meta.source);
+    metadata.thread_source = meta_line.meta.thread_source;
     metadata.agent_nickname = meta_line.meta.agent_nickname.clone();
     metadata.agent_role = meta_line.meta.agent_role.clone();
     metadata.agent_path = meta_line.meta.agent_path.clone();
@@ -87,9 +88,11 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
             }
         }
         EventMsg::UserMessage(user) => {
+            let preview = user_message_preview(user);
             if metadata.first_user_message.is_none() {
-                metadata.first_user_message = user_message_preview(user);
+                metadata.first_user_message = preview.clone();
             }
+            set_preview_if_empty(metadata, preview);
             if metadata.title.is_empty() {
                 let title = strip_user_message_prefix(user.message.as_str());
                 if !title.is_empty() {
@@ -97,11 +100,10 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
                 }
             }
         }
-        EventMsg::ThreadNameUpdated(updated) => {
-            if let Some(title) = updated.thread_name.as_deref()
-                && !title.trim().is_empty()
-            {
-                metadata.title = title.trim().to_string();
+        EventMsg::ThreadGoalUpdated(event) => {
+            let objective = event.goal.objective.trim();
+            if !objective.is_empty() {
+                set_preview_if_empty(metadata, Some(objective.to_string()));
             }
         }
         _ => {}
@@ -109,6 +111,12 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
 }
 
 fn apply_response_item(_metadata: &mut ThreadMetadata, _item: &ResponseItem) {}
+
+fn set_preview_if_empty(metadata: &mut ThreadMetadata, preview: Option<String>) {
+    if metadata.preview.is_none() {
+        metadata.preview = preview;
+    }
+}
 
 fn strip_user_message_prefix(text: &str) -> &str {
     match text.find(USER_MESSAGE_BEGIN) {
@@ -148,7 +156,6 @@ mod tests {
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
-    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::openai_models::ReasoningEffort;
@@ -159,7 +166,9 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::ThreadNameUpdatedEvent;
+    use codex_protocol::protocol::ThreadGoal;
+    use codex_protocol::protocol::ThreadGoalStatus;
+    use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use codex_protocol::protocol::UserMessageEvent;
@@ -183,6 +192,7 @@ mod tests {
         apply_rollout_item(&mut metadata, &item, "test-provider");
 
         assert_eq!(metadata.first_user_message, None);
+        assert_eq!(metadata.preview, None);
         assert_eq!(metadata.title, "");
     }
 
@@ -190,10 +200,12 @@ mod tests {
     fn event_msg_user_messages_set_title_and_first_user_message() {
         let mut metadata = metadata_for_test();
         let item = RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: format!("{USER_MESSAGE_BEGIN} actual user request"),
             images: Some(vec![]),
             local_images: vec![],
             text_elements: vec![],
+            ..Default::default()
         }));
 
         apply_rollout_item(&mut metadata, &item, "test-provider");
@@ -202,42 +214,30 @@ mod tests {
             metadata.first_user_message.as_deref(),
             Some("actual user request")
         );
+        assert_eq!(metadata.preview.as_deref(), Some("actual user request"));
         assert_eq!(metadata.title, "actual user request");
-    }
-
-    #[test]
-    fn thread_name_update_replaces_title_without_changing_first_user_message() {
-        let mut metadata = metadata_for_test();
-        metadata.title = "actual user request".to_string();
-        metadata.first_user_message = Some("actual user request".to_string());
-        let item = RolloutItem::EventMsg(EventMsg::ThreadNameUpdated(ThreadNameUpdatedEvent {
-            thread_id: metadata.id,
-            thread_name: Some("saved-session".to_string()),
-        }));
-
-        apply_rollout_item(&mut metadata, &item, "test-provider");
-
-        assert_eq!(
-            metadata.first_user_message.as_deref(),
-            Some("actual user request")
-        );
-        assert_eq!(metadata.title, "saved-session");
     }
 
     #[test]
     fn event_msg_image_only_user_message_sets_image_placeholder_preview() {
         let mut metadata = metadata_for_test();
         let item = RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: String::new(),
             images: Some(vec!["https://example.com/image.png".to_string()]),
             local_images: vec![],
             text_elements: vec![],
+            ..Default::default()
         }));
 
         apply_rollout_item(&mut metadata, &item, "test-provider");
 
         assert_eq!(
             metadata.first_user_message.as_deref(),
+            Some(super::IMAGE_ONLY_USER_MESSAGE_PLACEHOLDER)
+        );
+        assert_eq!(
+            metadata.preview.as_deref(),
             Some(super::IMAGE_ONLY_USER_MESSAGE_PLACEHOLDER)
         );
         assert_eq!(metadata.title, "");
@@ -247,16 +247,63 @@ mod tests {
     fn event_msg_blank_user_message_without_images_keeps_first_user_message_empty() {
         let mut metadata = metadata_for_test();
         let item = RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: "   ".to_string(),
             images: Some(vec![]),
             local_images: vec![],
             text_elements: vec![],
+            ..Default::default()
         }));
 
         apply_rollout_item(&mut metadata, &item, "test-provider");
 
         assert_eq!(metadata.first_user_message, None);
+        assert_eq!(metadata.preview, None);
         assert_eq!(metadata.title, "");
+    }
+
+    #[test]
+    fn event_msg_thread_goal_sets_preview_only_and_later_user_sets_message_title() {
+        let mut metadata = metadata_for_test();
+        let goal_item =
+            RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                thread_id: metadata.id,
+                turn_id: None,
+                goal: ThreadGoal {
+                    thread_id: metadata.id,
+                    objective: "optimize the benchmark".to_string(),
+                    status: ThreadGoalStatus::Active,
+                    token_budget: None,
+                    tokens_used: 0,
+                    time_used_seconds: 0,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+            }));
+
+        apply_rollout_item(&mut metadata, &goal_item, "test-provider");
+
+        assert_eq!(metadata.preview.as_deref(), Some("optimize the benchmark"));
+        assert_eq!(metadata.first_user_message, None);
+        assert_eq!(metadata.title, "");
+
+        let user_item = RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: format!("{USER_MESSAGE_BEGIN} next normal prompt"),
+            images: Some(vec![]),
+            local_images: vec![],
+            text_elements: vec![],
+            ..Default::default()
+        }));
+
+        apply_rollout_item(&mut metadata, &user_item, "test-provider");
+
+        assert_eq!(metadata.preview.as_deref(), Some("optimize the benchmark"));
+        assert_eq!(
+            metadata.first_user_message.as_deref(),
+            Some("next normal prompt")
+        );
+        assert_eq!(metadata.title, "next normal prompt");
     }
 
     #[test]
@@ -278,6 +325,7 @@ mod tests {
                     originator: "codex_cli_rs".to_string(),
                     cli_version: "0.0.0".to_string(),
                     source: SessionSource::Cli,
+                    thread_source: None,
                     agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
@@ -294,8 +342,8 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
-                trace_id: None,
                 cwd: PathBuf::from("/parent/workspace"),
+                workspace_roots: None,
                 current_date: None,
                 timezone: None,
                 approval_policy: AskForApproval::Never,
@@ -308,11 +356,7 @@ mod tests {
                 collaboration_mode: None,
                 realtime_active: None,
                 effort: None,
-                summary: ReasoningSummary::Auto,
-                user_instructions: None,
-                developer_instructions: None,
-                final_output_json_schema: None,
-                truncation_policy: None,
+                summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
         );
@@ -334,8 +378,8 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
-                trace_id: None,
                 cwd: PathBuf::from("/fallback/workspace"),
+                workspace_roots: None,
                 current_date: None,
                 timezone: None,
                 approval_policy: AskForApproval::OnRequest,
@@ -348,11 +392,7 @@ mod tests {
                 collaboration_mode: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),
-                summary: ReasoningSummary::Auto,
-                user_instructions: None,
-                developer_instructions: None,
-                final_output_json_schema: None,
-                truncation_policy: None,
+                summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
         );
@@ -368,8 +408,8 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
-                trace_id: None,
                 cwd: PathBuf::from("/fallback/workspace"),
+                workspace_roots: None,
                 current_date: None,
                 timezone: None,
                 approval_policy: AskForApproval::OnRequest,
@@ -382,11 +422,7 @@ mod tests {
                 collaboration_mode: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),
-                summary: ReasoningSummary::Auto,
-                user_instructions: None,
-                developer_instructions: None,
-                final_output_json_schema: None,
-                truncation_policy: None,
+                summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
         );
@@ -411,6 +447,7 @@ mod tests {
                     originator: "codex_cli_rs".to_string(),
                     cli_version: "0.0.0".to_string(),
                     source: SessionSource::Cli,
+                    thread_source: None,
                     agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
@@ -437,6 +474,7 @@ mod tests {
             created_at,
             updated_at: created_at,
             source: "cli".to_string(),
+            thread_source: None,
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
@@ -446,6 +484,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
+            preview: None,
             sandbox_policy: "read-only".to_string(),
             approval_mode: "on-request".to_string(),
             tokens_used: 1,

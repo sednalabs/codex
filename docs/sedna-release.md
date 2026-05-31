@@ -134,8 +134,7 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually dispatched
-- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the
-  build factory
+- `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
 - The initial Sedna release lane publishes direct GitHub release binaries. The legacy npm-style
@@ -176,3 +175,22 @@ runner. It intentionally does not perform host-local installation from the publi
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
+
+### Operator deployment boundary
+
+The public release architecture ends at GitHub Release publication and
+GitHub-hosted asset verification. The repository tracks the release resolver,
+metadata contract, signing/checksum process, artifact names, and dry-run asset
+verification because those are public product behavior.
+
+Operator deployment policy is downstream-owned and external to this public
+Actions surface. Do not add hostnames, tunnel names, self-hosted runner labels,
+service-unit paths, installation directories, or production-machine routing to
+tracked workflows or public release notes. If a public workflow needs to refer
+to that handoff, use repository-neutral wording such as external deployment
+automation.
+
+`.github/scripts/check_workflow_policy.py` is the checked-in guardrail for the
+highest-risk workflow drift: it rejects public self-hosted runners, direct
+release publication without the release environment, and public release-install
+paths that are not dry-run asset verification.
