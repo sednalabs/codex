@@ -1054,6 +1054,85 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct SpawnAgentResult {
+        agent_id: Option<String>,
+        task_name: String,
+        nickname: Option<String>,
+        requested_model: Option<String>,
+        requested_reasoning_effort: Option<ReasoningEffort>,
+        effective_model: Option<String>,
+        requested_model_honored: Option<bool>,
+        effective_reasoning_effort: Option<ReasoningEffort>,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let turn = TurnContext {
+        config: Arc::new(config),
+        ..turn
+    };
+    let turn = turn
+        .with_model("gpt-5.5".to_string(), &session.services.models_manager)
+        .await;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "monitor this wait",
+                "task_name": "terminal_babysitter_v2",
+                "agent_type": "terminal-babysitter",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("terminal-babysitter spawn should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let agent_id = result.agent_id.clone();
+
+    assert_eq!(
+        result,
+        SpawnAgentResult {
+            agent_id: agent_id.clone(),
+            task_name: "/root/terminal_babysitter_v2".to_string(),
+            nickname: result.nickname.clone(),
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: Some("gpt-5.4-mini".to_string()),
+            requested_model_honored: None,
+            effective_reasoning_effort: Some(ReasoningEffort::Low),
+        }
+    );
+    let child_thread_id = parse_agent_id(agent_id.as_deref().expect("agent id should be present"));
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model, "gpt-5.4-mini");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
+    assert!(result.nickname.is_some());
+}
+
+#[tokio::test]
 async fn spawn_agent_returns_agent_id_without_task_name() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
