@@ -63,10 +63,6 @@ use crate::exec_events::TurnStartedEvent;
 use crate::exec_events::Usage;
 use crate::exec_events::WebSearchItem;
 
-#[cfg(test)]
-#[path = "event_processor_with_jsonl_output_tests.rs"]
-mod event_processor_with_jsonl_output_tests;
-
 pub struct EventProcessorWithJsonOutput {
     last_message_path: Option<PathBuf>,
     next_item_id: AtomicU64,

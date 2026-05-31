@@ -21,10 +21,6 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 
-#[cfg(test)]
-#[path = "event_processor_with_human_output_tests.rs"]
-mod event_processor_with_human_output_tests;
-
 pub(crate) struct EventProcessorWithHumanOutput {
     bold: Style,
     cyan: Style,
