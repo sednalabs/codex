@@ -18,8 +18,8 @@ use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::perform_oauth_login::OAuthProviderError;
 use crate::save_oauth_tokens;
-use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
+use crate::utils::build_reqwest_client;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -45,7 +45,7 @@ pub async fn perform_oauth_device_login(
     mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let http_client = apply_default_headers(Client::builder(), &default_headers).build()?;
+    let http_client = build_reqwest_client(Client::builder(), &default_headers)?;
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &http_client,
         device_authorization_endpoint,

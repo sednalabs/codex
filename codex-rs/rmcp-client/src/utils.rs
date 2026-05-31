@@ -126,6 +126,18 @@ pub(crate) fn apply_default_headers(
     }
 }
 
+pub(crate) fn build_reqwest_client(
+    mut builder: ClientBuilder,
+    default_headers: &HeaderMap,
+) -> Result<reqwest::Client> {
+    codex_client::ensure_rustls_crypto_provider();
+    builder = apply_default_headers(builder, default_headers);
+    if let Some(tls_config) = codex_client::maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
+    Ok(builder.build()?)
+}
+
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",

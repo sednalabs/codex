@@ -13,8 +13,8 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::oauth::has_oauth_tokens;
-use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
+use crate::utils::build_reqwest_client;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -91,7 +91,7 @@ async fn discover_streamable_http_oauth_with_headers(
     // Use no_proxy to avoid a bug in the system-configuration crate that
     // can result in a panic. See #8912.
     let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = apply_default_headers(builder, default_headers).build()?;
+    let client = build_reqwest_client(builder, default_headers)?;
 
     let mut last_error: Option<Error> = None;
     for candidate_path in discovery_paths(base_url.path()) {
