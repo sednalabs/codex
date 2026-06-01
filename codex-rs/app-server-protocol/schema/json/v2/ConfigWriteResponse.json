@@ -92,7 +92,7 @@
           "type": "object"
         },
         {
-          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
+          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special\nin that it is expected to be:\n- writable by the user\n- generally outside the workspace directory",
           "properties": {
             "file": {
               "$ref": "#/$defs/AbsolutePathBuf",

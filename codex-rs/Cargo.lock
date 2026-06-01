@@ -2656,6 +2656,7 @@ dependencies = [
  "codex-utils-pty",
  "codex-utils-stream-parser",
  "codex-utils-string",
+ "codex-utils-template",
  "codex-windows-sandbox",
  "core_test_support",
  "csv",

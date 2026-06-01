@@ -200,8 +200,6 @@ pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) ->
     edits
 }
 
-mod document_helpers;
-
 struct ConfigDocument {
     doc: DocumentMut,
 }
