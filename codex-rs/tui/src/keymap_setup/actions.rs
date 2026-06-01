@@ -176,6 +176,12 @@ pub(super) const KEYMAP_ACTIONS: &[KeymapActionDescriptor] = &[
     action("pager", "Pager", "jump_bottom", "Jump to the end."),
     action("pager", "Pager", "close", "Close the pager overlay."),
     action("pager", "Pager", "close_transcript", "Close the transcript overlay."),
+    action(
+        "pager",
+        "Pager",
+        "toggle_transcript_mode",
+        "Toggle the transcript overlay between verbose and compact output.",
+    ),
     action("list", "List", "move_up", "Move list selection up."),
     action("list", "List", "move_down", "Move list selection down."),
     action("list", "List", "move_left", "Move horizontally left in list pickers."),
@@ -318,6 +324,7 @@ pub(super) fn binding_slot<'a>(
         ("pager", "jump_bottom") => Some(&mut keymap.pager.jump_bottom),
         ("pager", "close") => Some(&mut keymap.pager.close),
         ("pager", "close_transcript") => Some(&mut keymap.pager.close_transcript),
+        ("pager", "toggle_transcript_mode") => Some(&mut keymap.pager.toggle_transcript_mode),
         ("list", "move_up") => Some(&mut keymap.list.move_up),
         ("list", "move_down") => Some(&mut keymap.list.move_down),
         ("list", "move_left") => Some(&mut keymap.list.move_left),
@@ -442,6 +449,9 @@ pub(super) fn bindings_for_action<'a>(
         ("pager", "jump_bottom") => Some(runtime_keymap.pager.jump_bottom.as_slice()),
         ("pager", "close") => Some(runtime_keymap.pager.close.as_slice()),
         ("pager", "close_transcript") => Some(runtime_keymap.pager.close_transcript.as_slice()),
+        ("pager", "toggle_transcript_mode") => {
+            Some(runtime_keymap.pager.toggle_transcript_mode.as_slice())
+        }
         ("list", "move_up") => Some(runtime_keymap.list.move_up.as_slice()),
         ("list", "move_down") => Some(runtime_keymap.list.move_down.as_slice()),
         ("list", "move_left") => Some(runtime_keymap.list.move_left.as_slice()),

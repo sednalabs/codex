@@ -219,6 +219,7 @@ pub(crate) struct PagerKeymap {
     pub(crate) jump_bottom: Vec<KeyBinding>,
     pub(crate) close: Vec<KeyBinding>,
     pub(crate) close_transcript: Vec<KeyBinding>,
+    pub(crate) toggle_transcript_mode: Vec<KeyBinding>,
     pub(crate) previous_user_prompt: Vec<KeyBinding>,
     pub(crate) next_user_prompt: Vec<KeyBinding>,
 }
@@ -735,6 +736,7 @@ impl RuntimeKeymap {
             jump_bottom: resolve_local!(keymap, defaults, pager, jump_bottom),
             close: resolve_local!(keymap, defaults, pager, close),
             close_transcript: resolve_local!(keymap, defaults, pager, close_transcript),
+            toggle_transcript_mode: resolve_local!(keymap, defaults, pager, toggle_transcript_mode),
             previous_user_prompt: resolve_local!(keymap, defaults, pager, previous_user_prompt),
             next_user_prompt: resolve_local!(keymap, defaults, pager, next_user_prompt),
         };
@@ -1074,6 +1076,7 @@ impl RuntimeKeymap {
                 jump_bottom: default_bindings![plain(KeyCode::End)],
                 close: default_bindings![plain(KeyCode::Char('q')), ctrl(KeyCode::Char('c'))],
                 close_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
+                toggle_transcript_mode: default_bindings![plain(KeyCode::Char('v'))],
                 previous_user_prompt: default_bindings![plain(KeyCode::Left), alt(KeyCode::Up)],
                 next_user_prompt: default_bindings![plain(KeyCode::Right), alt(KeyCode::Down)],
             },
@@ -1539,6 +1542,10 @@ impl RuntimeKeymap {
                 ("close", self.pager.close.as_slice()),
                 ("close_transcript", self.pager.close_transcript.as_slice()),
                 (
+                    "toggle_transcript_mode",
+                    self.pager.toggle_transcript_mode.as_slice(),
+                ),
+                (
                     "previous_user_prompt",
                     self.pager.previous_user_prompt.as_slice(),
                 ),
@@ -1559,6 +1566,10 @@ impl RuntimeKeymap {
                 ("jump_bottom", self.pager.jump_bottom.as_slice()),
                 ("close", self.pager.close.as_slice()),
                 ("close_transcript", self.pager.close_transcript.as_slice()),
+                (
+                    "toggle_transcript_mode",
+                    self.pager.toggle_transcript_mode.as_slice(),
+                ),
                 (
                     "previous_user_prompt",
                     self.pager.previous_user_prompt.as_slice(),
@@ -2599,6 +2610,10 @@ mod tests {
     fn pager_prompt_selection_defaults_to_left_and_right_arrows() {
         let runtime = RuntimeKeymap::defaults();
 
+        assert_eq!(
+            runtime.pager.toggle_transcript_mode,
+            vec![key_hint::plain(KeyCode::Char('v'))]
+        );
         assert_eq!(
             runtime.pager.previous_user_prompt,
             vec![key_hint::plain(KeyCode::Left), key_hint::alt(KeyCode::Up)]

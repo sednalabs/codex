@@ -2,7 +2,7 @@
 source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
-" Transcript ────────────────────────────"
+" Transcript (verbose) ──────────────────"
 "alpha                                   "
 "                                        "
 "tail                                    "
@@ -10,5 +10,5 @@ expression: term.backend()
 "~                                       "
 "───────────────────────── 0 / 0 · 100% ─"
 " ↑/↓   ←/→   pgup/pgdn   home/end       "
-" q   ctrl + o   ⌥ + r   esc/←           "
+" q   ctrl + o   ⌥ + r   v   esc/←       "
 "                                        "
