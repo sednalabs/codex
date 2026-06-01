@@ -224,6 +224,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        None,
     );
     emitter
         .emit(
@@ -278,6 +279,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        None,
     );
     emitter
         .emit(

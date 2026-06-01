@@ -28,6 +28,8 @@ use crate::unified_exec::generate_chunk_id;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
+use codex_protocol::protocol::TerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
@@ -172,6 +174,11 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             max_output_tokens,
             turn.truncation_policy,
         ));
+        let terminal_wait = wait_until_terminal.then_some(TerminalWaitInfo {
+            primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+            max_wait_ms,
+            heartbeat_interval_ms,
+        });
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
@@ -279,6 +286,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    terminal_wait: terminal_wait.clone(),
                 },
                 &context,
             )

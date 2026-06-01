@@ -3087,6 +3087,11 @@ pub struct ExecCommandBeginEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub interaction_input: Option<String>,
+    /// Wait primitive selected by the tool call, when the command is being
+    /// held open by a terminal wait rather than ordinary command execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_wait: Option<TerminalWaitInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -3113,6 +3118,11 @@ pub struct ExecCommandEndEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub interaction_input: Option<String>,
+    /// Wait primitive selected by the tool call, when the command was held
+    /// open by a terminal wait rather than ordinary command execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_wait: Option<TerminalWaitInfo>,
 
     /// Captured stdout
     pub stdout: String,
@@ -3170,6 +3180,30 @@ pub struct TerminalInteractionEvent {
     pub process_id: String,
     /// Stdin sent to the running session.
     pub stdin: String,
+    /// Wait primitive selected by the tool call, when this interaction is a
+    /// wait/poll rather than ordinary user input to the terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_wait: Option<TerminalWaitInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalWaitPrimitive {
+    ExecCommandWaitUntilTerminal,
+    WriteStdinWaitUntilTerminal,
+    WriteStdinEmptyPoll,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct TerminalWaitInfo {
+    pub primitive: TerminalWaitPrimitive,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub heartbeat_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
