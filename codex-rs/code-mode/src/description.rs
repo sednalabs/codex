@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use crate::PUBLIC_TOOL_NAME;
 
 const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+const MAX_SCHEMA_RENDER_DEPTH: usize = 64;
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
 const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
@@ -457,7 +458,7 @@ fn render_tool_heading(global_name: &str, raw_name: &str) -> String {
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
-    render_json_schema_to_typescript_inner(schema)
+    render_json_schema_to_typescript_inner(schema, 0)
 }
 
 fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&JsonValue> {
@@ -501,7 +502,11 @@ fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&J
     )
 }
 
-fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
+fn render_json_schema_to_typescript_inner(schema: &JsonValue, depth: usize) -> String {
+    if depth > MAX_SCHEMA_RENDER_DEPTH {
+        return "unknown".to_string();
+    }
+
     match schema {
         JsonValue::Bool(true) => "unknown".to_string(),
         JsonValue::Bool(false) => "never".to_string(),
@@ -524,7 +529,9 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 if let Some(variants) = map.get(key).and_then(JsonValue::as_array) {
                     let rendered = variants
                         .iter()
-                        .map(render_json_schema_to_typescript_inner)
+                        .map(|variant| {
+                            render_json_schema_to_typescript_inner(variant, depth.saturating_add(1))
+                        })
                         .collect::<Vec<_>>();
                     if !rendered.is_empty() {
                         return rendered.join(" | ");
@@ -535,7 +542,9 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
             if let Some(variants) = map.get("allOf").and_then(JsonValue::as_array) {
                 let rendered = variants
                     .iter()
-                    .map(render_json_schema_to_typescript_inner)
+                    .map(|variant| {
+                        render_json_schema_to_typescript_inner(variant, depth.saturating_add(1))
+                    })
                     .collect::<Vec<_>>();
                 if !rendered.is_empty() {
                     return rendered.join(" & ");
@@ -547,7 +556,7 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                     let rendered = types
                         .iter()
                         .filter_map(JsonValue::as_str)
-                        .map(|schema_type| render_json_schema_type_keyword(map, schema_type))
+                        .map(|schema_type| render_json_schema_type_keyword(map, schema_type, depth))
                         .collect::<Vec<_>>();
                     if !rendered.is_empty() {
                         return rendered.join(" | ");
@@ -555,7 +564,7 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 }
 
                 if let Some(schema_type) = schema_type.as_str() {
-                    return render_json_schema_type_keyword(map, schema_type);
+                    return render_json_schema_type_keyword(map, schema_type, depth);
                 }
             }
 
@@ -563,11 +572,11 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 || map.contains_key("additionalProperties")
                 || map.contains_key("required")
             {
-                return render_json_schema_object(map);
+                return render_json_schema_object(map, depth);
             }
 
             if map.contains_key("items") || map.contains_key("prefixItems") {
-                return render_json_schema_array(map);
+                return render_json_schema_array(map, depth);
             }
 
             "unknown".to_string()
@@ -579,28 +588,29 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
 fn render_json_schema_type_keyword(
     map: &serde_json::Map<String, JsonValue>,
     schema_type: &str,
+    depth: usize,
 ) -> String {
     match schema_type {
         "string" => "string".to_string(),
         "number" | "integer" => "number".to_string(),
         "boolean" => "boolean".to_string(),
         "null" => "null".to_string(),
-        "array" => render_json_schema_array(map),
-        "object" => render_json_schema_object(map),
+        "array" => render_json_schema_array(map, depth),
+        "object" => render_json_schema_object(map, depth),
         _ => "unknown".to_string(),
     }
 }
 
-fn render_json_schema_array(map: &serde_json::Map<String, JsonValue>) -> String {
+fn render_json_schema_array(map: &serde_json::Map<String, JsonValue>, depth: usize) -> String {
     if let Some(items) = map.get("items") {
-        let item_type = render_json_schema_to_typescript_inner(items);
+        let item_type = render_json_schema_to_typescript_inner(items, depth.saturating_add(1));
         return format!("Array<{item_type}>");
     }
 
     if let Some(items) = map.get("prefixItems").and_then(JsonValue::as_array) {
         let item_types = items
             .iter()
-            .map(render_json_schema_to_typescript_inner)
+            .map(|item| render_json_schema_to_typescript_inner(item, depth.saturating_add(1)))
             .collect::<Vec<_>>();
         if !item_types.is_empty() {
             return format!("[{}]", item_types.join(", "));
@@ -615,12 +625,16 @@ fn append_additional_properties_line(
     map: &serde_json::Map<String, JsonValue>,
     properties: &serde_json::Map<String, JsonValue>,
     line_prefix: &str,
+    depth: usize,
 ) {
     if let Some(additional_properties) = map.get("additionalProperties") {
         let property_type = match additional_properties {
             JsonValue::Bool(true) => Some("unknown".to_string()),
             JsonValue::Bool(false) => None,
-            value => Some(render_json_schema_to_typescript_inner(value)),
+            value => Some(render_json_schema_to_typescript_inner(
+                value,
+                depth.saturating_add(1),
+            )),
         };
 
         if let Some(property_type) = property_type {
@@ -638,18 +652,23 @@ fn has_property_description(value: &JsonValue) -> bool {
         .is_some_and(|description| !description.is_empty())
 }
 
-fn render_json_schema_object_property(name: &str, value: &JsonValue, required: &[&str]) -> String {
+fn render_json_schema_object_property(
+    name: &str,
+    value: &JsonValue,
+    required: &[&str],
+    depth: usize,
+) -> String {
     let optional = if required.iter().any(|required_name| required_name == &name) {
         ""
     } else {
         "?"
     };
     let property_name = render_json_schema_property_name(name);
-    let property_type = render_json_schema_to_typescript_inner(value);
+    let property_type = render_json_schema_to_typescript_inner(value, depth.saturating_add(1));
     format!("{property_name}{optional}: {property_type};")
 }
 
-fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String {
+fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>, depth: usize) -> String {
     let required = map
         .get("required")
         .and_then(JsonValue::as_array)
@@ -686,21 +705,21 @@ fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String
 
             lines.push(format!(
                 "  {}",
-                render_json_schema_object_property(name, value, &required)
+                render_json_schema_object_property(name, value, &required, depth)
             ));
         }
 
-        append_additional_properties_line(&mut lines, map, &properties, "  ");
+        append_additional_properties_line(&mut lines, map, &properties, "  ", depth);
         lines.push("}".to_string());
         return lines.join("\n");
     }
 
     let mut lines = sorted_properties
         .into_iter()
-        .map(|(name, value)| render_json_schema_object_property(name, value, &required))
+        .map(|(name, value)| render_json_schema_object_property(name, value, &required, depth))
         .collect::<Vec<_>>();
 
-    append_additional_properties_line(&mut lines, map, &properties, "");
+    append_additional_properties_line(&mut lines, map, &properties, "", depth);
 
     if lines.is_empty() {
         return "{}".to_string();
@@ -731,6 +750,7 @@ mod tests {
     use super::build_exec_tool_description;
     use super::normalize_code_mode_identifier;
     use super::parse_exec_source;
+    use super::render_json_schema_to_typescript;
     use codex_protocol::ToolName;
     use pretty_assertions::assert_eq;
     use serde_json::Value as JsonValue;
@@ -790,6 +810,26 @@ mod tests {
             "hidden_dynamic_tool",
             normalize_code_mode_identifier("hidden-dynamic-tool")
         );
+    }
+
+    #[test]
+    fn render_json_schema_to_typescript_caps_deep_schema_recursion() {
+        let mut schema = json!({ "type": "string" });
+        for _ in 0..128 {
+            schema = json!({
+                "type": "object",
+                "properties": {
+                    "next": schema
+                },
+                "required": ["next"],
+                "additionalProperties": false
+            });
+        }
+
+        let rendered = render_json_schema_to_typescript(&schema);
+
+        assert!(rendered.contains("next:"));
+        assert!(rendered.contains("unknown"));
     }
 
     #[test]
