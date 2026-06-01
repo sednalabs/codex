@@ -131,7 +131,7 @@
         },
         "allowedWindowsSandboxImplementations": {
           "items": {
-            "$ref": "#/definitions/WindowsSandboxSetupMode"
+            "$ref": "#/$defs/WindowsSandboxSetupMode"
           },
           "type": [
             "array",
