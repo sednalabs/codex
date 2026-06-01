@@ -13,6 +13,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -217,6 +218,15 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
             .expect("test feature should be disableable in config");
     }
     turn.config = Arc::new(config);
+    turn.tool_mode = turn.model_info.tool_mode.unwrap_or_else(|| {
+        if turn.config.features.enabled(Feature::CodeModeOnly) {
+            ToolMode::CodeModeOnly
+        } else if turn.config.features.enabled(Feature::CodeMode) {
+            ToolMode::CodeMode
+        } else {
+            ToolMode::Direct
+        }
+    });
 }
 
 fn set_features(turn: &mut TurnContext, features: &[Feature]) {
@@ -369,6 +379,22 @@ fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
         }
         _ => false,
     }
+}
+
+#[tokio::test]
+async fn request_user_input_tool_respects_experimental_config_gate() {
+    let enabled = probe(|_| {}).await;
+    enabled.assert_visible_contains(&["request_user_input"]);
+    enabled.assert_registered_contains(&["request_user_input"]);
+
+    let disabled = probe(|turn| {
+        update_config(turn, |config| {
+            config.experimental_request_user_input_enabled = false;
+        });
+    })
+    .await;
+    disabled.assert_visible_lacks(&["request_user_input"]);
+    disabled.assert_registered_lacks(&["request_user_input"]);
 }
 
 #[tokio::test]
@@ -845,6 +871,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "close_agent",
         "send_message",
         "followup_task",
+        "assign_task",
         "list_agents",
         "inspect_agent_tree",
     ]);
@@ -875,7 +902,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "list_agents",
         "inspect_agent_tree",
     ]);
-    v2.assert_visible_lacks(&["send_input", "resume_agent"]);
+    v2.assert_visible_lacks(&["send_input", "resume_agent", "assign_task"]);
     let spawn_agent_description = match v2.visible_spec("spawn_agent") {
         ToolSpec::Function(tool) => tool.description.as_str(),
         other => panic!("expected spawn_agent function spec, got {other:?}"),
@@ -906,6 +933,20 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
     );
+}
+
+#[tokio::test]
+async fn tool_mode_selector_overrides_feature_flags() {
+    let direct = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+        turn.model_info.tool_mode = Some(ToolMode::Direct);
+        turn.tool_mode = ToolMode::Direct;
+    })
+    .await;
+    direct.assert_visible_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
 }
 
 #[tokio::test]
@@ -963,6 +1004,20 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
     .await;
 
     namespaced.assert_visible_contains(&["agents"]);
+    namespaced.assert_visible_lacks(&["assign_task"]);
+    assert!(
+        !namespaced
+            .registered_names
+            .contains(&ToolName::namespaced("agents", "assign_task").to_string()),
+        "expected no namespaced runtime for assign_task"
+    );
+    assert!(
+        !namespaced
+            .namespace_function_names("agents")
+            .iter()
+            .any(|name| name == "assign_task"),
+        "expected assign_task to be absent from agents namespace"
+    );
     for tool_name in [
         "spawn_agent",
         "send_message",
@@ -1038,6 +1093,13 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
     .await;
 
     assert_eq!(plan.visible_names, vec!["exec", "wait", "agents"]);
+    assert!(
+        !plan
+            .namespace_function_names("agents")
+            .iter()
+            .any(|name| name == "assign_task"),
+        "expected assign_task to be absent from agents namespace"
+    );
     for tool_name in [
         "spawn_agent",
         "send_message",

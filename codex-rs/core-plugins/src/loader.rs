@@ -32,6 +32,7 @@ use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::find_plugin_manifest_path;
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::Map as JsonMap;
 use serde_json::Value as JsonValue;
@@ -104,7 +105,7 @@ impl PluginMcpFile {
 #[serde(rename_all = "camelCase")]
 struct PluginAppFile {
     #[serde(default)]
-    apps: HashMap<String, PluginAppConfig>,
+    apps: IndexMap<String, PluginAppConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -888,10 +889,7 @@ async fn load_apps_from_paths(
             }
         };
 
-        let mut apps: Vec<PluginAppConfig> = parsed.apps.into_values().collect();
-        apps.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-
-        connector_ids.extend(apps.into_iter().filter_map(|app| {
+        connector_ids.extend(parsed.apps.into_values().filter_map(|app| {
             if app.id.trim().is_empty() {
                 warn!(
                     plugin = %plugin_root.display(),
@@ -903,7 +901,8 @@ async fn load_apps_from_paths(
             }
         }));
     }
-    connector_ids.dedup();
+    let mut seen_connector_ids = HashSet::new();
+    connector_ids.retain(|connector_id| seen_connector_ids.insert(connector_id.0.clone()));
     connector_ids
 }
 
