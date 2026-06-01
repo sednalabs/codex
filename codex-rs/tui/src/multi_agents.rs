@@ -430,7 +430,12 @@ fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> Pla
         details.push(line);
     }
     collab_event(
-        title_with_primitive("Spawning", "spawn_agent", /*agent*/ None, spawn_request),
+        title_with_primitive(
+            "Spawning",
+            "spawn_agent",
+            /*agent*/ None,
+            spawn_request,
+        ),
         details,
     )
 }
