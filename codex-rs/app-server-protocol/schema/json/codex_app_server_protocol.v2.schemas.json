@@ -12681,6 +12681,16 @@
         "stdin": {
           "type": "string"
         },
+        "terminalWait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalWaitInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "threadId": {
           "type": "string"
         },
@@ -12697,6 +12707,41 @@
       ],
       "title": "TerminalInteractionNotification",
       "type": "object"
+    },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/definitions/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
+      ],
+      "type": "string"
     },
     "TextElement": {
       "properties": {
@@ -13587,6 +13632,17 @@
                 "string",
                 "null"
               ]
+            },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
             },
             "source": {
               "$ref": "#/definitions/CommandExecutionSource",
