@@ -9,6 +9,7 @@ use crate::PUBLIC_TOOL_NAME;
 const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
+const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
 const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/compose tool calls
 - Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
@@ -273,7 +274,7 @@ pub fn build_exec_tool_description(
 
         for tool in enabled_tools {
             let name = tool.name.as_str();
-            let nested_description = render_code_mode_sample_for_definition(tool);
+            let nested_description = code_mode_sample_for_definition(tool);
             let namespace_description = tool
                 .tool_name
                 .namespace
@@ -348,7 +349,7 @@ pub fn normalize_code_mode_identifier(tool_key: &str) -> String {
 
 pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition {
     if definition.name != PUBLIC_TOOL_NAME {
-        definition.description = render_code_mode_sample_for_definition(&definition);
+        definition.description = code_mode_sample_for_definition(&definition);
     }
     definition
 }
@@ -385,7 +386,18 @@ pub fn render_code_mode_sample(
         "declare const tools: {{ {} }};",
         render_code_mode_tool_declaration(tool_name, input_name, input_type, output_type)
     );
-    format!("{description}\n\nexec tool declaration:\n```ts\n{declaration}\n```")
+    format!("{description}\n\n{EXEC_TOOL_DECLARATION_LABEL}\n```ts\n{declaration}\n```")
+}
+
+fn code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
+    // Tool definitions may flow through both model prompt planning and
+    // ALL_TOOLS metadata collection. Keep this augmentation idempotent so those
+    // phases can be composed without recursively embedding declarations.
+    if definition.description.contains(EXEC_TOOL_DECLARATION_LABEL) {
+        definition.description.clone()
+    } else {
+        render_code_mode_sample_for_definition(definition)
+    }
 }
 
 fn render_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
@@ -809,6 +821,70 @@ mod tests {
                 "hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
             )
         );
+    }
+
+    #[test]
+    fn augment_tool_definition_is_idempotent() {
+        let definition = ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Test tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "ok": { "type": "boolean" } },
+                "required": ["ok"]
+            })),
+        };
+
+        let once = augment_tool_definition(definition);
+        let twice = augment_tool_definition(once.clone());
+
+        assert_eq!(twice.description, once.description);
+        assert_eq!(
+            once.description.matches("exec tool declaration:").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn code_mode_only_description_does_not_double_augment_tool_descriptions() {
+        let tool = augment_tool_definition(ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Test tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "ok": { "type": "boolean" } },
+                "required": ["ok"]
+            })),
+        });
+
+        let description = build_exec_tool_description(
+            &[tool],
+            &BTreeMap::new(),
+            /*code_mode_only*/ true,
+            /*deferred_tools_available*/ false,
+        );
+
+        assert_eq!(description.matches("exec tool declaration:").count(), 1);
     }
 
     #[test]
