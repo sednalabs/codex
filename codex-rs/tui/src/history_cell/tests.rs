@@ -7,6 +7,7 @@ use crate::exec_cell::ExecCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::session_state::ThreadSessionState;
+use crate::terminal_hyperlinks::visible_lines;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::McpAuthStatus;
@@ -2080,10 +2081,12 @@ fn injected_context_collapses_only_in_rich_transcript_mode() {
 
     let rich = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Rich));
     let raw = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw));
-    let compact = render_lines(&cell.transcript_hyperlink_lines_for_detail_mode(
-        /*width*/ 80,
-        HistoryRenderMode::Rich,
-        TranscriptDetailMode::Compact,
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
     ));
 
     assert_eq!(
@@ -2348,10 +2351,12 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
 
-    let compact = render_lines(&cell.transcript_hyperlink_lines_for_detail_mode(
-        /*width*/ 80,
-        HistoryRenderMode::Rich,
-        TranscriptDetailMode::Compact,
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
     ));
     assert_eq!(compact, rendered);
 }
