@@ -415,6 +415,7 @@ fn build_code_mode_executors(
         return vec![];
     }
 
+    let code_mode_only = turn_context.tool_mode == ToolMode::CodeModeOnly;
     let mut code_mode_nested_tool_specs = Vec::new();
     let mut exec_prompt_tool_specs = Vec::new();
     for executor in executors {
@@ -428,24 +429,29 @@ fn build_code_mode_executors(
         }
         let spec = executor.spec();
 
-        if exposure != ToolExposure::Deferred {
+        if code_mode_only && exposure != ToolExposure::Deferred {
             exec_prompt_tool_specs.push(spec.clone());
         }
         code_mode_nested_tool_specs.push(spec);
     }
 
-    let namespace_descriptions = code_mode_namespace_descriptions(&exec_prompt_tool_specs);
-    let mut enabled_tools =
-        collect_code_mode_exec_prompt_tool_definitions(exec_prompt_tool_specs.iter());
-    enabled_tools
-        .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
+    let (namespace_descriptions, enabled_tools) = if code_mode_only {
+        let namespace_descriptions = code_mode_namespace_descriptions(&exec_prompt_tool_specs);
+        let mut enabled_tools =
+            collect_code_mode_exec_prompt_tool_definitions(exec_prompt_tool_specs.iter());
+        enabled_tools
+            .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
+        (namespace_descriptions, enabled_tools)
+    } else {
+        (BTreeMap::new(), Vec::new())
+    };
 
     vec![
         Arc::new(CodeModeExecuteHandler::new(
             create_code_mode_tool(
                 &enabled_tools,
                 &namespace_descriptions,
-                turn_context.tool_mode == ToolMode::CodeModeOnly,
+                code_mode_only,
                 deferred_tools_available,
             ),
             code_mode_nested_tool_specs,
