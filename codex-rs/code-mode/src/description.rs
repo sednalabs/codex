@@ -7,7 +7,10 @@ use std::collections::BTreeMap;
 use crate::PUBLIC_TOOL_NAME;
 
 const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
-const MAX_SCHEMA_RENDER_DEPTH: usize = 64;
+const MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS: usize = 16 * 1024;
+const MAX_SCHEMA_RENDER_DEPTH: usize = 16;
+const TRUNCATED_TOOL_DESCRIPTION_NOTICE: &str =
+    "\n\n(Type declaration truncated because the schema is too large.)";
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
 const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
@@ -394,11 +397,26 @@ fn code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
     // Tool definitions may flow through both model prompt planning and
     // ALL_TOOLS metadata collection. Keep this augmentation idempotent so those
     // phases can be composed without recursively embedding declarations.
-    if definition.description.contains(EXEC_TOOL_DECLARATION_LABEL) {
+    let description = if definition.description.contains(EXEC_TOOL_DECLARATION_LABEL) {
         definition.description.clone()
     } else {
         render_code_mode_sample_for_definition(definition)
+    };
+    truncate_code_mode_tool_description(description)
+}
+
+fn truncate_code_mode_tool_description(mut description: String) -> String {
+    if description.len() <= MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS {
+        return description;
     }
+
+    let mut truncate_at = MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS;
+    while !description.is_char_boundary(truncate_at) {
+        truncate_at = truncate_at.saturating_sub(1);
+    }
+    description.truncate(truncate_at);
+    description.push_str(TRUNCATED_TOOL_DESCRIPTION_NOTICE);
+    description
 }
 
 fn render_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
@@ -743,7 +761,9 @@ fn render_json_schema_literal(value: &JsonValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::CodeModeToolKind;
+    use super::MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS;
     use super::ParsedExecSource;
+    use super::TRUNCATED_TOOL_DESCRIPTION_NOTICE;
     use super::ToolDefinition;
     use super::ToolNamespaceDescription;
     use super::augment_tool_definition;
@@ -892,6 +912,28 @@ mod tests {
         assert_eq!(
             once.description.matches("exec tool declaration:").count(),
             1
+        );
+    }
+
+    #[test]
+    fn augment_tool_definition_truncates_oversized_descriptions() {
+        let definition = ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "x".repeat(MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS + 1024),
+            kind: CodeModeToolKind::Freeform,
+            input_schema: None,
+            output_schema: None,
+        };
+
+        let description = augment_tool_definition(definition).description;
+
+        assert!(description.contains(TRUNCATED_TOOL_DESCRIPTION_NOTICE.trim()));
+        assert!(
+            description.len()
+                <= MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS + TRUNCATED_TOOL_DESCRIPTION_NOTICE.len()
         );
     }
 
