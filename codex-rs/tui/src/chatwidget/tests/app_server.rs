@@ -525,6 +525,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 command: command.clone(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
@@ -547,6 +548,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 command,
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: vec![AppServerCommandAction::Unknown {

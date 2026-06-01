@@ -22,6 +22,7 @@ import type { McpToolCallResult } from "./McpToolCallResult";
 import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
+import type { TerminalWaitInfo } from "./TerminalWaitInfo";
 import type { UserInput } from "./UserInput";
 import type { WebSearchAction } from "./WebSearchAction";
 
@@ -37,7 +38,11 @@ cwd: AbsolutePathBuf,
 /**
  * Identifier for the underlying PTY process (when available).
  */
-processId: string | null, source: CommandExecutionSource, status: CommandExecutionStatus,
+processId: string | null,
+/**
+ * Metadata for command executions that are also blocking terminal waits.
+ */
+terminalWait?: TerminalWaitInfo, source: CommandExecutionSource, status: CommandExecutionStatus,
 /**
  * A best-effort parsing of the command to understand the action(s) it will perform.
  * This returns a list of CommandAction objects because a single shell command may

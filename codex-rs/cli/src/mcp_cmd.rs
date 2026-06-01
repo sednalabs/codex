@@ -271,7 +271,7 @@ async fn perform_oauth_device_login_retry_without_scopes(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     resolved_scopes: &ResolvedMcpOAuthScopes,
-    oauth_client_id: &str,
+    oauth_client_id: Option<&str>,
     oauth_resource: Option<&str>,
     device_authorization_endpoint: &str,
     token_endpoint: &str,
@@ -563,14 +563,6 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
                 ));
             }
         };
-        let Some(oauth_client_id) = server
-            .oauth_client_id()
-            .filter(|client_id| !client_id.trim().is_empty())
-        else {
-            bail!(
-                "OAuth device login for MCP server '{name}' requires a configured public OAuth client id."
-            );
-        };
         let Some(device_authorization_endpoint) = oauth_config
             .device_authorization_endpoint
             .as_deref()
@@ -597,7 +589,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             http_headers,
             env_http_headers,
             &resolved_scopes,
-            oauth_client_id,
+            server.oauth_client_id(),
             server.oauth_resource.as_deref(),
             device_authorization_endpoint,
             &oauth_config.token_endpoint,

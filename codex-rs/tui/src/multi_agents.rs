@@ -365,7 +365,9 @@ pub(crate) fn tool_call_history_cell(
     match tool {
         CollabAgentTool::SpawnAgent => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                return None;
+                let fallback_spawn_request = spawn_request_summary(item);
+                let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
+                return Some(spawn_begin(prompt, spawn_request));
             }
             let fallback_spawn_request = spawn_request_summary(item);
             let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
@@ -422,6 +424,22 @@ pub(crate) fn tool_call_history_cell(
     }
 }
 
+fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> PlainHistoryCell {
+    let mut details = Vec::new();
+    if let Some(line) = prompt_line(prompt) {
+        details.push(line);
+    }
+    collab_event(
+        title_with_primitive(
+            "Spawning",
+            "spawn_agent",
+            /*agent*/ None,
+            spawn_request,
+        ),
+        details,
+    )
+}
+
 fn spawn_end(
     new_thread_id: Option<ThreadId>,
     prompt: &str,
@@ -429,9 +447,10 @@ fn spawn_end(
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let title = match new_thread_id {
-        Some(thread_id) => title_with_agent(
+        Some(thread_id) => title_with_primitive(
             "Spawned",
-            agent_label(thread_id, &agent_metadata(thread_id)),
+            "spawn_agent",
+            Some(agent_label(thread_id, &agent_metadata(thread_id))),
             spawn_request,
         ),
         None => title_text("Agent spawn failed"),
@@ -473,16 +492,24 @@ fn waiting_begin(
         .collect::<Vec<_>>();
 
     let title = match receiver_agents.as_slice() {
-        [(thread_id, metadata)] => title_with_agent(
-            "Waiting via wait_agent for",
-            agent_label(*thread_id, metadata),
+        [(thread_id, metadata)] => title_with_primitive(
+            "Waiting",
+            "wait_agent",
+            Some(agent_label(*thread_id, metadata)),
             /*spawn_request*/ None,
         ),
-        [] => title_text("Waiting via wait_agent"),
-        _ => title_text(format!(
-            "Waiting via wait_agent · {} agents",
-            receiver_agents.len()
-        )),
+        [] => title_with_primitive(
+            "Waiting",
+            "wait_agent",
+            /*agent*/ None,
+            /*spawn_request*/ None,
+        ),
+        _ => title_with_primitive_text(
+            "Waiting",
+            "wait_agent",
+            Some(format!("{} agents", receiver_agents.len())),
+            /*spawn_request*/ None,
+        ),
     };
 
     let details = if receiver_agents.len() > 1 {
@@ -516,7 +543,7 @@ fn waiting_end(
     let details = wait_complete_lines(
         receiver_thread_ids,
         agents_states,
-        pending,
+        &pending,
         timed_out,
         agent_metadata,
     );
@@ -617,6 +644,44 @@ fn title_with_agent(
     title_spans_line(spans)
 }
 
+fn title_with_primitive(
+    action: &str,
+    primitive: &str,
+    agent: Option<AgentLabel<'_>>,
+    spawn_request: Option<&SpawnRequestSummary>,
+) -> Line<'static> {
+    let mut spans = primitive_title_prefix(action, primitive);
+    if let Some(agent) = agent {
+        spans.push(Span::from(" · ").dim());
+        spans.extend(agent_label_spans(agent));
+    }
+    spans.extend(spawn_request_spans(spawn_request));
+    title_spans_line(spans)
+}
+
+fn title_with_primitive_text(
+    action: &str,
+    primitive: &str,
+    detail: Option<String>,
+    spawn_request: Option<&SpawnRequestSummary>,
+) -> Line<'static> {
+    let mut spans = primitive_title_prefix(action, primitive);
+    if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
+        spans.push(Span::from(" · ").dim());
+        spans.push(Span::from(detail).cyan());
+    }
+    spans.extend(spawn_request_spans(spawn_request));
+    title_spans_line(spans)
+}
+
+fn primitive_title_prefix(action: &str, primitive: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::from(action.to_string()).bold(),
+        Span::from(" · primitive: ").dim(),
+        Span::from(primitive.to_string()).cyan(),
+    ]
+}
+
 fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
     let mut title = Vec::with_capacity(spans.len() + 1);
     title.push(Span::from("• ").dim());
@@ -698,7 +763,7 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
 fn wait_complete_lines(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
-    pending_thread_ids: Vec<String>,
+    pending_thread_ids: &[String],
     timed_out: bool,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> Vec<Line<'static>> {
@@ -1390,14 +1455,16 @@ mod tests {
 
         let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
-        assert_eq!(title.spans[2].content.as_ref(), "Robie");
-        assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
-        assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
-        assert_eq!(title.spans[4].style.fg, None);
-        assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
-        assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
+        assert_eq!(title.spans[3].content.as_ref(), "spawn_agent");
+        assert_eq!(title.spans[3].style.fg, Some(Color::Cyan));
+        assert_eq!(title.spans[5].content.as_ref(), "Robie");
+        assert_eq!(title.spans[5].style.fg, Some(Color::Cyan));
+        assert!(title.spans[5].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(title.spans[7].content.as_ref(), "[explorer]");
+        assert_eq!(title.spans[7].style.fg, None);
+        assert!(!title.spans[7].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(title.spans[9].content.as_ref(), "(gpt-5 high)");
+        assert_eq!(title.spans[9].style.fg, Some(Color::Magenta));
     }
 
     #[test]

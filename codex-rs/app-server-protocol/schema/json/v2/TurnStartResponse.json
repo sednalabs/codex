@@ -658,6 +658,41 @@
       ],
       "type": "string"
     },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
+      ],
+      "type": "string"
+    },
     "TextElement": {
       "properties": {
         "byteRange": {
@@ -883,6 +918,17 @@
                 "string",
                 "null"
               ]
+            },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
             },
             "source": {
               "$ref": "#/$defs/CommandExecutionSource",

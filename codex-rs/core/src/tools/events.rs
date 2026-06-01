@@ -18,6 +18,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::PatchApplyStatus;
+use codex_protocol::protocol::TerminalWaitInfo;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_shell_command::parse_command::parse_command;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -91,6 +92,7 @@ pub(crate) async fn emit_exec_command_begin(
     source: ExecCommandSource,
     interaction_input: Option<String>,
     process_id: Option<&str>,
+    terminal_wait: Option<TerminalWaitInfo>,
 ) {
     ctx.session
         .send_event(
@@ -105,6 +107,7 @@ pub(crate) async fn emit_exec_command_begin(
                 parsed_cmd: parsed_cmd.to_vec(),
                 source,
                 interaction_input,
+                terminal_wait,
             }),
         )
         .await;
@@ -127,6 +130,7 @@ pub(crate) enum ToolEmitter {
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
+        terminal_wait: Option<TerminalWaitInfo>,
     },
 }
 
@@ -153,6 +157,7 @@ impl ToolEmitter {
         cwd: AbsolutePathBuf,
         source: ExecCommandSource,
         process_id: Option<String>,
+        terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
         Self::UnifiedExec {
@@ -161,6 +166,7 @@ impl ToolEmitter {
             source,
             parsed_cmd,
             process_id,
+            terminal_wait,
         }
     }
 
@@ -180,7 +186,7 @@ impl ToolEmitter {
                     ctx,
                     ExecCommandInput::new(
                         command, cwd, parsed_cmd, *source, /*interaction_input*/ None,
-                        /*process_id*/ None,
+                        /*process_id*/ None, /*terminal_wait*/ None,
                     ),
                     stage,
                 )
@@ -292,6 +298,7 @@ impl ToolEmitter {
                     source,
                     parsed_cmd,
                     process_id,
+                    terminal_wait,
                 },
                 stage,
             ) => {
@@ -304,6 +311,7 @@ impl ToolEmitter {
                         *source,
                         /*interaction_input*/ None,
                         process_id.as_deref(),
+                        terminal_wait.clone(),
                     ),
                     stage,
                 )
@@ -412,6 +420,7 @@ struct ExecCommandInput<'a> {
     source: ExecCommandSource,
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
+    terminal_wait: Option<TerminalWaitInfo>,
 }
 
 impl<'a> ExecCommandInput<'a> {
@@ -422,6 +431,7 @@ impl<'a> ExecCommandInput<'a> {
         source: ExecCommandSource,
         interaction_input: Option<&'a str>,
         process_id: Option<&'a str>,
+        terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         Self {
             command,
@@ -430,6 +440,7 @@ impl<'a> ExecCommandInput<'a> {
             source,
             interaction_input,
             process_id,
+            terminal_wait,
         }
     }
 }
@@ -459,6 +470,7 @@ async fn emit_exec_stage(
                 exec_input.source,
                 exec_input.interaction_input.map(str::to_owned),
                 exec_input.process_id,
+                exec_input.terminal_wait.clone(),
             )
             .await;
         }
@@ -526,6 +538,7 @@ async fn emit_exec_end(
                 parsed_cmd: exec_input.parsed_cmd.to_vec(),
                 source: exec_input.source,
                 interaction_input: exec_input.interaction_input.map(str::to_owned),
+                terminal_wait: exec_input.terminal_wait,
                 stdout: exec_result.stdout,
                 stderr: exec_result.stderr,
                 aggregated_output: exec_result.aggregated_output,
