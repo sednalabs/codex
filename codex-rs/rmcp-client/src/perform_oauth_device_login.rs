@@ -48,13 +48,8 @@ pub async fn perform_oauth_device_login(
 ) -> Result<()> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     let http_client = build_reqwest_client(Client::builder(), &default_headers)?;
-    let oauth_client_id = resolve_device_oauth_client_id(
-        server_url,
-        &http_client,
-        scopes,
-        oauth_client_id,
-    )
-    .await?;
+    let oauth_client_id =
+        resolve_device_oauth_client_id(server_url, &http_client, scopes, oauth_client_id).await?;
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &http_client,
         device_authorization_endpoint,
@@ -196,9 +191,7 @@ async fn register_device_oauth_client(
     Ok(client_id.to_string())
 }
 
-fn metadata_supports_refresh_token(
-    additional_fields: &HashMap<String, serde_json::Value>,
-) -> bool {
+fn metadata_supports_refresh_token(additional_fields: &HashMap<String, serde_json::Value>) -> bool {
     additional_fields
         .get("grant_types_supported")
         .and_then(serde_json::Value::as_array)
@@ -787,10 +780,7 @@ mod tests {
             assert_eq!(body["client_name"], "Codex");
             assert_eq!(body["token_endpoint_auth_method"], "none");
             assert_eq!(body["scope"], "profile ops:read");
-            assert_eq!(
-                body["grant_types"],
-                json!(state.expected_grant_types)
-            );
+            assert_eq!(body["grant_types"], json!(state.expected_grant_types));
             assert!(body.get("redirect_uris").is_none());
             assert!(body.get("response_types").is_none());
 
