@@ -29,6 +29,8 @@ use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
+use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -257,6 +259,10 @@ pub enum ThreadItem {
         cwd: AbsolutePathBuf,
         /// Identifier for the underlying PTY process (when available).
         process_id: Option<String>,
+        /// Metadata for command executions that are also blocking terminal waits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        terminal_wait: Option<TerminalWaitInfo>,
         #[serde(default)]
         source: CommandExecutionSource,
         status: CommandExecutionStatus,
@@ -382,6 +388,52 @@ pub enum ThreadItem {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     ContextCompaction { id: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum TerminalWaitPrimitive {
+    ExecCommandWaitUntilTerminal,
+    WriteStdinWaitUntilTerminal,
+    WriteStdinEmptyPoll,
+}
+
+impl From<CoreTerminalWaitPrimitive> for TerminalWaitPrimitive {
+    fn from(value: CoreTerminalWaitPrimitive) -> Self {
+        match value {
+            CoreTerminalWaitPrimitive::ExecCommandWaitUntilTerminal => {
+                Self::ExecCommandWaitUntilTerminal
+            }
+            CoreTerminalWaitPrimitive::WriteStdinWaitUntilTerminal => {
+                Self::WriteStdinWaitUntilTerminal
+            }
+            CoreTerminalWaitPrimitive::WriteStdinEmptyPoll => Self::WriteStdinEmptyPoll,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TerminalWaitInfo {
+    pub primitive: TerminalWaitPrimitive,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub heartbeat_interval_ms: Option<u64>,
+}
+
+impl From<CoreTerminalWaitInfo> for TerminalWaitInfo {
+    fn from(value: CoreTerminalWaitInfo) -> Self {
+        Self {
+            primitive: value.primitive.into(),
+            max_wait_ms: value.max_wait_ms,
+            heartbeat_interval_ms: value.heartbeat_interval_ms,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -1250,6 +1302,9 @@ pub struct TerminalInteractionNotification {
     pub item_id: String,
     pub process_id: String,
     pub stdin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_wait: Option<TerminalWaitInfo>,
 }
 
 #[serde_as]

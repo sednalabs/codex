@@ -817,6 +817,7 @@ pub(super) fn begin_exec_with_source(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: None,
+        terminal_wait: None,
         source,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions,
@@ -840,6 +841,7 @@ pub(super) fn begin_unified_exec_startup(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: Some(process_id.to_string()),
+        terminal_wait: None,
         source: ExecCommandSource::UnifiedExecStartup,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions: Vec::new(),
@@ -885,6 +887,7 @@ pub(super) fn terminal_interaction(
                 item_id: call_id.to_string(),
                 process_id: process_id.to_string(),
                 stdin: stdin.to_string(),
+                terminal_wait: None,
             },
         ),
         /*replay_kind*/ None,
@@ -1052,6 +1055,7 @@ pub(super) fn end_exec(
         command,
         cwd,
         process_id,
+        terminal_wait,
         source,
         command_actions,
         ..
@@ -1066,6 +1070,7 @@ pub(super) fn end_exec(
             command,
             cwd,
             process_id,
+            terminal_wait,
             source,
             status: if exit_code == 0 {
                 AppServerCommandExecutionStatus::Completed

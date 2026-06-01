@@ -83,9 +83,11 @@ impl ChatWidget {
                 }
             }
             ServerNotification::ReasoningSummaryPartAdded(_) => self.on_reasoning_section_break(),
-            ServerNotification::TerminalInteraction(notification) => {
-                self.on_terminal_interaction(notification.process_id, notification.stdin)
-            }
+            ServerNotification::TerminalInteraction(notification) => self.on_terminal_interaction(
+                notification.process_id,
+                notification.stdin,
+                notification.terminal_wait,
+            ),
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
             }
