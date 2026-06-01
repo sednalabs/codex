@@ -18,6 +18,7 @@ use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
+use crate::terminal_hyperlinks::HyperlinkLine;
 use codex_app_server_protocol::HookEventName;
 use codex_app_server_protocol::HookOutputEntry;
 use codex_app_server_protocol::HookOutputEntryKind;
@@ -337,9 +338,14 @@ impl HistoryCell for HookCell {
         lines
     }
 
-    /// Hook transcript output matches viewport output.
+    /// Hook transcript output uses the richer transcript summary so compact/detail modes can
+    /// suppress noisy hook context without changing the viewport rendering.
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.display_lines(width)
+        self.rich_transcript_lines(width)
+    }
+
+    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.transcript_hyperlink_lines(width)
     }
 
     fn transcript_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
@@ -924,6 +930,21 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
+        let compact = cell
+            .transcript_hyperlink_lines_for_detail_mode(
+                /*width*/ 80,
+                HistoryRenderMode::Rich,
+                TranscriptDetailMode::Compact,
+            )
+            .iter()
+            .map(|line| {
+                line.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
         let raw = cell
             .transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw)
             .iter()
@@ -943,6 +964,7 @@ mod tests {
             rich.iter()
                 .any(|line| line.contains("warning: stay visible"))
         );
+        assert_eq!(compact, rich);
         assert!(
             raw.iter()
                 .any(|line| line.contains("hook context: line one"))

@@ -202,6 +202,10 @@ impl HistoryCell for UserHistoryCell {
         }
     }
 
+    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        plain_hyperlink_lines(self.transcript_lines_for_mode(width, HistoryRenderMode::Rich))
+    }
+
     fn is_user_prompt(&self) -> bool {
         self.injected_context_summary().is_none()
     }
@@ -288,6 +292,14 @@ impl HistoryCell for ReasoningSummaryCell {
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.lines(width)
+    }
+
+    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        if self.transcript_only {
+            self.transcript_hyperlink_lines(width)
+        } else {
+            self.display_hyperlink_lines(width)
+        }
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
