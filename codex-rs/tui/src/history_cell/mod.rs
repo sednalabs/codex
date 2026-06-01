@@ -261,6 +261,14 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         plain_hyperlink_lines(self.transcript_lines(width))
     }
 
+    /// Returns transcript-overlay lines plus terminal hyperlink metadata for compact detail mode.
+    ///
+    /// Defaults to the viewport/display representation so cells without a transcript-specific
+    /// compact summary keep their current compact behavior.
+    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
+
     /// Returns transcript overlay lines for the selected render mode.
     fn transcript_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
         match mode {
@@ -292,7 +300,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
             TranscriptDetailMode::Verbose => {
                 self.transcript_hyperlink_lines_for_mode(width, render_mode)
             }
-            TranscriptDetailMode::Compact => self.display_hyperlink_lines(width),
+            TranscriptDetailMode::Compact => self.compact_transcript_hyperlink_lines(width),
         }
     }
 

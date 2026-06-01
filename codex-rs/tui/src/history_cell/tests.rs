@@ -2080,11 +2080,17 @@ fn injected_context_collapses_only_in_rich_transcript_mode() {
 
     let rich = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Rich));
     let raw = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw));
+    let compact = render_lines(&cell.transcript_hyperlink_lines_for_detail_mode(
+        /*width*/ 80,
+        HistoryRenderMode::Rich,
+        TranscriptDetailMode::Compact,
+    ));
 
     assert_eq!(
         rich,
         vec!["AGENTS.md instructions: [collapsed in rich transcript; 3 lines]"]
     );
+    assert_eq!(compact, rich);
     assert_eq!(
         raw,
         vec![
@@ -2341,6 +2347,13 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
 
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
+
+    let compact = render_lines(&cell.transcript_hyperlink_lines_for_detail_mode(
+        /*width*/ 80,
+        HistoryRenderMode::Rich,
+        TranscriptDetailMode::Compact,
+    ));
+    assert_eq!(compact, rendered);
 }
 
 #[tokio::test]
