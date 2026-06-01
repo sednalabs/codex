@@ -430,7 +430,7 @@ fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> Pla
         details.push(line);
     }
     collab_event(
-        title_with_primitive("Spawning", "spawn_agent", None, spawn_request),
+        title_with_primitive("Spawning", "spawn_agent", /*agent*/ None, spawn_request),
         details,
     )
 }
@@ -493,7 +493,12 @@ fn waiting_begin(
             Some(agent_label(*thread_id, metadata)),
             /*spawn_request*/ None,
         ),
-        [] => title_with_primitive("Waiting", "wait_agent", None, /*spawn_request*/ None),
+        [] => title_with_primitive(
+            "Waiting",
+            "wait_agent",
+            /*agent*/ None,
+            /*spawn_request*/ None,
+        ),
         _ => title_with_primitive_text(
             "Waiting",
             "wait_agent",
