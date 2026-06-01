@@ -610,11 +610,14 @@ async fn start_authorization(
 ) -> Result<OAuthState> {
     let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
     else {
-        let mut oauth_state = OAuthState::new(server_url, Some(http_client)).await?;
-        oauth_state
-            .start_authorization(scopes, redirect_uri, Some("Codex"))
-            .await?;
-        return Ok(oauth_state);
+        let mut auth_manager = AuthorizationManager::new(server_url).await?;
+        auth_manager.with_client(http_client)?;
+        let metadata = auth_manager.discover_metadata().await?;
+        auth_manager.set_metadata(metadata);
+        let session =
+            AuthorizationSession::new(auth_manager, scopes, redirect_uri, Some("Codex"), None)
+                .await?;
+        return Ok(OAuthState::Session(session));
     };
 
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
@@ -740,7 +743,7 @@ mod tests {
             "authorization_endpoint": format!("{base_url}/oauth/authorize"),
             "token_endpoint": format!("{base_url}/oauth/token"),
             "registration_endpoint": format!("{base_url}/register"),
-            "scopes_supported": [""],
+            "scopes_supported": ["offline_access"],
         });
         let path_scoped_metadata = metadata.clone();
         let saw_registration_header = Arc::new(AtomicBool::new(false));
@@ -856,8 +859,19 @@ mod tests {
             .query_pairs()
             .find(|(key, _)| key == "client_id")
             .map(|(_, value)| value.into_owned());
+        let requested_scopes: Vec<String> = auth_url
+            .query_pairs()
+            .filter(|(key, _)| key == "scope")
+            .flat_map(|(_, value)| {
+                value
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
         assert_eq!(client_id.as_deref(), Some("dynamic-codex-client"));
+        assert_eq!(requested_scopes, vec!["ops:read".to_string()]);
     }
 
     #[test]
