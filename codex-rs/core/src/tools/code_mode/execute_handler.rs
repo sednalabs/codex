@@ -7,11 +7,14 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use std::thread;
 
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
+
+const CODE_MODE_METADATA_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 pub struct CodeModeExecuteHandler {
     spec: ToolSpec,
@@ -36,8 +39,8 @@ impl CodeModeExecuteHandler {
         let args =
             codex_code_mode::parse_exec_source(&code).map_err(FunctionCallError::RespondToModel)?;
         let exec = ExecContext { session, turn };
-        let enabled_tools =
-            codex_tools::collect_code_mode_tool_definitions(&self.nested_tool_specs);
+        let enabled_tools = collect_code_mode_tool_definitions_for_runtime(&self.nested_tool_specs)
+            .map_err(FunctionCallError::RespondToModel)?;
         let started_at = std::time::Instant::now();
         let started_cell = exec
             .session
@@ -130,4 +133,22 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Custom { .. })
     }
+}
+
+fn collect_code_mode_tool_definitions_for_runtime(
+    nested_tool_specs: &[ToolSpec],
+) -> Result<Vec<codex_code_mode::ToolDefinition>, String> {
+    thread::scope(|scope| {
+        let handle = thread::Builder::new()
+            .name("code-mode-tool-metadata".to_string())
+            .stack_size(CODE_MODE_METADATA_STACK_SIZE)
+            .spawn_scoped(scope, || {
+                codex_tools::collect_code_mode_tool_definitions(nested_tool_specs)
+            })
+            .map_err(|err| format!("failed to start code mode metadata collection: {err}"))?;
+
+        handle
+            .join()
+            .map_err(|_| "code mode metadata collection panicked".to_string())
+    })
 }
