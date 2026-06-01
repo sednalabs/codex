@@ -2680,15 +2680,6 @@ impl SessionSource {
         }
     }
 
-    pub fn parent_thread_id(&self) -> Option<ThreadId> {
-        match self {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            }) => Some(parent_thread_id.clone()),
-            _ => None,
-        }
-    }
-
     pub fn restriction_product(&self) -> Option<Product> {
         match self {
             SessionSource::Custom(source) => Product::from_session_source_name(source),
