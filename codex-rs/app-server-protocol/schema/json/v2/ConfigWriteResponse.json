@@ -72,13 +72,11 @@
               "type": "string"
             },
             "name": {
-              "description": "Admin-facing name for the delivered layer. This is surfaced in diagnostics so users know which cloud layer needs administrator attention.",
+              "description": "Admin-facing name for the delivered layer. This is surfaced in\ndiagnostics so users know which cloud layer needs administrator\nattention.",
               "type": "string"
             },
             "type": {
-              "enum": [
-                "enterpriseManaged"
-              ],
+              "const": "enterpriseManaged",
               "title": "EnterpriseManagedConfigLayerSourceType",
               "type": "string"
             }
