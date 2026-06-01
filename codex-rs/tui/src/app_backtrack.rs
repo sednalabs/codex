@@ -445,8 +445,14 @@ impl App {
             let chat_widget = &self.chat_widget;
             tui.draw(u16::MAX, |frame| {
                 let width = frame.area().width.max(1);
+                let render_mode = t.render_mode();
+                let detail_mode = t.detail_mode();
                 t.sync_live_tail(width, active_key, |w| {
-                    chat_widget.active_cell_transcript_hyperlink_lines(w)
+                    chat_widget.active_cell_transcript_hyperlink_lines_for_detail_mode(
+                        w,
+                        render_mode,
+                        detail_mode,
+                    )
                 });
                 t.render(frame.area(), frame.buffer);
             })?;
@@ -1115,6 +1121,7 @@ mod tests {
             scroll_offset: 4,
             highlight_cell: Some(0),
             render_mode: HistoryRenderMode::Raw,
+            detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
         };
 
         let state = transcript_overlay_state_for_open(stale_state, &cells);
@@ -1125,6 +1132,7 @@ mod tests {
                 scroll_offset: 4,
                 highlight_cell: Some(2),
                 render_mode: HistoryRenderMode::Raw,
+                detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
             }
         );
     }
@@ -1139,6 +1147,7 @@ mod tests {
             scroll_offset: 4,
             highlight_cell: Some(0),
             render_mode: HistoryRenderMode::Raw,
+            detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
         };
 
         let state = transcript_overlay_state_for_open(stale_state, &cells);
@@ -1149,6 +1158,7 @@ mod tests {
                 scroll_offset: 4,
                 highlight_cell: None,
                 render_mode: HistoryRenderMode::Raw,
+                detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
             }
         );
     }

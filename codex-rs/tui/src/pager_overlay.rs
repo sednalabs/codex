@@ -33,6 +33,7 @@ use crate::footer_hints::render_footer_separator;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::SessionInfoCell;
+use crate::history_cell::TranscriptDetailMode;
 use crate::history_cell::UserHistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -72,6 +73,7 @@ pub(crate) struct TranscriptOverlayState {
     pub(crate) scroll_offset: usize,
     pub(crate) highlight_cell: Option<usize>,
     pub(crate) render_mode: HistoryRenderMode,
+    pub(crate) detail_mode: TranscriptDetailMode,
 }
 
 impl TranscriptOverlayState {
@@ -80,6 +82,7 @@ impl TranscriptOverlayState {
             scroll_offset: usize::MAX,
             highlight_cell: None,
             render_mode,
+            detail_mode: TranscriptDetailMode::Verbose,
         }
     }
 }
@@ -486,6 +489,7 @@ struct CellRenderable {
     selected_style: Option<Style>,
     highlight_cell: Rc<StdCell<Option<usize>>>,
     render_mode: HistoryRenderMode,
+    detail_mode: TranscriptDetailMode,
 }
 
 impl Renderable for CellRenderable {
@@ -495,9 +499,11 @@ impl Renderable for CellRenderable {
         } else {
             self.style
         };
-        let hyperlink_lines = self
-            .cell
-            .transcript_hyperlink_lines_for_mode(area.width, self.render_mode);
+        let hyperlink_lines = self.cell.transcript_hyperlink_lines_for_detail_mode(
+            area.width,
+            self.render_mode,
+            self.detail_mode,
+        );
         let p = Paragraph::new(Text::from(visible_lines(hyperlink_lines.clone())))
             .style(style)
             .wrap(Wrap { trim: false });
@@ -506,8 +512,11 @@ impl Renderable for CellRenderable {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.cell
-            .desired_transcript_height_for_mode(width, self.render_mode)
+        self.cell.desired_transcript_height_for_detail_mode(
+            width,
+            self.render_mode,
+            self.detail_mode,
+        )
     }
 }
 
@@ -543,6 +552,7 @@ pub(crate) struct TranscriptOverlay {
     highlight_cell: Rc<StdCell<Option<usize>>>,
     user_prompt_positions: Vec<usize>,
     render_mode: HistoryRenderMode,
+    detail_mode: TranscriptDetailMode,
     copy_keymap: Vec<KeyBinding>,
     toggle_raw_output_keymap: Vec<KeyBinding>,
     copy_requested: bool,
@@ -574,6 +584,10 @@ struct LiveTailKey {
     is_stream_continuation: bool,
     /// Optional animation tick to refresh spinners/progress indicators.
     animation_tick: Option<u64>,
+    /// Active transcript rich/raw rendering mode.
+    render_mode: HistoryRenderMode,
+    /// Active transcript verbose/compact detail mode.
+    detail_mode: TranscriptDetailMode,
 }
 
 impl TranscriptOverlay {
@@ -596,6 +610,7 @@ impl TranscriptOverlay {
                         &transcript_cells,
                         Rc::clone(&highlight_cell),
                         state.render_mode,
+                        state.detail_mode,
                     ),
                     "Transcript".to_string(),
                     state.scroll_offset,
@@ -608,6 +623,7 @@ impl TranscriptOverlay {
             cells: transcript_cells,
             highlight_cell,
             render_mode: state.render_mode,
+            detail_mode: state.detail_mode,
             copy_keymap,
             toggle_raw_output_keymap,
             copy_requested: false,
@@ -622,6 +638,7 @@ impl TranscriptOverlay {
         cells: &[Arc<dyn HistoryCell>],
         highlight_cell: Rc<StdCell<Option<usize>>>,
         render_mode: HistoryRenderMode,
+        detail_mode: TranscriptDetailMode,
     ) -> Vec<Box<dyn Renderable>> {
         cells
             .iter()
@@ -636,6 +653,7 @@ impl TranscriptOverlay {
                         selected_style: Some(user_message_style().reversed()),
                         highlight_cell: Rc::clone(&highlight_cell),
                         render_mode,
+                        detail_mode,
                     })) as Box<dyn Renderable>
                 } else {
                     Box::new(CachedRenderable::new(CellRenderable {
@@ -645,6 +663,7 @@ impl TranscriptOverlay {
                         selected_style: None,
                         highlight_cell: Rc::clone(&highlight_cell),
                         render_mode,
+                        detail_mode,
                     })) as Box<dyn Renderable>
                 };
                 let mut cell_renderable = base_renderable;
@@ -692,6 +711,7 @@ impl TranscriptOverlay {
             &self.cells,
             Rc::clone(&self.highlight_cell),
             self.render_mode,
+            self.detail_mode,
         );
         self.view.invalidate_layout();
         if let Some(tail) = tail_renderable {
@@ -809,6 +829,8 @@ impl TranscriptOverlay {
             revision: key.revision,
             is_stream_continuation: key.is_stream_continuation,
             animation_tick: key.animation_tick,
+            render_mode: self.render_mode,
+            detail_mode: self.detail_mode,
         });
 
         if self.live_tail_key == next_key {
@@ -880,7 +902,16 @@ impl TranscriptOverlay {
             scroll_offset: self.view.scroll_offset,
             highlight_cell: self.highlight_cell.get(),
             render_mode: self.render_mode,
+            detail_mode: self.detail_mode,
         }
+    }
+
+    pub(crate) fn render_mode(&self) -> HistoryRenderMode {
+        self.render_mode
+    }
+
+    pub(crate) fn detail_mode(&self) -> TranscriptDetailMode {
+        self.detail_mode
     }
 
     pub(crate) fn take_copy_requested(&mut self) -> bool {
@@ -910,6 +941,18 @@ impl TranscriptOverlay {
             HistoryRenderMode::Rich => HistoryRenderMode::Raw,
             HistoryRenderMode::Raw => HistoryRenderMode::Rich,
         };
+        self.live_tail_key = None;
+        self.take_live_tail_renderable();
+        self.rebuild_renderables();
+    }
+
+    fn toggle_detail_mode(&mut self) {
+        self.detail_mode = match self.detail_mode {
+            TranscriptDetailMode::Verbose => TranscriptDetailMode::Compact,
+            TranscriptDetailMode::Compact => TranscriptDetailMode::Verbose,
+        };
+        self.live_tail_key = None;
+        self.take_live_tail_renderable();
         self.rebuild_renderables();
     }
 
@@ -949,7 +992,10 @@ impl TranscriptOverlay {
                     .get(idx)
                     .is_some_and(|cell| !cell.is_stream_continuation()),
         );
-        let rich_prompt_padding = usize::from(matches!(self.render_mode, HistoryRenderMode::Rich));
+        let rich_prompt_padding = usize::from(
+            matches!(self.render_mode, HistoryRenderMode::Rich)
+                && matches!(self.detail_mode, TranscriptDetailMode::Verbose),
+        );
         inter_cell_spacing.saturating_add(rich_prompt_padding)
     }
 
@@ -1009,7 +1055,10 @@ impl TranscriptOverlay {
     }
 
     fn header_title(&self) -> String {
-        "Transcript".to_string()
+        match self.detail_mode {
+            TranscriptDetailMode::Verbose => "Transcript (verbose)".to_string(),
+            TranscriptDetailMode::Compact => "Transcript (compact)".to_string(),
+        }
     }
 
     fn footer_progress_label(&self, content_height: u16, total_len: usize, width: u16) -> String {
@@ -1039,6 +1088,7 @@ impl TranscriptOverlay {
             &self.cells,
             Rc::clone(&self.highlight_cell),
             self.render_mode,
+            self.detail_mode,
         );
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
@@ -1108,6 +1158,8 @@ impl TranscriptOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
         let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
             .into_iter()
             .chain(first_or_empty(&self.view.keymap.scroll_down))
@@ -1174,6 +1226,18 @@ impl TranscriptOverlay {
                 mode_label,
                 mode_label,
                 /*priority*/ 4,
+            ));
+        }
+        if !self.view.keymap.toggle_transcript_mode.is_empty() {
+            let detail_label = match self.detail_mode {
+                TranscriptDetailMode::Verbose => "compact",
+                TranscriptDetailMode::Compact => "verbose",
+            };
+            action_hints.push(FooterHint::new(
+                key_label(&first_or_empty(&self.view.keymap.toggle_transcript_mode)),
+                detail_label,
+                detail_label,
+                /*priority*/ 5,
             ));
         }
         if self.highlight_cell.get().is_some() {
@@ -1258,6 +1322,12 @@ impl TranscriptOverlay {
                             .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
                         Ok(())
                     }
+                    e if self.view.keymap.toggle_transcript_mode.is_pressed(e) => {
+                        self.toggle_detail_mode();
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                        Ok(())
+                    }
                     e if self.copy_keymap.is_pressed(e) => {
                         self.copy_requested = true;
                         Ok(())
@@ -1328,6 +1398,8 @@ impl StaticOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
         let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
             .into_iter()
             .chain(first_or_empty(&self.view.keymap.scroll_down))
@@ -1484,6 +1556,26 @@ mod tests {
 
         fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
             self.lines.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct DetailModeTestCell {
+        display_lines: Vec<Line<'static>>,
+        transcript_lines: Vec<Line<'static>>,
+    }
+
+    impl crate::history_cell::HistoryCell for DetailModeTestCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            self.display_lines.clone()
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            self.transcript_lines.clone()
+        }
+
+        fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            self.transcript_lines.clone()
         }
     }
 
@@ -1744,6 +1836,43 @@ mod tests {
     }
 
     #[test]
+    fn transcript_overlay_compact_mode_uses_display_lines() {
+        let mut overlay = transcript_overlay(vec![Arc::new(DetailModeTestCell {
+            display_lines: vec![Line::from("$ cat huge.txt"), Line::from("... +98 lines")],
+            transcript_lines: vec![
+                Line::from("$ cat huge.txt"),
+                Line::from("first line"),
+                Line::from("full file tail"),
+            ],
+        })]);
+
+        assert_eq!(
+            visible_lines(overlay.cells[0].transcript_hyperlink_lines_for_detail_mode(
+                /*width*/ 80,
+                overlay.render_mode,
+                overlay.detail_mode,
+            )),
+            vec![
+                Line::from("$ cat huge.txt"),
+                Line::from("first line"),
+                Line::from("full file tail"),
+            ],
+        );
+
+        overlay.toggle_detail_mode();
+
+        assert_eq!(
+            visible_lines(overlay.cells[0].transcript_hyperlink_lines_for_detail_mode(
+                /*width*/ 80,
+                overlay.render_mode,
+                overlay.detail_mode,
+            )),
+            vec![Line::from("$ cat huge.txt"), Line::from("... +98 lines")],
+        );
+        assert_eq!(overlay.state().detail_mode, TranscriptDetailMode::Compact);
+    }
+
+    #[test]
     fn transcript_overlay_live_tail_preserves_semantic_web_links() {
         let destination = "https://example.com/a/streamed/path";
         let cell = history_cell::AgentMarkdownCell::new(
@@ -1781,6 +1910,7 @@ mod tests {
             scroll_offset: 3,
             highlight_cell: Some(0),
             render_mode: HistoryRenderMode::Raw,
+            detail_mode: TranscriptDetailMode::Verbose,
         };
         let overlay = TranscriptOverlay::new(
             vec![user_cell("prompt")],
@@ -1824,13 +1954,13 @@ mod tests {
             user_cell("second"),
         ]);
 
-        assert_eq!(overlay.header_title(), "Transcript");
+        assert_eq!(overlay.header_title(), "Transcript (verbose)");
 
         overlay.move_prompt_selection(PromptSelectionDirection::Previous);
-        assert_eq!(overlay.header_title(), "Transcript");
+        assert_eq!(overlay.header_title(), "Transcript (verbose)");
 
         overlay.move_prompt_selection(PromptSelectionDirection::Previous);
-        assert_eq!(overlay.header_title(), "Transcript");
+        assert_eq!(overlay.header_title(), "Transcript (verbose)");
     }
 
     #[test]
@@ -2006,7 +2136,7 @@ mod tests {
         ]);
 
         assert_eq!(overlay.user_prompt_count(), 2);
-        assert_eq!(overlay.header_title(), "Transcript");
+        assert_eq!(overlay.header_title(), "Transcript (verbose)");
         assert_eq!(
             overlay.footer_progress_label(
                 /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
