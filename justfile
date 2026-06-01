@@ -254,6 +254,7 @@ mcp-safety-targeted:
 mcp-device-login-targeted:
     cargo test -p codex-rmcp-client auth_status::tests::discover_streamable_http_oauth_returns_normalized_scopes --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client perform_oauth_login::tests::start_authorization_routes_dynamic_registration_through_configured_client --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_dynamic_registration_uses_device_grant_shape --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_polls_until_authorized --lib -- --exact --test-threads=1
     cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
     cargo test -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
