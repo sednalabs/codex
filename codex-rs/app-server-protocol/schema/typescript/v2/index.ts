@@ -356,6 +356,8 @@ export type { SkillsListResponse } from "./SkillsListResponse";
 export type { SortDirection } from "./SortDirection";
 export type { SubagentMigration } from "./SubagentMigration";
 export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
+export type { TerminalWaitInfo } from "./TerminalWaitInfo";
+export type { TerminalWaitPrimitive } from "./TerminalWaitPrimitive";
 export type { TextElement } from "./TextElement";
 export type { TextPosition } from "./TextPosition";
 export type { TextRange } from "./TextRange";

@@ -1,6 +1,8 @@
 //! Background terminal interaction and process-summary history cells.
 
 use super::*;
+use codex_app_server_protocol::TerminalWaitInfo;
+use codex_app_server_protocol::TerminalWaitPrimitive;
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecInteractionCell {
@@ -108,20 +110,53 @@ pub(crate) struct WaitPrimitiveCell {
     detail: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WaitPrimitiveKind {
+    Terminal {
+        primitive: TerminalWaitPrimitive,
+        max_wait_ms: Option<u64>,
+        heartbeat_interval_ms: Option<u64>,
+    },
     BackgroundTerminal,
 }
 
 impl WaitPrimitiveKind {
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
+            WaitPrimitiveKind::Terminal { primitive, .. } => {
+                terminal_wait_primitive_label(primitive)
+            }
             WaitPrimitiveKind::BackgroundTerminal => "background terminal",
+        }
+    }
+
+    fn wait_details(&self) -> Option<String> {
+        match self {
+            WaitPrimitiveKind::Terminal {
+                max_wait_ms,
+                heartbeat_interval_ms,
+                ..
+            } => terminal_wait_detail(*max_wait_ms, *heartbeat_interval_ms),
+            WaitPrimitiveKind::BackgroundTerminal => None,
         }
     }
 }
 
 impl WaitPrimitiveCell {
+    pub(crate) fn terminal(
+        terminal_wait: TerminalWaitInfo,
+        command_display: Option<String>,
+    ) -> Self {
+        Self {
+            kind: WaitPrimitiveKind::Terminal {
+                primitive: terminal_wait.primitive,
+                max_wait_ms: terminal_wait.max_wait_ms,
+                heartbeat_interval_ms: terminal_wait.heartbeat_interval_ms,
+            },
+            detail: command_display.filter(|command| !command.is_empty()),
+        }
+    }
+
     pub(crate) fn background_terminal(command_display: Option<String>) -> Self {
         Self {
             kind: WaitPrimitiveKind::BackgroundTerminal,
@@ -129,15 +164,15 @@ impl WaitPrimitiveCell {
         }
     }
 
-    pub(crate) fn update_background_terminal_detail(&mut self, command_display: Option<String>) {
-        if self.kind != WaitPrimitiveKind::BackgroundTerminal || self.detail.is_some() {
+    pub(crate) fn update_detail(&mut self, command_display: Option<String>) {
+        if self.detail.is_some() {
             return;
         }
         self.detail = command_display.filter(|display| !display.is_empty());
     }
 
-    pub(crate) fn is_background_terminal(&self) -> bool {
-        self.kind == WaitPrimitiveKind::BackgroundTerminal
+    pub(crate) fn is_waiting_cell(&self) -> bool {
+        true
     }
 }
 
@@ -146,7 +181,11 @@ impl HistoryCell for WaitPrimitiveCell {
         if width == 0 {
             return Vec::new();
         }
-        let mut spans = vec!["• Waiting via ".bold(), self.kind.label().bold()];
+        let mut spans = vec![
+            "• Waiting".bold(),
+            " · primitive: ".dim(),
+            self.kind.label().to_string().cyan(),
+        ];
         if let Some(detail) = &self.detail {
             spans.push(" · ".dim());
             spans.push(detail.clone().dim());
@@ -155,21 +194,68 @@ impl HistoryCell for WaitPrimitiveCell {
         let mut out = Vec::new();
         let wrapped = adaptive_wrap_line(&header, RtOptions::new(width as usize));
         push_owned_lines(&wrapped, &mut out);
+        if let Some(wait_details) = self.kind.wait_details() {
+            let wait_details = Line::from(wait_details.dim());
+            let wrapped = adaptive_wrap_line(
+                &wait_details,
+                RtOptions::new(width as usize)
+                    .initial_indent(Line::from("  └ ".dim()))
+                    .subsequent_indent(Line::from("    ".dim())),
+            );
+            push_owned_lines(&wrapped, &mut out);
+        }
         out
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let text = if let Some(detail) = &self.detail {
-            format!("Waiting via {}: {detail}", self.kind.label())
-        } else {
-            format!("Waiting via {}", self.kind.label())
-        };
+        let mut text = format!("Waiting · primitive: {}", self.kind.label());
+        if let Some(detail) = &self.detail {
+            text.push_str(" · ");
+            text.push_str(detail);
+        }
+        if let Some(wait_details) = self.kind.wait_details() {
+            text.push_str(" · ");
+            text.push_str(&wait_details);
+        }
         vec![Line::from(text)]
     }
 }
 
+pub(crate) fn new_terminal_wait_primitive(
+    terminal_wait: TerminalWaitInfo,
+    command_display: Option<String>,
+) -> WaitPrimitiveCell {
+    WaitPrimitiveCell::terminal(terminal_wait, command_display)
+}
+
 pub(crate) fn new_background_terminal_wait(command_display: Option<String>) -> WaitPrimitiveCell {
     WaitPrimitiveCell::background_terminal(command_display)
+}
+
+pub(crate) fn terminal_wait_primitive_label(primitive: &TerminalWaitPrimitive) -> &'static str {
+    match primitive {
+        TerminalWaitPrimitive::ExecCommandWaitUntilTerminal => {
+            "exec_command(wait_until_terminal=true)"
+        }
+        TerminalWaitPrimitive::WriteStdinWaitUntilTerminal => {
+            "write_stdin(wait_until_terminal=true)"
+        }
+        TerminalWaitPrimitive::WriteStdinEmptyPoll => "write_stdin(empty stdin poll)",
+    }
+}
+
+fn terminal_wait_detail(
+    max_wait_ms: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(max_wait_ms) = max_wait_ms {
+        parts.push(format!("max_wait_ms={max_wait_ms}"));
+    }
+    if let Some(heartbeat_interval_ms) = heartbeat_interval_ms {
+        parts.push(format!("heartbeat_interval_ms={heartbeat_interval_ms}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 #[derive(Debug)]

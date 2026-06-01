@@ -1,7 +1,7 @@
 ---
-source: tui/src/chatwidget/tests/exec_flow.rs
+source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
-• Waiting via background terminal · cargo test -p codex-core
+• Waiting · primitive: write_stdin(empty stdin poll) · cargo test -p codex-core
 
 • Final response.

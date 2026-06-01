@@ -758,6 +758,7 @@ fn sample_command_execution_item_with_id(
         command: "echo hi".to_string(),
         cwd: test_path_buf("/tmp").abs(),
         process_id: Some("pid-1".to_string()),
+        terminal_wait: None,
         source: CommandExecutionSource::Agent,
         status,
         command_actions: Vec::new(),
