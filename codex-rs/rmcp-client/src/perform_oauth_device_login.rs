@@ -49,7 +49,6 @@ pub async fn perform_oauth_device_login(
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     let http_client = build_reqwest_client(Client::builder(), &default_headers)?;
     let oauth_client_id = resolve_device_oauth_client_id(
-        server_name,
         server_url,
         &http_client,
         scopes,
@@ -119,7 +118,6 @@ pub async fn perform_oauth_device_login(
 }
 
 async fn resolve_device_oauth_client_id(
-    server_name: &str,
     server_url: &str,
     http_client: &Client,
     scopes: &[String],
@@ -138,21 +136,33 @@ async fn resolve_device_oauth_client_id(
         .filter(|endpoint| !endpoint.trim().is_empty())
         .ok_or_else(|| {
             anyhow!(
-                "OAuth device login for MCP server '{server_name}' requires a configured public OAuth client id because the authorization server does not advertise dynamic client registration."
+                "OAuth device login requires a configured public OAuth client id because the authorization server does not advertise dynamic client registration."
             )
         })?;
+    let supports_refresh_token = metadata_supports_refresh_token(&metadata.additional_fields);
 
-    register_device_oauth_client(http_client, registration_endpoint, scopes).await
+    register_device_oauth_client(
+        http_client,
+        registration_endpoint,
+        scopes,
+        supports_refresh_token,
+    )
+    .await
 }
 
 async fn register_device_oauth_client(
     http_client: &Client,
     registration_endpoint: &str,
     scopes: &[String],
+    supports_refresh_token: bool,
 ) -> Result<String> {
+    let mut grant_types = vec![DEVICE_CODE_GRANT_TYPE];
+    if supports_refresh_token {
+        grant_types.push("refresh_token");
+    }
     let request = DeviceClientRegistrationRequest {
         client_name: "Codex",
-        grant_types: vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+        grant_types,
         token_endpoint_auth_method: "none",
         scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
     };
@@ -184,6 +194,19 @@ async fn register_device_oauth_client(
     }
 
     Ok(client_id.to_string())
+}
+
+fn metadata_supports_refresh_token(
+    additional_fields: &HashMap<String, serde_json::Value>,
+) -> bool {
+    additional_fields
+        .get("grant_types_supported")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|grant_types| {
+            grant_types
+                .iter()
+                .any(|grant_type| grant_type.as_str() == Some("refresh_token"))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,6 +594,12 @@ mod tests {
         poll_count: Arc<AtomicUsize>,
     }
 
+    #[derive(Clone)]
+    struct RegistrationState {
+        registration_count: Arc<AtomicUsize>,
+        expected_grant_types: Vec<&'static str>,
+    }
+
     #[tokio::test]
     async fn device_login_dynamic_registration_uses_device_grant_shape() {
         let registration_count = Arc::new(AtomicUsize::new(0));
@@ -578,7 +607,30 @@ mod tests {
         let client = Client::builder().no_proxy().build().expect("client");
 
         let client_id = resolve_device_oauth_client_id(
-            "ops",
+            &format!("{server}/mcp"),
+            &client,
+            &["profile".to_string(), "ops:read".to_string()],
+            /*oauth_client_id*/ None,
+        )
+        .await
+        .expect("dynamic device registration");
+
+        assert_eq!(client_id, "dynamic-device-client");
+        assert_eq!(registration_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn device_login_dynamic_registration_omits_refresh_when_not_supported() {
+        let registration_count = Arc::new(AtomicUsize::new(0));
+        let server = spawn_device_registration_server_with_grants(
+            registration_count.clone(),
+            vec![DEVICE_CODE_GRANT_TYPE],
+            vec![DEVICE_CODE_GRANT_TYPE],
+        )
+        .await;
+        let client = Client::builder().no_proxy().build().expect("client");
+
+        let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
             &client,
             &["profile".to_string(), "ops:read".to_string()],
@@ -598,7 +650,6 @@ mod tests {
         let client = Client::builder().no_proxy().build().expect("client");
 
         let client_id = resolve_device_oauth_client_id(
-            "ops",
             &format!("{server}/mcp"),
             &client,
             &["profile".to_string(), "ops:read".to_string()],
@@ -715,17 +766,30 @@ mod tests {
     }
 
     async fn spawn_device_registration_server(registration_count: Arc<AtomicUsize>) -> String {
+        spawn_device_registration_server_with_grants(
+            registration_count,
+            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+        )
+        .await
+    }
+
+    async fn spawn_device_registration_server_with_grants(
+        registration_count: Arc<AtomicUsize>,
+        grant_types_supported: Vec<&'static str>,
+        expected_grant_types: Vec<&'static str>,
+    ) -> String {
         async fn register(
-            axum::extract::State(registration_count): axum::extract::State<Arc<AtomicUsize>>,
+            axum::extract::State(state): axum::extract::State<RegistrationState>,
             Json(body): Json<Value>,
         ) -> Response {
-            registration_count.fetch_add(1, Ordering::SeqCst);
+            state.registration_count.fetch_add(1, Ordering::SeqCst);
             assert_eq!(body["client_name"], "Codex");
             assert_eq!(body["token_endpoint_auth_method"], "none");
             assert_eq!(body["scope"], "profile ops:read");
             assert_eq!(
                 body["grant_types"],
-                json!([DEVICE_CODE_GRANT_TYPE, "refresh_token"])
+                json!(state.expected_grant_types)
             );
             assert!(body.get("redirect_uris").is_none());
             assert!(body.get("response_types").is_none());
@@ -748,7 +812,7 @@ mod tests {
             "token_endpoint": format!("{base_url}/token"),
             "registration_endpoint": format!("{base_url}/register"),
             "device_authorization_endpoint": format!("{base_url}/device"),
-            "grant_types_supported": [DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+            "grant_types_supported": grant_types_supported,
             "scopes_supported": ["offline_access"],
         });
         let path_scoped_metadata = metadata.clone();
@@ -768,7 +832,10 @@ mod tests {
                 }),
             )
             .route("/register", post(register))
-            .with_state(registration_count);
+            .with_state(RegistrationState {
+                registration_count,
+                expected_grant_types,
+            });
 
         tokio::spawn(async move {
             axum::serve(listener, router)
