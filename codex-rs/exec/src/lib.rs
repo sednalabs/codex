@@ -84,6 +84,7 @@ use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
@@ -104,9 +105,45 @@ use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
 use codex_utils_version::RELEASE_VERSION;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
-use event_processor_with_jsonl_output::EventProcessorWithJsonOutput;
+pub use event_processor_with_jsonl_output::CodexStatus;
+pub use event_processor_with_jsonl_output::CollectedThreadEvents;
+pub use event_processor_with_jsonl_output::EventProcessorWithJsonOutput;
+pub use exec_events::AgentMessageItem;
+pub use exec_events::CollabAgentState;
+pub use exec_events::CollabAgentStatus;
+pub use exec_events::CollabTool;
+pub use exec_events::CollabToolCallItem;
+pub use exec_events::CollabToolCallStatus;
+pub use exec_events::CommandExecutionItem;
+pub use exec_events::CommandExecutionStatus;
+pub use exec_events::ErrorItem;
+pub use exec_events::FileChangeItem;
+pub use exec_events::FileUpdateChange;
+pub use exec_events::ItemCompletedEvent;
+pub use exec_events::ItemStartedEvent;
+pub use exec_events::ItemUpdatedEvent;
+pub use exec_events::McpToolCallItem;
+pub use exec_events::McpToolCallItemError;
+pub use exec_events::McpToolCallItemResult;
+pub use exec_events::McpToolCallStatus;
+pub use exec_events::PatchApplyStatus;
+pub use exec_events::PatchChangeKind;
+pub use exec_events::ReasoningItem;
+pub use exec_events::ThreadErrorEvent;
+pub use exec_events::ThreadEvent;
+pub use exec_events::ThreadItem as ExecThreadItem;
+pub use exec_events::ThreadItemDetails;
+pub use exec_events::ThreadStartedEvent;
+pub use exec_events::TodoItem;
+pub use exec_events::TodoListItem;
+pub use exec_events::TurnCompletedEvent;
+pub use exec_events::TurnFailedEvent;
+pub use exec_events::TurnStartedEvent;
+pub use exec_events::Usage;
+pub use exec_events::WebSearchItem;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::Path;
@@ -124,7 +161,6 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 use crate::cli::Command as ExecCommand;
-use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
@@ -373,11 +409,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         None // No model specified, will use the default.
     };
 
-    // Load configuration and determine approval policy
     let overrides = ConfigOverrides {
         model,
         review_model: None,
-        // Default to never ask for approvals in headless mode. Feature flags can override.
+        // Default to never ask for approvals in headless mode. Rebuild below if
+        // the fully resolved reviewer is AutoReview.
         approval_policy: Some(AskForApproval::Never),
         approvals_reviewer: None,
         sandbox_mode,
@@ -402,14 +438,22 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         additional_writable_roots: add_dir,
     };
 
-    let config = ConfigBuilder::default()
-        .cli_overrides(cli_kv_overrides)
-        .harness_overrides(overrides)
-        .loader_overrides(loader_overrides)
-        .strict_config(strict_config)
-        .cloud_requirements(cloud_requirements)
-        .build()
-        .await?;
+    let build_config = |overrides| {
+        ConfigBuilder::default()
+            .codex_home(codex_home.to_path_buf())
+            .cli_overrides(cli_kv_overrides.clone())
+            .harness_overrides(overrides)
+            .loader_overrides(loader_overrides.clone())
+            .strict_config(strict_config)
+            .cloud_requirements(cloud_requirements.clone())
+            .build()
+    };
+    let config = build_exec_config(
+        overrides,
+        dangerously_bypass_approvals_and_sandbox || removed_full_auto,
+        build_config,
+    )
+    .await?;
 
     #[allow(clippy::print_stderr)]
     match check_execpolicy_for_warnings(&config.config_layer_stack).await {
@@ -533,6 +577,41 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     })
     .instrument(exec_span)
     .await
+}
+
+async fn build_exec_config<BuildConfig, BuildFuture>(
+    overrides: ConfigOverrides,
+    preserve_headless_approval_policy: bool,
+    build_config: BuildConfig,
+) -> std::io::Result<Config>
+where
+    BuildConfig: Fn(ConfigOverrides) -> BuildFuture,
+    BuildFuture: Future<Output = std::io::Result<Config>>,
+{
+    let build_without_headless_approval_policy = || {
+        build_config(ConfigOverrides {
+            approval_policy: None,
+            ..overrides.clone()
+        })
+    };
+    match build_config(overrides.clone()).await {
+        Ok(config)
+            if config.approvals_reviewer == ApprovalsReviewer::AutoReview
+                && !preserve_headless_approval_policy =>
+        {
+            build_without_headless_approval_policy().await
+        }
+        Ok(config) => Ok(config),
+        Err(headless_error) if !preserve_headless_approval_policy => {
+            match build_without_headless_approval_policy().await {
+                Ok(config) if config.approvals_reviewer == ApprovalsReviewer::AutoReview => {
+                    Ok(config)
+                }
+                Ok(_) | Err(_) => Err(headless_error),
+            }
+        }
+        Err(headless_error) => Err(headless_error),
+    }
 }
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
@@ -1164,6 +1243,7 @@ fn session_configured_from_thread_start_response(
     session_configured_from_thread_response(
         &response.thread.session_id,
         &response.thread.id,
+        response.thread.parent_thread_id.as_deref(),
         response.thread.thread_source.map(Into::into),
         response.thread.name.clone(),
         response.thread.path.clone(),
@@ -1186,6 +1266,7 @@ fn session_configured_from_thread_resume_response(
     session_configured_from_thread_response(
         &response.thread.session_id,
         &response.thread.id,
+        response.thread.parent_thread_id.as_deref(),
         response.thread.thread_source.map(Into::into),
         response.thread.name.clone(),
         response.thread.path.clone(),
@@ -1217,6 +1298,7 @@ fn review_target_to_api(target: ReviewTarget) -> ApiReviewTarget {
 fn session_configured_from_thread_response(
     session_id: &str,
     thread_id: &str,
+    parent_thread_id: Option<&str>,
     thread_source: Option<codex_protocol::protocol::ThreadSource>,
     thread_name: Option<String>,
     rollout_path: Option<PathBuf>,
@@ -1234,11 +1316,16 @@ fn session_configured_from_thread_response(
         .map_err(|err| format!("session id `{session_id}` is invalid: {err}"))?;
     let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| format!("thread id `{thread_id}` is invalid: {err}"))?;
+    let parent_thread_id = parent_thread_id
+        .map(ThreadId::from_string)
+        .transpose()
+        .map_err(|err| format!("parent thread id is invalid: {err}"))?;
 
     Ok(SessionConfiguredEvent {
         session_id,
         thread_id,
         forked_from_id: None,
+        parent_thread_id,
         thread_source,
         thread_name,
         model,

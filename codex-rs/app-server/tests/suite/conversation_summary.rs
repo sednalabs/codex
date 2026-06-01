@@ -150,6 +150,7 @@ fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> Result
             .create_thread(CreateThreadParams {
                 thread_id,
                 forked_from_id: None,
+                parent_thread_id: None,
                 source: SessionSource::Cli,
                 thread_source: None,
                 base_instructions: BaseInstructions::default(),

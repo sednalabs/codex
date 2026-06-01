@@ -544,6 +544,9 @@
             "js_repl_tools_only": {
               "type": "boolean"
             },
+            "local_thread_store_compression": {
+              "type": "boolean"
+            },
             "memories": {
               "type": "boolean"
             },
@@ -929,6 +932,16 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "type": "object"
+    },
+    "ExperimentalRequestUserInput": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -3432,6 +3445,9 @@
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
+        "experimental_request_user_input": {
+          "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
         "web_search": {
           "default": null,
           "oneOf": [
@@ -3581,6 +3597,7 @@
               "start_change_operator": null,
               "start_delete_operator": null,
               "start_yank_operator": null,
+              "substitute_char": null,
               "yank_line": null
             },
             "vim_operator": {
@@ -4418,6 +4435,7 @@
             "start_change_operator": null,
             "start_delete_operator": null,
             "start_yank_operator": null,
+            "substitute_char": null,
             "yank_line": null
           }
         },
@@ -4966,6 +4984,14 @@
               "type": "null"
             }
           ]
+        },
+        "substitute_char": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Delete character under cursor and enter insert mode (`s`)."
         },
         "yank_line": {
           "description": "Yank the entire line (`Y`).",
@@ -5734,6 +5760,9 @@
           "type": "boolean"
         },
         "js_repl_tools_only": {
+          "type": "boolean"
+        },
+        "local_thread_store_compression": {
           "type": "boolean"
         },
         "memories": {
