@@ -635,6 +635,7 @@ mod tests {
             credits: None,
             rate_limit_reached_type: None,
             plan_type: None,
+            individual_limit: None,
         });
         Event {
             id: turn_id.to_string(),
