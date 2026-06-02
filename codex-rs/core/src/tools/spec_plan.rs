@@ -204,8 +204,7 @@ fn build_model_visible_specs_and_registry(
         let exposure = runtime.exposure();
         if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
         {
-            let spec = runtime.spec();
-            specs.push(spec_for_model_request(turn_context, exposure, spec));
+            specs.push(runtime.spec());
         }
     }
     for spec in hosted_specs {
@@ -227,23 +226,6 @@ fn build_model_visible_specs_and_registry(
         .collect();
 
     (model_visible_specs, registry)
-}
-
-fn spec_for_model_request(
-    turn_context: &TurnContext,
-    exposure: ToolExposure,
-    spec: ToolSpec,
-) -> ToolSpec {
-    if matches!(
-        turn_context.tool_mode,
-        ToolMode::CodeMode | ToolMode::CodeModeOnly
-    ) && exposure != ToolExposure::DirectModelOnly
-        && codex_code_mode::is_code_mode_nested_tool(spec.name())
-    {
-        codex_tools::augment_tool_spec_for_code_mode(spec)
-    } else {
-        spec
-    }
 }
 
 fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {

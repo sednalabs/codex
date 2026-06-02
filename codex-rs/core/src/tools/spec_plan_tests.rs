@@ -856,6 +856,29 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 }
 
 #[tokio::test]
+async fn code_mode_leaves_direct_tool_descriptions_unaugmented() {
+    let plan = probe_with(
+        |turn| {
+            set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                /*namespace*/ None, "lookup", /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["lookup", codex_code_mode::PUBLIC_TOOL_NAME]);
+    let ToolSpec::Function(tool) = plan.visible_spec("lookup") else {
+        panic!("expected lookup function spec");
+    };
+    assert_eq!(tool.description, "lookup dynamic tool");
+    assert!(!tool.description.contains("exec tool declaration:"));
+}
+
+#[tokio::test]
 async fn multi_agent_feature_selects_one_agent_tool_family() {
     let v1 = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
