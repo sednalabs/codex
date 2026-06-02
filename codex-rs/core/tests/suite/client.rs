@@ -2874,77 +2874,82 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = MockServer::start().await;
+#[test]
+fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Result<()> {
+    core_test_support::run_large_stack_test("server-overloaded-retry-budget-test", async {
+        skip_if_no_network!(Ok(()));
+        let server = MockServer::start().await;
 
-    let responses_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse_failed(
-                "resp_capacity_1",
-                "server_is_overloaded",
-                "Selected model is at capacity.",
-            ),
-            sse_failed(
-                "resp_capacity_2",
-                "slow_down",
-                "Selected model is temporarily busy.",
-            ),
-            sse(vec![
-                ev_response_created("resp_ok"),
-                ev_completed("resp_ok"),
-            ]),
-        ],
-    )
-    .await;
+        let responses_mock = mount_sse_sequence(
+            &server,
+            vec![
+                sse_failed(
+                    "resp_capacity_1",
+                    "server_is_overloaded",
+                    "Selected model is at capacity.",
+                ),
+                sse_failed(
+                    "resp_capacity_2",
+                    "slow_down",
+                    "Selected model is temporarily busy.",
+                ),
+                sse(vec![
+                    ev_response_created("resp_ok"),
+                    ev_completed("resp_ok"),
+                ]),
+            ],
+        )
+        .await;
 
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(|config| {
-            config.model_provider.stream_max_retries = Some(0);
-        })
-        .build(&server)
-        .await?;
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "survive capacity".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
+        let TestCodex { codex, .. } = test_codex()
+            .with_config(|config| {
+                config.model_provider.stream_max_retries = Some(0);
+            })
+            .build(&server)
+            .await?;
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "survive capacity".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
 
-    let mut stream_error_messages = Vec::new();
-    loop {
-        let event = tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
-            .await
-            .expect("timeout waiting for capacity retry event")
-            .expect("event stream ended unexpectedly")
-            .msg;
-        match event {
-            EventMsg::StreamError(error) => stream_error_messages.push(error.message),
-            EventMsg::Error(error) => panic!("capacity retry should not be terminal: {error:?}"),
-            EventMsg::TurnComplete(_) => break,
-            _ => {}
+        let mut stream_error_messages = Vec::new();
+        loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
+                    .await
+                    .expect("timeout waiting for capacity retry event")
+                    .expect("event stream ended unexpectedly")
+                    .msg;
+            match event {
+                EventMsg::StreamError(error) => stream_error_messages.push(error.message),
+                EventMsg::Error(error) => {
+                    panic!("capacity retry should not be terminal: {error:?}")
+                }
+                EventMsg::TurnComplete(_) => break,
+                _ => {}
+            }
         }
-    }
 
-    assert_eq!(responses_mock.requests().len(), 3);
-    assert_eq!(stream_error_messages.len(), 2);
-    assert!(
-        stream_error_messages
-            .iter()
-            .all(|message| message.starts_with("Model at capacity; retrying in ")),
-        "unexpected retry messages: {stream_error_messages:?}"
-    );
+        assert_eq!(responses_mock.requests().len(), 3);
+        assert_eq!(stream_error_messages.len(), 2);
+        assert!(
+            stream_error_messages
+                .iter()
+                .all(|message| message.starts_with("Model at capacity; retrying in ")),
+            "unexpected retry messages: {stream_error_messages:?}"
+        );
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[test]
