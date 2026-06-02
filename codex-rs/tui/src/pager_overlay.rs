@@ -1065,7 +1065,9 @@ impl TranscriptOverlay {
     }
 
     fn handle_viewport_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
-        let area = self.last_rendered_area.unwrap_or(tui.terminal.viewport_area);
+        let Some(area) = self.last_rendered_area else {
+            return Ok(());
+        };
         let top_h = area.height.saturating_sub(3);
         let top = Rect::new(area.x, area.y, area.width, top_h);
         let content_area = self.view.content_area(top);
