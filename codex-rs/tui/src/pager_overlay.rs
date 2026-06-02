@@ -16,9 +16,9 @@
 //! mutates in place or when its transcript output is time-dependent.
 
 use std::any::TypeId;
-use std::cell::Cell as StdCell;
 use std::io::Result;
-use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -62,6 +62,33 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+
+const NO_HIGHLIGHT_CELL: usize = usize::MAX;
+
+#[derive(Clone)]
+struct HighlightCell(Arc<AtomicUsize>);
+
+impl HighlightCell {
+    fn new(cell: Option<usize>) -> Self {
+        Self(Arc::new(AtomicUsize::new(Self::encode(cell))))
+    }
+
+    fn get(&self) -> Option<usize> {
+        Self::decode(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, cell: Option<usize>) {
+        self.0.store(Self::encode(cell), Ordering::Relaxed);
+    }
+
+    fn encode(cell: Option<usize>) -> usize {
+        cell.unwrap_or(NO_HIGHLIGHT_CELL)
+    }
+
+    fn decode(cell: usize) -> Option<usize> {
+        (cell != NO_HIGHLIGHT_CELL).then_some(cell)
+    }
+}
 
 pub(crate) enum Overlay {
     Transcript(Box<TranscriptOverlay>),
@@ -246,7 +273,7 @@ impl PagerView {
 
     fn render_header(&self, area: Rect, content_area: Rect, buf: &mut Buffer, total_len: usize) {
         let header = Rect::new(area.x, area.y, area.width, 1);
-        render_footer_separator(header, buf, String::new());
+        render_footer_separator(header, buf, "");
         let title = if self.show_header_progress {
             let percent = self.scroll_percent(content_area.height, total_len);
             format!(" {} · {percent}% ", self.title)
@@ -321,7 +348,7 @@ impl PagerView {
         let sep_y = content_area.bottom();
         let sep_rect = Rect::new(full_area.x, sep_y, full_area.width, 1);
 
-        render_footer_separator(sep_rect, buf, self.footer_separator_label.clone());
+        render_footer_separator(sep_rect, buf, self.footer_separator_label.as_str());
     }
 
     fn scroll_percent(&self, content_height: u16, total_len: usize) -> u8 {
@@ -335,7 +362,12 @@ impl PagerView {
         (((self.scroll_offset.min(max_scroll)) as f32 / max_scroll as f32) * 100.0).round() as u8
     }
 
-    fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<bool> {
+    fn handle_key_event(
+        &mut self,
+        tui: &mut tui::Tui,
+        key_event: KeyEvent,
+        viewport_area: Rect,
+    ) -> Result<bool> {
         match key_event {
             e if self.keymap.scroll_up.is_pressed(e) => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
@@ -344,20 +376,20 @@ impl PagerView {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
             }
             e if self.keymap.page_up.is_pressed(e) => {
-                let page_height = self.page_height(tui.terminal.viewport_area);
+                let page_height = self.page_height(viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_sub(page_height);
             }
             e if self.keymap.page_down.is_pressed(e) => {
-                let page_height = self.page_height(tui.terminal.viewport_area);
+                let page_height = self.page_height(viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_add(page_height);
             }
             e if self.keymap.half_page_down.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
+                let area = self.content_area(viewport_area);
                 let half_page = (area.height as usize).saturating_add(1) / 2;
                 self.scroll_offset = self.scroll_offset.saturating_add(half_page);
             }
             e if self.keymap.half_page_up.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
+                let area = self.content_area(viewport_area);
                 let half_page = (area.height as usize).saturating_add(1) / 2;
                 self.scroll_offset = self.scroll_offset.saturating_sub(half_page);
             }
@@ -487,7 +519,7 @@ struct CellRenderable {
     cell_index: usize,
     style: Style,
     selected_style: Option<Style>,
-    highlight_cell: Rc<StdCell<Option<usize>>>,
+    highlight_cell: HighlightCell,
     render_mode: HistoryRenderMode,
     detail_mode: TranscriptDetailMode,
 }
@@ -549,7 +581,7 @@ pub(crate) struct TranscriptOverlay {
     view: PagerView,
     /// Committed transcript cells (does not include the live tail).
     cells: Vec<Arc<dyn HistoryCell>>,
-    highlight_cell: Rc<StdCell<Option<usize>>>,
+    highlight_cell: HighlightCell,
     user_prompt_positions: Vec<usize>,
     render_mode: HistoryRenderMode,
     detail_mode: TranscriptDetailMode,
@@ -558,6 +590,7 @@ pub(crate) struct TranscriptOverlay {
     copy_requested: bool,
     scroll_selected_user_cell: Option<usize>,
     footer_status: Option<FooterStatus>,
+    last_rendered_area: Option<Rect>,
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
     is_done: bool,
@@ -602,13 +635,13 @@ impl TranscriptOverlay {
         toggle_raw_output_keymap: Vec<KeyBinding>,
         state: TranscriptOverlayState,
     ) -> Self {
-        let highlight_cell = Rc::new(StdCell::new(state.highlight_cell));
+        let highlight_cell = HighlightCell::new(state.highlight_cell);
         Self {
             view: {
                 let mut view = PagerView::new(
                     Self::render_cells(
                         &transcript_cells,
-                        Rc::clone(&highlight_cell),
+                        highlight_cell.clone(),
                         state.render_mode,
                         state.detail_mode,
                     ),
@@ -629,6 +662,7 @@ impl TranscriptOverlay {
             copy_requested: false,
             scroll_selected_user_cell: None,
             footer_status: None,
+            last_rendered_area: None,
             live_tail_key: None,
             is_done: false,
         }
@@ -636,7 +670,7 @@ impl TranscriptOverlay {
 
     fn render_cells(
         cells: &[Arc<dyn HistoryCell>],
-        highlight_cell: Rc<StdCell<Option<usize>>>,
+        highlight_cell: HighlightCell,
         render_mode: HistoryRenderMode,
         detail_mode: TranscriptDetailMode,
     ) -> Vec<Box<dyn Renderable>> {
@@ -651,7 +685,7 @@ impl TranscriptOverlay {
                         cell_index: i,
                         style: user_message_style(),
                         selected_style: Some(user_message_style().reversed()),
-                        highlight_cell: Rc::clone(&highlight_cell),
+                        highlight_cell: highlight_cell.clone(),
                         render_mode,
                         detail_mode,
                     })) as Box<dyn Renderable>
@@ -661,7 +695,7 @@ impl TranscriptOverlay {
                         cell_index: i,
                         style: Style::default(),
                         selected_style: None,
-                        highlight_cell: Rc::clone(&highlight_cell),
+                        highlight_cell: highlight_cell.clone(),
                         render_mode,
                         detail_mode,
                     })) as Box<dyn Renderable>
@@ -709,7 +743,7 @@ impl TranscriptOverlay {
         self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
         self.view.renderables = Self::render_cells(
             &self.cells,
-            Rc::clone(&self.highlight_cell),
+            self.highlight_cell.clone(),
             self.render_mode,
             self.detail_mode,
         );
@@ -1010,11 +1044,10 @@ impl TranscriptOverlay {
             return None;
         }
         let offsets = self.view.layout(width).offsets.clone();
-        let prompts = self.user_prompt_positions.iter().copied().map(|idx| {
-            (
-                idx,
-                offsets[idx].saturating_add(self.prompt_first_text_row_offset(idx)),
-            )
+        let prompts = self.user_prompt_positions.iter().copied().filter_map(|idx| {
+            offsets
+                .get(idx)
+                .map(|offset| (idx, offset.saturating_add(self.prompt_first_text_row_offset(idx))))
         });
         if after > before {
             let previous_bottom = before.saturating_add(height as usize);
@@ -1032,16 +1065,12 @@ impl TranscriptOverlay {
     }
 
     fn handle_viewport_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
-        let top_h = tui.terminal.viewport_area.height.saturating_sub(3);
-        let top = Rect::new(
-            tui.terminal.viewport_area.x,
-            tui.terminal.viewport_area.y,
-            tui.terminal.viewport_area.width,
-            top_h,
-        );
+        let area = self.last_rendered_area.unwrap_or(tui.terminal.viewport_area);
+        let top_h = area.height.saturating_sub(3);
+        let top = Rect::new(area.x, area.y, area.width, top_h);
         let content_area = self.view.content_area(top);
         let before = self.view.clamped_scroll_offset(content_area);
-        if !self.view.handle_key_event(tui, key_event)? {
+        if !self.view.handle_key_event(tui, key_event, top)? {
             return Ok(());
         }
         let after = self.view.clamped_scroll_offset(content_area);
@@ -1086,7 +1115,7 @@ impl TranscriptOverlay {
         let tail_renderable = self.take_live_tail_renderable();
         self.view.renderables = Self::render_cells(
             &self.cells,
-            Rc::clone(&self.highlight_cell),
+            self.highlight_cell.clone(),
             self.render_mode,
             self.detail_mode,
         );
@@ -1278,6 +1307,7 @@ impl TranscriptOverlay {
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
         self.clear_expired_footer_status_at(Instant::now());
+        self.last_rendered_area = Some(area);
         let top_h = area.height.saturating_sub(3);
         let top = Rect::new(area.x, area.y, area.width, top_h);
         let bottom = Rect::new(area.x, area.y + top_h, area.width, 3);
@@ -1450,7 +1480,10 @@ impl StaticOverlay {
                     self.is_done = true;
                     Ok(())
                 }
-                other => self.view.handle_key_event(tui, other).map(|_| ()),
+                other => self
+                    .view
+                    .handle_key_event(tui, other, tui.terminal.viewport_area)
+                    .map(|_| ()),
             },
             TuiEvent::Draw | TuiEvent::Resize => {
                 tui.draw(u16::MAX, |frame| {
