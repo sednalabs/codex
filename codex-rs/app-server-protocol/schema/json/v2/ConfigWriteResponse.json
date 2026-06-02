@@ -82,9 +82,9 @@
             }
           },
           "required": [
+            "type",
             "id",
-            "name",
-            "type"
+            "name"
           ],
           "title": "EnterpriseManagedConfigLayerSource",
           "type": "object"

@@ -7,7 +7,6 @@ use codex_protocol::computer_use::ComputerUseCallRequest;
 #[cfg(test)]
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_utils_string::truncate_middle_chars;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -117,8 +116,8 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::ComputerUseCallRequest(_)
-        | EventMsg::ComputerUseCallResponse(_) => Some(EventPersistenceMode::Extended),
-        EventMsg::Warning(_)
+        | EventMsg::ComputerUseCallResponse(_)
+        | EventMsg::Warning(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
         | EventMsg::RealtimeConversationSdp(_)
@@ -167,7 +166,7 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
 }
 
 #[test]
-fn persists_computer_use_events_in_extended_mode() {
+fn computer_use_events_are_live_only_in_single_persistence_policy() {
     let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
         call_id: "call-android-1".to_string(),
         turn_id: "turn-1".to_string(),
@@ -193,11 +192,9 @@ fn persists_computer_use_events_in_extended_mode() {
 
     assert_eq!(
         vec![
-            should_persist_event_msg(&request, EventPersistenceMode::Limited),
-            should_persist_event_msg(&response, EventPersistenceMode::Limited),
-            should_persist_event_msg(&request, EventPersistenceMode::Extended),
-            should_persist_event_msg(&response, EventPersistenceMode::Extended),
+            should_persist_event_msg(&request),
+            should_persist_event_msg(&response),
         ],
-        vec![false, false, true, true]
+        vec![false, false]
     );
 }

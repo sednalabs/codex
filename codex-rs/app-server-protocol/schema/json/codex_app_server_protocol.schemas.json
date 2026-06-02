@@ -678,8 +678,8 @@
             }
           },
           "required": [
-            "id",
             "method",
+            "id",
             "params"
           ],
           "title": "Skills/extraRoots/setRequest",
@@ -7409,9 +7409,9 @@
               }
             },
             "required": [
+              "type",
               "id",
-              "name",
-              "type"
+              "name"
             ],
             "title": "EnterpriseManagedConfigLayerSource",
             "type": "object"
@@ -15921,6 +15921,13 @@
                   "null"
                 ]
               },
+              "source": {
+                "$ref": "#/definitions/v2/CommandExecutionSource",
+                "default": "agent"
+              },
+              "status": {
+                "$ref": "#/definitions/v2/CommandExecutionStatus"
+              },
               "terminalWait": {
                 "anyOf": [
                   {
@@ -15931,13 +15938,6 @@
                   }
                 ],
                 "description": "Metadata for command executions that are also blocking terminal waits."
-              },
-              "source": {
-                "$ref": "#/definitions/v2/CommandExecutionSource",
-                "default": "agent"
-              },
-              "status": {
-                "$ref": "#/definitions/v2/CommandExecutionStatus"
               },
               "type": {
                 "const": "commandExecution",
