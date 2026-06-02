@@ -414,12 +414,15 @@
       "category": "mcp",
       "surface": [
         "oauth fallback credentials file",
-        "best-effort fallback recovery"
+        "best-effort fallback recovery",
+        "cached token expiry restoration"
       ],
       "files": [
-        "codex-rs/rmcp-client/src/oauth.rs"
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials files as best-effort state: empty or corrupt files no longer abort auth loading, and writes replace the fallback file atomically.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, and restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -428,10 +431,12 @@
       "guardrail_lane": "codex.mcp-safety-targeted",
       "tests": [
         "load_oauth_tokens_ignores_empty_fallback_file",
-        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors"
+        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors",
+        "refresh_expires_in_from_timestamp_marks_expired_tokens",
+        "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken or partially-written fallback credential files from turning into hard auth failures during MCP login and reconnect flows.",
+      "notes": "Keeps broken, partially-written, or expired fallback credential state from turning into hard auth failures during MCP login and reconnect flows.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [],
