@@ -289,7 +289,6 @@ mcp-device-login-targeted:
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_dynamic_registration_omits_refresh_when_not_supported --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_polls_until_authorized --lib -- --exact --test-threads=1
     cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
-    cargo test -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
@@ -343,6 +342,7 @@ exec-server-targeted:
 # Focused CLI surface slice for parser, subcommand, and diagnostics contracts.
 cli-surface-targeted:
     cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
+    cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
