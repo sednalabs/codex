@@ -49,7 +49,7 @@ are:
 | Model-visible screenshots | Successful visual browser, Android, and desktop observations must return native image content to the model. Artifact paths are diagnostics, not the primary visual channel. |
 | Agent orchestration | Downstream carries blocking wait patterns, richer sub-agent inventory, usage/accounting projection, and continuity improvements for long-running local workflows. |
 | Runtime accounting | The fork maintains first-party local usage/accounting surfaces so live CLI, TUI, and app-server views can explain active-thread and combined-session usage. |
-| MCP and config safety | Downstream preserves safety controls around MCP configuration, OAuth fallback behavior, approval memory, and related runtime guardrails. |
+| MCP and config safety | Downstream preserves safety controls around MCP configuration, OAuth fallback behavior, headless device login with dynamic client registration, approval memory, and related runtime guardrails. |
 
 For the full inventory, read [Downstream / fork notes](./docs/downstream.md)
 and the [Downstream regression matrix](./docs/downstream-regression-matrix.md).
@@ -104,7 +104,10 @@ handoff. Do not leave finished branch work only in a local worktree.
 Downstream syncs are merge-based from `upstream-main` into `main`. The intended
 long-term shape is minimal fork carry in high-churn upstream files, with
 downstream behavior expressed through narrow extension seams or provider
-boundaries when possible.
+boundaries when possible. Some carry is deliberate product behavior rather than
+temporary merge residue; the carry ledger and divergence registry mark those
+surfaces so sync work preserves them until upstream offers an equivalent
+contract.
 
 Release and validation work is intentionally GitHub-first. Public release
 artifacts are produced by Sedna release workflows; preview and validation runs
