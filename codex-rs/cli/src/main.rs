@@ -41,6 +41,7 @@ use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Instant;
 use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -2162,6 +2163,8 @@ async fn run_interactive_tui(
         )
     };
     let mut attempted_repair = false;
+    let mut lock_retry_started_at: Option<Instant> = None;
+    let mut reported_lock_retry = false;
     loop {
         let err = match start_tui().await {
             Ok(exit_info) => return Ok(exit_info),
@@ -2171,9 +2174,35 @@ async fn run_interactive_tui(
             return Err(err);
         };
         if local_state_db::is_locked(startup_error.detail()) {
-            local_state_db::print_locked_guidance(startup_error);
+            let started_at = *lock_retry_started_at.get_or_insert_with(Instant::now);
+            let elapsed = started_at.elapsed();
+            if local_state_db::should_retry_lock(
+                elapsed,
+                local_state_db::STARTUP_LOCK_RETRY_TIMEOUT,
+            ) {
+                let remaining = local_state_db::STARTUP_LOCK_RETRY_TIMEOUT
+                    .checked_sub(elapsed)
+                    .unwrap_or_default();
+                let delay = local_state_db::retry_delay(
+                    remaining,
+                    local_state_db::STARTUP_LOCK_RETRY_INTERVAL,
+                );
+                local_state_db::print_lock_retry_wait(
+                    startup_error,
+                    elapsed,
+                    local_state_db::STARTUP_LOCK_RETRY_TIMEOUT,
+                    delay,
+                    !reported_lock_retry,
+                );
+                reported_lock_retry = true;
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            local_state_db::print_locked_guidance(startup_error, Some(elapsed));
             return Ok(AppExitInfo::fatal(startup_error.to_string()));
         }
+        lock_retry_started_at = None;
+        reported_lock_retry = false;
         if attempted_repair {
             local_state_db::print_diagnostic_guidance(startup_error);
             return Ok(AppExitInfo::fatal(startup_error.to_string()));
