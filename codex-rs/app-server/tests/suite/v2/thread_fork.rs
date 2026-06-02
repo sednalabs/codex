@@ -444,7 +444,7 @@ async fn thread_fork_treats_explicit_null_thread_instructions_as_missing() -> Re
         /*git_info*/ None,
     )?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let disabled_instruction_config = json!({

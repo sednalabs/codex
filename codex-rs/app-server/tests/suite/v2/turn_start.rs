@@ -474,7 +474,7 @@ async fn turn_start_treats_explicit_null_thread_instructions_as_missing() -> Res
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri(), "never", &BTreeMap::new())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let disabled_instruction_config = json!({
