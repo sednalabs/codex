@@ -2208,6 +2208,7 @@ fn set_weekly_status_line_snapshot(
                 window_minutes: Some(window_minutes),
             }),
             credits: None,
+            individual_limit: None,
         },
     );
 }
@@ -2269,6 +2270,7 @@ async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
                 window_minutes: Some(10_080),
             }),
             credits: None,
+            individual_limit: None,
         },
     );
 
