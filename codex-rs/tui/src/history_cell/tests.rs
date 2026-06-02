@@ -7,6 +7,7 @@ use crate::exec_cell::ExecCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::session_state::ThreadSessionState;
+use crate::terminal_hyperlinks::visible_lines;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::McpAuthStatus;
@@ -2082,6 +2083,41 @@ fn user_history_cell_height_matches_rendered_lines_with_remote_images() {
 }
 
 #[test]
+fn injected_context_collapses_only_in_rich_transcript_mode() {
+    let cell = UserHistoryCell {
+        message: "# AGENTS.md instructions for /tmp/example\nline one\nline two".to_string(),
+        text_elements: Vec::new(),
+        local_image_paths: Vec::new(),
+        remote_image_urls: Vec::new(),
+    };
+
+    let rich = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Rich));
+    let raw = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw));
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
+    ));
+
+    assert_eq!(
+        rich,
+        vec!["AGENTS.md instructions: [collapsed in rich transcript; 3 lines]"]
+    );
+    assert_eq!(compact, rich);
+    assert_eq!(
+        raw,
+        vec![
+            "# AGENTS.md instructions for /tmp/example",
+            "line one",
+            "line two",
+        ]
+    );
+    assert!(!cell.is_user_prompt());
+}
+
+#[test]
 fn user_history_cell_trims_trailing_blank_message_lines() {
     let cell = UserHistoryCell {
         message: "line one\n\n   \n\t \n".to_string(),
@@ -2326,6 +2362,15 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
 
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
+
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
+    ));
+    assert_eq!(compact, rendered);
 }
 
 #[tokio::test]
