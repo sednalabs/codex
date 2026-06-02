@@ -3552,10 +3552,13 @@
               "half_page_up": null,
               "jump_bottom": null,
               "jump_top": null,
+              "next_user_prompt": null,
               "page_down": null,
               "page_up": null,
+              "previous_user_prompt": null,
               "scroll_down": null,
-              "scroll_up": null
+              "scroll_up": null,
+              "toggle_transcript_mode": null
             },
             "vim_normal": {
               "append_after_cursor": null,
@@ -3874,12 +3877,15 @@
           ]
         },
         "interrupt_turn": {
-          "allOf": [
+          "description": "Interrupt the active turn.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Interrupt the active turn."
+          ]
         }
       },
       "type": "object"
@@ -4382,10 +4388,13 @@
             "half_page_up": null,
             "jump_bottom": null,
             "jump_top": null,
+            "next_user_prompt": null,
             "page_down": null,
             "page_up": null,
+            "previous_user_prompt": null,
             "scroll_down": null,
-            "scroll_up": null
+            "scroll_up": null,
+            "toggle_transcript_mode": null
           }
         },
         "vim_normal": {
@@ -4652,6 +4661,17 @@
             }
           ]
         },
+        "next_user_prompt": {
+          "description": "Jump to the next user prompt in the transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "page_down": {
           "description": "Scroll down by one page.",
           "oneOf": [
@@ -4674,6 +4694,17 @@
             }
           ]
         },
+        "previous_user_prompt": {
+          "description": "Jump to the previous user prompt in the transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "scroll_down": {
           "description": "Scroll down by one row.",
           "oneOf": [
@@ -4687,6 +4718,17 @@
         },
         "scroll_up": {
           "description": "Scroll up by one row.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toggle_transcript_mode": {
+          "description": "Toggle the transcript overlay between verbose and compact output.",
           "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
@@ -4938,12 +4980,15 @@
           ]
         },
         "start_change_operator": {
-          "allOf": [
+          "description": "Begin change operator; next keys select a text object.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Begin change operator; next keys select a text object."
+          ]
         },
         "start_delete_operator": {
           "description": "Begin delete operator; next key selects motion (`d`).",
@@ -5107,20 +5152,26 @@
           ]
         },
         "select_around_text_object": {
-          "allOf": [
+          "description": "Select an around text object after an operator.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Select an around text object after an operator."
+          ]
         },
         "select_inner_text_object": {
-          "allOf": [
+          "description": "Select an inner text object after an operator.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Select an inner text object after an operator."
+          ]
         },
         "yank_line": {
           "description": "Repeat yank operator to yank the whole line (`yy`).",
@@ -5141,76 +5192,103 @@
       "description": "Vim text-object keybindings for modal editing inside text areas.",
       "properties": {
         "backtick": {
-          "allOf": [
+          "description": "Text object: backticks.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: backticks."
+          ]
         },
         "big_word": {
-          "allOf": [
+          "description": "Text object: whitespace-delimited WORD.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: whitespace-delimited WORD."
+          ]
         },
         "braces": {
-          "allOf": [
+          "description": "Text object: braces.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: braces."
+          ]
         },
         "brackets": {
-          "allOf": [
+          "description": "Text object: brackets.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: brackets."
+          ]
         },
         "cancel": {
-          "allOf": [
+          "description": "Cancel the pending text-object command.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Cancel the pending text-object command."
+          ]
         },
         "double_quote": {
-          "allOf": [
+          "description": "Text object: double quotes.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: double quotes."
+          ]
         },
         "parentheses": {
-          "allOf": [
+          "description": "Text object: parentheses.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: parentheses."
+          ]
         },
         "single_quote": {
-          "allOf": [
+          "description": "Text object: single quotes.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: single quotes."
+          ]
         },
         "word": {
-          "allOf": [
+          "description": "Text object: word.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Text object: word."
+          ]
         }
       },
       "type": "object"
