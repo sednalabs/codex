@@ -39,6 +39,26 @@ Branch tracking should remain:
 - Do not invent broad dynamic plugin systems during conflict resolution unless explicitly requested. Prefer small, static, upstream-shaped seams that let downstream behavior plug in without changing public contracts.
 - Preserve important downstream product behavior intentionally. For this fork, do not casually drop realtime, voice, or realtime-text behavior during sync just to make merges easier.
 
+## Downstream Carry Documentation
+
+- Any change that introduces, preserves, or materially reshapes intentional
+  downstream carry must update the carry documentation in the same branch
+  before it is considered ready to land.
+- At minimum, update `docs/divergences/index.yaml` with the carry id, behavior,
+  primary files, owner, upstream-equivalence status, guardrail lane, tests, and
+  the rule for preserving or dropping the carry during future upstream syncs.
+- For live carries, also update the human-readable
+  `docs/carry-divergence-ledger.md` section and map the expected validation
+  surface in `docs/downstream-regression-matrix.md`.
+- If the carry changes a public or agent-facing surface, update the relevant
+  domain document as well, such as `docs/downstream.md`,
+  `docs/downstream-tool-surface-matrix.md`, `docs/native-computer-use.md`, or
+  another focused downstream doc.
+- Treat missing carry docs as incomplete work, not as optional follow-up. If an
+  intentional carry is accidentally landed without those docs, make the
+  docs-only follow-up immediately and keep it tied to the merge commit that
+  introduced the carry.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
