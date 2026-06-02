@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::Form;
 use axum::extract::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -88,6 +89,12 @@ struct ArmSessionPostFailureRequest {
 }
 
 #[derive(Deserialize)]
+struct TokenRequest {
+    grant_type: String,
+    refresh_token: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct EchoArgs {
     message: String,
     #[allow(dead_code)]
@@ -153,6 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }),
         )
+        .route("/oauth/token", post(refresh_token))
         .nest_service(
             "/mcp",
             StreamableHttpService::new(
@@ -389,7 +397,8 @@ async fn require_bearer(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.uri().path().contains("/.well-known/") {
+    if request.uri().path().contains("/.well-known/") || request.uri().path() == "/oauth/token"
+    {
         return Ok(next.run(request).await);
     }
     if request
@@ -401,6 +410,33 @@ async fn require_bearer(
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
+}
+
+async fn refresh_token(
+    Form(request): Form<TokenRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if request.grant_type != "refresh_token" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Ok(expected_refresh_token) = std::env::var("MCP_EXPECT_REFRESH_TOKEN")
+        && request.refresh_token.as_deref() != Some(expected_refresh_token.as_str())
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let access_token =
+        std::env::var("MCP_REFRESH_ACCESS_TOKEN").map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mut response = json!({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "profile",
+    });
+    if let Some(refresh_token) = request.refresh_token {
+        response["refresh_token"] = json!(refresh_token);
+    }
+    Ok(Json(response))
 }
 
 async fn arm_session_post_failure(
