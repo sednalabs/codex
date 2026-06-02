@@ -579,7 +579,7 @@ contract.
 - `codex-rs/tools/src/computer_use_tool.rs`
 - `codex-rs/tools/src/desktop_tool.rs`
 - `codex-rs/core/src/tools/handlers/computer_use.rs`
-- `codex-rs/core/src/tools/tool_search_entry.rs`
+- `codex-rs/tools/src/tool_search.rs`
 - `codex-rs/core-plugins/src/lib.rs`
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`

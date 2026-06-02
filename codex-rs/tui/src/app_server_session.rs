@@ -1419,7 +1419,6 @@ fn thread_start_params_from_config(
         session_start_source,
         thread_source: Some(ThreadSource::User),
         dynamic_tools: configured_native_dynamic_tools(),
-        persist_extended_history: false,
         ..ThreadStartParams::default()
     }
 }
@@ -1459,7 +1458,6 @@ fn thread_resume_params_from_config(
         permissions,
         config: config_request_overrides_from_config(&config),
         dynamic_tools: configured_native_dynamic_tools(),
-        persist_extended_history: false,
         ..ThreadResumeParams::default()
     }
 }
@@ -1503,7 +1501,6 @@ fn thread_fork_params_from_config(
         ephemeral: config.ephemeral,
         thread_source: Some(ThreadSource::User),
         dynamic_tools: configured_native_dynamic_tools(),
-        persist_extended_history: false,
         ..ThreadForkParams::default()
     }
 }

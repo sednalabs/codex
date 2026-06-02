@@ -42,6 +42,7 @@ use super::complete_terminal_wait;
 use super::effective_max_output_tokens;
 use super::get_command;
 use super::post_unified_exec_tool_use_payload;
+use super::shell_mode_for_environment;
 use super::unified_exec_blocking_wait_capability;
 
 #[derive(Clone, Copy)]
@@ -49,6 +50,7 @@ pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
+    pub(crate) include_shell_parameter: bool,
 }
 
 pub struct ExecCommandHandler {
@@ -62,6 +64,7 @@ impl Default for ExecCommandHandler {
                 allow_login_shell: false,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
+                include_shell_parameter: true,
             },
         }
     }
@@ -86,6 +89,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
             },
             self.options.include_environment_id,
+            self.options.include_shell_parameter,
         )
     }
 
@@ -146,10 +150,12 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         )
         .await;
         let process_id = manager.allocate_process_id().await;
+        let shell_mode =
+            shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
         let resolved_command = get_command(
             &args,
             session.user_shell(),
-            &turn.unified_exec_shell_mode,
+            &shell_mode,
             turn.config.permissions.allow_login_shell,
         )
         .map_err(FunctionCallError::RespondToModel)?;
@@ -278,6 +284,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     cwd,
                     sandbox_cwd: turn_environment.cwd.clone(),
                     environment,
+                    shell_mode,
                     network: context.turn.network.clone(),
                     tty,
                     sandbox_permissions: effective_additional_permissions.sandbox_permissions,

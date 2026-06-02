@@ -3052,7 +3052,6 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
                 persist_on_resume: true,
                 capability: None,
             }],
-            /*persist_extended_history*/ false,
         )
         .await?;
     let mut test = base_test;

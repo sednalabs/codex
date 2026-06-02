@@ -2450,7 +2450,6 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             fork_config.clone(),
             rollout_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await?;
@@ -3162,7 +3161,6 @@ async fn set_rate_limits_retains_previous_credits() {
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -3268,7 +3266,6 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -3528,7 +3525,6 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
                     ThreadMemoryMode::Disabled
                 },
             },
-            event_persistence_mode: ThreadEventPersistenceMode::Limited,
         },
     )
     .await
@@ -3798,7 +3794,6 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     }
@@ -4543,7 +4538,6 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -4654,7 +4648,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -4893,7 +4886,6 @@ async fn make_session_with_config_and_rx(
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -4998,7 +4990,6 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools: Vec::new(),
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
@@ -6033,7 +6024,6 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
                     ThreadMemoryMode::Disabled
                 },
             },
-            event_persistence_mode: ThreadEventPersistenceMode::Limited,
         },
     )
     .await
@@ -6505,7 +6495,6 @@ where
         parent_thread_id: None,
         thread_source: None,
         dynamic_tools,
-        persist_extended_history: false,
         inherited_shell_snapshot: None,
         user_shell_override: None,
     };
