@@ -471,6 +471,7 @@
         "discover_streamable_http_oauth_returns_normalized_scopes",
         "device_login_dynamic_registration_uses_device_grant_shape",
         "device_login_dynamic_registration_omits_refresh_when_not_supported",
+        "device_login_configured_client_id_skips_dynamic_registration",
         "device_login_polls_until_authorized",
         "mcp_login_parses_device_auth_flag"
       ],
