@@ -48,7 +48,7 @@ enum FooterHintLabelMode {
     KeyOnly,
 }
 
-pub(crate) fn footer_hint_line_for_row(hints: &[FooterHint], width: u16) -> Line<'static> {
+pub(crate) fn footer_hint_line_for_row(hints: &[FooterHint], width: u16) -> Line<'_> {
     if width >= FOOTER_COMPACT_BREAKPOINT
         && let Some(line) = fit_footer_hints(hints, FooterHintLabelMode::Wide, width)
     {
@@ -77,7 +77,7 @@ pub(crate) fn footer_hint_line_for_row(hints: &[FooterHint], width: u16) -> Line
     Line::default()
 }
 
-pub(crate) fn render_footer_separator(area: Rect, buf: &mut Buffer, label: String) {
+pub(crate) fn render_footer_separator(area: Rect, buf: &mut Buffer, label: &str) {
     if area.width == 0 {
         return;
     }
@@ -87,8 +87,9 @@ pub(crate) fn render_footer_separator(area: Rect, buf: &mut Buffer, label: Strin
         return;
     }
 
-    let label_width = UnicodeWidthStr::width(label.as_str()) as u16;
-    if label_width < area.width {
+    let label_width = UnicodeWidthStr::width(label);
+    if label_width < area.width as usize {
+        let label_width = label_width as u16;
         let label_area = Rect::new(
             area.x + area.width - label_width - 1,
             area.y,
@@ -110,8 +111,8 @@ pub(crate) fn first_fitting_right_label(width: u16, labels: &[String]) -> String
 pub(crate) fn render_footer_line_with_optional_right(
     area: Rect,
     buf: &mut Buffer,
-    left: Line<'static>,
-    right: Option<Line<'static>>,
+    left: Line<'_>,
+    right: Option<Line<'_>>,
 ) {
     let Some(right) = right else {
         left.render(area, buf);
@@ -167,16 +168,16 @@ fn fit_footer_hints(
     hints: &[FooterHint],
     mode: FooterHintLabelMode,
     width: u16,
-) -> Option<Line<'static>> {
+) -> Option<Line<'_>> {
     let hint_refs = hints.iter().collect::<Vec<_>>();
     fit_footer_hint_refs(&hint_refs, mode, width)
 }
 
-fn fit_footer_hint_refs(
-    hints: &[&FooterHint],
+fn fit_footer_hint_refs<'a>(
+    hints: &[&'a FooterHint],
     mode: FooterHintLabelMode,
     width: u16,
-) -> Option<Line<'static>> {
+) -> Option<Line<'a>> {
     let gap_width = FOOTER_HINT_GAP;
     if footer_hints_width(hints, mode, gap_width) > width as usize {
         return None;
@@ -190,7 +191,7 @@ fn fit_footer_hint_refs(
         if idx > 0 {
             spans.push(" ".repeat(gap_width).set_style(footer_hint_label_style()));
         }
-        spans.push(hint.key.clone().set_style(footer_hint_key_style()));
+        spans.push(hint.key.as_str().set_style(footer_hint_key_style()));
         let label = match mode {
             FooterHintLabelMode::Wide => Some(hint.wide_label.as_str()),
             FooterHintLabelMode::Compact => Some(hint.compact_label.as_str()),
@@ -198,7 +199,7 @@ fn fit_footer_hint_refs(
         };
         if let Some(label) = label {
             spans.push(" ".set_style(footer_hint_label_style()));
-            spans.push(label.to_string().set_style(footer_hint_label_style()));
+            spans.push(label.set_style(footer_hint_label_style()));
         }
     }
     Some(spans.into())
@@ -262,7 +263,7 @@ mod tests {
         out
     }
 
-    fn line_text(line: Line<'static>) -> String {
+    fn line_text(line: Line<'_>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())

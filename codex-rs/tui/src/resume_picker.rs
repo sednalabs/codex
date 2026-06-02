@@ -2035,11 +2035,8 @@ fn render_picker_footer(
     }
 
     let separator = Rect::new(area.x, area.y, area.width, 1);
-    render_footer_separator(
-        separator,
-        frame.buffer,
-        picker_footer_progress_label(state, list_height, area.width),
-    );
+    let progress_label = picker_footer_progress_label(state, list_height, area.width);
+    render_footer_separator(separator, frame.buffer, progress_label.as_str());
 
     let lines = footer_hint_lines(state, area.width);
     for (idx, line) in lines.into_iter().enumerate() {
@@ -2117,7 +2114,7 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
             FooterHint::new("loading", "transcript", "transcript", /*priority*/ 0),
             FooterHint::new("ctrl+c", "quit", "quit", /*priority*/ 1),
         ];
-        let line = footer_hint_line_for_row(&hints, width);
+        let line = own_line(footer_hint_line_for_row(&hints, width));
         return vec![line, Line::default()];
     }
 
@@ -2162,9 +2159,25 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
     ];
 
     vec![
-        footer_hint_line_for_row(&first_row_hints, width),
-        footer_hint_line_for_row(&second_row_hints, width),
+        own_line(footer_hint_line_for_row(&first_row_hints, width)),
+        own_line(footer_hint_line_for_row(&second_row_hints, width)),
     ]
+}
+
+fn own_line(line: Line<'_>) -> Line<'static> {
+    let Line {
+        style,
+        alignment,
+        spans,
+    } = line;
+    Line {
+        style,
+        alignment,
+        spans: spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.into_owned(), span.style))
+            .collect(),
+    }
 }
 
 fn render_transcript_loading_overlay(frame: &mut crate::custom_terminal::Frame, area: Rect) {
