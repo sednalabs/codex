@@ -1022,6 +1022,7 @@ mod tests {
                 "Editor.move_word_right",
                 "Global.open_transcript",
                 "Pager.close",
+                "Pager.toggle_transcript_mode",
                 "Pager.page_up",
                 "Pager.page_down",
                 "Approval.open_fullscreen",

@@ -324,15 +324,23 @@ docs-only refresh commit that records this snapshot.
   login from SSH-only or browserless hosts through the OAuth Device
   Authorization Grant instead of relying on a local browser callback.
 - Streamable HTTP OAuth discovery preserves `token_endpoint`,
-  `device_authorization_endpoint`, and `grant_types_supported`, so the CLI can
-  fail loudly when a server does not actually advertise device-login support.
-- The device-login flow uses the configured public MCP OAuth `client_id`, PKCE,
-  the identity-provider verification URL/user code, token-endpoint polling, and
-  the existing MCP OAuth token cache.
+  `device_authorization_endpoint`, `registration_endpoint`, and
+  `grant_types_supported`, so the CLI can fail loudly when a server does not
+  actually advertise device-login support or lacks both configured client id
+  and dynamic registration support.
+- The device-login flow uses a configured public MCP OAuth `client_id` when one
+  is available. Otherwise, it performs standards-based dynamic client
+  registration using the device grant shape, a public-client token endpoint
+  auth method, optional requested scopes, and refresh-token registration only
+  when server grant metadata permits or omits grant support.
+- After client-id resolution, the flow uses PKCE, the identity-provider
+  verification URL/user code, token-endpoint polling, and the existing MCP
+  OAuth token cache.
 - This is an intentional downstream carry for headless MCP server login until
   upstream ships an equivalent headless MCP OAuth login contract. During
   upstream syncs, preserve this behavior unless the upstream replacement covers
-  the same discovery, grant-validation, PKCE, polling, and token-cache path.
+  the same discovery, grant-validation, dynamic-registration fallback,
+  configured-client-id fast path, PKCE, polling, and token-cache path.
 - Primary files:
   - `codex-rs/cli/src/mcp_cmd.rs`
   - `codex-rs/codex-mcp/src/mcp/auth.rs`
@@ -374,6 +382,40 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/tui-weekly-usage-pacing-status-line.md`
   - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
+### TUI Transcript Compact Detail Mode
+
+- The `Ctrl+T` transcript overlay intentionally carries two detail modes:
+  verbose mode for the complete transcript and compact mode for prompt/agent
+  review without terminal/tool noise.
+- Verbose mode remains the default audit surface. Compact mode keeps user
+  prompts, assistant-facing responses, selected reasoning summaries, and
+  important warning/error/stop hook output visible while collapsing injected
+  session context, context-only hook entries, and other detail that belongs in
+  verbose transcript inspection.
+- The overlay footer exposes the active detail mode and the toggle key, and the
+  overlay state preserves scroll, selected prompt, raw/rich render mode, and
+  verbose/compact detail mode across close/reopen.
+- This is an intentional downstream TUI ergonomics carry. Preserve it during
+  upstream syncs unless upstream lands equivalent transcript detail-mode
+  behavior that keeps the same verbose audit fallback and compact prompt/agent
+  review path.
+- Primary files:
+  - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/hook_cell.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
+  - `codex-rs/tui/src/keymap.rs`
+  - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
+  - `codex-rs/config/src/tui_keymap.rs`
   - `docs/downstream-regression-matrix.md`
 
 ### Custom Prompt Discovery And Review Prompt Flow

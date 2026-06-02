@@ -445,6 +445,7 @@
       "surface_type": "operator-facing",
       "surface": [
         "codex mcp login --device-auth",
+        "dynamic client registration fallback",
         "Streamable HTTP OAuth discovery metadata",
         "MCP OAuth token cache"
       ],
@@ -459,7 +460,7 @@
         ".github/workflows/sedna-heavy-tests.yml",
         "justfile"
       ],
-      "behavior": "Downstream adds a standards-based OAuth Device Authorization Grant login path for headless MCP servers, preserving discovery metadata and storing tokens in the existing MCP cache.",
+      "behavior": "Downstream adds a standards-based OAuth Device Authorization Grant login path for headless MCP servers. It preserves discovery metadata, uses a configured public client id when available, dynamically registers a public device client when the authorization server advertises registration, and stores tokens in the existing MCP cache.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": "5a9c53213d6bcbda108ee7297e6cbb02625cb835",
@@ -468,11 +469,14 @@
       "guardrail_lane": "codex.mcp-device-login-targeted",
       "tests": [
         "discover_streamable_http_oauth_returns_normalized_scopes",
+        "device_login_dynamic_registration_uses_device_grant_shape",
+        "device_login_dynamic_registration_omits_refresh_when_not_supported",
+        "device_login_configured_client_id_skips_dynamic_registration",
         "device_login_polls_until_authorized",
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
-      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support."
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths."
     },
     {
       "id": "startup-plugin-sync-bounded-wait",
@@ -546,6 +550,59 @@
         "codex-rs/tui/src/chatwidget.rs"
       ],
       "extraction_target": "TUI status/session contributor slots"
+    },
+    {
+      "id": "tui-transcript-compact-mode",
+      "title": "TUI transcript compact detail mode",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "Ctrl+T transcript overlay",
+        "verbose/compact transcript detail toggle",
+        "transcript footer hints and prompt navigation"
+      ],
+      "files": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/transcript.rs",
+        "codex-rs/tui/src/footer_hints.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/hook_cell.rs",
+        "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap_setup.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/resume_picker.rs"
+      ],
+      "behavior": "Downstream carries a Ctrl+T transcript overlay detail mode that defaults to verbose mode but lets users toggle to compact mode, where the overlay focuses on user prompts and agent-facing responses while collapsing injected context, noisy context-only hook entries, and terminal/tool chatter that belongs in the full verbose transcript.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "b9e72a751b75d8b03ffa6d2adab9d3fc2a6262d9",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-transcript-viewport-targeted",
+      "tests": [
+        "transcript_overlay_compact_mode_uses_display_lines",
+        "transcript_overlay_state_round_trips_scroll_selection_and_mode",
+        "transcript_overlay_renders_live_tail",
+        "transcript_overlay_footer_status_snapshot",
+        "UserHistoryCell compact transcript coverage",
+        "HookCell compact transcript coverage"
+      ],
+      "owner": "downstream",
+      "notes": "This is an intentional downstream TUI carry for operator transcript ergonomics. Preserve both verbose mode for complete audit detail and compact mode for prompt/agent review; if upstream lands an equivalent transcript detail-mode model, compare behavior before dropping this carry.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "tui-ergonomics",
+      "hotspot_files": [
+        "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/app_backtrack.rs"
+      ],
+      "extraction_target": "upstreamable transcript overlay detail-mode support"
     },
     {
       "id": "custom-prompt-discovery-and-review-flow",
