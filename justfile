@@ -277,6 +277,8 @@ mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_serializes_tool_approval_overrides --lib -- --exact --test-threads=1
     cargo test -p codex-core config::service_tests::write_value_supports_custom_mcp_server_default_tool_approval_mode --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client load_oauth_tokens_ --lib -- --test-threads=1
+    cargo test -p codex-rmcp-client refresh_expires_in_from_timestamp_marks_expired_tokens --lib -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
 
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
 mcp-device-login-targeted:

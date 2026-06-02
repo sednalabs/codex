@@ -1876,7 +1876,7 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     // it is a host process.
     let expected_env_value = "propagated-env-http";
     let Some(http_server) =
-        start_streamable_http_test_server(expected_env_value, /*expected_token*/ None).await?
+        start_streamable_http_test_server(expected_env_value, /*auth*/ None).await?
     else {
         return Ok(());
     };
@@ -2041,13 +2041,22 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     .await;
 
     // Phase 2: start the Streamable HTTP MCP test server with bearer-token
-    // enforcement enabled so the client must use stored OAuth credentials.
+    // enforcement enabled so the client must refresh stored OAuth credentials
+    // before the startup handshake reaches the server.
     let expected_env_value = "propagated-env-http-oauth";
-    let expected_token = "initial-access-token";
+    let expired_access_token = "expired-access-token";
+    let expected_token = "refreshed-access-token";
     let client_id = "test-client-id";
     let refresh_token = "initial-refresh-token";
-    let Some(http_server) =
-        start_streamable_http_test_server(expected_env_value, Some(expected_token)).await?
+    let Some(http_server) = start_streamable_http_test_server(
+        expected_env_value,
+        Some(StreamableHttpAuth {
+            expected_bearer_token: expected_token,
+            expected_refresh_token: Some(refresh_token),
+            refreshed_access_token: Some(expected_token),
+        }),
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -2057,12 +2066,12 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     // server so the test does not share credentials with other suite cases.
     let temp_home = Arc::new(tempdir()?);
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
-    write_fallback_oauth_tokens(
+    write_expired_fallback_oauth_tokens(
         temp_home.path(),
         server_name,
         &server_url,
         client_id,
-        expected_token,
+        expired_access_token,
         refresh_token,
     )?;
 
@@ -2169,7 +2178,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
 /// Starts the Streamable HTTP MCP test server in the active test placement.
 async fn start_streamable_http_test_server(
     expected_env_value: &str,
-    expected_token: Option<&str>,
+    auth: Option<StreamableHttpAuth<'_>>,
 ) -> anyhow::Result<Option<StreamableHttpTestServer>> {
     let rmcp_http_server_bin = match cargo_bin("test_streamable_http_server") {
         Ok(path) => path,
@@ -2185,7 +2194,7 @@ async fn start_streamable_http_test_server(
                 &container_name,
                 &rmcp_http_server_bin,
                 expected_env_value,
-                expected_token,
+                auth,
             )
             .await?,
         ));
@@ -2202,8 +2211,14 @@ async fn start_streamable_http_test_server(
         .kill_on_drop(true)
         .env("MCP_STREAMABLE_HTTP_BIND_ADDR", &bind_addr)
         .env("MCP_TEST_VALUE", expected_env_value);
-    if let Some(expected_token) = expected_token {
-        command.env("MCP_EXPECT_BEARER", expected_token);
+    if let Some(auth) = auth {
+        command.env("MCP_EXPECT_BEARER", auth.expected_bearer_token);
+        if let Some(expected_refresh_token) = auth.expected_refresh_token {
+            command.env("MCP_EXPECT_REFRESH_TOKEN", expected_refresh_token);
+        }
+        if let Some(refreshed_access_token) = auth.refreshed_access_token {
+            command.env("MCP_REFRESH_ACCESS_TOKEN", refreshed_access_token);
+        }
     }
     let mut child = command.spawn()?;
 
@@ -2219,7 +2234,7 @@ async fn start_remote_streamable_http_test_server(
     container_name: &str,
     rmcp_http_server_bin: &Path,
     expected_env_value: &str,
-    expected_token: Option<&str>,
+    auth: Option<StreamableHttpAuth<'_>>,
 ) -> anyhow::Result<StreamableHttpTestServer> {
     let remote_path = copy_binary_to_remote_env(
         container_name,
@@ -2239,11 +2254,23 @@ async fn start_remote_streamable_http_test_server(
         ),
         format!("MCP_TEST_VALUE={}", sh_single_quote(expected_env_value)),
     ];
-    if let Some(expected_token) = expected_token {
+    if let Some(auth) = auth {
         env_assignments.push(format!(
             "MCP_EXPECT_BEARER={}",
-            sh_single_quote(expected_token)
+            sh_single_quote(auth.expected_bearer_token)
         ));
+        if let Some(expected_refresh_token) = auth.expected_refresh_token {
+            env_assignments.push(format!(
+                "MCP_EXPECT_REFRESH_TOKEN={}",
+                sh_single_quote(expected_refresh_token)
+            ));
+        }
+        if let Some(refreshed_access_token) = auth.refreshed_access_token {
+            env_assignments.push(format!(
+                "MCP_REFRESH_ACCESS_TOKEN={}",
+                sh_single_quote(refreshed_access_token)
+            ));
+        }
     }
 
     let script = format!(
@@ -2280,7 +2307,7 @@ async fn start_remote_streamable_http_test_server(
     // test is whether the remote-side MCP client can reach it. Probe through
     // remote HTTP before handing the URL to the Codex fixture.
     wait_for_remote_streamable_http_server(&server_url, Duration::from_secs(5)).await?;
-    if expected_token.is_some() {
+    if auth.is_some() {
         wait_for_streamable_http_metadata(&server_url, Duration::from_secs(5)).await?;
     }
 
@@ -2515,7 +2542,14 @@ fn streamable_http_metadata_url(server_url: &str) -> String {
     format!("{base_url}{STREAMABLE_HTTP_METADATA_PATH}")
 }
 
-fn write_fallback_oauth_tokens(
+#[derive(Clone, Copy)]
+struct StreamableHttpAuth<'a> {
+    expected_bearer_token: &'a str,
+    expected_refresh_token: Option<&'a str>,
+    refreshed_access_token: Option<&'a str>,
+}
+
+fn write_expired_fallback_oauth_tokens(
     home: &Path,
     server_name: &str,
     server_url: &str,
@@ -2524,8 +2558,8 @@ fn write_fallback_oauth_tokens(
     refresh_token: &str,
 ) -> anyhow::Result<()> {
     let expires_at = SystemTime::now()
-        .checked_add(Duration::from_secs(3600))
-        .ok_or_else(|| anyhow::anyhow!("failed to compute expiry time"))?
+        .checked_sub(Duration::from_secs(60))
+        .ok_or_else(|| anyhow::anyhow!("failed to compute expired token time"))?
         .duration_since(UNIX_EPOCH)?
         .as_millis() as u64;
 
