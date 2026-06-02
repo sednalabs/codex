@@ -2524,6 +2524,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         model: previous_model.to_string(),
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
+        multi_agent_version: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -3522,6 +3523,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
             thread_source: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
+            multi_agent_version: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
@@ -6021,6 +6023,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             thread_source: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
+            multi_agent_version: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
