@@ -21,7 +21,7 @@
         "approvals_reviewer": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ApprovalsReviewer"
+              "$ref": "#/$defs/ApprovalsReviewer"
             },
             {
               "type": "null"
