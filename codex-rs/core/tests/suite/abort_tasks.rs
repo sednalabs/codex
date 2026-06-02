@@ -70,97 +70,101 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
 /// the original tool call and the synthesized shell-style abort output. This
 /// test exercises the follow-up flow: it sends another user turn, inspects the
 /// mock responses server, and ensures the model receives the serialized abort.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupt_tool_records_history_entries() {
-    let command = "sleep 60";
-    let call_id = "call-history";
+#[test]
+fn interrupt_tool_records_history_entries() -> anyhow::Result<()> {
+    core_test_support::run_large_stack_test("interrupt-tool-history-test", async {
+        let command = "sleep 60";
+        let call_id = "call-history";
 
-    let args = json!({
-        "command": command,
-        "timeout_ms": 60_000
+        let args = json!({
+            "command": command,
+            "timeout_ms": 60_000
+        })
+        .to_string();
+        let first_body = sse(vec![
+            ev_response_created("resp-history"),
+            ev_function_call(call_id, "shell_command", &args),
+            ev_completed("resp-history"),
+        ]);
+        let follow_up_body = sse(vec![
+            ev_response_created("resp-followup"),
+            ev_completed("resp-followup"),
+        ]);
+
+        let server = start_mock_server().await;
+        let response_mock = mount_sse_sequence(&server, vec![first_body, follow_up_body]).await;
+
+        let fixture = test_codex()
+            .with_model("gpt-5.4")
+            .build(&server)
+            .await
+            .unwrap();
+        let codex = Arc::clone(&fixture.codex);
+
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "start history recording".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecCommandBegin(_))).await;
+
+        tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
+        codex.submit(Op::Interrupt).await.unwrap();
+
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
+
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "follow up".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+        let requests = response_mock.requests();
+        assert!(
+            requests.len() == 2,
+            "expected two calls to the responses API, got {}",
+            requests.len()
+        );
+
+        assert!(
+            response_mock.saw_function_call(call_id),
+            "function call not recorded in responses payload"
+        );
+        let output = response_mock
+            .function_call_output_text(call_id)
+            .expect("missing function_call_output text");
+        assert!(
+            output.starts_with("Wall time: "),
+            "expected shell-style abort output to include wall time, got {output:?}"
+        );
+        assert!(
+            output.contains("aborted by user"),
+            "expected shell-style abort output to mention user abort, got {output:?}"
+        );
+
+        Ok(())
     })
-    .to_string();
-    let first_body = sse(vec![
-        ev_response_created("resp-history"),
-        ev_function_call(call_id, "shell_command", &args),
-        ev_completed("resp-history"),
-    ]);
-    let follow_up_body = sse(vec![
-        ev_response_created("resp-followup"),
-        ev_completed("resp-followup"),
-    ]);
-
-    let server = start_mock_server().await;
-    let response_mock = mount_sse_sequence(&server, vec![first_body, follow_up_body]).await;
-
-    let fixture = test_codex()
-        .with_model("gpt-5.4")
-        .build(&server)
-        .await
-        .unwrap();
-    let codex = Arc::clone(&fixture.codex);
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "start history recording".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecCommandBegin(_))).await;
-
-    tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
-    codex.submit(Op::Interrupt).await.unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
-
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "follow up".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    let requests = response_mock.requests();
-    assert!(
-        requests.len() == 2,
-        "expected two calls to the responses API, got {}",
-        requests.len()
-    );
-
-    assert!(
-        response_mock.saw_function_call(call_id),
-        "function call not recorded in responses payload"
-    );
-    let output = response_mock
-        .function_call_output_text(call_id)
-        .expect("missing function_call_output text");
-    assert!(
-        output.starts_with("Wall time: "),
-        "expected shell-style abort output to include wall time, got {output:?}"
-    );
-    assert!(
-        output.contains("aborted by user"),
-        "expected shell-style abort output to mention user abort, got {output:?}"
-    );
 }
 
 /// After an interrupt we persist a model-visible `<turn_aborted>` marker in the conversation

@@ -2947,56 +2947,58 @@ async fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Resul
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = MockServer::start().await;
+#[test]
+fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
+    core_test_support::run_large_stack_test("server-overloaded-backoff-test", async {
+        skip_if_no_network!(Ok(()));
+        let server = MockServer::start().await;
 
-    let responses_mock = mount_sse_repeating(
-        &server,
-        sse_failed(
-            "resp_capacity",
-            "server_is_overloaded",
-            "Selected model is at capacity.",
-        ),
-    )
-    .await;
+        let responses_mock = mount_sse_repeating(
+            &server,
+            sse_failed(
+                "resp_capacity",
+                "server_is_overloaded",
+                "Selected model is at capacity.",
+            ),
+        )
+        .await;
 
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(|config| {
-            config.model_provider.stream_max_retries = Some(0);
+        let TestCodex { codex, .. } = test_codex()
+            .with_config(|config| {
+                config.model_provider.stream_max_retries = Some(0);
+            })
+            .build(&server)
+            .await?;
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "interrupt capacity backoff".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::StreamError(_))).await;
+        codex.submit(Op::Interrupt).await?;
+
+        let aborted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await
         })
-        .build(&server)
-        .await?;
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "interrupt capacity backoff".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
+        .await
+        .expect("capacity retry backoff did not observe interrupt promptly");
+        assert!(matches!(aborted, EventMsg::TurnAborted(_)));
+        assert!(
+            responses_mock.requests().len() >= 1,
+            "expected at least one capacity request"
+        );
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::StreamError(_))).await;
-    codex.submit(Op::Interrupt).await?;
-
-    let aborted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await
+        Ok(())
     })
-    .await
-    .expect("capacity retry backoff did not observe interrupt promptly");
-    assert!(matches!(aborted, EventMsg::TurnAborted(_)));
-    assert!(
-        responses_mock.requests().len() >= 1,
-        "expected at least one capacity request"
-    );
-
-    Ok(())
 }
 
 /// We try to avoid setting env vars in tests because std::env::set_var() is

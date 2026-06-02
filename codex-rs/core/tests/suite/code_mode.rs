@@ -46,34 +46,16 @@ use std::collections::HashSet;
 use std::fs;
 use std::future::Future;
 use std::path::Path;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use wiremock::MockServer;
-
-const CODE_MODE_METADATA_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn run_code_mode_metadata_test<F, Fut>(test: F) -> Result<()>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    let handle = thread::Builder::new()
-        .name("code-mode-metadata-test".to_string())
-        .stack_size(CODE_MODE_METADATA_TEST_STACK_SIZE)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_stack_size(CODE_MODE_METADATA_TEST_STACK_SIZE)
-                .enable_all()
-                .build()?;
-            runtime.block_on(test())
-        })?;
-
-    match handle.join() {
-        Ok(result) => result,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
+    core_test_support::run_large_stack_test("code-mode-metadata-test", test())
 }
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {

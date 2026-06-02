@@ -5,6 +5,7 @@ use anyhow::ensure;
 use codex_arg0::Arg0PathEntryGuard;
 use codex_utils_cargo_bin::CargoBinError;
 use ctor::ctor;
+use std::future::Future;
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
@@ -38,6 +39,8 @@ pub mod tracing;
 pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
+
+pub const LARGE_STACK_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
@@ -113,6 +116,28 @@ pub fn test_absolute_path_with_windows(
 
 pub fn test_absolute_path(unix_path: &str) -> AbsolutePathBuf {
     test_absolute_path_with_windows(unix_path, /*windows_path*/ None)
+}
+
+pub fn run_large_stack_test<Fut>(thread_name: &'static str, test_body: Fut) -> anyhow::Result<()>
+where
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .stack_size(LARGE_STACK_TEST_STACK_SIZE)
+        .spawn(move || -> anyhow::Result<()> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(LARGE_STACK_TEST_STACK_SIZE)
+                .enable_all()
+                .build()?;
+            runtime.block_on(test_body)
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 pub trait TempDirExt {
