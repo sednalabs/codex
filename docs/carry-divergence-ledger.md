@@ -324,15 +324,23 @@ docs-only refresh commit that records this snapshot.
   login from SSH-only or browserless hosts through the OAuth Device
   Authorization Grant instead of relying on a local browser callback.
 - Streamable HTTP OAuth discovery preserves `token_endpoint`,
-  `device_authorization_endpoint`, and `grant_types_supported`, so the CLI can
-  fail loudly when a server does not actually advertise device-login support.
-- The device-login flow uses the configured public MCP OAuth `client_id`, PKCE,
-  the identity-provider verification URL/user code, token-endpoint polling, and
-  the existing MCP OAuth token cache.
+  `device_authorization_endpoint`, `registration_endpoint`, and
+  `grant_types_supported`, so the CLI can fail loudly when a server does not
+  actually advertise device-login support or lacks both configured client id
+  and dynamic registration support.
+- The device-login flow uses a configured public MCP OAuth `client_id` when one
+  is available. Otherwise, it performs standards-based dynamic client
+  registration using the device grant shape, a public-client token endpoint
+  auth method, optional requested scopes, and refresh-token registration only
+  when server grant metadata permits or omits grant support.
+- After client-id resolution, the flow uses PKCE, the identity-provider
+  verification URL/user code, token-endpoint polling, and the existing MCP
+  OAuth token cache.
 - This is an intentional downstream carry for headless MCP server login until
   upstream ships an equivalent headless MCP OAuth login contract. During
   upstream syncs, preserve this behavior unless the upstream replacement covers
-  the same discovery, grant-validation, PKCE, polling, and token-cache path.
+  the same discovery, grant-validation, dynamic-registration fallback,
+  configured-client-id fast path, PKCE, polling, and token-cache path.
 - Primary files:
   - `codex-rs/cli/src/mcp_cmd.rs`
   - `codex-rs/codex-mcp/src/mcp/auth.rs`
