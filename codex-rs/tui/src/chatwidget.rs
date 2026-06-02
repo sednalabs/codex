@@ -11,7 +11,7 @@
 //!
 //! The transcript overlay is kept in sync by `App::overlay_forward_event`, which syncs a live tail
 //! during draws using `active_cell_transcript_key()` and
-//! `active_cell_transcript_hyperlink_lines()`. The
+//! `active_cell_transcript_hyperlink_lines_for_detail_mode()`. The
 //! cache key is designed to change when the active cell mutates in place or when its transcript
 //! output is time-dependent so the overlay can refresh its cached tail without rebuilding it on
 //! every draw.
@@ -195,6 +195,24 @@ use tracing::debug;
 use tracing::warn;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CopyStatus {
+    Success(String),
+    Error(String),
+}
+
+impl CopyStatus {
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Success(message) | Self::Error(message) => message,
+        }
+    }
+
+    pub(crate) fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+}
 const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
@@ -1925,17 +1943,27 @@ impl ChatWidget {
     /// filters out empty results so the overlay can treat "nothing to render" as "no tail". Callers
     /// should pass the same width the overlay uses; using a different width will cause wrapping
     /// mismatches between the main viewport and the transcript overlay.
-    pub(crate) fn active_cell_transcript_hyperlink_lines(
+    pub(crate) fn active_cell_transcript_hyperlink_lines_for_detail_mode(
         &self,
         width: u16,
+        render_mode: super::history_cell::HistoryRenderMode,
+        detail_mode: super::history_cell::TranscriptDetailMode,
     ) -> Option<Vec<HyperlinkLine>> {
         let mut lines = Vec::new();
         if let Some(cell) = self.transcript.active_cell.as_ref() {
-            lines.extend(cell.transcript_hyperlink_lines(width));
+            lines.extend(cell.transcript_hyperlink_lines_for_detail_mode(
+                width,
+                render_mode,
+                detail_mode,
+            ));
         }
         if let Some(hook_cell) = self.active_hook_cell.as_ref() {
             // Compute hook lines first so hidden hooks do not add a separator.
-            let hook_lines = hook_cell.transcript_hyperlink_lines(width);
+            let hook_lines = hook_cell.transcript_hyperlink_lines_for_detail_mode(
+                width,
+                render_mode,
+                detail_mode,
+            );
             if !hook_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }
@@ -1946,8 +1974,12 @@ impl ChatWidget {
 
     #[cfg(test)]
     pub(crate) fn active_cell_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
-        self.active_cell_transcript_hyperlink_lines(width)
-            .map(crate::terminal_hyperlinks::visible_lines)
+        self.active_cell_transcript_hyperlink_lines_for_detail_mode(
+            width,
+            super::history_cell::HistoryRenderMode::Rich,
+            super::history_cell::TranscriptDetailMode::Verbose,
+        )
+        .map(crate::terminal_hyperlinks::visible_lines)
     }
 
     /// Return a reference to the widget's current config (includes any
