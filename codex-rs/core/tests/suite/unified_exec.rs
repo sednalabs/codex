@@ -1617,8 +1617,15 @@ async fn write_stdin_wait_until_terminal_defers_provider_resume_until_exit() -> 
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
+#[test]
+fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
+    core_test_support::run_large_stack_test(
+        "unified-exec-metadata-test",
+        exec_command_reports_chunk_and_exit_metadata_impl(),
+    )
+}
+
+async fn exec_command_reports_chunk_and_exit_metadata_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
@@ -2084,8 +2091,15 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
+#[test]
+fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
+    core_test_support::run_large_stack_test(
+        "unified-exec-write-stdin-test",
+        write_stdin_returns_exit_metadata_and_clears_session_impl(),
+    )
+}
+
+async fn write_stdin_returns_exit_metadata_and_clears_session_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
