@@ -3981,9 +3981,9 @@
       },
       "required": [
         "limit",
+        "used",
         "remainingPercent",
-        "resetsAt",
-        "used"
+        "resetsAt"
       ],
       "type": "object"
     },
