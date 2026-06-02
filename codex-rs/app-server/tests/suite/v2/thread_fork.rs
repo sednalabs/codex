@@ -28,8 +28,12 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::RolloutItem;
+use codex_rollout::append_rollout_item_to_path;
+use codex_rollout::read_session_meta_line;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -84,6 +88,9 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
         "expected original rollout to exist at {}",
         original_path.display()
     );
+    let mut session_meta = read_session_meta_line(&original_path).await?;
+    session_meta.meta.multi_agent_version = Some(MultiAgentVersion::V1);
+    append_rollout_item_to_path(&original_path, &RolloutItem::SessionMeta(session_meta)).await?;
     let original_contents = std::fs::read_to_string(&original_path)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
