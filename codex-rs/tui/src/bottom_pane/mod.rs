@@ -2886,7 +2886,7 @@ mod tests {
 
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt { .. }))),
             "second Esc after modal dismiss should send Op::Interrupt"
         );
     }
@@ -3010,7 +3010,7 @@ mod tests {
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
 
         assert!(
-            !matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
+            !matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt { .. }))),
             "expected Alt+Esc to not send Op::Interrupt while a task is running"
         );
     }

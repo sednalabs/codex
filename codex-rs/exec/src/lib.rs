@@ -2353,6 +2353,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             forked_from_id: None,
+            parent_thread_id: None,
             git_info: None,
             name: None,
             turns: vec![
@@ -2577,6 +2578,7 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 forked_from_id: None,
+                parent_thread_id: None,
                 git_info: None,
                 name: Some("thread".to_string()),
                 turns: vec![],
