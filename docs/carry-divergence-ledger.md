@@ -384,6 +384,40 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### TUI Transcript Compact Detail Mode
+
+- The `Ctrl+T` transcript overlay intentionally carries two detail modes:
+  verbose mode for the complete transcript and compact mode for prompt/agent
+  review without terminal/tool noise.
+- Verbose mode remains the default audit surface. Compact mode keeps user
+  prompts, assistant-facing responses, selected reasoning summaries, and
+  important warning/error/stop hook output visible while collapsing injected
+  session context, context-only hook entries, and other detail that belongs in
+  verbose transcript inspection.
+- The overlay footer exposes the active detail mode and the toggle key, and the
+  overlay state preserves scroll, selected prompt, raw/rich render mode, and
+  verbose/compact detail mode across close/reopen.
+- This is an intentional downstream TUI ergonomics carry. Preserve it during
+  upstream syncs unless upstream lands equivalent transcript detail-mode
+  behavior that keeps the same verbose audit fallback and compact prompt/agent
+  review path.
+- Primary files:
+  - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/hook_cell.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
+  - `codex-rs/tui/src/keymap.rs`
+  - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
+  - `codex-rs/config/src/tui_keymap.rs`
+  - `docs/downstream-regression-matrix.md`
+
 ### Custom Prompt Discovery And Review Prompt Flow
 
 - Downstream restores a file-backed custom prompt catalogue under
