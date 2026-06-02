@@ -409,9 +409,12 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/transcript.rs`
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
   - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
   - `codex-rs/tui/src/keymap.rs`
   - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
   - `codex-rs/config/src/tui_keymap.rs`
   - `docs/downstream-regression-matrix.md`
 
