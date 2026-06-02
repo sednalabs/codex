@@ -17,9 +17,9 @@
 
 use std::any::TypeId;
 use std::io::Result;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -786,7 +786,7 @@ impl TranscriptOverlay {
             .get()
             .is_some_and(|idx| idx >= self.cells.len())
         {
-            self.highlight_cell.set(None);
+            self.highlight_cell.set(/*cell*/ None);
         }
         self.rebuild_renderables();
         if follow_bottom {
@@ -831,7 +831,7 @@ impl TranscriptOverlay {
                 .get()
                 .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
             {
-                self.highlight_cell.set(None);
+                self.highlight_cell.set(/*cell*/ None);
             }
             self.rebuild_renderables();
         }
@@ -1044,11 +1044,18 @@ impl TranscriptOverlay {
             return None;
         }
         let offsets = self.view.layout(width).offsets.clone();
-        let prompts = self.user_prompt_positions.iter().copied().filter_map(|idx| {
-            offsets
-                .get(idx)
-                .map(|offset| (idx, offset.saturating_add(self.prompt_first_text_row_offset(idx))))
-        });
+        let prompts = self
+            .user_prompt_positions
+            .iter()
+            .copied()
+            .filter_map(|idx| {
+                offsets.get(idx).map(|offset| {
+                    (
+                        idx,
+                        offset.saturating_add(self.prompt_first_text_row_offset(idx)),
+                    )
+                })
+            });
         if after > before {
             let previous_bottom = before.saturating_add(height as usize);
             let current_bottom = after.saturating_add(height as usize);

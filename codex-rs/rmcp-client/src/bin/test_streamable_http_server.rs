@@ -397,8 +397,7 @@ async fn require_bearer(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.uri().path().contains("/.well-known/") || request.uri().path() == "/oauth/token"
-    {
+    if request.uri().path().contains("/.well-known/") || request.uri().path() == "/oauth/token" {
         return Ok(next.run(request).await);
     }
     if request
