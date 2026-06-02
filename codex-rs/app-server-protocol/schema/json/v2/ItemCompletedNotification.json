@@ -771,6 +771,13 @@
                 "null"
               ]
             },
+            "source": {
+              "$ref": "#/$defs/CommandExecutionSource",
+              "default": "agent"
+            },
+            "status": {
+              "$ref": "#/$defs/CommandExecutionStatus"
+            },
             "terminalWait": {
               "anyOf": [
                 {
@@ -781,13 +788,6 @@
                 }
               ],
               "description": "Metadata for command executions that are also blocking terminal waits."
-            },
-            "source": {
-              "$ref": "#/$defs/CommandExecutionSource",
-              "default": "agent"
-            },
-            "status": {
-              "$ref": "#/$defs/CommandExecutionStatus"
             },
             "type": {
               "const": "commandExecution",

@@ -159,7 +159,6 @@ fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> Result
                     model_provider: "test-provider".to_string(),
                     memory_mode: ThreadMemoryMode::Disabled,
                 },
-                event_persistence_mode: ThreadEventPersistenceMode::default(),
             })
             .await?;
 
