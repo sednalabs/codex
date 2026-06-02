@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -53,7 +54,17 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CreditsSnapshot"
+              "$ref": "#/definitions/CreditsSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -75,7 +86,7 @@
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PlanType"
+              "$ref": "#/definitions/PlanType"
             },
             {
               "type": "null"
@@ -85,7 +96,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -95,7 +106,7 @@
         "rateLimitReachedType": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitReachedType"
+              "$ref": "#/definitions/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -105,7 +116,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RateLimitWindow"
+              "$ref": "#/definitions/RateLimitWindow"
             },
             {
               "type": "null"
@@ -140,12 +151,37 @@
         "usedPercent"
       ],
       "type": "object"
+    },
+    "SpendControlLimitSnapshot": {
+      "properties": {
+        "limit": {
+          "type": "string"
+        },
+        "remainingPercent": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "resetsAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "used": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "remainingPercent",
+        "resetsAt",
+        "used"
+      ],
+      "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and does not clear a previously observed value.",
   "properties": {
     "rateLimits": {
-      "$ref": "#/$defs/RateLimitSnapshot"
+      "$ref": "#/definitions/RateLimitSnapshot"
     }
   },
   "required": [
