@@ -114,7 +114,10 @@ fn refresh_expires_in_from_timestamp(tokens: &mut StoredOAuthTokens) {
             tokens.token_response.0.set_expires_in(Some(&duration));
         }
         None => {
-            tokens.token_response.0.set_expires_in(None);
+            tokens
+                .token_response
+                .0
+                .set_expires_in(Some(&Duration::ZERO));
         }
     }
 }
@@ -970,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_expires_in_from_timestamp_clears_expired_tokens() {
+    fn refresh_expires_in_from_timestamp_marks_expired_tokens() {
         let mut tokens = sample_tokens();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -983,7 +986,7 @@ mod tests {
 
         super::refresh_expires_in_from_timestamp(&mut tokens);
 
-        assert!(tokens.token_response.0.expires_in().is_none());
+        assert_eq!(tokens.token_response.0.expires_in(), Some(Duration::ZERO));
     }
 
     fn assert_tokens_match_without_expiry(
