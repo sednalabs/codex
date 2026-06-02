@@ -178,11 +178,7 @@ async fn thread_spawn_subagent_inherits_parent_dynamic_tools() {
     let browser_tool = browser_observe_dynamic_tool();
     let parent = harness
         .manager
-        .start_thread_with_tools(
-            harness.config.clone(),
-            vec![browser_tool.clone()],
-            /*persist_extended_history*/ false,
-        )
+        .start_thread_with_tools(harness.config.clone(), vec![browser_tool.clone()])
         .await
         .expect("start parent thread with browser tool");
 

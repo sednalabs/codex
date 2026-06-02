@@ -139,7 +139,6 @@ use codex_thread_store::LiveThreadInitGuard;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
-use codex_thread_store::ThreadEventPersistenceMode;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -364,7 +363,6 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolEnvironmentMode;
 use codex_tools::UnifiedExecShellMode;
-use codex_tools::shell_command_backend_for_features;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -408,7 +406,6 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) agent_control: AgentControl,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
-    pub(crate) persist_extended_history: bool,
     pub(crate) metrics_service_name: Option<String>,
     pub(crate) inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
     pub(crate) inherited_exec_policy: Option<Arc<ExecPolicyManager>>,
@@ -474,7 +471,6 @@ impl Codex {
             thread_source,
             agent_control,
             dynamic_tools,
-            persist_extended_history,
             metrics_service_name,
             inherited_shell_snapshot,
             user_shell_override,
@@ -645,7 +641,6 @@ impl Codex {
             parent_thread_id,
             thread_source,
             dynamic_tools,
-            persist_extended_history,
             inherited_shell_snapshot,
             user_shell_override,
         };

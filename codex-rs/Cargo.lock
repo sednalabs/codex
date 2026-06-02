@@ -1977,7 +1977,7 @@ dependencies = [
  "codex-arg0",
  "codex-backend-client",
  "codex-chatgpt",
- "codex-cloud-requirements",
+ "codex-cloud-config",
  "codex-config",
  "codex-core",
  "codex-core-plugins",
@@ -2425,7 +2425,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-cloud-requirements"
+name = "codex-cloud-config"
 version = "0.0.0"
 dependencies = [
  "async-trait",
@@ -2814,7 +2814,7 @@ dependencies = [
  "codex-apply-patch",
  "codex-arg0",
  "codex-browser-computer-use",
- "codex-cloud-requirements",
+ "codex-cloud-config",
  "codex-config",
  "codex-core",
  "codex-feedback",
@@ -3449,6 +3449,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "codex-utils-absolute-path",
@@ -3464,8 +3465,10 @@ dependencies = [
  "rama-tcp",
  "rama-tls-rustls",
  "rama-unix",
+ "rustls-native-certs",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -3686,7 +3689,6 @@ dependencies = [
  "codex-protocol",
  "codex-state",
  "codex-utils-path",
- "codex-utils-string",
  "pretty_assertions",
  "regex",
  "serde",
@@ -3934,7 +3936,7 @@ dependencies = [
  "codex-arg0",
  "codex-browser-computer-use",
  "codex-cli",
- "codex-cloud-requirements",
+ "codex-cloud-config",
  "codex-config",
  "codex-connectors",
  "codex-core-plugins",

@@ -102,7 +102,6 @@ pub(crate) struct SessionConfiguration {
     /// Optional analytics source classification for this thread.
     pub(super) thread_source: Option<ThreadSource>,
     pub(super) dynamic_tools: Vec<DynamicToolSpec>,
-    pub(super) persist_extended_history: bool,
     pub(super) inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
     pub(super) user_shell_override: Option<shell::Shell>,
 }
@@ -549,11 +548,6 @@ impl Session {
             .or_else(|| initial_history.get_resumed_parent_thread_id());
         session_configuration.parent_thread_id = parent_thread_id;
 
-        let event_persistence_mode = if session_configuration.persist_extended_history {
-            ThreadEventPersistenceMode::Extended
-        } else {
-            ThreadEventPersistenceMode::Limited
-        };
         let thread_id = match &initial_history {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
                 ThreadId::default()
@@ -603,7 +597,6 @@ impl Session {
                                         ThreadMemoryMode::Disabled
                                     },
                                 },
-                                event_persistence_mode,
                             },
                         )
                         .await?
@@ -625,7 +618,6 @@ impl Session {
                                         ThreadMemoryMode::Disabled
                                     },
                                 },
-                                event_persistence_mode,
                             },
                         )
                         .await?
