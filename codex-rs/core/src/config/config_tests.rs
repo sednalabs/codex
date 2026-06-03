@@ -32,6 +32,7 @@ use codex_config::permissions_toml::NetworkToml;
 use codex_config::permissions_toml::PermissionProfileToml;
 use codex_config::permissions_toml::PermissionsToml;
 use codex_config::permissions_toml::WorkspaceRootsToml;
+use codex_config::profile_toml::ProfileTui;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::BundledSkillsConfig;
@@ -59,6 +60,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::TuiTranscriptDetailMode;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_core_plugins::PluginsManager;
@@ -664,6 +666,7 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            transcript_default_detail_mode: TuiTranscriptDetailMode::Verbose,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -806,6 +809,38 @@ fn test_tui_raw_output_mode_true() {
     );
 }
 
+#[test]
+fn tui_transcript_default_detail_mode_defaults_to_verbose() {
+    let toml = r#"
+        [tui]
+    "#;
+    let parsed: ConfigToml = toml::from_str(toml).expect("deserialize empty [tui] table");
+    assert_eq!(
+        parsed
+            .tui
+            .expect("config should include tui section")
+            .transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Verbose,
+    );
+}
+
+#[test]
+fn tui_transcript_default_detail_mode_deserializes_from_toml() {
+    let toml = r#"
+        [tui]
+        transcript_default_detail_mode = "compact"
+    "#;
+    let parsed: ConfigToml =
+        toml::from_str(toml).expect("deserialize transcript_default_detail_mode=compact");
+    assert_eq!(
+        parsed
+            .tui
+            .expect("config should include tui section")
+            .transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Compact,
+    );
+}
+
 #[tokio::test]
 async fn runtime_config_uses_tui_raw_output_mode() {
     let toml = r#"
@@ -822,6 +857,67 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_tui_transcript_default_detail_mode() {
+    let toml = r#"
+        [tui]
+        transcript_default_detail_mode = "compact"
+    "#;
+    let cfg_toml: ConfigToml =
+        toml::from_str(toml).expect("deserialize transcript_default_detail_mode=compact");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.tui_transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Compact,
+    );
+}
+
+#[tokio::test]
+async fn profile_v2_config_file_uses_tui_transcript_default_detail_mode() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let base_config = codex_home.path().join(CONFIG_TOML_FILE);
+    let profile_config = codex_home.path().join("work.config.toml");
+    tokio::fs::write(
+        &base_config,
+        r#"
+[tui]
+transcript_default_detail_mode = "verbose"
+"#,
+    )
+    .await?;
+    tokio::fs::write(
+        &profile_config,
+        r#"
+[tui]
+transcript_default_detail_mode = "compact"
+"#,
+    )
+    .await?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides {
+            user_config_path: Some(profile_config.abs()),
+            user_config_profile: Some("work".parse().expect("profile-v2 name")),
+            ..LoaderOverrides::without_managed_config_for_tests()
+        })
+        .build()
+        .await?;
+
+    assert_eq!(
+        config.tui_transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Compact,
+    );
+    Ok(())
 }
 
 #[test]
@@ -3412,6 +3508,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            transcript_default_detail_mode: TuiTranscriptDetailMode::Verbose,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,
@@ -3568,6 +3665,26 @@ theme = "dark"
 
     assert!(err.to_string().contains("unknown field"));
     assert!(err.to_string().contains("theme"));
+}
+
+#[test]
+fn profile_tui_transcript_default_detail_mode_deserializes_from_toml() {
+    let parsed = toml::from_str::<ConfigToml>(
+        r#"
+[profiles.work.tui]
+transcript_default_detail_mode = "compact"
+"#,
+    )
+    .expect("profile TUI transcript default should deserialize");
+
+    assert_eq!(
+        parsed
+            .profiles
+            .get("work")
+            .and_then(|profile| profile.tui.as_ref())
+            .and_then(|tui: &ProfileTui| tui.transcript_default_detail_mode),
+        Some(TuiTranscriptDetailMode::Compact),
+    );
 }
 
 #[tokio::test]

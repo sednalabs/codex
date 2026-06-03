@@ -8,6 +8,7 @@ use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::Personality;
 use crate::types::SessionPickerViewMode;
+use crate::types::TuiTranscriptDetailMode;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_protocol::config_types::ReasoningSummary;
@@ -78,4 +79,8 @@ pub struct ProfileTui {
     /// Preferred layout for resume/fork session picker results.
     #[serde(default)]
     pub session_picker_view: Option<SessionPickerViewMode>,
+
+    /// Default detail mode for the `Ctrl+T` transcript overlay.
+    #[serde(default)]
+    pub transcript_default_detail_mode: Option<TuiTranscriptDetailMode>,
 }

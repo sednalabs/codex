@@ -60,6 +60,7 @@ use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::WebSearchAction;
 #[cfg(test)]
 use codex_config::types::McpServerTransportConfig;
+use codex_config::types::TuiTranscriptDetailMode;
 #[cfg(test)]
 use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
@@ -153,6 +154,31 @@ pub(crate) enum HistoryRenderMode {
 pub(crate) enum TranscriptDetailMode {
     Verbose,
     Compact,
+}
+
+impl TranscriptDetailMode {
+    pub(crate) fn opposite(self) -> Self {
+        match self {
+            Self::Verbose => Self::Compact,
+            Self::Compact => Self::Verbose,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Verbose => "verbose",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+impl From<TuiTranscriptDetailMode> for TranscriptDetailMode {
+    fn from(mode: TuiTranscriptDetailMode) -> Self {
+        match mode {
+            TuiTranscriptDetailMode::Verbose => Self::Verbose,
+            TuiTranscriptDetailMode::Compact => Self::Compact,
+        }
+    }
 }
 
 pub(crate) fn raw_lines_from_source(source: &str) -> Vec<Line<'static>> {
