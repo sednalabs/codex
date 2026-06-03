@@ -29,6 +29,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::HashMap;
@@ -128,11 +129,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     let base_test = builder.build(&server).await?;
     let started = base_test
         .thread_manager
-        .start_thread_with_tools(
-            base_test.config.clone(),
-            vec![dynamic_tool.clone()],
-            /*persist_extended_history*/ false,
-        )
+        .start_thread_with_tools(base_test.config.clone(), vec![dynamic_tool.clone()])
         .await?;
     let rollout_path = started
         .session_configured
@@ -243,6 +240,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                 meta: SessionMeta {
                     id: thread_id,
                     forked_from_id: None,
+                    parent_thread_id: None,
                     timestamp: "2026-01-27T12:00:00Z".to_string(),
                     cwd: codex_home.to_path_buf(),
                     originator: "test".to_string(),
@@ -256,6 +254,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                     base_instructions: None,
                     dynamic_tools: None,
                     memory_mode: None,
+                    multi_agent_version: None,
                 },
                 git: None,
             };
@@ -496,6 +495,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
             .expect("test mcp servers should accept any configuration");
     });
     let test = builder.build(&server).await?;
+    wait_for_mcp_server(&test.codex, server_name).await?;
     let db = test.codex.state_db().expect("state db enabled");
     let thread_id = test.session_configured.thread_id;
     let cwd = test.cwd_path().to_path_buf();

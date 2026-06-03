@@ -62,10 +62,10 @@ impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
             ));
         }
 
-        session
-            .services
-            .agent_control
-            .register_session_root(session.conversation_id, &turn.session_source);
+        session.services.agent_control.register_session_root(
+            session.conversation_id,
+            turn.session_source.parent_thread_id(),
+        );
         session
             .services
             .agent_control

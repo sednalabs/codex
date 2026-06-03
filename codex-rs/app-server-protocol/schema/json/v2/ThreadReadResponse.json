@@ -919,6 +919,13 @@
             "null"
           ]
         },
+        "parentThreadId": {
+          "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
           "description": "[UNSTABLE] Path to the thread on disk.",
           "type": [
@@ -1210,6 +1217,13 @@
                 "null"
               ]
             },
+            "source": {
+              "$ref": "#/$defs/CommandExecutionSource",
+              "default": "agent"
+            },
+            "status": {
+              "$ref": "#/$defs/CommandExecutionStatus"
+            },
             "terminalWait": {
               "anyOf": [
                 {
@@ -1220,13 +1234,6 @@
                 }
               ],
               "description": "Metadata for command executions that are also blocking terminal waits."
-            },
-            "source": {
-              "$ref": "#/$defs/CommandExecutionSource",
-              "default": "agent"
-            },
-            "status": {
-              "$ref": "#/$defs/CommandExecutionStatus"
             },
             "type": {
               "const": "commandExecution",

@@ -721,9 +721,7 @@ async fn run_review_on_session(
         .total_token_usage()
         .await
         .unwrap_or_default();
-    // The legacy SandboxPolicy should match the PermissionProfile.
     let guardian_permission_profile = PermissionProfile::read_only();
-    let legacy_sandbox_policy = SandboxPolicy::new_read_only_policy();
 
     let submit_result = run_before_review_deadline(
         deadline,
@@ -738,7 +736,7 @@ async fn run_review_on_session(
                 #[allow(deprecated)]
                 cwd: Some(params.parent_turn.cwd.to_path_buf()),
                 approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(legacy_sandbox_policy),
+                sandbox_policy: None,
                 permission_profile: Some(guardian_permission_profile),
                 summary: Some(params.reasoning_summary),
                 personality: params.personality,

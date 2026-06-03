@@ -13,6 +13,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
+use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -216,12 +217,37 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
             .disable(feature)
             .expect("test feature should be disableable in config");
     }
+    turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
+    turn.tool_mode = turn.model_info.tool_mode.unwrap_or_else(|| {
+        if turn.config.features.enabled(Feature::CodeModeOnly) {
+            ToolMode::CodeModeOnly
+        } else if turn.config.features.enabled(Feature::CodeMode) {
+            ToolMode::CodeMode
+        } else {
+            ToolMode::Direct
+        }
+    });
 }
 
 fn set_features(turn: &mut TurnContext, features: &[Feature]) {
     for feature in features {
         set_feature(turn, *feature, /*enabled*/ true);
+    }
+}
+
+fn zsh_fork_config_for_spec_plan_tests() -> codex_tools::ZshForkConfig {
+    let placeholder_exe = codex_utils_absolute_path::AbsolutePathBuf::try_from(
+        std::env::current_exe().expect("current exe path"),
+    )
+    .expect("current exe should be absolute");
+
+    // Spec planning only checks whether the shell mode is ZshFork. These paths
+    // are never executed, so use a stable absolute placeholder instead of
+    // depending on packaged zsh-fork artifacts in schema tests.
+    codex_tools::ZshForkConfig {
+        shell_zsh_path: placeholder_exe.clone(),
+        main_execve_wrapper_exe: placeholder_exe,
     }
 }
 
@@ -287,6 +313,44 @@ impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
         _call: ExtensionToolCall,
     ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
         Ok(Box::new(codex_tools::JsonToolOutput::new(json!({}))))
+    }
+}
+
+struct DeferredExtensionTool;
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for DeferredExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("extension_echo")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: "extension_echo".to_string(),
+            description: "Echoes arguments through an extension tool.".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: codex_tools::JsonSchema::object(
+                BTreeMap::from([(
+                    "message".to_string(),
+                    codex_tools::JsonSchema::string(/*description*/ None),
+                )]),
+                Some(vec!["message".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        panic!("spec planning should not execute extension tools")
     }
 }
 
@@ -372,6 +436,22 @@ fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
 }
 
 #[tokio::test]
+async fn request_user_input_tool_respects_experimental_config_gate() {
+    let enabled = probe(|_| {}).await;
+    enabled.assert_visible_contains(&["request_user_input"]);
+    enabled.assert_registered_contains(&["request_user_input"]);
+
+    let disabled = probe(|turn| {
+        update_config(turn, |config| {
+            config.experimental_request_user_input_enabled = false;
+        });
+    })
+    .await;
+    disabled.assert_visible_lacks(&["request_user_input"]);
+    disabled.assert_registered_lacks(&["request_user_input"]);
+}
+
+#[tokio::test]
 async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
     let plan = probe(|turn| {
         set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
@@ -384,6 +464,120 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
     plan.assert_visible_lacks(&["shell_command"]);
     plan.assert_registered_contains(&["exec_command", "write_stdin", "shell_command"]);
     assert_eq!(plan.exposure("shell_command"), ToolExposure::Hidden);
+    assert!(has_parameter(plan.visible_spec("exec_command"), "shell"));
+}
+
+#[tokio::test]
+async fn shell_zsh_fork_stays_standalone_until_unified_exec_composition_is_enabled() {
+    let standalone = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        set_feature(turn, Feature::ShellZshFork, /*enabled*/ true);
+        set_feature(turn, Feature::UnifiedExecZshFork, /*enabled*/ false);
+        turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+    })
+    .await;
+
+    standalone.assert_visible_contains(&["shell_command"]);
+    standalone.assert_visible_lacks(&["exec_command", "write_stdin"]);
+    standalone.assert_registered_contains(&["shell_command"]);
+    standalone.assert_registered_lacks(&["exec_command", "write_stdin"]);
+
+    let composed = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::ShellTool,
+                Feature::UnifiedExec,
+                Feature::ShellZshFork,
+                Feature::UnifiedExecZshFork,
+            ],
+        );
+        turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+    })
+    .await;
+
+    if codex_utils_pty::conpty_supported() {
+        composed.assert_visible_contains(&["exec_command", "write_stdin"]);
+        composed.assert_visible_lacks(&["shell_command"]);
+        composed.assert_registered_contains(&["exec_command", "write_stdin", "shell_command"]);
+        assert_eq!(composed.exposure("shell_command"), ToolExposure::Hidden);
+    } else {
+        composed.assert_visible_contains(&["shell_command"]);
+        composed.assert_visible_lacks(&["exec_command", "write_stdin"]);
+    }
+}
+
+#[tokio::test]
+async fn zsh_fork_unified_exec_hides_shell_parameter() {
+    if !codex_utils_pty::conpty_supported() {
+        return;
+    }
+
+    let plan = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::ShellTool,
+                Feature::UnifiedExec,
+                Feature::ShellZshFork,
+                Feature::UnifiedExecZshFork,
+            ],
+        );
+        turn.unified_exec_shell_mode =
+            codex_tools::UnifiedExecShellMode::ZshFork(zsh_fork_config_for_spec_plan_tests());
+    })
+    .await;
+
+    plan.assert_visible_contains(&["exec_command", "write_stdin"]);
+    assert!(!has_parameter(plan.visible_spec("exec_command"), "shell"));
+}
+
+#[tokio::test]
+async fn zsh_fork_unified_exec_keeps_shell_parameter_when_remote_environment_available() {
+    if !codex_utils_pty::conpty_supported() {
+        return;
+    }
+
+    let plan = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::ShellTool,
+                Feature::UnifiedExec,
+                Feature::ShellZshFork,
+                Feature::UnifiedExecZshFork,
+            ],
+        );
+        turn.unified_exec_shell_mode =
+            codex_tools::UnifiedExecShellMode::ZshFork(zsh_fork_config_for_spec_plan_tests());
+        let remote_cwd = turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd
+            .clone();
+        turn.environments
+            .turn_environments
+            .push(crate::session::turn_context::TurnEnvironment {
+                environment_id: "remote".to_string(),
+                environment: Arc::new(
+                    codex_exec_server::Environment::create_for_tests(Some(
+                        "ws://127.0.0.1:1/remote-exec-server".to_string(),
+                    ))
+                    .expect("remote test environment"),
+                ),
+                cwd: remote_cwd,
+                shell: None,
+            });
+    })
+    .await;
+
+    plan.assert_visible_contains(&["exec_command", "write_stdin"]);
+    assert!(has_parameter(plan.visible_spec("exec_command"), "shell"));
+    assert!(has_parameter(
+        plan.visible_spec("exec_command"),
+        "environment_id"
+    ));
 }
 
 #[tokio::test]
@@ -652,6 +846,25 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
 }
 
 #[tokio::test]
+async fn deferred_extension_tools_are_discoverable_with_tool_search() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(DeferredExtensionTool)],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["tool_search"]);
+    plan.assert_visible_lacks(&["extension_echo"]);
+    plan.assert_registered_contains(&["extension_echo"]);
+    assert_eq!(plan.exposure("extension_echo"), ToolExposure::Deferred);
+}
+
+#[tokio::test]
 async fn invalid_mcp_tools_are_not_registered() {
     let plan = probe_with(
         |_| {},
@@ -830,6 +1043,29 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 }
 
 #[tokio::test]
+async fn code_mode_leaves_direct_tool_descriptions_unaugmented() {
+    let plan = probe_with(
+        |turn| {
+            set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                /*namespace*/ None, "lookup", /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["lookup", codex_code_mode::PUBLIC_TOOL_NAME]);
+    let ToolSpec::Function(tool) = plan.visible_spec("lookup") else {
+        panic!("expected lookup function spec");
+    };
+    assert_eq!(tool.description, "lookup dynamic tool");
+    assert!(!tool.description.contains("exec tool declaration:"));
+}
+
+#[tokio::test]
 async fn multi_agent_feature_selects_one_agent_tool_family() {
     let v1 = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
@@ -845,6 +1081,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "close_agent",
         "send_message",
         "followup_task",
+        "assign_task",
         "list_agents",
         "inspect_agent_tree",
     ]);
@@ -875,7 +1112,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "list_agents",
         "inspect_agent_tree",
     ]);
-    v2.assert_visible_lacks(&["send_input", "resume_agent"]);
+    v2.assert_visible_lacks(&["send_input", "resume_agent", "assign_task"]);
     let spawn_agent_description = match v2.visible_spec("spawn_agent") {
         ToolSpec::Function(tool) => tool.description.as_str(),
         other => panic!("expected spawn_agent function spec, got {other:?}"),
@@ -906,6 +1143,20 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
     );
+}
+
+#[tokio::test]
+async fn tool_mode_selector_overrides_feature_flags() {
+    let direct = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+        turn.model_info.tool_mode = Some(ToolMode::Direct);
+        turn.tool_mode = ToolMode::Direct;
+    })
+    .await;
+    direct.assert_visible_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
 }
 
 #[tokio::test]
@@ -963,6 +1214,20 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
     .await;
 
     namespaced.assert_visible_contains(&["agents"]);
+    namespaced.assert_visible_lacks(&["assign_task"]);
+    assert!(
+        !namespaced
+            .registered_names
+            .contains(&ToolName::namespaced("agents", "assign_task").to_string()),
+        "expected no namespaced runtime for assign_task"
+    );
+    assert!(
+        !namespaced
+            .namespace_function_names("agents")
+            .iter()
+            .any(|name| name == "assign_task"),
+        "expected assign_task to be absent from agents namespace"
+    );
     for tool_name in [
         "spawn_agent",
         "send_message",
@@ -1037,7 +1302,23 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
     })
     .await;
 
-    assert_eq!(plan.visible_names, vec!["exec", "wait", "agents"]);
+    assert_eq!(
+        plan.visible_names,
+        vec![
+            "exec",
+            "wait",
+            "agents",
+            // Hosted Responses tools.
+            "web_search",
+        ]
+    );
+    assert!(
+        !plan
+            .namespace_function_names("agents")
+            .iter()
+            .any(|name| name == "assign_task"),
+        "expected assign_task to be absent from agents namespace"
+    );
     for tool_name in [
         "spawn_agent",
         "send_message",
@@ -1097,6 +1378,32 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
             search_context_size: None,
             search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
         }
+    );
+
+    let code_mode_only = probe(|turn| {
+        use_chatgpt_auth(turn);
+        set_features(turn, &[Feature::CodeModeOnly, Feature::MultiAgentV2]);
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.input_modalities = vec![InputModality::Image];
+    })
+    .await;
+    assert_eq!(
+        code_mode_only.visible_names,
+        vec![
+            // Code-mode entrypoints.
+            codex_code_mode::PUBLIC_TOOL_NAME,
+            codex_code_mode::WAIT_TOOL_NAME,
+            // Multi-agent v2 tools.
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "wait_agent",
+            "close_agent",
+            "list_agents",
+            // Hosted Responses tools.
+            "web_search",
+            "image_generation",
+        ]
     );
 
     let standalone_web_search_without_web_run = probe(|turn| {
