@@ -29,7 +29,7 @@ codex-android-computer-use = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-browser-computer-use = { workspace = true }
-codex-cloud-requirements = { workspace = true }
+codex-cloud-config = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-feedback = { workspace = true }

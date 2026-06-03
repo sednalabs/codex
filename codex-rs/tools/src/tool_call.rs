@@ -1,6 +1,7 @@
 use crate::FunctionCallError;
 use crate::ToolName;
 use crate::ToolPayload;
+use codex_protocol::items::ImageGenerationItem;
 use codex_protocol::items::WebSearchItem;
 use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -29,16 +30,14 @@ impl ConversationHistory {
 /// Future returned when an extension tool emits a visible turn-item lifecycle event.
 pub type TurnItemEmissionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// Visible turn items that an extension fully owns and may emit as-is.
-///
-/// Add only item kinds that require no additional host finalization before
-/// persistence or client delivery. Richer items need a host-owned publish path.
+/// Visible turn items that an extension may publish into the host lifecycle.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExtensionTurnItem {
     WebSearch(WebSearchItem),
+    ImageGeneration(ImageGenerationItem),
 }
 
-/// Host-provided capability for extension tools to emit finalized visible turn items.
+/// Host-provided capability for extension tools to emit visible turn items.
 ///
 /// Implementations route lifecycle events through the host's normal item event
 /// pipeline, including any persistence and client delivery owned by the host.
@@ -46,7 +45,7 @@ pub trait TurnItemEmitter: Send + Sync {
     /// Emits the beginning of one visible turn item.
     fn emit_started<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a>;
 
-    /// Emits the completion of one visible turn item.
+    /// Emits one visible turn item after host-owned finalization.
     fn emit_completed<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a>;
 }
 
@@ -64,12 +63,12 @@ impl TurnItemEmitter for NoopTurnItemEmitter {
     }
 }
 
-// TODO: this is temporary and will disappear in the next PR (as we make codex-extension-api generic on Invocation.
 #[derive(Clone)]
 pub struct ToolCall {
     pub turn_id: String,
     pub call_id: String,
     pub tool_name: ToolName,
+    pub model: String,
     pub truncation_policy: TruncationPolicy,
     pub conversation_history: ConversationHistory,
     pub turn_item_emitter: Arc<dyn TurnItemEmitter>,
@@ -82,6 +81,7 @@ impl std::fmt::Debug for ToolCall {
             .field("turn_id", &self.turn_id)
             .field("call_id", &self.call_id)
             .field("tool_name", &self.tool_name)
+            .field("model", &self.model)
             .field("truncation_policy", &self.truncation_policy)
             .field("conversation_history", &self.conversation_history)
             .field("turn_item_emitter", &"<host turn item emitter>")

@@ -2322,6 +2322,71 @@
         }
       ]
     },
+    "RemoteControlClientsListOrder": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "RemoteControlClientsListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteControlClientsListOrder"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "RemoteControlClientsRevokeParams": {
+      "properties": {
+        "clientId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "clientId"
+      ],
+      "type": "object"
+    },
+    "RemoteControlPairingStartParams": {
+      "properties": {
+        "manualCode": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RequestId": {
       "anyOf": [
         {
@@ -3404,10 +3469,6 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "runtimeWorkspaceRoots": {
           "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
           "items": {
@@ -4087,10 +4148,6 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "personality": {
           "anyOf": [
             {
@@ -4501,10 +4558,6 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "personality": {
           "anyOf": [
             {
@@ -4774,6 +4827,12 @@
           ],
           "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
         },
+        "clientUserMessageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "collaborationMode": {
           "anyOf": [
             {
@@ -4784,12 +4843,6 @@
             }
           ],
           "description": "EXPERIMENTAL - Set a pre-set collaboration mode.\nTakes precedence over model, reasoning_effort, and developer instructions if set.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means\n\"use the built-in instructions for the selected mode\"."
-        },
-        "clientUserMessageId": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "cwd": {
           "description": "Override the working directory for this turn and subsequent turns.",
@@ -5604,8 +5657,8 @@
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Skills/extraRoots/setRequest",

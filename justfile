@@ -1,7 +1,11 @@
 set working-directory := "codex-rs"
 set positional-arguments
+export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
+set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
+set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 
 rust_min_stack := "8388608" # 8 MiB
+python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help
 help:
@@ -10,31 +14,35 @@ help:
 # `codex`
 alias c := codex
 codex *args:
-    cargo run --bin codex -- "$@"
+    cargo run --bin codex -- {args}
 
 # `codex exec`
 exec *args:
-    cargo run --bin codex -- exec "$@"
+    cargo run --bin codex -- exec {args}
 
 # Start `codex exec-server` and run codex-tui.
 [no-cd]
+[positional-arguments]
+[unix]
 tui-with-exec-server *args:
     {{ justfile_directory() }}/scripts/run_tui_with_exec_server.sh "$@"
 
 # Run the CLI version of the file-search crate.
 file-search *args:
-    cargo run --bin codex-file-search -- "$@"
+    cargo run --bin codex-file-search -- {args}
 
 # Build the CLI and run the app-server test client
 app-server-test-client *args:
     cargo build -p codex-cli
-    cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex "$@"
+    cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex {args}
 
-# Format Rust and Python SDK code.
+# Format the justfile, Rust, Python SDK code, and Python scripts.
 fmt:
-    cargo fmt -- --config imports_granularity=Item 2>/dev/null
-    uv run --frozen --project ../sdk/python --extra dev ruff check --fix --fix-only ../sdk/python
-    uv run --frozen --project ../sdk/python --extra dev ruff format ../sdk/python
+    {{ python }} ../scripts/format.py
+
+# Check formatting without modifying files.
+fmt-check:
+    {{ python }} ../scripts/format.py --check
 
 core-websocket-targeted:
     set -euo pipefail; \
@@ -45,27 +53,53 @@ core-websocket-targeted:
     cargo test -p codex-core --test all suite::turn_state::websocket_turn_state_persists_within_turn_and_resets_after -- --exact --test-threads=1
 
 fix *args:
-    cargo clippy --fix --tests --allow-dirty "$@"
+    cargo clippy --fix --tests --allow-dirty {args}
 
 clippy *args:
-    cargo clippy --tests "$@"
+    cargo clippy --tests {args}
 
+[unix]
 install:
     rustup show active-toolchain
     cargo fetch
+
+[windows]
+install:
+    #!powershell.exe -File
+    $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if (-not $pwsh) {
+        winget install --exact --id Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    rustup show active-toolchain
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    cargo fetch
+    exit $LASTEXITCODE
 
 # Run nextest with --no-fail-fast so all tests are run.
 #
 # Run `cargo install --locked cargo-nextest` if you don't have it installed.
 # Prefer this for routine local runs. Workspace crate features are banned, so
 # there should be no need to add `--all-features`.
+[unix]
 test *args:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
     just bench-smoke
 
+[windows]
+test *args:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
+    just bench-smoke
+
+# Run from the repository root so scripts that resolve paths from `cwd` see
+# the same layout they use in GitHub Actions.
+[no-cd]
+test-github-scripts:
+    {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
+
 # Run explicit workspace benchmark targets.
 bench *args:
-    cargo bench --workspace --bench '*' "$@"
+    cargo bench --workspace --bench '*' {args}
 
 # Run benchmark targets once to ensure they start successfully.
 bench-smoke:
@@ -260,7 +294,6 @@ mcp-device-login-targeted:
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_dynamic_registration_omits_refresh_when_not_supported --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_polls_until_authorized --lib -- --exact --test-threads=1
     cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
-    cargo test -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
@@ -314,6 +347,7 @@ exec-server-targeted:
 # Focused CLI surface slice for parser, subcommand, and diagnostics contracts.
 cli-surface-targeted:
     cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
+    cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
@@ -424,7 +458,7 @@ core-ledger-smoke:
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 # one bounded runtime shard.
 core-runtime-surface-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
@@ -497,40 +531,49 @@ core-test-progressive:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast
 
 # Build and run Codex from source using Bazel.
-# Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
-# to ensure that Bazel runs the command in the current working directory.
+# On Unix, use `[no-cd]` and `--run_under="cd $PWD &&"` to ensure Bazel runs
+# the command in the current working directory.
 [no-cd]
+[unix]
 bazel-codex *args:
     bazel run //codex-rs/cli:codex --run_under="cd $PWD &&" -- "$@"
+
+[windows]
+bazel-codex *args:
+    bazel run //codex-rs/cli:codex --run_under='cd /d "{{ invocation_directory_native() }}" &&' -- @($args | Select-Object -Skip 1)
 
 [no-cd]
 bazel-lock-update:
     bazel mod deps --lockfile_mode=update
 
 [no-cd]
+[unix]
 bazel-lock-check:
     {{ justfile_directory() }}/scripts/check-module-bazel-lock.sh
+
+[windows]
+bazel-lock-check:
+    bazel mod deps --lockfile_mode=error; if ($LASTEXITCODE -ne 0) { Write-Error "MODULE.bazel.lock is out of date. Run 'just bazel-lock-update' and commit the updated lockfile."; exit 1 }
 
 bazel-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
 
 [no-cd]
+[unix]
 bazel-clippy:
     bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && bazel build --config=clippy -- ${bazel_targets}
 
 [no-cd]
+[unix]
 bazel-argument-comment-lint:
     bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
 
-bazel-remote-test:
-    bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
-
 build-for-release:
-    bazel build //codex-rs/cli:release_binaries --config=remote
+    bazel build //codex-rs/cli:release_binaries
 
 # Run the MCP server
 mcp-server-run *args:
-    cargo run -p codex-mcp-server -- "$@"
+    cargo run -p codex-mcp-server -- {args}
 
 # Regenerate the json schema for config.toml from the current config types.
 write-config-schema:
@@ -538,7 +581,7 @@ write-config-schema:
 
 # Regenerate vendored app-server protocol schema artifacts.
 write-app-server-schema *args:
-    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- "$@"
+    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- {args}
 
 [no-cd]
 write-hooks-schema:
@@ -546,10 +589,12 @@ write-hooks-schema:
 
 # Run the argument-comment Dylint checks across codex-rs.
 [no-cd]
+[unix]
 _run-bazel-argument-comment-lint:
     cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
 
 [no-cd]
+[unix]
 argument-comment-lint *args:
     if [ "$#" -eq 0 ]; then \
       bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh); \
@@ -559,8 +604,13 @@ argument-comment-lint *args:
 
 [no-cd]
 argument-comment-lint-from-source *args:
-    {{ justfile_directory() }}/tools/argument-comment-lint/run.py "$@"
+    {{ python }} {{ justfile_directory() }}/tools/argument-comment-lint/run.py {args}
 
 # Tail logs from the state SQLite database
+[unix]
 log *args:
     if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-state --bin logs_client -- "$@"
+
+[windows]
+log *args:
+    $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-state --bin logs_client -- @forwarded_args

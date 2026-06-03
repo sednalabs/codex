@@ -86,6 +86,7 @@
     },
     "AccountRateLimitsUpdatedNotification": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response\nor refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and\ndoes not clear a previously observed value.",
       "properties": {
         "rateLimits": {
           "$ref": "#/definitions/RateLimitSnapshot"
@@ -314,6 +315,16 @@
     },
     "AppConfig": {
       "properties": {
+        "approvals_reviewer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApprovalsReviewer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "default_tools_approval_mode": {
           "anyOf": [
             {
@@ -1415,8 +1426,8 @@
             }
           },
           "required": [
-            "id",
             "method",
+            "id",
             "params"
           ],
           "title": "Skills/extraRoots/setRequest",
@@ -3819,6 +3830,31 @@
           "type": "object"
         },
         {
+          "description": "Enterprise-managed config layer delivered by the cloud config bundle.",
+          "properties": {
+            "id": {
+              "description": "Stable identifier for the delivered layer.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Admin-facing name for the delivered layer. This is surfaced in\ndiagnostics so users know which cloud layer needs administrator\nattention.",
+              "type": "string"
+            },
+            "type": {
+              "const": "enterpriseManaged",
+              "title": "EnterpriseManagedConfigLayerSourceType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "title": "EnterpriseManagedConfigLayerSource",
+          "type": "object"
+        },
+        {
           "description": "User config layer from $CODEX_HOME/config.toml. This layer is special\nin that it is expected to be:\n- writable by the user\n- generally outside the workspace directory",
           "properties": {
             "file": {
@@ -4004,6 +4040,15 @@
         "allowedWebSearchModes": {
           "items": {
             "$ref": "#/definitions/WebSearchMode"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "allowedWindowsSandboxImplementations": {
+          "items": {
+            "$ref": "#/definitions/WindowsSandboxSetupMode"
           },
           "type": [
             "array",
@@ -6326,6 +6371,7 @@
         "sessionFlags",
         "plugin",
         "cloudRequirements",
+        "cloudManagedConfig",
         "legacyManagedConfigFile",
         "legacyManagedConfigMdm",
         "unknown"
@@ -9543,6 +9589,16 @@
             }
           ]
         },
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SpendControlLimitSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "limitId": {
           "type": [
             "string",
@@ -12586,6 +12642,31 @@
       ],
       "type": "string"
     },
+    "SpendControlLimitSnapshot": {
+      "properties": {
+        "limit": {
+          "type": "string"
+        },
+        "remainingPercent": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "resetsAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "used": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "used",
+        "remainingPercent",
+        "resetsAt"
+      ],
+      "type": "object"
+    },
     "SubAgentSource": {
       "oneOf": [
         {
@@ -12865,6 +12946,13 @@
         },
         "name": {
           "description": "Optional user-facing thread title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
           "type": [
             "string",
             "null"
@@ -13633,6 +13721,13 @@
                 "null"
               ]
             },
+            "source": {
+              "$ref": "#/definitions/CommandExecutionSource",
+              "default": "agent"
+            },
+            "status": {
+              "$ref": "#/definitions/CommandExecutionStatus"
+            },
             "terminalWait": {
               "anyOf": [
                 {
@@ -13643,13 +13738,6 @@
                 }
               ],
               "description": "Metadata for command executions that are also blocking terminal waits."
-            },
-            "source": {
-              "$ref": "#/definitions/CommandExecutionSource",
-              "default": "agent"
-            },
-            "status": {
-              "$ref": "#/definitions/CommandExecutionStatus"
             },
             "type": {
               "const": "commandExecution",

@@ -1591,6 +1591,13 @@
         "cwd": {
           "$ref": "#/$defs/AbsolutePathBuf"
         },
+        "environmentId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },

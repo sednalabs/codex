@@ -32,7 +32,8 @@ axum = { workspace = true, default-features = false, features = [
 ] }
 codex-analytics = { workspace = true }
 codex-arg0 = { workspace = true }
-codex-cloud-requirements = { workspace = true }
+codex-cloud-config = { workspace = true }
+codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-exec-server = { workspace = true }
@@ -52,7 +53,6 @@ codex-utils-pty = { workspace = true }
 codex-backend-client = { workspace = true }
 codex-file-search = { workspace = true }
 codex-chatgpt = { workspace = true }
-codex-config = { workspace = true }
 codex-login = { workspace = true }
 codex-image-generation-extension = { workspace = true }
 codex-memories-extension = { workspace = true }

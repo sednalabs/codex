@@ -489,6 +489,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: SessionMeta {
                     id: ThreadId::default(),
+                    parent_thread_id: None,
                     timestamp: "2024-01-01T00:00:00Z".to_string(),
                     cwd: ".".into(),
                     originator: "test_originator".to_string(),
@@ -619,6 +620,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: SessionMeta {
                     id: ThreadId::default(),
+                    parent_thread_id: None,
                     timestamp: "2024-01-01T00:00:00Z".to_string(),
                     cwd: ".".into(),
                     originator: "test_originator".to_string(),
@@ -903,6 +905,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider,
         SessionSource::Exec,
+        /*parent_thread_id*/ None,
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
@@ -2359,6 +2362,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider.clone(),
         SessionSource::Exec,
+        /*parent_thread_id*/ None,
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
@@ -2575,6 +2579,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "resets_at": 1704074400
                 },
                 "credits": null,
+                "individual_limit": null,
                 "plan_type": null,
                 "rate_limit_reached_type": null
             },
@@ -2653,6 +2658,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             "resets_at": null
         },
         "credits": null,
+        "individual_limit": null,
         "plan_type": null,
         "rate_limit_reached_type": null
     });
@@ -2870,129 +2876,136 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = MockServer::start().await;
+#[test]
+fn server_overloaded_retries_beyond_stream_retry_budget() -> anyhow::Result<()> {
+    core_test_support::run_large_stack_test("server-overloaded-retry-budget-test", async {
+        skip_if_no_network!(Ok(()));
+        let server = MockServer::start().await;
 
-    let responses_mock = mount_sse_sequence(
-        &server,
-        vec![
+        let responses_mock = mount_sse_sequence(
+            &server,
+            vec![
+                sse_failed(
+                    "resp_capacity_1",
+                    "server_is_overloaded",
+                    "Selected model is at capacity.",
+                ),
+                sse_failed(
+                    "resp_capacity_2",
+                    "slow_down",
+                    "Selected model is temporarily busy.",
+                ),
+                sse(vec![
+                    ev_response_created("resp_ok"),
+                    ev_completed("resp_ok"),
+                ]),
+            ],
+        )
+        .await;
+
+        let TestCodex { codex, .. } = test_codex()
+            .with_config(|config| {
+                config.model_provider.stream_max_retries = Some(0);
+            })
+            .build(&server)
+            .await?;
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "survive capacity".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+
+        let mut stream_error_messages = Vec::new();
+        loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
+                    .await
+                    .expect("timeout waiting for capacity retry event")
+                    .expect("event stream ended unexpectedly")
+                    .msg;
+            match event {
+                EventMsg::StreamError(error) => stream_error_messages.push(error.message),
+                EventMsg::Error(error) => {
+                    panic!("capacity retry should not be terminal: {error:?}")
+                }
+                EventMsg::TurnComplete(_) => break,
+                _ => {}
+            }
+        }
+
+        assert_eq!(responses_mock.requests().len(), 3);
+        assert_eq!(stream_error_messages.len(), 2);
+        assert!(
+            stream_error_messages
+                .iter()
+                .all(|message| message.starts_with("Model at capacity; retrying in ")),
+            "unexpected retry messages: {stream_error_messages:?}"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
+    core_test_support::run_large_stack_test("server-overloaded-backoff-test", async {
+        skip_if_no_network!(Ok(()));
+        let server = MockServer::start().await;
+
+        let responses_mock = mount_sse_repeating(
+            &server,
             sse_failed(
-                "resp_capacity_1",
+                "resp_capacity",
                 "server_is_overloaded",
                 "Selected model is at capacity.",
             ),
-            sse_failed(
-                "resp_capacity_2",
-                "slow_down",
-                "Selected model is temporarily busy.",
-            ),
-            sse(vec![
-                ev_response_created("resp_ok"),
-                ev_completed("resp_ok"),
-            ]),
-        ],
-    )
-    .await;
+        )
+        .await;
 
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(|config| {
-            config.model_provider.stream_max_retries = Some(0);
+        let TestCodex { codex, .. } = test_codex()
+            .with_config(|config| {
+                config.model_provider.stream_max_retries = Some(0);
+            })
+            .build(&server)
+            .await?;
+        codex
+            .submit(Op::UserInput {
+                environments: None,
+                items: vec![UserInput::Text {
+                    text: "interrupt capacity backoff".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::StreamError(_))).await;
+        codex.submit(Op::Interrupt).await?;
+
+        let aborted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await
         })
-        .build(&server)
-        .await?;
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "survive capacity".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
+        .await
+        .expect("capacity retry backoff did not observe interrupt promptly");
+        assert!(matches!(aborted, EventMsg::TurnAborted(_)));
+        assert!(
+            responses_mock.requests().len() >= 1,
+            "expected at least one capacity request"
+        );
 
-    let mut stream_error_messages = Vec::new();
-    loop {
-        let event = tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
-            .await
-            .expect("timeout waiting for capacity retry event")
-            .expect("event stream ended unexpectedly")
-            .msg;
-        match event {
-            EventMsg::StreamError(error) => stream_error_messages.push(error.message),
-            EventMsg::Error(error) => panic!("capacity retry should not be terminal: {error:?}"),
-            EventMsg::TurnComplete(_) => break,
-            _ => {}
-        }
-    }
-
-    assert_eq!(responses_mock.requests().len(), 3);
-    assert_eq!(stream_error_messages.len(), 2);
-    assert!(
-        stream_error_messages
-            .iter()
-            .all(|message| message.starts_with("Model at capacity; retrying in ")),
-        "unexpected retry messages: {stream_error_messages:?}"
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = MockServer::start().await;
-
-    let responses_mock = mount_sse_repeating(
-        &server,
-        sse_failed(
-            "resp_capacity",
-            "server_is_overloaded",
-            "Selected model is at capacity.",
-        ),
-    )
-    .await;
-
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(|config| {
-            config.model_provider.stream_max_retries = Some(0);
-        })
-        .build(&server)
-        .await?;
-    codex
-        .submit(Op::UserInput {
-            environments: None,
-            items: vec![UserInput::Text {
-                text: "interrupt capacity backoff".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::StreamError(_))).await;
-    codex.submit(Op::Interrupt).await?;
-
-    let aborted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await
+        Ok(())
     })
-    .await
-    .expect("capacity retry backoff did not observe interrupt promptly");
-    assert!(matches!(aborted, EventMsg::TurnAborted(_)));
-    assert!(
-        responses_mock.requests().len() >= 1,
-        "expected at least one capacity request"
-    );
-
-    Ok(())
 }
 
 /// We try to avoid setting env vars in tests because std::env::set_var() is
