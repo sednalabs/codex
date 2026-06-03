@@ -1062,6 +1062,7 @@ async fn create_oauth_transport_and_runtime(
         credentials_store,
         Some(initial_tokens),
     );
+    runtime.refresh_if_needed().await?;
 
     Ok((transport, runtime))
 }

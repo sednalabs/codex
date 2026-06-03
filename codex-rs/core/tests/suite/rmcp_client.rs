@@ -2123,6 +2123,27 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     // Phase 5: wait for MCP startup before the turn is submitted, which keeps
     // failures tied to server startup/discovery.
     wait_for_mcp_server(&fixture, server_name).await?;
+    let credentials: Value =
+        serde_json::from_slice(&fs::read(temp_home.path().join(".credentials.json"))?)?;
+    let persisted = credentials
+        .as_object()
+        .and_then(|store| store.values().next())
+        .and_then(Value::as_object)
+        .context("fallback OAuth credential should be an object")?;
+    let persisted_access_token = persisted
+        .get("access_token")
+        .and_then(Value::as_str)
+        .context("fallback OAuth credential should include an access token")?;
+    assert_eq!(persisted_access_token, expected_token);
+    let persisted_expires_at = persisted
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .context("fallback OAuth credential should include an expiry")?;
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    assert!(
+        persisted_expires_at > now_ms,
+        "refreshed OAuth credential should have a future expiry"
+    );
 
     // Phase 6: submit the user turn that should invoke the OAuth-backed tool.
     fixture
