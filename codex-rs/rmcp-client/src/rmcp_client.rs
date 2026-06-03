@@ -1062,6 +1062,9 @@ async fn create_oauth_transport_and_runtime(
         credentials_store,
         Some(initial_tokens),
     );
+    if let Err(error) = runtime.refresh_if_needed().await {
+        warn!("failed to refresh OAuth tokens during transport creation: {error}");
+    }
 
     Ok((transport, runtime))
 }
