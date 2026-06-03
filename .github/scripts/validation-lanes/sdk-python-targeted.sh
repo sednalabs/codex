@@ -4,13 +4,14 @@ set -euo pipefail
 cd sdk/python
 
 repo_root="$(git rev-parse --show-toplevel)"
+python_sdk_image="${CODEX_PYTHON_SDK_IMAGE:-python:3.12-slim}"
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/codex-python-sdk-home \
   -e UV_LINK_MODE=copy \
   -v "${repo_root}:${repo_root}" \
   -w "${repo_root}/sdk/python" \
-  python:3.12-alpine \
+  "${python_sdk_image}" \
   sh -euxc '
     python -m venv /tmp/uv
     /tmp/uv/bin/python -m pip install uv==0.11.3
