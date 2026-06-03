@@ -2,7 +2,7 @@
 source: tui/src/pager_overlay.rs
 expression: "render_snapshot(&mut overlay, Rect::new(0, 0, 28, 8),)"
 ---
- Transcript (verbose) ──────
+ Transcript: verbose ───────
 
 › prompt
 

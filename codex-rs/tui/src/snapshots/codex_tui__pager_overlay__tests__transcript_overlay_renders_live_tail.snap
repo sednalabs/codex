@@ -2,7 +2,7 @@
 source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
-" Transcript (verbose) ──────────────────"
+" Transcript: verbose ───────────────────"
 "alpha                                   "
 "                                        "
 "tail                                    "

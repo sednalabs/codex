@@ -397,11 +397,21 @@ docs-only refresh commit that records this snapshot.
 - The overlay footer exposes the active detail mode and the toggle key, and the
   overlay state preserves scroll, selected prompt, raw/rich render mode, and
   verbose/compact detail mode across close/reopen.
+- The transcript header now names the active mode (`Transcript: verbose` or
+  `Transcript: compact`), and the footer spells out the switch keys as
+  `raw render` / `rich render` and `compact view` / `verbose view` when there
+  is enough terminal width.
+- `[tui].transcript_default_detail_mode = "verbose" | "compact"` chooses the
+  startup detail mode; verbose remains the default so the complete audit
+  transcript is preserved unless the user opts into quiet review.
 - This is an intentional downstream TUI ergonomics carry. Preserve it during
   upstream syncs unless upstream lands equivalent transcript detail-mode
   behavior that keeps the same verbose audit fallback and compact prompt/agent
   review path.
 - Primary files:
+  - `codex-rs/config/src/types.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/config.schema.json`
   - `codex-rs/tui/src/pager_overlay.rs`
   - `codex-rs/tui/src/history_cell/mod.rs`
   - `codex-rs/tui/src/history_cell/hook_cell.rs`

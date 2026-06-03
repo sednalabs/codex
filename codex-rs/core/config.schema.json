@@ -3702,6 +3702,15 @@
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
         },
+        "transcript_default_detail_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiTranscriptDetailMode"
+            }
+          ],
+          "default": "verbose",
+          "description": "Default detail mode for the `Ctrl+T` transcript overlay. - `verbose` (default): show the complete audit transcript. - `compact`: focus on user prompts and agent-facing output."
+        },
         "session_picker_view": {
           "default": null,
           "description": "Preferred layout for resume/fork session picker results.",
@@ -3771,6 +3780,21 @@
         }
       },
       "type": "object"
+    },
+    "TuiTranscriptDetailMode": {
+      "description": "Default detail mode for the TUI transcript overlay.",
+      "oneOf": [
+        {
+          "const": "verbose",
+          "description": "Show the complete transcript, including terminal/tool details.",
+          "type": "string"
+        },
+        {
+          "const": "compact",
+          "description": "Show a quieter transcript focused on user prompts and agent-facing output.",
+          "type": "string"
+        }
+      ]
     },
     "TuiApprovalKeymap": {
       "additionalProperties": false,

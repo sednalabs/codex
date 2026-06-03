@@ -981,6 +981,7 @@ impl PickerState {
             Vec::new(),
             crate::pager_overlay::TranscriptOverlayState::new(
                 crate::history_cell::HistoryRenderMode::Rich,
+                crate::history_cell::TranscriptDetailMode::Verbose,
             ),
         ));
         self.pending_transcript_open = None;
