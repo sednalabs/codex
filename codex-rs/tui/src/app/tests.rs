@@ -3833,6 +3833,7 @@ async fn make_test_app() -> App {
         overlay: None,
         transcript_overlay_state: crate::pager_overlay::TranscriptOverlayState::new(
             crate::history_cell::HistoryRenderMode::Rich,
+            crate::history_cell::TranscriptDetailMode::Verbose,
         ),
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -3899,6 +3900,7 @@ async fn make_test_app_with_channels() -> (
             overlay: None,
             transcript_overlay_state: crate::pager_overlay::TranscriptOverlayState::new(
                 crate::history_cell::HistoryRenderMode::Rich,
+                crate::history_cell::TranscriptDetailMode::Verbose,
             ),
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -5628,6 +5630,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
         Vec::new(),
         crate::pager_overlay::TranscriptOverlayState::new(
             crate::history_cell::HistoryRenderMode::Rich,
+            crate::history_cell::TranscriptDetailMode::Verbose,
         ),
     ));
     app.deferred_history_lines = vec![Line::from("stale buffered line").into()];

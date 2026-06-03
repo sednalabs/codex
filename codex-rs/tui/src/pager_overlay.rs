@@ -104,12 +104,12 @@ pub(crate) struct TranscriptOverlayState {
 }
 
 impl TranscriptOverlayState {
-    pub(crate) fn new(render_mode: HistoryRenderMode) -> Self {
+    pub(crate) fn new(render_mode: HistoryRenderMode, detail_mode: TranscriptDetailMode) -> Self {
         Self {
             scroll_offset: usize::MAX,
             highlight_cell: None,
             render_mode,
-            detail_mode: TranscriptDetailMode::Verbose,
+            detail_mode,
         }
     }
 }
@@ -981,10 +981,7 @@ impl TranscriptOverlay {
     }
 
     fn toggle_detail_mode(&mut self) {
-        self.detail_mode = match self.detail_mode {
-            TranscriptDetailMode::Verbose => TranscriptDetailMode::Compact,
-            TranscriptDetailMode::Compact => TranscriptDetailMode::Verbose,
-        };
+        self.detail_mode = self.detail_mode.opposite();
         self.live_tail_key = None;
         self.take_live_tail_renderable();
         self.rebuild_renderables();
@@ -1093,10 +1090,7 @@ impl TranscriptOverlay {
     }
 
     fn header_title(&self) -> String {
-        match self.detail_mode {
-            TranscriptDetailMode::Verbose => "Transcript (verbose)".to_string(),
-            TranscriptDetailMode::Compact => "Transcript (compact)".to_string(),
-        }
+        format!("Transcript: {}", self.detail_mode.name())
     }
 
     fn footer_progress_label(&self, content_height: u16, total_len: usize, width: u16) -> String {
@@ -1255,25 +1249,25 @@ impl TranscriptOverlay {
             ));
         }
         if !self.toggle_raw_output_keymap.is_empty() {
-            let mode_label = match self.render_mode {
-                HistoryRenderMode::Rich => "raw",
-                HistoryRenderMode::Raw => "rich",
+            let (action_label, mode_label) = match self.render_mode {
+                HistoryRenderMode::Rich => ("switch to raw render", "raw render"),
+                HistoryRenderMode::Raw => ("switch to rich render", "rich render"),
             };
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.toggle_raw_output_keymap)),
-                mode_label,
+                action_label,
                 mode_label,
                 /*priority*/ 4,
             ));
         }
         if !self.view.keymap.toggle_transcript_mode.is_empty() {
-            let detail_label = match self.detail_mode {
-                TranscriptDetailMode::Verbose => "compact",
-                TranscriptDetailMode::Compact => "verbose",
+            let (action_label, detail_label) = match self.detail_mode {
+                TranscriptDetailMode::Verbose => ("switch to compact view", "compact view"),
+                TranscriptDetailMode::Compact => ("switch to verbose view", "verbose view"),
             };
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.view.keymap.toggle_transcript_mode)),
-                detail_label,
+                action_label,
                 detail_label,
                 /*priority*/ 5,
             ));
@@ -1641,7 +1635,7 @@ mod tests {
             keymap.pager,
             keymap.app.copy,
             keymap.app.toggle_raw_output,
-            TranscriptOverlayState::new(HistoryRenderMode::Rich),
+            TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
         )
     }
 
@@ -1996,13 +1990,16 @@ mod tests {
             user_cell("second"),
         ]);
 
-        assert_eq!(overlay.header_title(), "Transcript (verbose)");
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
 
         overlay.move_prompt_selection(PromptSelectionDirection::Previous);
-        assert_eq!(overlay.header_title(), "Transcript (verbose)");
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
 
         overlay.move_prompt_selection(PromptSelectionDirection::Previous);
-        assert_eq!(overlay.header_title(), "Transcript (verbose)");
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
+
+        overlay.toggle_detail_mode();
+        assert_eq!(overlay.header_title(), "Transcript: compact");
     }
 
     #[test]
@@ -2178,7 +2175,7 @@ mod tests {
         ]);
 
         assert_eq!(overlay.user_prompt_count(), 2);
-        assert_eq!(overlay.header_title(), "Transcript (verbose)");
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
         assert_eq!(
             overlay.footer_progress_label(
                 /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80

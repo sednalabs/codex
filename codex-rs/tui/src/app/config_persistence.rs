@@ -208,9 +208,21 @@ impl App {
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
         self.apply_runtime_policy_overrides(&mut config);
+        let transcript_default_detail_mode = config.tui_transcript_default_detail_mode.into();
         self.config = config;
         self.chat_widget.sync_plugin_mentions_config(&self.config);
+        self.sync_transcript_default_detail_mode(transcript_default_detail_mode);
         Ok(())
+    }
+
+    fn sync_transcript_default_detail_mode(
+        &mut self,
+        detail_mode: history_cell::TranscriptDetailMode,
+    ) {
+        if matches!(self.overlay, Some(Overlay::Transcript(_))) {
+            return;
+        }
+        self.transcript_overlay_state.detail_mode = detail_mode;
     }
 
     pub(super) async fn refresh_in_memory_config_from_disk_best_effort(&mut self, action: &str) {
@@ -1063,8 +1075,10 @@ mod tests {
     use super::*;
     use crate::app::test_support::app_enabled_in_effective_config;
     use crate::app::test_support::make_test_app;
+    use crate::history_cell::TranscriptDetailMode;
     use crate::legacy_core::config::edit::ConfigEdit;
     use crate::test_support::PathBufExt;
+    use codex_config::types::TuiTranscriptDetailMode;
     use codex_protocol::models::PermissionProfile;
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
@@ -1200,6 +1214,35 @@ terminal_resize_reflow_max_rows = 9000
         assert_eq!(
             app.config.terminal_resize_reflow.max_rows,
             crate::legacy_core::config::TerminalResizeReflowMaxRows::Limit(9000)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_in_memory_config_from_disk_updates_transcript_default_detail_mode()
+    -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        app.config.tui_transcript_default_detail_mode = TuiTranscriptDetailMode::Verbose;
+        app.transcript_overlay_state.detail_mode = TranscriptDetailMode::Verbose;
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            r#"
+[tui]
+transcript_default_detail_mode = "compact"
+"#,
+        )?;
+
+        app.refresh_in_memory_config_from_disk().await?;
+
+        assert_eq!(
+            app.config.tui_transcript_default_detail_mode,
+            TuiTranscriptDetailMode::Compact
+        );
+        assert_eq!(
+            app.transcript_overlay_state.detail_mode,
+            TranscriptDetailMode::Compact
         );
         Ok(())
     }

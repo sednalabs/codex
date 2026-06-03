@@ -984,8 +984,10 @@ Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
             )
         })?;
-        let transcript_overlay_state =
-            TranscriptOverlayState::new(chat_widget.history_render_mode());
+        let transcript_overlay_state = TranscriptOverlayState::new(
+            chat_widget.history_render_mode(),
+            config.tui_transcript_default_detail_mode.into(),
+        );
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
