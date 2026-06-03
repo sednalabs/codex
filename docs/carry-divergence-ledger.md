@@ -402,13 +402,16 @@ docs-only refresh commit that records this snapshot.
   `raw render` / `rich render` and `compact view` / `verbose view` when there
   is enough terminal width.
 - `[tui].transcript_default_detail_mode = "verbose" | "compact"` chooses the
-  startup detail mode; verbose remains the default so the complete audit
-  transcript is preserved unless the user opts into quiet review.
+  default detail mode at startup and after active config refreshes; verbose
+  remains the default so the complete audit transcript is preserved unless the
+  user opts into quiet review. An already-open transcript keeps its current
+  mode until it is closed.
 - This is an intentional downstream TUI ergonomics carry. Preserve it during
   upstream syncs unless upstream lands equivalent transcript detail-mode
   behavior that keeps the same verbose audit fallback and compact prompt/agent
   review path.
 - Primary files:
+  - `codex-rs/config/src/profile_toml.rs`
   - `codex-rs/config/src/types.rs`
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/config.schema.json`

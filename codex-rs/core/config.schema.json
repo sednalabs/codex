@@ -2809,6 +2809,18 @@
               "type": "null"
             }
           ]
+        },
+        "transcript_default_detail_mode": {
+          "default": null,
+          "description": "Default detail mode for the `Ctrl+T` transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/TuiTranscriptDetailMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
