@@ -59,6 +59,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::TuiTranscriptDetailMode;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_core_plugins::PluginsManager;
@@ -664,6 +665,7 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            transcript_default_detail_mode: TuiTranscriptDetailMode::Verbose,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -806,6 +808,38 @@ fn test_tui_raw_output_mode_true() {
     );
 }
 
+#[test]
+fn tui_transcript_default_detail_mode_defaults_to_verbose() {
+    let toml = r#"
+        [tui]
+    "#;
+    let parsed: ConfigToml = toml::from_str(toml).expect("deserialize empty [tui] table");
+    assert_eq!(
+        parsed
+            .tui
+            .expect("config should include tui section")
+            .transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Verbose,
+    );
+}
+
+#[test]
+fn tui_transcript_default_detail_mode_deserializes_from_toml() {
+    let toml = r#"
+        [tui]
+        transcript_default_detail_mode = "compact"
+    "#;
+    let parsed: ConfigToml =
+        toml::from_str(toml).expect("deserialize transcript_default_detail_mode=compact");
+    assert_eq!(
+        parsed
+            .tui
+            .expect("config should include tui section")
+            .transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Compact,
+    );
+}
+
 #[tokio::test]
 async fn runtime_config_uses_tui_raw_output_mode() {
     let toml = r#"
@@ -822,6 +856,28 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_tui_transcript_default_detail_mode() {
+    let toml = r#"
+        [tui]
+        transcript_default_detail_mode = "compact"
+    "#;
+    let cfg_toml: ConfigToml =
+        toml::from_str(toml).expect("deserialize transcript_default_detail_mode=compact");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.tui_transcript_default_detail_mode,
+        TuiTranscriptDetailMode::Compact,
+    );
 }
 
 #[test]
@@ -3412,6 +3468,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            transcript_default_detail_mode: TuiTranscriptDetailMode::Verbose,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,

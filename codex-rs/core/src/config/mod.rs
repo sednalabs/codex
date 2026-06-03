@@ -51,6 +51,7 @@ use codex_config::types::ToolSuggestDiscoverable;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::TuiTranscriptDetailMode;
 use codex_config::types::UriBasedFileOpener;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginsConfigInput;
@@ -722,6 +723,9 @@ pub struct Config {
 
     /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
     pub tui_raw_output_mode: bool,
+
+    /// Default detail mode for the TUI transcript overlay.
+    pub tui_transcript_default_detail_mode: TuiTranscriptDetailMode,
 
     /// Start the TUI in the specified collaboration mode (plan/default).
 
@@ -3656,6 +3660,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.raw_output_mode)
                 .unwrap_or(false),
+            tui_transcript_default_detail_mode: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.transcript_default_detail_mode)
+                .unwrap_or_default(),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
