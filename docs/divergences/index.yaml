@@ -568,6 +568,7 @@
       ],
       "files": [
         "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/config/src/profile_toml.rs",
         "codex-rs/config/src/types.rs",
         "codex-rs/core-api/src/lib.rs",
         "codex-rs/core/config.schema.json",
@@ -588,7 +589,7 @@
         "codex-rs/tui/src/resume_picker.rs",
         "codex-rs/thread-manager-sample/src/main.rs"
       ],
-      "behavior": "Downstream carries a Ctrl+T transcript overlay detail mode that defaults to verbose mode but lets users toggle to compact mode, where the overlay focuses on user prompts and agent-facing responses while collapsing injected context, noisy context-only hook entries, and terminal/tool chatter that belongs in the full verbose transcript. The overlay labels the current mode and switch hotkeys directly in the header/footer, and `[tui].transcript_default_detail_mode = \"verbose\" | \"compact\"` selects the startup default.",
+      "behavior": "Downstream carries a Ctrl+T transcript overlay detail mode that defaults to verbose mode but lets users toggle to compact mode, where the overlay focuses on user prompts and agent-facing responses while collapsing injected context, noisy context-only hook entries, and terminal/tool chatter that belongs in the full verbose transcript. The overlay labels the current mode and switch hotkeys directly in the header/footer, and `[tui].transcript_default_detail_mode = \"verbose\" | \"compact\"` selects the default at startup and after active config refreshes without changing an already-open transcript.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": "b9e72a751b75d8b03ffa6d2adab9d3fc2a6262d9",
@@ -603,6 +604,9 @@
         "tui_transcript_default_detail_mode_defaults_to_verbose",
         "tui_transcript_default_detail_mode_deserializes_from_toml",
         "runtime_config_uses_tui_transcript_default_detail_mode",
+        "profile_tui_transcript_default_detail_mode_deserializes_from_toml",
+        "profile_v2_config_file_uses_tui_transcript_default_detail_mode",
+        "refresh_in_memory_config_from_disk_updates_transcript_default_detail_mode",
         "UserHistoryCell compact transcript coverage",
         "HookCell compact transcript coverage"
       ],
