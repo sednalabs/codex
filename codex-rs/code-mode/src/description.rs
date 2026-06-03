@@ -476,7 +476,7 @@ fn render_tool_heading(global_name: &str, raw_name: &str) -> String {
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
-    render_json_schema_to_typescript_inner(schema, 0)
+    render_json_schema_to_typescript_inner(schema, /*depth*/ 0)
 }
 
 fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&JsonValue> {
