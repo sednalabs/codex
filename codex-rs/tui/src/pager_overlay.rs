@@ -104,10 +104,7 @@ pub(crate) struct TranscriptOverlayState {
 }
 
 impl TranscriptOverlayState {
-    pub(crate) fn new(
-        render_mode: HistoryRenderMode,
-        detail_mode: TranscriptDetailMode,
-    ) -> Self {
+    pub(crate) fn new(render_mode: HistoryRenderMode, detail_mode: TranscriptDetailMode) -> Self {
         Self {
             scroll_offset: usize::MAX,
             highlight_cell: None,
@@ -1252,23 +1249,25 @@ impl TranscriptOverlay {
             ));
         }
         if !self.toggle_raw_output_keymap.is_empty() {
-            let mode_label = match self.render_mode {
-                HistoryRenderMode::Rich => "raw render",
-                HistoryRenderMode::Raw => "rich render",
+            let (action_label, mode_label) = match self.render_mode {
+                HistoryRenderMode::Rich => ("switch to raw render", "raw render"),
+                HistoryRenderMode::Raw => ("switch to rich render", "rich render"),
             };
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.toggle_raw_output_keymap)),
-                format!("switch to {mode_label}"),
+                action_label,
                 mode_label,
                 /*priority*/ 4,
             ));
         }
         if !self.view.keymap.toggle_transcript_mode.is_empty() {
-            let next_mode = self.detail_mode.opposite();
-            let detail_label = format!("{} view", next_mode.name());
+            let (action_label, detail_label) = match self.detail_mode {
+                TranscriptDetailMode::Verbose => ("switch to compact view", "compact view"),
+                TranscriptDetailMode::Compact => ("switch to verbose view", "verbose view"),
+            };
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.view.keymap.toggle_transcript_mode)),
-                format!("switch to {detail_label}"),
+                action_label,
                 detail_label,
                 /*priority*/ 5,
             ));
