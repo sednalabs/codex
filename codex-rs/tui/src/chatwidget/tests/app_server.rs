@@ -832,6 +832,34 @@ async fn live_app_server_failed_turn_consolidates_streamed_answer() {
 }
 
 #[tokio::test]
+async fn live_app_server_context_compaction_start_updates_status_header() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Compacting context");
+    assert_eq!(status.details(), None);
+}
+
+#[tokio::test]
 async fn live_app_server_stream_recovery_restores_previous_status_header() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
