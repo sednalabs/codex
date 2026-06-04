@@ -60,7 +60,7 @@ impl App {
                 )
                 .await;
             }
-            AppEvent::OpenResumePicker => {
+            AppEvent::OpenResumePicker { side_only } => {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,
                     &self.app_server_target,
@@ -77,15 +77,26 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
-                match crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
-                    tui,
-                    &self.config,
-                    /*show_all*/ false,
-                    /*include_non_interactive*/ false,
-                    picker_app_server,
-                )
-                .await?
-                {
+                let selection = if side_only {
+                    crate::resume_picker::run_side_resume_picker_from_existing_session_with_app_server(
+                        tui,
+                        &self.config,
+                        /*show_all*/ false,
+                        /*include_non_interactive*/ false,
+                        picker_app_server,
+                    )
+                    .await?
+                } else {
+                    crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
+                        tui,
+                        &self.config,
+                        /*show_all*/ false,
+                        /*include_non_interactive*/ false,
+                        picker_app_server,
+                    )
+                    .await?
+                };
+                match selection {
                     SessionSelection::Resume(target_session) => {
                         match self
                             .resume_target_session(tui, app_server, target_session)

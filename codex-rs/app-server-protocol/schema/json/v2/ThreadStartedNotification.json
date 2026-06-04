@@ -1719,9 +1719,10 @@
     },
     "ThreadSource": {
       "enum": [
-        "user",
+        "memory_consolidation",
+        "side",
         "subagent",
-        "memory_consolidation"
+        "user"
       ],
       "type": "string"
     },

@@ -2572,6 +2572,7 @@ pub enum ThreadSource {
     User,
     Subagent,
     MemoryConsolidation,
+    Side,
 }
 
 impl ThreadSource {
@@ -2580,6 +2581,7 @@ impl ThreadSource {
             ThreadSource::User => "user",
             ThreadSource::Subagent => "subagent",
             ThreadSource::MemoryConsolidation => "memory_consolidation",
+            ThreadSource::Side => "side",
         }
     }
 }
@@ -2598,6 +2600,7 @@ impl FromStr for ThreadSource {
             "user" => Ok(ThreadSource::User),
             "subagent" => Ok(ThreadSource::Subagent),
             "memory_consolidation" => Ok(ThreadSource::MemoryConsolidation),
+            "side" => Ok(ThreadSource::Side),
             other => Err(format!("unknown thread source: {other}")),
         }
     }

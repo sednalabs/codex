@@ -197,7 +197,8 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ClearUi);
             }
             SlashCommand::Resume => {
-                self.app_event_tx.send(AppEvent::OpenResumePicker);
+                self.app_event_tx
+                    .send(AppEvent::OpenResumePicker { side_only: false });
             }
             SlashCommand::Fork => {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
@@ -802,8 +803,13 @@ impl ChatWidget {
                 }));
             }
             SlashCommand::Resume if !trimmed.is_empty() => {
-                self.app_event_tx
-                    .send(AppEvent::ResumeSessionByIdOrName(args));
+                if trimmed.eq_ignore_ascii_case("side") {
+                    self.app_event_tx
+                        .send(AppEvent::OpenResumePicker { side_only: true });
+                } else {
+                    self.app_event_tx
+                        .send(AppEvent::ResumeSessionByIdOrName(args));
+                }
             }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
                 self.app_event_tx

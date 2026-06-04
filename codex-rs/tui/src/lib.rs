@@ -691,6 +691,7 @@ async fn lookup_session_target_by_name_with_app_server(
                 sort_direction: None,
                 model_providers: None,
                 source_kinds: Some(vec![ThreadSourceKind::Cli, ThreadSourceKind::VsCode]),
+                thread_sources: None,
                 archived: Some(false),
                 cwd: None,
                 use_state_db_only: false,
@@ -783,6 +784,7 @@ fn latest_session_lookup_params(
             Some(vec![config.model_provider_id.clone()])
         },
         source_kinds: Some(resume_source_kinds(include_non_interactive)),
+        thread_sources: None,
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().to_string())),
         use_state_db_only: false,

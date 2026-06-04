@@ -10,10 +10,17 @@ const THREAD_LIST_MAX_LIMIT: usize = 100;
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
+    thread_sources: Option<Vec<ThreadSource>>,
     archived: bool,
     cwd_filters: Option<Vec<PathBuf>>,
     search_term: Option<String>,
     use_state_db_only: bool,
+}
+
+fn core_thread_source_filter(
+    thread_sources: Option<Vec<ThreadSource>>,
+) -> Option<Vec<codex_protocol::protocol::ThreadSource>> {
+    thread_sources.map(|sources| sources.into_iter().map(Into::into).collect())
 }
 
 fn collect_resume_override_mismatches(
@@ -1821,6 +1828,7 @@ impl ThreadRequestProcessor {
             sort_direction,
             model_providers,
             source_kinds,
+            thread_sources,
             archived,
             cwd,
             use_state_db_only,
@@ -1846,6 +1854,7 @@ impl ThreadRequestProcessor {
                 ThreadListFilters {
                     model_providers,
                     source_kinds,
+                    thread_sources,
                     archived: archived.unwrap_or(false),
                     cwd_filters,
                     search_term,
@@ -1901,6 +1910,7 @@ impl ThreadRequestProcessor {
             sort_key,
             sort_direction,
             source_kinds,
+            thread_sources,
             archived,
             search_term,
         } = params;
@@ -1918,6 +1928,7 @@ impl ThreadRequestProcessor {
         };
         let store_sort_direction = sort_direction.unwrap_or(SortDirection::Desc);
         let (allowed_sources, source_kind_filter) = compute_source_filters(source_kinds);
+        let thread_source_filter = core_thread_source_filter(thread_sources);
         let mut cursor_obj = cursor;
         let mut last_cursor = cursor_obj.clone();
         let mut remaining = requested_page_size;
@@ -1951,6 +1962,10 @@ impl ThreadRequestProcessor {
                 if source_kind_filter
                     .as_ref()
                     .is_none_or(|filter| source_kind_matches(&source, filter))
+                    && thread_source_matches(
+                        result.thread.thread_source,
+                        thread_source_filter.as_deref(),
+                    )
                 {
                     search_results.push(result);
                     if search_results.len() >= requested_page_size {
@@ -3385,6 +3400,17 @@ impl ThreadRequestProcessor {
                 err => internal_error(format!("error forking thread: {err}")),
             })?;
 
+        if session_configured.rollout_path.is_some()
+            && let Some(state_db) = self.state_db.as_ref()
+            && let Err(err) = state_db
+                .record_usage_fork_snapshot(thread_id, source_thread_id)
+                .await
+        {
+            tracing::warn!(
+                "failed to record usage fork snapshot for {thread_id} from {source_thread_id}: {err}"
+            );
+        }
+
         Self::set_app_server_client_info(
             forked_thread.as_ref(),
             app_server_client_name,
@@ -3559,6 +3585,7 @@ impl ThreadRequestProcessor {
         let ThreadListFilters {
             model_providers,
             source_kinds,
+            thread_sources,
             archived,
             cwd_filters,
             search_term,
@@ -3581,6 +3608,7 @@ impl ThreadRequestProcessor {
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
         let (allowed_sources_vec, source_kind_filter) = compute_source_filters(source_kinds);
+        let thread_source_filter = core_thread_source_filter(thread_sources);
         let allowed_sources = allowed_sources_vec.as_slice();
         let store_sort_direction = match sort_direction {
             SortDirection::Asc => StoreSortDirection::Asc,
@@ -3616,6 +3644,7 @@ impl ThreadRequestProcessor {
                 if source_kind_filter
                     .as_ref()
                     .is_none_or(|filter| source_kind_matches(&source, filter))
+                    && thread_source_matches(it.thread_source, thread_source_filter.as_deref())
                     && cwd_filters.as_ref().is_none_or(|expected_cwds| {
                         expected_cwds.iter().any(|expected_cwd| {
                             path_utils::paths_match_after_normalization(&it.cwd, expected_cwd)

@@ -273,6 +273,16 @@ fn thread_list_params_accepts_state_db_only_flag() {
 }
 
 #[test]
+fn thread_list_params_accepts_side_thread_source_filter() {
+    let params = serde_json::from_value::<ThreadListParams>(json!({
+        "threadSources": ["side"],
+    }))
+    .expect("thread source filter should deserialize");
+
+    assert_eq!(params.thread_sources, Some(vec![ThreadSource::Side]));
+}
+
+#[test]
 fn collab_agent_state_maps_interrupted_status() {
     assert_eq!(
         CollabAgentState::from(CoreAgentStatus::Interrupted),

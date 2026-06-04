@@ -3062,14 +3062,14 @@ fn agent_picker_item_name_snapshot() {
 }
 
 #[tokio::test]
-async fn side_fork_config_is_ephemeral_and_appends_developer_guardrails() {
+async fn side_fork_config_is_persistent_and_appends_developer_guardrails() {
     let app = make_test_app().await;
     let original_approval_policy = app.config.permissions.approval_policy.value();
     let original_sandbox_policy = app.config.legacy_sandbox_policy();
 
     let fork_config = app.side_fork_config();
 
-    assert!(fork_config.ephemeral);
+    assert!(!fork_config.ephemeral);
     assert_eq!(
         fork_config.permissions.approval_policy.value(),
         original_approval_policy
@@ -3467,7 +3467,7 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
         let mut side_config = app.chat_widget.config_ref().clone();
-        side_config.ephemeral = true;
+        side_config.ephemeral = false;
         let started = app_server.start_thread(&side_config).await?;
         let side_thread_id = started.session.thread_id;
         app.side_threads
