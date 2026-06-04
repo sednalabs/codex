@@ -1898,7 +1898,22 @@ async fn slash_resume_opens_picker() {
 
     chat.dispatch_command(SlashCommand::Resume);
 
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenResumePicker));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenResumePicker { side_only: false })
+    );
+}
+
+#[tokio::test]
+async fn slash_resume_side_opens_side_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Resume, "side".to_string(), Vec::new());
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenResumePicker { side_only: true })
+    );
 }
 
 #[tokio::test]

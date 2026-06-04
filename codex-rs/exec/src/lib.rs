@@ -1583,6 +1583,7 @@ async fn resolve_resume_thread_id(
                         sort_direction: None,
                         model_providers: model_providers.clone(),
                         source_kinds: Some(all_thread_source_kinds()),
+                        thread_sources: None,
                         archived: Some(false),
                         cwd: None,
                         use_state_db_only: false,
@@ -1648,6 +1649,7 @@ async fn resolve_resume_thread_id(
                     sort_direction: None,
                     model_providers: model_providers.clone(),
                     source_kinds: Some(all_thread_source_kinds()),
+                    thread_sources: None,
                     archived: Some(false),
                     cwd: None,
                     // Thread names are attached separately from rollout titles, so name

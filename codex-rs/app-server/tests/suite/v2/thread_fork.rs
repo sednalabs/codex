@@ -880,6 +880,7 @@ async fn thread_fork_ephemeral_remains_pathless_and_omits_listing() -> Result<()
             sort_direction: None,
             model_providers: None,
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
@@ -923,6 +924,117 @@ async fn thread_fork_ephemeral_remains_pathless_and_omits_listing() -> Result<()
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: conversation_id.clone(),
+            thread_source: Some(ThreadSource::Side),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+    let side_thread_id = thread.id.clone();
+
+    assert!(!thread.ephemeral);
+    assert!(thread.path.is_some());
+    assert_eq!(thread.thread_source, Some(ThreadSource::Side));
+    assert_eq!(thread.forked_from_id.as_deref(), Some(conversation_id.as_str()));
+
+    let default_list_id = mcp
+        .send_thread_list_request(ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: None,
+            source_kinds: None,
+            thread_sources: None,
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+        })
+        .await?;
+    let default_list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(default_list_id)),
+    )
+    .await??;
+    let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(default_list_resp)?;
+    assert!(
+        data.iter().all(|candidate| candidate.id != side_thread_id),
+        "side forks should be hidden from the default thread/list"
+    );
+
+    let side_list_id = mcp
+        .send_thread_list_request(ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: None,
+            source_kinds: None,
+            thread_sources: Some(vec![ThreadSource::Side]),
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+        })
+        .await?;
+    let side_list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(side_list_id)),
+    )
+    .await??;
+    let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(side_list_resp)?;
+    assert!(
+        data.iter().any(|candidate| candidate.id == side_thread_id),
+        "side forks should be listed when the side filter is requested"
+    );
+
+    let fork_side_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: side_thread_id,
+            ..Default::default()
+        })
+        .await?;
+    let fork_side_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_side_id)),
+    )
+    .await??;
+    let ThreadForkResponse {
+        thread: forked_side,
+        ..
+    } = to_response::<ThreadForkResponse>(fork_side_resp)?;
+    assert!(forked_side.path.is_some());
 
     Ok(())
 }

@@ -1128,6 +1128,7 @@ async fn thread_list(endpoint: &Endpoint, config_overrides: &[String], limit: u3
             sort_direction: None,
             model_providers: None,
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,

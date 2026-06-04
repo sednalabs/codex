@@ -3713,6 +3713,16 @@
             "null"
           ]
         },
+        "threadSources": {
+          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "useStateDbOnly": {
           "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
           "type": "boolean"
@@ -4271,6 +4281,16 @@
             "array",
             "null"
           ]
+        },
+        "threadSources": {
+          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
@@ -4436,7 +4456,8 @@
       "enum": [
         "user",
         "subagent",
-        "memory_consolidation"
+        "memory_consolidation",
+        "side"
       ],
       "type": "string"
     },

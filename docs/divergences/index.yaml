@@ -1228,6 +1228,45 @@
         "justfile"
       ],
       "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "side-chat-persistence-and-usage-ledger",
+      "title": "Side chat persistence and usage ledger tracking",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "/side TUI command",
+        "app-server thread_source filtering",
+        "usage.sqlite fork lineage"
+      ],
+      "files": [
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/usage.rs"
+      ],
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, and records usage-ledger lineage/provider rows.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test; codex.tui-agent-picker-targeted",
+      "tests": [
+        "state_runtime_records_direct_fork_snapshot_from_provider_rows",
+        "thread_fork_side_source_persists_and_uses_side_filter",
+        "thread_list_hides_side_threads_until_side_filter_requested",
+        "side_fork_config_is_persistent_and_appends_developer_guardrails"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
+      "upstreamability_tier": "downstream-product",
+      "boundary_type": "interactive-history-and-ledger",
+      "hotspot_files": [
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/usage.rs"
+      ],
+      "extraction_target": "side-thread persistence and history filtering contract"
     }
   ]
 }

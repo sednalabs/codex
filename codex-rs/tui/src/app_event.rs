@@ -141,7 +141,7 @@ pub(crate) enum AppEvent {
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
-    /// Fork the current thread into a transient side conversation.
+    /// Fork the current thread into a persisted side conversation.
     StartSide {
         parent_thread_id: ThreadId,
         user_message: Option<UserMessage>,
@@ -204,7 +204,7 @@ pub(crate) enum AppEvent {
     },
 
     /// Open the resume picker inside the running TUI session.
-    OpenResumePicker,
+    OpenResumePicker { side_only: bool },
 
     /// Resume a thread by UUID or thread name inside the running TUI session.
     ResumeSessionByIdOrName(String),

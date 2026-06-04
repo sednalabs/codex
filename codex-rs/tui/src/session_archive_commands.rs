@@ -142,6 +142,7 @@ async fn lookup_session_by_exact_name(
                 source_kinds: Some(super::resume_source_kinds(
                     /*include_non_interactive*/ false,
                 )),
+                thread_sources: None,
                 archived: Some(matches!(action, SessionArchiveAction::Unarchive)),
                 cwd: None,
                 use_state_db_only: false,

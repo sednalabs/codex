@@ -69,6 +69,7 @@ pub enum ThreadSource {
     User,
     Subagent,
     MemoryConsolidation,
+    Side,
 }
 
 impl From<CoreThreadSource> for ThreadSource {
@@ -77,6 +78,7 @@ impl From<CoreThreadSource> for ThreadSource {
             CoreThreadSource::User => ThreadSource::User,
             CoreThreadSource::Subagent => ThreadSource::Subagent,
             CoreThreadSource::MemoryConsolidation => ThreadSource::MemoryConsolidation,
+            CoreThreadSource::Side => ThreadSource::Side,
         }
     }
 }
@@ -87,6 +89,7 @@ impl From<ThreadSource> for CoreThreadSource {
             ThreadSource::User => CoreThreadSource::User,
             ThreadSource::Subagent => CoreThreadSource::Subagent,
             ThreadSource::MemoryConsolidation => CoreThreadSource::MemoryConsolidation,
+            ThreadSource::Side => CoreThreadSource::Side,
         }
     }
 }

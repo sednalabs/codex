@@ -95,6 +95,21 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/Cargo.toml`
 
+### Side Chat Persistence And Usage Ledger Tracking
+
+- `/side` conversations are persisted as side-tagged fork threads instead of
+  pathless ephemeral forks, so they keep rollout transcripts, remain resumable,
+  and can be forked by thread id or rollout path.
+- Default history/list/search surfaces hide side chats; explicit
+  `threadSources: ["side"]` requests expose the side-chat history class.
+- Usage-ledger lineage records side forks in `usage_threads` and
+  `usage_fork_snapshots`, while side turns write normal provider-call rows.
+- Primary files:
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
+  - `codex-rs/app-server/src/filters.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation

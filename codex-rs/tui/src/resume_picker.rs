@@ -41,6 +41,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey;
+use codex_app_server_protocol::ThreadSource;
 use codex_config::types::SessionPickerViewMode;
 use codex_protocol::ThreadId;
 use codex_utils_path as path_utils;
@@ -114,6 +115,21 @@ pub enum SessionPickerAction {
 pub enum SessionPickerLaunchContext {
     Startup,
     ExistingSession,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionThreadSourceFilter {
+    Default,
+    SideOnly,
+}
+
+impl SessionThreadSourceFilter {
+    fn thread_sources(self) -> Option<Vec<ThreadSource>> {
+        match self {
+            Self::Default => None,
+            Self::SideOnly => Some(vec![ThreadSource::Side]),
+        }
+    }
 }
 
 impl SessionPickerAction {
@@ -318,6 +334,7 @@ pub async fn run_resume_picker_with_app_server(
         include_non_interactive,
         app_server,
         SessionPickerLaunchContext::Startup,
+        SessionThreadSourceFilter::Default,
     )
     .await
 }
@@ -336,6 +353,26 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
         include_non_interactive,
         app_server,
         SessionPickerLaunchContext::ExistingSession,
+        SessionThreadSourceFilter::Default,
+    )
+    .await
+}
+
+pub async fn run_side_resume_picker_from_existing_session_with_app_server(
+    tui: &mut Tui,
+    config: &Config,
+    show_all: bool,
+    include_non_interactive: bool,
+    app_server: AppServerSession,
+) -> Result<SessionSelection> {
+    run_resume_picker_with_launch_context(
+        tui,
+        config,
+        show_all,
+        include_non_interactive,
+        app_server,
+        SessionPickerLaunchContext::ExistingSession,
+        SessionThreadSourceFilter::SideOnly,
     )
     .await
 }
@@ -347,6 +384,7 @@ async fn run_resume_picker_with_launch_context(
     include_non_interactive: bool,
     app_server: AppServerSession,
     launch_context: SessionPickerLaunchContext,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> Result<SessionSelection> {
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
     let uses_remote_workspace = app_server.uses_remote_workspace();
@@ -379,6 +417,7 @@ async fn run_resume_picker_with_launch_context(
         spawn_app_server_page_loader(
             app_server,
             include_non_interactive,
+            thread_source_filter,
             raw_reasoning_visibility(config),
             bg_tx,
         ),
@@ -424,6 +463,7 @@ pub async fn run_fork_picker_with_app_server(
         spawn_app_server_page_loader(
             app_server,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
             raw_reasoning_visibility(config),
             bg_tx,
         ),
@@ -553,6 +593,7 @@ fn picker_cwd_filter(
 fn spawn_app_server_page_loader(
     app_server: AppServerSession,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
     raw_reasoning_visibility: RawReasoningVisibility,
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
 ) -> PickerLoader {
@@ -571,6 +612,7 @@ fn spawn_app_server_page_loader(
                         request.provider_filter,
                         request.sort_key,
                         include_non_interactive,
+                        thread_source_filter,
                     )
                     .await;
                     let _ = bg_tx.send(BackgroundEvent::Page {
@@ -740,6 +782,7 @@ async fn load_app_server_page(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> std::io::Result<PickerPage> {
     let response = app_server
         .thread_list(thread_list_params(
@@ -748,6 +791,7 @@ async fn load_app_server_page(
             provider_filter,
             sort_key,
             include_non_interactive,
+            thread_source_filter,
         ))
         .await
         .map_err(std::io::Error::other)?;
@@ -1817,6 +1861,7 @@ fn thread_list_params(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> ThreadListParams {
     ThreadListParams {
         cursor,
@@ -1828,6 +1873,7 @@ fn thread_list_params(
             ProviderFilter::MatchDefault(default_provider) => Some(vec![default_provider]),
         },
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
+        thread_sources: thread_source_filter.thread_sources(),
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
         use_state_db_only: false,
@@ -3123,12 +3169,28 @@ mod tests {
             ProviderFilter::MatchDefault(String::from("openai")),
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
+        assert_eq!(params.thread_sources, None);
+    }
+
+    #[test]
+    fn side_picker_thread_list_params_request_side_threads() {
+        let params = thread_list_params(
+            Some(String::from("cursor-1")),
+            /*cwd_filter*/ None,
+            ProviderFilter::Any,
+            ThreadSortKey::UpdatedAt,
+            /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::SideOnly,
+        );
+
+        assert_eq!(params.thread_sources, Some(vec![ThreadSource::Side]));
     }
 
     #[test]
@@ -3348,6 +3410,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3370,6 +3433,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ true,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
