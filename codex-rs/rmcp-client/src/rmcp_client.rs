@@ -888,8 +888,9 @@ impl RmcpClient {
         .await
         {
             Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
-                self.reinitialize_after_session_expiry(&service).await?;
+            Err(error) if Self::is_recoverable_streamable_http_error(&error) => {
+                self.reinitialize_after_recoverable_transport_error(&service)
+                    .await?;
                 let recovered_service = self.service().await?;
                 Self::run_service_operation_once(
                     recovered_service,
@@ -930,7 +931,7 @@ impl RmcpClient {
         }
     }
 
-    fn is_session_expired_404(error: &ClientOperationError) -> bool {
+    fn is_recoverable_streamable_http_error(error: &ClientOperationError) -> bool {
         let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
             error
         else {
@@ -945,12 +946,13 @@ impl RmcpClient {
                     error,
                     StreamableHttpError::Client(
                         StreamableHttpClientAdapterError::SessionExpired404
-                    )
+                    ) | StreamableHttpError::Auth(AuthError::AuthorizationRequired)
+                        | StreamableHttpError::AuthRequired(_)
                 )
             })
     }
 
-    async fn reinitialize_after_session_expiry(
+    async fn reinitialize_after_recoverable_transport_error(
         &self,
         failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
     ) -> Result<()> {
@@ -1071,9 +1073,12 @@ async fn create_oauth_transport_and_runtime(
 
 #[cfg(test)]
 mod tests {
+    use std::any::TypeId;
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
+    use rmcp::transport::DynamicTransportError;
+    use rmcp::transport::streamable_http_client::AuthRequiredError;
     use tokio::time;
 
     use super::*;
@@ -1095,5 +1100,37 @@ mod tests {
             .await;
 
         assert_eq!(Ok("done"), result);
+    }
+
+    fn transport_send_error(
+        error: StreamableHttpError<StreamableHttpClientAdapterError>,
+    ) -> ClientOperationError {
+        ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(
+            DynamicTransportError::from_parts("test", TypeId::of::<()>(), Box::new(error)),
+        ))
+    }
+
+    #[test]
+    fn oauth_authorization_required_reinitializes_mcp_client() {
+        let error =
+            transport_send_error(StreamableHttpError::Auth(AuthError::AuthorizationRequired));
+
+        assert!(RmcpClient::is_recoverable_streamable_http_error(&error));
+    }
+
+    #[test]
+    fn streamable_http_auth_required_reinitializes_mcp_client() {
+        let error = transport_send_error(StreamableHttpError::AuthRequired(
+            AuthRequiredError::new("Bearer resource_metadata=\"https://example.test\"".to_string()),
+        ));
+
+        assert!(RmcpClient::is_recoverable_streamable_http_error(&error));
+    }
+
+    #[test]
+    fn unrelated_streamable_http_errors_do_not_reinitialize_mcp_client() {
+        let error = transport_send_error(StreamableHttpError::UnexpectedEndOfStream);
+
+        assert!(!RmcpClient::is_recoverable_streamable_http_error(&error));
     }
 }
