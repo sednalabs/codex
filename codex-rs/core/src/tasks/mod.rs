@@ -407,7 +407,7 @@ impl Session {
                     .await;
                 let sess = session_ctx.clone_session();
                 if let Err(err) = sess.flush_rollout().await {
-                    warn!("failed to flush rollout after task run: {err}");
+                    warn!("failed to flush rollout after task run: {}", err);
                 }
                 if !task_cancellation_token.is_cancelled() {
                     // Emit completion uniformly from spawn site so all tasks share the same lifecycle.
@@ -865,7 +865,7 @@ impl Session {
             // Ensure the marker is durably visible before emitting TurnAborted: some clients
             // synchronously re-read the rollout on receipt of the abort event.
             if let Err(err) = self.flush_rollout().await {
-                warn!("failed to flush rollout after task abort marker: {err}");
+                warn!("failed to flush rollout after task abort marker: {}", err);
             }
         }
 
