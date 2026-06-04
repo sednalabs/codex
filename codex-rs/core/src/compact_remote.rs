@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::Prompt;
+use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::CompactConversationRequestSettings;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::InitialContextInjection;
@@ -206,38 +207,62 @@ async fn run_remote_compact_task_inner_impl(
     let turn_metadata_header = turn_context
         .turn_metadata_state
         .current_header_value_for_compaction(&window_id, compaction_metadata);
-    let mut new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
-            &prompt,
-            &turn_context.model_info,
-            CompactConversationRequestSettings {
-                effort: turn_context.reasoning_effort,
-                summary: turn_context.reasoning_summary,
-                service_tier: if sess.services.auth_manager.auth_mode() == Some(AuthMode::ApiKey) {
-                    None
-                } else {
-                    turn_context.config.service_tier.clone()
+    let mut capacity_retries = 0;
+    let mut new_history = loop {
+        let result = sess
+            .services
+            .model_client
+            .compact_conversation_history(
+                &prompt,
+                &turn_context.model_info,
+                CompactConversationRequestSettings {
+                    effort: turn_context.reasoning_effort,
+                    summary: turn_context.reasoning_summary,
+                    service_tier: if sess.services.auth_manager.auth_mode()
+                        == Some(AuthMode::ApiKey)
+                    {
+                        None
+                    } else {
+                        turn_context.config.service_tier.clone()
+                    },
                 },
-            },
-            &turn_context.session_telemetry,
-            &compaction_trace,
-            turn_metadata_header.as_deref(),
-        )
-        .or_else(|err| async {
-            let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
-            let compact_request_log_data =
-                build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
-            log_remote_compact_failure(
-                turn_context,
-                &compact_request_log_data,
-                total_usage_breakdown,
-                &err,
-            );
-            Err(err)
-        })
-        .await?;
+                &turn_context.session_telemetry,
+                &compaction_trace,
+                turn_metadata_header.as_deref(),
+            )
+            .or_else(|err| async {
+                if matches!(&err, CodexErr::ServerOverloaded) {
+                    return Err(err);
+                }
+                let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
+                let compact_request_log_data =
+                    build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
+                log_remote_compact_failure(
+                    turn_context,
+                    &compact_request_log_data,
+                    total_usage_breakdown,
+                    &err,
+                );
+                Err(err)
+            })
+            .await;
+
+        match result {
+            Err(err @ CodexErr::ServerOverloaded) => {
+                capacity_retries += 1;
+                notify_and_wait_for_capacity_retry(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    cancellation_token,
+                    capacity_retries,
+                    "remote compaction request",
+                    err,
+                )
+                .await?;
+            }
+            result => break result?,
+        }
+    };
     new_history = process_compacted_history(
         sess.as_ref(),
         turn_context.as_ref(),
