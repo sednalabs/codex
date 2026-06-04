@@ -383,6 +383,9 @@ docs-only refresh commit that records this snapshot.
   being rejected immediately.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
   follow-ups and queued model changes coherently.
+- Active-turn status labels preserve downstream operator cues, including
+  showing `Compacting context` while context compaction is running instead of
+  falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - Primary files:
@@ -391,6 +394,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`

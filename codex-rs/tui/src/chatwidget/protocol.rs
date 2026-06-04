@@ -316,6 +316,9 @@ impl ChatWidget {
             item @ ThreadItem::ComputerUseCall { .. } => {
                 self.on_computer_use_call_started(item);
             }
+            item @ ThreadItem::ContextCompaction { .. } => {
+                self.on_context_compaction_started(item);
+            }
             ThreadItem::CollabAgentToolCall {
                 id,
                 tool,

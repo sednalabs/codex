@@ -522,6 +522,7 @@
       "surface": [
         "thread session continuity",
         "queued turn handling",
+        "status indicator lifecycle labels",
         "usage summaries"
       ],
       "files": [
@@ -530,11 +531,13 @@
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/status/card.rs",
         "codex-rs/tui/src/status/rate_limits.rs"
       ],
-      "behavior": "Per-thread session state and queued interaction semantics stay stable across the TUI surfaces.",
+      "behavior": "Per-thread session state, queued interaction semantics, and active-turn status labels stay stable across the TUI surfaces, including showing \"Compacting context\" while a context compaction item is running.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -543,16 +546,19 @@
       "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
       "tests": [
         "sync_session_tree_token_usage_updates_combined_status_line_items",
+        "live_app_server_context_compaction_start_updates_status_header",
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, and thread policy aligned.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, and user-visible active-turn status labels aligned.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
-        "codex-rs/tui/src/chatwidget.rs"
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs"
       ],
       "extraction_target": "TUI status/session contributor slots"
     },
