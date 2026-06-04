@@ -541,18 +541,22 @@ impl StateRuntime {
         let parent_call_id = usage
             .as_ref()
             .map(|row| row.get::<String, _>("provider_call_id"));
-        let uncached_tokens = usage
-            .as_ref()
-            .map(|row| row.get::<Option<i64>, _>("input_tokens_uncached").unwrap_or_default());
-        let cached_tokens = usage
-            .as_ref()
-            .map(|row| row.get::<Option<i64>, _>("input_tokens_cached").unwrap_or_default());
-        let output_tokens = usage
-            .as_ref()
-            .map(|row| row.get::<Option<i64>, _>("output_tokens").unwrap_or_default());
-        let total_tokens = usage
-            .as_ref()
-            .map(|row| row.get::<Option<i64>, _>("total_tokens").unwrap_or_default());
+        let uncached_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("input_tokens_uncached")
+                .unwrap_or_default()
+        });
+        let cached_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("input_tokens_cached")
+                .unwrap_or_default()
+        });
+        let output_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("output_tokens")
+                .unwrap_or_default()
+        });
+        let total_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("total_tokens")
+                .unwrap_or_default()
+        });
 
         sqlx::query(
             r#"INSERT INTO usage_fork_snapshots (
