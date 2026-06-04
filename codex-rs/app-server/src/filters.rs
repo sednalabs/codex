@@ -171,9 +171,15 @@ mod tests {
 
     #[test]
     fn thread_source_filter_excludes_side_by_default() {
-        assert!(thread_source_matches(None, None));
-        assert!(thread_source_matches(Some(CoreThreadSource::User), None));
-        assert!(!thread_source_matches(Some(CoreThreadSource::Side), None));
+        assert!(thread_source_matches(/*thread_source*/ None, /*filter*/ None));
+        assert!(thread_source_matches(
+            Some(CoreThreadSource::User),
+            /*filter*/ None
+        ));
+        assert!(!thread_source_matches(
+            Some(CoreThreadSource::Side),
+            /*filter*/ None
+        ));
         assert!(!thread_source_matches(
             Some(CoreThreadSource::Side),
             Some(&[])
@@ -192,6 +198,9 @@ mod tests {
             Some(CoreThreadSource::User),
             Some(&filter)
         ));
-        assert!(!thread_source_matches(None, Some(&filter)));
+        assert!(!thread_source_matches(
+            /*thread_source*/ None,
+            Some(&filter)
+        ));
     }
 }
