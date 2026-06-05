@@ -10,6 +10,7 @@ use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
 use log::warn;
 use sqlx::Row;
@@ -75,6 +76,27 @@ impl UsageLogger {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) -> anyhow::Result<Self> {
+        Self::try_new_with_thread_source(
+            state,
+            thread_id,
+            source,
+            None,
+            forked_from_id,
+            agent_nickname,
+            agent_role,
+        )
+        .await
+    }
+
+    pub async fn try_new_with_thread_source(
+        state: Arc<StateRuntime>,
+        thread_id: ThreadId,
+        source: SessionSource,
+        thread_source: Option<ThreadSource>,
+        forked_from_id: Option<ThreadId>,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) -> anyhow::Result<Self> {
         let pool = state.usage_ledger_pool();
         let parent_thread_id = Self::parent_thread_from_source(&source);
         // Reuse the first persisted root we can find so spawned and forked descendants
@@ -96,17 +118,19 @@ impl UsageLogger {
             .unwrap_or_else(|| thread_id.to_string());
         let created_at = Utc::now();
         let source_str = source.to_string();
+        let thread_source_str = thread_source.map(|source| source.as_str());
         sqlx::query(
             r#"
-INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, thread_source, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     parent_thread_id = COALESCE(excluded.parent_thread_id, usage_threads.parent_thread_id),
     root_thread_id = COALESCE(excluded.root_thread_id, usage_threads.root_thread_id),
     fork_parent_thread_id = COALESCE(excluded.fork_parent_thread_id, usage_threads.fork_parent_thread_id),
     agent_nickname = COALESCE(excluded.agent_nickname, usage_threads.agent_nickname),
     agent_role = COALESCE(excluded.agent_role, usage_threads.agent_role),
-    source = excluded.source
+    source = excluded.source,
+    thread_source = COALESCE(excluded.thread_source, usage_threads.thread_source)
                 "#,
         )
         .bind(thread_id.to_string())
@@ -116,6 +140,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(agent_nickname.as_deref())
         .bind(agent_role.as_deref())
         .bind(source_str)
+        .bind(thread_source_str)
         .bind(created_at.to_rfc3339())
         .execute(pool.as_ref())
         .await
@@ -809,6 +834,49 @@ WHERE thread_id = ?
                 quota_percent_remaining: 87.5,
                 quota_percent_used: 12.5,
             }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_records_thread_source_marker() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let side_thread_id = ThreadId::new();
+        let _logger = UsageLogger::try_new_with_thread_source(
+            runtime.clone(),
+            side_thread_id,
+            SessionSource::Cli,
+            Some(ThreadSource::Side),
+            Some(parent_thread_id),
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(side_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            row,
+            (
+                Some(parent_thread_id.to_string()),
+                Some(parent_thread_id.to_string()),
+                Some("side".to_string())
+            )
         );
 
         Ok(())

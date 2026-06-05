@@ -472,6 +472,7 @@ async fn maybe_create_usage_logger(
     state_db: Option<Arc<codex_state::StateRuntime>>,
     thread_id: ThreadId,
     session_source: SessionSource,
+    thread_source: Option<ThreadSource>,
     forked_from_id: Option<ThreadId>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
@@ -480,10 +481,11 @@ async fn maybe_create_usage_logger(
         return None;
     };
 
-    match codex_state::UsageLogger::try_new(
+    match codex_state::UsageLogger::try_new_with_thread_source(
         state_db,
         thread_id,
         session_source,
+        thread_source,
         forked_from_id,
         agent_nickname,
         agent_role,
@@ -916,6 +918,7 @@ impl Session {
                 state_db_ctx.clone(),
                 thread_id,
                 session_configuration.session_source.clone(),
+                session_configuration.thread_source,
                 forked_from_id,
                 session_configuration.session_source.get_nickname(),
                 session_configuration.session_source.get_agent_role(),

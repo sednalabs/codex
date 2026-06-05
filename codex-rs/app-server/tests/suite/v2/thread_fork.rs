@@ -970,6 +970,44 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
         Some(conversation_id.as_str())
     );
 
+    let state_runtime =
+        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
+            .await?;
+    let usage_pool = state_runtime.usage_pool();
+    let usage_thread_row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+    )
+    .bind(&side_thread_id)
+    .fetch_one(usage_pool.as_ref())
+    .await?;
+    assert_eq!(
+        usage_thread_row,
+        (
+            Some(conversation_id.clone()),
+            Some(conversation_id.clone()),
+            Some("side".to_string())
+        ),
+        "side forks should be marked as side chats in the usage ledger"
+    );
+    let usage_fork_row: (String,) = sqlx::query_as(
+        "SELECT parent_thread_id FROM usage_fork_snapshots WHERE child_thread_id = ?",
+    )
+    .bind(&side_thread_id)
+    .fetch_one(usage_pool.as_ref())
+    .await?;
+    assert_eq!(
+        usage_fork_row.0,
+        conversation_id.as_str(),
+        "side fork snapshots should preserve their source thread"
+    );
+
     let default_list_id = mcp
         .send_thread_list_request(ThreadListParams {
             cursor: None,
@@ -1024,7 +1062,7 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
 
     let fork_side_id = mcp
         .send_thread_fork_request(ThreadForkParams {
-            thread_id: side_thread_id,
+            thread_id: side_thread_id.clone(),
             ..Default::default()
         })
         .await?;
@@ -1038,6 +1076,33 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
         ..
     } = to_response::<ThreadForkResponse>(fork_side_resp)?;
     assert!(forked_side.path.is_some());
+    assert_eq!(forked_side.thread_source, Some(ThreadSource::Side));
+    assert_eq!(
+        forked_side.forked_from_id.as_deref(),
+        Some(side_thread_id.as_str())
+    );
+    let forked_side_usage_row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+    )
+    .bind(&forked_side.id)
+    .fetch_one(usage_pool.as_ref())
+    .await?;
+    assert_eq!(
+        forked_side_usage_row,
+        (
+            Some(conversation_id),
+            Some(side_thread_id),
+            Some("side".to_string())
+        ),
+        "side-chat forks should stay side-marked in the usage ledger"
+    );
 
     Ok(())
 }

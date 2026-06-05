@@ -895,6 +895,107 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
 }
 
 #[tokio::test]
+async fn fork_stopped_thread_from_rollout_preserves_side_thread_source() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let state_db = init_state_db(&config).await;
+    let thread_store = thread_store_from_config(&config, state_db.clone());
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager,
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        /*analytics_events_client*/ None,
+        thread_store,
+        state_db,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+    );
+
+    let source = manager
+        .start_thread_with_options(StartThreadOptions {
+            config: config.clone(),
+            initial_history: InitialHistory::New,
+            session_source: None,
+            thread_source: Some(ThreadSource::Side),
+            dynamic_tools: Vec::new(),
+            metrics_service_name: None,
+            parent_trace: None,
+            environments: Vec::new(),
+        })
+        .await
+        .expect("start side source thread");
+    source.thread.ensure_rollout_materialized().await;
+    source
+        .thread
+        .flush_rollout()
+        .await
+        .expect("flush side source rollout");
+    let rollout_path = source
+        .thread
+        .rollout_path()
+        .expect("side source rollout path should exist");
+    source
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown side source thread before fork");
+    let _ = manager.remove_thread(&source.thread_id).await;
+
+    let forked = manager
+        .fork_thread(
+            ForkSnapshot::Interrupted,
+            config.clone(),
+            rollout_path.clone(),
+            /*thread_source*/ None,
+            /*parent_trace*/ None,
+        )
+        .await
+        .expect("fork side source thread");
+    assert_eq!(
+        forked.thread.config_snapshot().await.thread_source.as_ref(),
+        Some(&ThreadSource::Side)
+    );
+    forked
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown inherited-source fork");
+
+    let explicit_user_fork = manager
+        .fork_thread(
+            ForkSnapshot::Interrupted,
+            config,
+            rollout_path,
+            Some(ThreadSource::User),
+            /*parent_trace*/ None,
+        )
+        .await
+        .expect("fork side source thread with explicit user source");
+    assert_eq!(
+        explicit_user_fork
+            .thread
+            .config_snapshot()
+            .await
+            .thread_source
+            .as_ref(),
+        Some(&ThreadSource::User)
+    );
+    explicit_user_fork
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown explicit-source fork");
+}
+
+#[tokio::test]
 async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;

@@ -948,6 +948,7 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        let thread_source = thread_source.or_else(|| history.get_resumed_thread_source());
         let multi_agent_version = self
             .state
             .effective_multi_agent_version_for_spawn(
