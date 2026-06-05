@@ -103,12 +103,18 @@ docs-only refresh commit that records this snapshot.
 - Default history/list/search surfaces hide side chats; explicit
   `threadSources: ["side"]` requests expose the side-chat history class.
 - Usage-ledger lineage records side forks in `usage_threads` and
-  `usage_fork_snapshots`, while side turns write normal provider-call rows.
+  `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
+  writes normal provider-call rows for side turns.
+- `scripts/codex-resume-recent.sh` skips side chats by default, with
+  `--include-side` available when an operator deliberately wants side-chat
+  resume candidates.
 - Primary files:
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/app-server/src/filters.rs`
   - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
+  - `scripts/codex-resume-recent.sh`
 
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 

@@ -1256,9 +1256,11 @@
       "files": [
         "codex-rs/tui/src/app/side.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
-        "codex-rs/state/src/runtime/usage.rs"
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
+        "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, and records usage-ledger lineage/provider rows.",
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, and marks usage_threads.thread_source as \"side\" for resume filtering.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1267,9 +1269,11 @@
       "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test; codex.tui-agent-picker-targeted",
       "tests": [
         "state_runtime_records_direct_fork_snapshot_from_provider_rows",
+        "fork_stopped_thread_from_rollout_preserves_side_thread_source",
         "thread_fork_side_source_persists_and_uses_side_filter",
         "thread_list_hides_side_threads_until_side_filter_requested",
-        "side_fork_config_is_persistent_and_appends_developer_guardrails"
+        "side_fork_config_is_persistent_and_appends_developer_guardrails",
+        "bash -n scripts/codex-resume-recent.sh"
       ],
       "owner": "downstream",
       "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
@@ -1278,7 +1282,9 @@
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
-        "codex-rs/state/src/runtime/usage.rs"
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/*.sql",
+        "scripts/codex-resume-recent.sh"
       ],
       "extraction_target": "side-thread persistence and history filtering contract"
     }
