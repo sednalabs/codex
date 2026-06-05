@@ -970,6 +970,38 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
         Some(conversation_id.as_str())
     );
 
+    let state_runtime =
+        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
+            .await?;
+    let usage_thread_row = state_runtime
+        .get_usage_thread_record(&side_thread_id)
+        .await?
+        .expect("side thread should be present in the usage ledger");
+    assert_eq!(
+        usage_thread_row.root_thread_id.as_deref(),
+        Some(conversation_id.as_str()),
+        "side forks should keep the source thread as the usage root"
+    );
+    assert_eq!(
+        usage_thread_row.fork_parent_thread_id.as_deref(),
+        Some(conversation_id.as_str()),
+        "side forks should keep the source thread as their fork parent"
+    );
+    assert_eq!(
+        usage_thread_row.thread_source.as_deref(),
+        Some("side"),
+        "side forks should be marked as side chats in the usage ledger"
+    );
+    let usage_fork_parent = state_runtime
+        .get_usage_fork_snapshot_parent_thread_id(&side_thread_id)
+        .await?
+        .expect("side thread should have a usage fork snapshot");
+    assert_eq!(
+        usage_fork_parent,
+        conversation_id.as_str(),
+        "side fork snapshots should preserve their source thread"
+    );
+
     let default_list_id = mcp
         .send_thread_list_request(ThreadListParams {
             cursor: None,
@@ -1024,7 +1056,7 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
 
     let fork_side_id = mcp
         .send_thread_fork_request(ThreadForkParams {
-            thread_id: side_thread_id,
+            thread_id: side_thread_id.clone(),
             ..Default::default()
         })
         .await?;
@@ -1038,6 +1070,30 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
         ..
     } = to_response::<ThreadForkResponse>(fork_side_resp)?;
     assert!(forked_side.path.is_some());
+    assert_eq!(forked_side.thread_source, Some(ThreadSource::Side));
+    assert_eq!(
+        forked_side.forked_from_id.as_deref(),
+        Some(side_thread_id.as_str())
+    );
+    let forked_side_usage_row = state_runtime
+        .get_usage_thread_record(&forked_side.id)
+        .await?
+        .expect("forked side thread should be present in the usage ledger");
+    assert_eq!(
+        forked_side_usage_row.root_thread_id.as_deref(),
+        Some(conversation_id.as_str()),
+        "side-chat forks should keep the original source as the usage root"
+    );
+    assert_eq!(
+        forked_side_usage_row.fork_parent_thread_id.as_deref(),
+        Some(side_thread_id.as_str()),
+        "side-chat forks should keep the direct source as their fork parent"
+    );
+    assert_eq!(
+        forked_side_usage_row.thread_source.as_deref(),
+        Some("side"),
+        "side-chat forks should stay side-marked in the usage ledger"
+    );
 
     Ok(())
 }
