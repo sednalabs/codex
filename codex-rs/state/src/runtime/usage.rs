@@ -47,6 +47,13 @@ struct TokenUsageTotals {
     total_tokens: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageThreadRecord {
+    pub root_thread_id: Option<String>,
+    pub fork_parent_thread_id: Option<String>,
+    pub thread_source: Option<String>,
+}
+
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the
 /// downstream usage ledger.
 ///
@@ -542,6 +549,45 @@ ON CONFLICT(thread_id) DO UPDATE SET
 }
 
 impl StateRuntime {
+    pub async fn get_usage_thread_record(
+        &self,
+        thread_id: &str,
+    ) -> anyhow::Result<Option<UsageThreadRecord>> {
+        let pool = self.usage_ledger_pool();
+        let row = sqlx::query(
+            r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(pool.as_ref())
+        .await?;
+        Ok(row.map(|row| UsageThreadRecord {
+            root_thread_id: row.get::<Option<String>, _>("root_thread_id"),
+            fork_parent_thread_id: row.get::<Option<String>, _>("fork_parent_thread_id"),
+            thread_source: row.get::<Option<String>, _>("thread_source"),
+        }))
+    }
+
+    pub async fn get_usage_fork_snapshot_parent_thread_id(
+        &self,
+        child_thread_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let pool = self.usage_ledger_pool();
+        let parent_thread_id = sqlx::query_scalar::<_, String>(
+            "SELECT parent_thread_id FROM usage_fork_snapshots WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id)
+        .fetch_optional(pool.as_ref())
+        .await?;
+        Ok(parent_thread_id)
+    }
+
     pub async fn record_usage_fork_snapshot(
         &self,
         child_thread_id: ThreadId,
