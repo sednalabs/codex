@@ -381,16 +381,27 @@ docs-only refresh commit that records this snapshot.
   totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
+- Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
+  and model service-tier slash commands remain selectable while a task is
+  running so their chosen settings apply to queued follow-up turns.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
   follow-ups and queued model changes coherently.
+- Active-turn status labels preserve downstream operator cues, including
+  showing `Compacting context` while context compaction is running instead of
+  falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
   - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+  - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`

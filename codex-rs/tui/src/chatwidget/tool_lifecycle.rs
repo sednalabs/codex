@@ -81,6 +81,18 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn on_context_compaction_started(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            |q| q.push_item_started(item),
+            |s| s.handle_context_compaction_started_now(),
+        );
+    }
+
+    fn handle_context_compaction_started_now(&mut self) {
+        self.set_status_header(String::from("Compacting context"));
+        self.request_redraw();
+    }
+
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.record_visible_turn_activity();
         self.flush_answer_stream_with_separator();
@@ -354,6 +366,9 @@ impl ChatWidget {
             }
             item @ ThreadItem::ComputerUseCall { .. } => {
                 self.handle_computer_use_call_started_now(item);
+            }
+            ThreadItem::ContextCompaction { .. } => {
+                self.handle_context_compaction_started_now();
             }
             _ => {}
         }

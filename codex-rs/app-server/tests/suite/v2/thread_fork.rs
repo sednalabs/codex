@@ -965,7 +965,10 @@ async fn thread_fork_side_source_persists_and_uses_side_filter() -> Result<()> {
     assert!(!thread.ephemeral);
     assert!(thread.path.is_some());
     assert_eq!(thread.thread_source, Some(ThreadSource::Side));
-    assert_eq!(thread.forked_from_id.as_deref(), Some(conversation_id.as_str()));
+    assert_eq!(
+        thread.forked_from_id.as_deref(),
+        Some(conversation_id.as_str())
+    );
 
     let default_list_id = mcp
         .send_thread_list_request(ThreadListParams {
