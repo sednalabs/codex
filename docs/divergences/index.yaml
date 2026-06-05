@@ -971,22 +971,30 @@
       "surface": [
         "multi-agent TUI state",
         "usage & status line surfaces",
+        "active slash-command setting queues",
         "TUI contributor slots"
       ],
       "files": [
+        "codex-rs/tui/src/slash_command.rs",
+        "codex-rs/tui/src/bottom_pane/slash_commands.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/tui/src/contributor_slots.rs",
         "codex-rs/tui/src/",
         "codex-rs/tui/tests/",
         "codex-rs/tui/src/snapshots/"
       ],
-      "behavior": "Downstream's TUI layers enforce queue, usage, session-state, status, history, bottom-pane, update-prompt, and computer-use display surfaces through registered contributor slots instead of editing only central orchestration files.",
+      "behavior": "Downstream's TUI layers enforce queue, active slash-command setting selection, usage, session-state, status, history, bottom-pane, update-prompt, and computer-use display surfaces through registered contributor slots instead of editing only central orchestration files.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted; codex.tui-front-queue-submit-targeted",
       "tests": [
+        "active_turn_model_slash_opens_picker_and_selection_does_not_start_turn",
+        "active_turn_permissions_slash_opens_picker_and_selection_does_not_start_turn",
+        "active_turn_plan_with_args_queues_prompt_under_plan_mode",
+        "active_turn_fast_slash_applies_service_tier_without_starting_turn",
         "contributor_slots::*",
         "status_indicator_widget::* snapshots",
         "update_prompt_snapshot",
