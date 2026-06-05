@@ -113,7 +113,7 @@ fi
 
 session_file_for_id() {
   local id="$1"
-  find "$codex_home/sessions" -type f -name "*${id}.jsonl" -print -quit 2>/dev/null || true
+  find "$codex_home/sessions" -type f -name "*${id}.jsonl" 2>/dev/null | head -n 1 || true
 }
 
 session_cwd() {
@@ -134,15 +134,15 @@ session_cwd() {
 
 session_meta_marks_side_chat() {
   local session_file="$1"
-  jq -e '
-    select(.type == "session_meta")
-    | (
-        .payload.thread_source? //
-        .payload.threadSource? //
-        .payload.meta.thread_source? //
-        .payload.meta.threadSource? //
-        empty
-      ) == "side"
+  jq -n -e '
+    any(
+      inputs | select(.type == "session_meta");
+      (.payload.thread_source? //
+       .payload.threadSource? //
+       .payload.meta.thread_source? //
+       .payload.meta.threadSource? //
+       "") == "side"
+    )
   ' "$session_file" >/dev/null 2>&1
 }
 
