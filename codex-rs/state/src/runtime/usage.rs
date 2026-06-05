@@ -80,7 +80,7 @@ impl UsageLogger {
             state,
             thread_id,
             source,
-            None,
+            /*thread_source*/ None,
             forked_from_id,
             agent_nickname,
             agent_role,
