@@ -412,10 +412,11 @@ async fn active_turn_model_slash_opens_picker_and_selection_does_not_start_turn(
 
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateModel(_))),
-        "expected model selection event during active turn; events: {events:?}"
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::OpenReasoningPopup { model } if model.model == "gpt-5.2"
+        )),
+        "expected model selection to open reasoning picker during active turn; events: {events:?}"
     );
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }
