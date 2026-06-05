@@ -544,6 +544,28 @@ impl ChatWidget {
             return;
         }
 
+        if cmd == SlashCommand::Plan && self.bottom_pane.is_task_running() {
+            if !self.apply_plan_slash_command() {
+                return;
+            }
+            let Some((prepared_args, prepared_elements)) =
+                self.prepare_live_inline_args(args, text_elements)
+            else {
+                return;
+            };
+            let user_message = self.prepared_inline_user_message(
+                prepared_args,
+                prepared_elements,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                SlashCommandDispatchSource::Live,
+            );
+            self.queue_user_message_with_options(user_message, QueuedInputAction::Plain);
+            self.bottom_pane.drain_pending_submission_state();
+            return;
+        }
+
         let Some((prepared_args, prepared_elements)) =
             self.prepare_live_inline_args(args, text_elements)
         else {

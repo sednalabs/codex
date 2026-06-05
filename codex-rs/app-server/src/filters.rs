@@ -171,9 +171,18 @@ mod tests {
 
     #[test]
     fn thread_source_filter_excludes_side_by_default() {
-        assert!(thread_source_matches(None, None));
-        assert!(thread_source_matches(Some(CoreThreadSource::User), None));
-        assert!(!thread_source_matches(Some(CoreThreadSource::Side), None));
+        let no_thread_source = Option::<CoreThreadSource>::None;
+        let no_filter = Option::<&[CoreThreadSource]>::None;
+
+        assert!(thread_source_matches(no_thread_source, no_filter));
+        assert!(thread_source_matches(
+            Some(CoreThreadSource::User),
+            no_filter
+        ));
+        assert!(!thread_source_matches(
+            Some(CoreThreadSource::Side),
+            no_filter
+        ));
         assert!(!thread_source_matches(
             Some(CoreThreadSource::Side),
             Some(&[])
@@ -183,6 +192,7 @@ mod tests {
     #[test]
     fn thread_source_filter_matches_side_only_when_requested() {
         let filter = [CoreThreadSource::Side];
+        let no_thread_source = Option::<CoreThreadSource>::None;
 
         assert!(thread_source_matches(
             Some(CoreThreadSource::Side),
@@ -192,6 +202,6 @@ mod tests {
             Some(CoreThreadSource::User),
             Some(&filter)
         ));
-        assert!(!thread_source_matches(None, Some(&filter)));
+        assert!(!thread_source_matches(no_thread_source, Some(&filter)));
     }
 }
