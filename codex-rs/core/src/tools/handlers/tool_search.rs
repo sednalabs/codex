@@ -116,6 +116,23 @@ impl ToolSearchHandler {
         limit: usize,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
         let exact_result_ids = self.exact_identifier_match_ids(query, limit);
+        if exact_result_ids.len() >= limit {
+            let results = exact_result_ids
+                .iter()
+                .filter_map(|id| self.entries.get(*id));
+            return self.search_output_tools(results);
+        }
+
+        if exact_result_ids.is_empty() {
+            let results = self
+                .search_engine
+                .search(query, limit)
+                .into_iter()
+                .map(|result| result.document.id)
+                .filter_map(|id| self.entries.get(id));
+            return self.search_output_tools(results);
+        }
+
         let exact_result_id_set = exact_result_ids
             .iter()
             .copied()
@@ -197,18 +214,37 @@ fn entry_matches_exact_identifier(entry: &ToolSearchEntry, terms: &[String]) -> 
 }
 
 fn matches_namespaced_tool_identifier(term: &str, namespace: &str, tool_name: &str) -> bool {
-    let tool_name = tool_name.to_ascii_lowercase();
-    if term == tool_name {
+    if tool_name.eq_ignore_ascii_case(term) {
         return true;
     }
 
-    let namespace = namespace.trim_end_matches('_').to_ascii_lowercase();
-    if namespace.is_empty() {
+    let namespace_prefix = namespace.trim_end_matches('_');
+    if namespace_prefix.is_empty() {
         return false;
     }
 
-    let flattened_name = format!("{namespace}__{}", tool_name.trim_start_matches('_'));
-    term == flattened_name
+    let namespace_len = namespace_prefix.len();
+    let delimiter_len = "__".len();
+    if term.len() <= namespace_len + delimiter_len {
+        return false;
+    }
+
+    if !term.is_char_boundary(namespace_len)
+        || !term.is_char_boundary(namespace_len + delimiter_len)
+    {
+        return false;
+    }
+
+    if !term[..namespace_len].eq_ignore_ascii_case(namespace_prefix) {
+        return false;
+    }
+
+    if !term[namespace_len..].starts_with("__") {
+        return false;
+    }
+
+    term[namespace_len + delimiter_len..]
+        .eq_ignore_ascii_case(tool_name.trim_start_matches('_'))
 }
 
 #[cfg(test)]
