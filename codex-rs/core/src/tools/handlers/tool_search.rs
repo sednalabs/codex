@@ -11,6 +11,7 @@ use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_tools::LoadableToolSpec;
+use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
@@ -114,13 +115,38 @@ impl ToolSearchHandler {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
-        let results = self
-            .search_engine
-            .search(query, limit)
-            .into_iter()
-            .map(|result| result.document.id)
-            .filter_map(|id| self.entries.get(id));
-        self.search_output_tools(results)
+        let exact_result_ids = self.exact_identifier_match_ids(query, limit);
+        let exact_result_id_set = exact_result_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let results = exact_result_ids
+            .iter()
+            .filter_map(|id| self.entries.get(*id))
+            .chain(
+                self.search_engine
+                    .search(query, limit)
+                    .into_iter()
+                    .map(|result| result.document.id)
+                    .filter(|id| !exact_result_id_set.contains(id))
+                    .filter_map(|id| self.entries.get(id)),
+            );
+        self.search_output_tools(results.take(limit))
+    }
+
+    fn exact_identifier_match_ids(&self, query: &str, limit: usize) -> Vec<usize> {
+        let terms = exact_identifier_terms(query);
+        if terms.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry_matches_exact_identifier(entry, &terms))
+            .map(|(idx, _)| idx)
+            .take(limit)
+            .collect()
     }
 
     fn search_output_tools<'a>(
@@ -131,6 +157,58 @@ impl ToolSearchHandler {
             results.into_iter().map(|entry| entry.output.clone()),
         ))
     }
+}
+
+fn exact_identifier_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| {
+            term.trim_matches(|ch: char| {
+                !(ch.is_ascii_alphanumeric()
+                    || ch == '_'
+                    || ch == '-'
+                    || ch == ':'
+                    || ch == '/')
+            })
+        })
+        .filter(|term| is_exact_identifier_term(term))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn is_exact_identifier_term(term: &str) -> bool {
+    term.len() >= 3
+        && (term.chars().any(|ch| matches!(ch, '_' | ':' | '/'))
+            || term.matches('-').count() >= 2)
+}
+
+fn entry_matches_exact_identifier(entry: &ToolSearchEntry, terms: &[String]) -> bool {
+    match &entry.output {
+        LoadableToolSpec::Function(tool) => terms
+            .iter()
+            .any(|term| tool.name.eq_ignore_ascii_case(term)),
+        LoadableToolSpec::Namespace(namespace) => namespace.tools.iter().any(|tool| {
+            let ResponsesApiNamespaceTool::Function(tool) = tool;
+            terms
+                .iter()
+                .any(|term| matches_namespaced_tool_identifier(term, &namespace.name, &tool.name))
+        }),
+    }
+}
+
+fn matches_namespaced_tool_identifier(term: &str, namespace: &str, tool_name: &str) -> bool {
+    let tool_name = tool_name.to_ascii_lowercase();
+    if term == tool_name {
+        return true;
+    }
+
+    let namespace = namespace.trim_end_matches('_').to_ascii_lowercase();
+    if namespace.is_empty() {
+        return false;
+    }
+
+    let flattened_name = format!("{namespace}__{}", tool_name.trim_start_matches('_'));
+    term == flattened_name
 }
 
 #[cfg(test)]
@@ -274,6 +352,149 @@ mod tests {
                 .expect("search should succeed");
             assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
         }
+    }
+
+    #[test]
+    fn mcp_search_surfaces_ops_queue_tools_for_exact_identifier_query() {
+        let search_infos = [
+            tool_info("ops", "work_item_queue_add", "Add a work item to an Ops runner queue"),
+            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
+            tool_info(
+                "ops",
+                "work_item_queue_remove",
+                "Remove a work item from an Ops runner queue",
+            ),
+            tool_info("ops", "work_item_queue_upsert", "Upsert an Ops runner queue"),
+            tool_info("ops", "runner_checkpoint_append", "Append a runner checkpoint"),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search(
+                concat!(
+                    "work_item_queue_add ",
+                    "work_item_queue_read ",
+                    "work_item_queue_upsert ",
+                    "work_item_queue_remove",
+                ),
+                /*limit*/ 8,
+            )
+            .expect("search should succeed");
+
+        assert_eq!(
+            namespace_tool_names(&tools),
+            vec![
+                "work_item_queue_add",
+                "work_item_queue_read",
+                "work_item_queue_remove",
+                "work_item_queue_upsert",
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_search_surfaces_flattened_namespace_identifier_query() {
+        let search_infos = [
+            tool_info("ops", "work_item_queue_add", "Add a work item to an Ops runner queue"),
+            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search("mcp__ops__work_item_queue_read", /*limit*/ 1)
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_read"]);
+    }
+
+    #[test]
+    fn exact_identifier_match_requires_callable_identifier_equality() {
+        let search_infos = [
+            tool_info(
+                "ops",
+                "work_item_queue_remove_all",
+                "Remove all items from an Ops runner queue",
+            ),
+            tool_info(
+                "ops",
+                "work_item_queue_remove",
+                "Remove one item from an Ops runner queue",
+            ),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search("work_item_queue_remove", /*limit*/ 1)
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_remove"]);
+    }
+
+    #[test]
+    fn exact_identifier_match_does_not_promote_schema_identifiers() {
+        let search_infos = cloudflare_like_tools()
+            .into_iter()
+            .map(|tool| {
+                McpHandler::new(tool)
+                    .expect("MCP tool should convert")
+                    .search_info()
+                    .expect("MCP handler should return search info")
+            })
+            .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        assert!(
+            handler
+                .exact_identifier_match_ids("database_id", /*limit*/ 8)
+                .is_empty()
+        );
+
+        let tools = handler
+            .search(
+                "Cloudflare database_id read only query execute SQL database",
+                /*limit*/ 1,
+            )
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
+    }
+
+    #[test]
+    fn exact_identifier_terms_ignores_natural_language_words() {
+        assert_eq!(
+            exact_identifier_terms(concat!(
+                "Find `work_item_queue_add`, ",
+                "mcp__ops__work_item_queue_read and queue tools",
+            )),
+            vec![
+                "work_item_queue_add".to_string(),
+                "mcp__ops__work_item_queue_read".to_string(),
+            ]
+        );
     }
 
     fn namespace_tool_names(tools: &[LoadableToolSpec]) -> Vec<&str> {
