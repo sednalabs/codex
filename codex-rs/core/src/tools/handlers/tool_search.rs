@@ -181,11 +181,7 @@ fn exact_identifier_terms(query: &str) -> Vec<String> {
         .split_whitespace()
         .map(|term| {
             term.trim_matches(|ch: char| {
-                !(ch.is_ascii_alphanumeric()
-                    || ch == '_'
-                    || ch == '-'
-                    || ch == ':'
-                    || ch == '/')
+                !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == ':' || ch == '/')
             })
         })
         .filter(|term| is_exact_identifier_term(term))
@@ -195,8 +191,7 @@ fn exact_identifier_terms(query: &str) -> Vec<String> {
 
 fn is_exact_identifier_term(term: &str) -> bool {
     term.len() >= 3
-        && (term.chars().any(|ch| matches!(ch, '_' | ':' | '/'))
-            || term.matches('-').count() >= 2)
+        && (term.chars().any(|ch| matches!(ch, '_' | ':' | '/')) || term.matches('-').count() >= 2)
 }
 
 fn entry_matches_exact_identifier(entry: &ToolSearchEntry, terms: &[String]) -> bool {
@@ -243,8 +238,7 @@ fn matches_namespaced_tool_identifier(term: &str, namespace: &str, tool_name: &s
         return false;
     }
 
-    term[namespace_len + delimiter_len..]
-        .eq_ignore_ascii_case(tool_name.trim_start_matches('_'))
+    term[namespace_len + delimiter_len..].eq_ignore_ascii_case(tool_name.trim_start_matches('_'))
 }
 
 #[cfg(test)]
@@ -393,15 +387,27 @@ mod tests {
     #[test]
     fn mcp_search_surfaces_ops_queue_tools_for_exact_identifier_query() {
         let search_infos = [
-            tool_info("ops", "work_item_queue_add", "Add a work item to an Ops runner queue"),
+            tool_info(
+                "ops",
+                "work_item_queue_add",
+                "Add a work item to an Ops runner queue",
+            ),
             tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
             tool_info(
                 "ops",
                 "work_item_queue_remove",
                 "Remove a work item from an Ops runner queue",
             ),
-            tool_info("ops", "work_item_queue_upsert", "Upsert an Ops runner queue"),
-            tool_info("ops", "runner_checkpoint_append", "Append a runner checkpoint"),
+            tool_info(
+                "ops",
+                "work_item_queue_upsert",
+                "Upsert an Ops runner queue",
+            ),
+            tool_info(
+                "ops",
+                "runner_checkpoint_append",
+                "Append a runner checkpoint",
+            ),
         ]
         .into_iter()
         .map(|tool| {
@@ -439,7 +445,11 @@ mod tests {
     #[test]
     fn mcp_search_surfaces_flattened_namespace_identifier_query() {
         let search_infos = [
-            tool_info("ops", "work_item_queue_add", "Add a work item to an Ops runner queue"),
+            tool_info(
+                "ops",
+                "work_item_queue_add",
+                "Add a work item to an Ops runner queue",
+            ),
             tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
         ]
         .into_iter()
