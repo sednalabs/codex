@@ -748,6 +748,8 @@ impl Session {
                     0
                 }
             },
+            final_model: None,
+            model_snapshot: None,
             completed_at,
             duration_ms,
             time_to_first_token_ms,

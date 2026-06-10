@@ -1886,6 +1886,14 @@ pub struct TurnCompleteEvent {
     pub last_agent_message: Option<String>,
     #[serde(default)]
     pub compaction_events_in_turn: u32,
+    /// Final model used by the terminal successful sampling request, after routing or fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub final_model: Option<String>,
+    /// Concrete model snapshot used by the terminal successful sampling request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_snapshot: Option<String>,
     /// Unix timestamp (in seconds) when the turn completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]
