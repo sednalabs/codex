@@ -170,6 +170,8 @@ fn turn_complete_item(turn_id: String, completed_at: Option<i64>) -> RolloutItem
         turn_id,
         last_agent_message: None,
         compaction_events_in_turn: 0,
+        final_model: None,
+        model_snapshot: None,
         completed_at,
         duration_ms: None,
         time_to_first_token_ms: None,
