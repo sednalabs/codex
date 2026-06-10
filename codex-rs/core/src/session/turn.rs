@@ -41,6 +41,7 @@ use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
 use crate::session::session::Session;
+use crate::session::turn_context::ModelExecutionIdentity;
 use crate::session::turn_context::TurnContext;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
@@ -141,6 +142,7 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
+    *turn_context.model_execution_identity.lock().await = ModelExecutionIdentity::default();
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -252,6 +254,7 @@ pub(crate) async fn run_turn(
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
+                    model_execution_identity: sampling_request_model_execution_identity,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
                 let (has_pending_input, token_status, estimated_token_count) = async {
@@ -355,6 +358,8 @@ pub(crate) async fn run_turn(
                             .await;
                         }
                     }
+                    *turn_context.model_execution_identity.lock().await =
+                        sampling_request_model_execution_identity;
                     if stop_outcome.should_stop {
                         break;
                     }
@@ -1277,6 +1282,7 @@ pub(crate) async fn built_tools(
 struct SamplingRequestResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
+    model_execution_identity: ModelExecutionIdentity,
 }
 
 /// Ephemeral per-response state for streaming a single proposed plan.
@@ -1893,6 +1899,7 @@ async fn try_run_sampling_request(
         FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
+    let mut model_execution_identity = ModelExecutionIdentity::default();
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
         String,
@@ -2041,6 +2048,7 @@ async fn try_run_sampling_request(
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
+                        model_execution_identity,
                     });
                 }
             }
@@ -2129,6 +2137,12 @@ async fn try_run_sampling_request(
                         .store(true, Ordering::Relaxed);
                 }
             }
+            ResponseEvent::ServerModelIdentity(identity) => {
+                model_execution_identity = ModelExecutionIdentity {
+                    final_model: identity.final_model,
+                    model_snapshot: identity.model_snapshot,
+                };
+            }
             ResponseEvent::ModelVerifications(verifications) => {
                 if !turn_context
                     .model_verification_emitted
@@ -2177,6 +2191,7 @@ async fn try_run_sampling_request(
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,
+                    model_execution_identity,
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {
