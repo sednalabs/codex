@@ -178,7 +178,7 @@ pub(crate) async fn send_wait_end_event(
         .send_event(
             turn,
             CollabWaitingEndEvent {
-                sender_thread_id: session.conversation_id,
+                sender_thread_id: session.thread_id,
                 call_id,
                 receiver_thread_ids,
                 pending_thread_ids,
@@ -406,7 +406,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     config.model_provider = turn.provider.info().clone();
     config.model_reasoning_effort = turn
         .reasoning_effort
-        .or(turn.model_info.default_reasoning_level);
+        .clone()
+        .or_else(|| turn.model_info.default_reasoning_level.clone());
     config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
@@ -443,6 +444,7 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!("approval_policy is invalid: {err}"))
         })?;
+    config.approvals_reviewer = turn.config.approvals_reviewer;
     config.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
     #[allow(deprecated)]
@@ -486,11 +488,11 @@ pub(crate) async fn apply_spawn_agent_model_selection(
         turn,
         config,
         requested_model,
-        requested_reasoning_effort,
+        requested_reasoning_effort.clone(),
     )
     .await?;
 
-    let pre_role_reasoning_effort = config.model_reasoning_effort;
+    let pre_role_reasoning_effort = config.model_reasoning_effort.clone();
     let spawn_model_selection_carry = apply_role_to_spawn_config(config, role_name)
         .await
         .map_err(FunctionCallError::RespondToModel)?;
@@ -534,7 +536,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
             validate_spawn_agent_reasoning_effort(
                 &selected_model_name,
                 &selected_model_info.supported_reasoning_levels,
-                reasoning_effort,
+                &reasoning_effort,
             )?;
             config.model_reasoning_effort = Some(reasoning_effort);
         } else {
@@ -548,7 +550,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         validate_spawn_agent_reasoning_effort(
             &turn.model_info.slug,
             &turn.model_info.supported_reasoning_levels,
-            reasoning_effort,
+            &reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
     }
@@ -572,12 +574,12 @@ async fn normalize_spawn_agent_reasoning_effort(
         .get_model_info(&model, &config.to_models_manager_config())
         .await;
 
-    match config.model_reasoning_effort {
+    match config.model_reasoning_effort.as_ref() {
         Some(reasoning_effort) => {
             if !model_info
                 .supported_reasoning_levels
                 .iter()
-                .any(|preset| preset.effort == reasoning_effort)
+                .any(|preset| &preset.effort == reasoning_effort)
             {
                 let role_changed_reasoning_effort =
                     config.model_reasoning_effort != pre_role_reasoning_effort;
@@ -585,7 +587,7 @@ async fn normalize_spawn_agent_reasoning_effort(
                     validate_spawn_agent_reasoning_effort(
                         &model,
                         &model_info.supported_reasoning_levels,
-                        reasoning_effort,
+                        &reasoning_effort,
                     )?;
                 }
 
@@ -678,11 +680,11 @@ fn find_spawn_agent_model_name(
 pub(crate) fn validate_spawn_agent_reasoning_effort(
     model: &str,
     supported_reasoning_levels: &[ReasoningEffortPreset],
-    requested_reasoning_effort: ReasoningEffort,
+    requested_reasoning_effort: &ReasoningEffort,
 ) -> Result<(), FunctionCallError> {
     if supported_reasoning_levels
         .iter()
-        .any(|preset| preset.effort == requested_reasoning_effort)
+        .any(|preset| &preset.effort == requested_reasoning_effort)
     {
         return Ok(());
     }

@@ -28,12 +28,6 @@
       "type": "string"
     },
     "ThreadSource": {
-      "enum": [
-        "memory_consolidation",
-        "side",
-        "subagent",
-        "user"
-      ],
       "type": "string"
     },
     "ThreadSourceKind": {

@@ -65,6 +65,7 @@ use codex_utils_oss::get_default_model_for_oss_provider;
 use codex_utils_version::RELEASE_VERSION;
 use color_eyre::eyre::WrapErr;
 use cwd_prompt::CwdPromptAction;
+pub use session_archive_commands::DeleteConfirmation;
 pub use session_archive_commands::SessionArchiveAction;
 pub use session_archive_commands::SessionArchiveCommandOptions;
 pub use session_archive_commands::run_session_archive_command;
@@ -72,6 +73,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 pub use token_usage::TokenUsage;
 use tracing::Level;
 use tracing::error;
@@ -137,7 +139,8 @@ mod diff_render;
 mod exec_cell;
 mod exec_command;
 mod external_agent_config_migration;
-mod external_agent_config_migration_startup;
+mod external_agent_config_migration_flow;
+mod external_agent_config_migration_model;
 mod external_editor;
 mod file_search;
 mod footer_hints;
@@ -160,6 +163,7 @@ mod local_chatgpt_auth;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
+mod markdown_text_merge;
 mod mention_codec;
 mod model_catalog;
 mod model_migration;
@@ -195,8 +199,10 @@ mod terminal_hyperlinks;
 mod terminal_palette;
 mod terminal_probe;
 mod terminal_title;
+mod terminal_visualization_instructions;
 mod text_formatting;
 mod theme_picker;
+mod thread_transcript;
 mod token_usage;
 mod tooltips;
 mod transcript_reflow;
@@ -284,6 +290,7 @@ pub(crate) mod test_support;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
 use crate::startup_hooks_review::StartupHooksReviewOutcome;
+use crate::startup_hooks_review::load_startup_hooks_review_entry;
 use crate::startup_hooks_review::maybe_run_startup_hooks_review;
 use crate::tui::Tui;
 pub use cli::Cli;
@@ -355,9 +362,11 @@ async fn init_state_db_for_app_server_target(
 ) -> std::io::Result<Option<StateDbHandle>> {
     match app_server_target {
         AppServerTarget::Embedded => state_db::try_init(config).await.map(Some).map_err(|err| {
+            let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
+                .unwrap_or_else(|| codex_state::state_db_path(config.sqlite_home.as_path()));
             std::io::Error::other(LocalStateDbStartupError::new(
-                codex_state::state_db_path(config.sqlite_home.as_path()),
-                err.to_string(),
+                database_path,
+                format!("{err:#}"),
             ))
         }),
         AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
@@ -753,18 +762,37 @@ async fn lookup_latest_session_target_with_app_server(
     cwd_filter: Option<&Path>,
     include_non_interactive: bool,
 ) -> color_eyre::Result<Option<resume_picker::SessionTarget>> {
-    let response = app_server
-        .thread_list(latest_session_lookup_params(
-            app_server.uses_remote_workspace(),
-            config,
-            cwd_filter,
-            include_non_interactive,
-        ))
-        .await?;
-    Ok(response
-        .data
-        .into_iter()
-        .find_map(session_target_from_app_server_thread))
+    let uses_remote_workspace = app_server.uses_remote_workspace();
+    for lookup_mode in [
+        LatestSessionLookupMode::StateDbOnly,
+        LatestSessionLookupMode::ScanAndRepair,
+    ] {
+        let response = app_server
+            .thread_list(latest_session_lookup_params(
+                uses_remote_workspace,
+                config,
+                cwd_filter,
+                include_non_interactive,
+                lookup_mode,
+            ))
+            .await?;
+        let target = response
+            .data
+            .into_iter()
+            .find_map(session_target_from_app_server_thread);
+        if target.as_ref().is_some_and(|target| {
+            uses_remote_workspace || target.path.as_deref().is_some_and(std::path::Path::exists)
+        }) {
+            return Ok(target);
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LatestSessionLookupMode {
+    StateDbOnly,
+    ScanAndRepair,
 }
 
 fn latest_session_lookup_params(
@@ -772,6 +800,7 @@ fn latest_session_lookup_params(
     config: &Config,
     cwd_filter: Option<&Path>,
     include_non_interactive: bool,
+    lookup_mode: LatestSessionLookupMode,
 ) -> ThreadListParams {
     ThreadListParams {
         cursor: None,
@@ -787,7 +816,10 @@ fn latest_session_lookup_params(
         thread_sources: None,
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().to_string())),
-        use_state_db_only: false,
+        use_state_db_only: match lookup_mode {
+            LatestSessionLookupMode::StateDbOnly => true,
+            LatestSessionLookupMode::ScanAndRepair => false,
+        },
         search_term: None,
     }
 }
@@ -1103,7 +1135,7 @@ pub async fn run_main(
 
     let otel_originator = originator().value;
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::legacy_core::otel_init::build_provider(
+        codex_app_server_client::build_otel_provider(
             &config,
             env!("CARGO_PKG_VERSION"),
             /*service_name_override*/ None,
@@ -1126,26 +1158,25 @@ pub async fn run_main(
             None
         }
     };
-    crate::legacy_core::otel_init::record_process_start(otel.as_ref(), otel_originator.as_str());
-    crate::legacy_core::otel_init::install_sqlite_telemetry(
-        otel.as_ref(),
-        otel_originator.as_str(),
-    );
+    if let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics) {
+        let _ = codex_otel::record_process_start_once(metrics, otel_originator.as_str());
+        let telemetry =
+            codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
+        let _ = codex_state::install_process_db_telemetry(telemetry);
+    }
     let state_db = init_state_db_for_app_server_target(&config, &app_server_target).await?;
 
     let effective_toml = config.config_layer_stack.effective_config();
     match effective_toml.try_into() {
         Ok(config_toml) => {
-            match crate::legacy_core::personality_migration::maybe_migrate_personality(
+            match codex_app_server_client::migrate_personality_if_needed(
                 &config.codex_home,
                 &config_toml,
                 state_db.clone(),
             )
             .await
             {
-                Ok(
-                    crate::legacy_core::personality_migration::PersonalityMigrationStatus::Applied,
-                ) => {
+                Ok(true) => {
                     config = load_config_or_exit(
                         cli_kv_overrides.clone(),
                         overrides.clone(),
@@ -1155,11 +1186,7 @@ pub async fn run_main(
                     )
                     .await;
                 }
-                Ok(
-                    crate::legacy_core::personality_migration::PersonalityMigrationStatus::SkippedMarker
-                    | crate::legacy_core::personality_migration::PersonalityMigrationStatus::SkippedExplicitPersonality
-                    | crate::legacy_core::personality_migration::PersonalityMigrationStatus::SkippedNoSessions,
-                ) => {}
+                Ok(false) => {}
                 Err(err) => {
                     tracing::warn!(error = %err, "failed to run personality migration");
                 }
@@ -1791,11 +1818,21 @@ async fn run_ratatui_app(
             resume_picker::SessionSelection::Resume(_)
         );
     let bypass_hook_trust_for_startup_review = config.bypass_hook_trust && !is_persistent_resume;
+    let hooks_request_handle = app_server.request_handle();
+    let hooks_cwd = config.cwd.to_path_buf();
+    let startup_prefetch_started_at = Instant::now();
+    let (startup_bootstrap, startup_hooks_entry) = tokio::join!(
+        app_server.bootstrap(&config),
+        load_startup_hooks_review_entry(hooks_request_handle, hooks_cwd),
+    );
+    let startup_bootstrap = Some(startup_bootstrap?);
+    let startup_elapsed_before_app = startup_prefetch_started_at.elapsed();
     let startup_hooks_browser = match maybe_run_startup_hooks_review(
         &mut app_server,
         &mut tui,
         &config,
         bypass_hook_trust_for_startup_review,
+        startup_hooks_entry,
     )
     .await?
     {
@@ -1810,16 +1847,18 @@ async fn run_ratatui_app(
         cli_kv_overrides.clone(),
         overrides.clone(),
         loader_overrides.clone(),
+        cloud_config_bundle,
         prompt,
         images,
         session_selection,
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?
-        should_show_trust_screen_flag, // Preserve the startup-time trust NUX signal before onboarding
         should_prompt_windows_sandbox_nux_at_startup,
         app_server_target,
         state_db,
         environment_manager,
+        startup_elapsed_before_app,
+        startup_bootstrap,
         startup_hooks_browser,
     )
     .await;
@@ -2048,6 +2087,85 @@ mod tests {
             .codex_home(temp_dir.path().to_path_buf())
             .build()
             .await
+    }
+
+    fn write_session_rollout(
+        codex_home: &Path,
+        filename_ts: &str,
+        meta_rfc3339: &str,
+        preview: &str,
+        model_provider: &str,
+        cwd: &Path,
+    ) -> color_eyre::Result<ThreadId> {
+        let uuid = Uuid::new_v4();
+        let uuid_str = uuid.to_string();
+        let thread_id = ThreadId::from_string(&uuid_str)?;
+        let year = &filename_ts[0..4];
+        let month = &filename_ts[5..7];
+        let day = &filename_ts[8..10];
+        let rollout_path = codex_home
+            .join("sessions")
+            .join(year)
+            .join(month)
+            .join(day)
+            .join(format!("rollout-{filename_ts}-{uuid_str}.jsonl"));
+        let parent = rollout_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("rollout path is missing a parent directory"))?;
+        std::fs::create_dir_all(parent)?;
+
+        let session_meta = codex_protocol::protocol::SessionMeta {
+            id: thread_id,
+            timestamp: meta_rfc3339.to_string(),
+            cwd: cwd.to_path_buf(),
+            originator: "codex".to_string(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_protocol::protocol::SessionSource::Cli,
+            model_provider: Some(model_provider.to_string()),
+            ..Default::default()
+        };
+        let session_meta = serde_json::to_value(codex_protocol::protocol::SessionMetaLine {
+            meta: session_meta,
+            git: None,
+        })?;
+        let lines = [
+            serde_json::json!({
+                "timestamp": meta_rfc3339,
+                "type": "session_meta",
+                "payload": session_meta,
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": meta_rfc3339,
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": preview}],
+                },
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": meta_rfc3339,
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": preview,
+                    "kind": "plain",
+                },
+            })
+            .to_string(),
+        ];
+        std::fs::write(&rollout_path, lines.join("\n") + "\n")?;
+        let updated_at =
+            chrono::DateTime::parse_from_rfc3339(meta_rfc3339)?.with_timezone(&chrono::Utc);
+        let times = std::fs::FileTimes::new().set_modified(updated_at.into());
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(rollout_path)?
+            .set_times(times)?;
+
+        Ok(thread_id)
     }
 
     #[test]
@@ -2338,13 +2456,27 @@ mod tests {
             &config,
             Some(cwd.as_path()),
             /*include_non_interactive*/ false,
+            LatestSessionLookupMode::StateDbOnly,
         );
 
-        assert_eq!(params.model_providers, Some(vec![config.model_provider_id]));
+        assert_eq!(
+            params.model_providers,
+            Some(vec![config.model_provider_id.clone()])
+        );
         assert_eq!(
             params.cwd,
             Some(ThreadListCwdFilter::One(cwd.to_string_lossy().to_string()))
         );
+        assert!(params.use_state_db_only);
+
+        let scan_params = latest_session_lookup_params(
+            /*uses_remote_workspace*/ false,
+            &config,
+            Some(cwd.as_path()),
+            /*include_non_interactive*/ false,
+            LatestSessionLookupMode::ScanAndRepair,
+        );
+        assert!(!scan_params.use_state_db_only);
         Ok(())
     }
 
@@ -2365,6 +2497,7 @@ mod tests {
             &config,
             Some(cwd.as_path()),
             /*include_non_interactive*/ false,
+            LatestSessionLookupMode::StateDbOnly,
         );
 
         assert_eq!(params.model_providers, Some(vec![config.model_provider_id]));
@@ -2382,8 +2515,11 @@ mod tests {
         let config = build_config(&temp_dir).await?;
 
         let params = latest_session_lookup_params(
-            /*uses_remote_workspace*/ true, &config, /*cwd_filter*/ None,
+            /*uses_remote_workspace*/ true,
+            &config,
+            /*cwd_filter*/ None,
             /*include_non_interactive*/ false,
+            LatestSessionLookupMode::StateDbOnly,
         );
 
         assert_eq!(params.model_providers, None);
@@ -2398,8 +2534,11 @@ mod tests {
         let config = build_config(&temp_dir).await?;
 
         let params = latest_session_lookup_params(
-            /*uses_remote_workspace*/ true, &config, /*cwd_filter*/ None,
+            /*uses_remote_workspace*/ true,
+            &config,
+            /*cwd_filter*/ None,
             /*include_non_interactive*/ true,
+            LatestSessionLookupMode::StateDbOnly,
         );
 
         assert_eq!(
@@ -2426,6 +2565,7 @@ mod tests {
             &config,
             Some(cwd),
             /*include_non_interactive*/ false,
+            LatestSessionLookupMode::StateDbOnly,
         );
 
         assert_eq!(params.model_providers, None);
@@ -2465,85 +2605,6 @@ mod tests {
 
     #[tokio::test]
     async fn fork_last_filters_latest_session_by_cwd_unless_show_all() -> color_eyre::Result<()> {
-        fn write_session_rollout(
-            codex_home: &Path,
-            filename_ts: &str,
-            meta_rfc3339: &str,
-            preview: &str,
-            model_provider: &str,
-            cwd: &Path,
-        ) -> color_eyre::Result<ThreadId> {
-            let uuid = Uuid::new_v4();
-            let uuid_str = uuid.to_string();
-            let thread_id = ThreadId::from_string(&uuid_str)?;
-            let year = &filename_ts[0..4];
-            let month = &filename_ts[5..7];
-            let day = &filename_ts[8..10];
-            let rollout_path = codex_home
-                .join("sessions")
-                .join(year)
-                .join(month)
-                .join(day)
-                .join(format!("rollout-{filename_ts}-{uuid_str}.jsonl"));
-            let parent = rollout_path.parent().ok_or_else(|| {
-                color_eyre::eyre::eyre!("rollout path is missing a parent directory")
-            })?;
-            std::fs::create_dir_all(parent)?;
-
-            let session_meta = codex_protocol::protocol::SessionMeta {
-                id: thread_id,
-                timestamp: meta_rfc3339.to_string(),
-                cwd: cwd.to_path_buf(),
-                originator: "codex".to_string(),
-                cli_version: "0.0.0".to_string(),
-                source: codex_protocol::protocol::SessionSource::Cli,
-                model_provider: Some(model_provider.to_string()),
-                ..Default::default()
-            };
-            let session_meta = serde_json::to_value(codex_protocol::protocol::SessionMetaLine {
-                meta: session_meta,
-                git: None,
-            })?;
-            let lines = [
-                serde_json::json!({
-                    "timestamp": meta_rfc3339,
-                    "type": "session_meta",
-                    "payload": session_meta,
-                })
-                .to_string(),
-                serde_json::json!({
-                    "timestamp": meta_rfc3339,
-                    "type": "response_item",
-                    "payload": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": preview}],
-                    },
-                })
-                .to_string(),
-                serde_json::json!({
-                    "timestamp": meta_rfc3339,
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "user_message",
-                        "message": preview,
-                        "kind": "plain",
-                    },
-                })
-                .to_string(),
-            ];
-            std::fs::write(&rollout_path, lines.join("\n") + "\n")?;
-            let updated_at =
-                chrono::DateTime::parse_from_rfc3339(meta_rfc3339)?.with_timezone(&chrono::Utc);
-            let times = std::fs::FileTimes::new().set_modified(updated_at.into());
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(rollout_path)?
-                .set_times(times)?;
-
-            Ok(thread_id)
-        }
-
         let temp_dir = TempDir::new()?;
         let project_cwd = temp_dir.path().join("project");
         let other_cwd = temp_dir.path().join("other-project");
@@ -2610,6 +2671,51 @@ mod tests {
 
         assert_eq!(scoped_target.thread_id, project_thread_id);
         assert_eq!(show_all_target.thread_id, other_thread_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn latest_session_lookup_falls_back_for_rollout_missing_from_state_db()
+    -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let project_cwd = temp_dir.path().join("project");
+        std::fs::create_dir_all(&project_cwd)?;
+        let config = ConfigBuilder::default()
+            .codex_home(temp_dir.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(project_cwd.clone()),
+                ..Default::default()
+            })
+            .build()
+            .await?;
+        let mut app_server = AppServerSession::new(
+            codex_app_server_client::AppServerClient::InProcess(
+                start_test_embedded_app_server(config.clone()).await?,
+            ),
+            ThreadParamsMode::Embedded,
+        );
+
+        // Simulate a legacy writer creating a rollout after the state DB backfill completed.
+        let thread_id = write_session_rollout(
+            temp_dir.path(),
+            "2025-01-02T10-00-00",
+            "2025-01-02T10:00:00Z",
+            "legacy writer session",
+            config.model_provider_id.as_str(),
+            &project_cwd,
+        )?;
+
+        let target = lookup_latest_session_target_with_app_server(
+            &mut app_server,
+            &config,
+            Some(project_cwd.as_path()),
+            /*include_non_interactive*/ false,
+        )
+        .await?
+        .expect("expected scan-and-repair fallback to find the rollout");
+        app_server.shutdown().await?;
+
+        assert_eq!(target.thread_id, thread_id);
         Ok(())
     }
 
@@ -2880,6 +2986,37 @@ mod tests {
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn embedded_state_db_corruption_preserves_failed_database_for_cli_recovery()
+    -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut config = build_config(&temp_dir).await?;
+        let sqlite_home = temp_dir.path().join("sqlite-home");
+        std::fs::create_dir_all(&sqlite_home)?;
+        let logs_db_path = codex_state::logs_db_path(&sqlite_home);
+        std::fs::write(&logs_db_path, "not a sqlite database")?;
+        config.sqlite_home = sqlite_home;
+
+        let err =
+            match init_state_db_for_app_server_target(&config, &AppServerTarget::Embedded).await {
+                Ok(_) => panic!("embedded startup should surface state db init failures"),
+                Err(err) => err,
+            };
+        let startup_error = err
+            .get_ref()
+            .and_then(|err| err.downcast_ref::<LocalStateDbStartupError>())
+            .expect("state db startup failure should retain its typed context");
+
+        assert_eq!(startup_error.database_path(), logs_db_path.as_path());
+        assert!(
+            codex_state::sqlite_error_detail_is_corruption(startup_error.detail()),
+            "startup error should preserve the SQLite corruption cause, got: {}",
+            startup_error.detail()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     #[serial]
     async fn windows_shows_trust_prompt_with_sandbox() -> std::io::Result<()> {

@@ -148,6 +148,7 @@ fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> Result
         store
             .create_thread(CreateThreadParams {
                 thread_id,
+                extra_config: None,
                 forked_from_id: None,
                 parent_thread_id: None,
                 source: SessionSource::Cli,

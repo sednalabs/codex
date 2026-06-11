@@ -39,7 +39,6 @@ pub struct DynamicToolHandler {
     tool_name: ToolName,
     spec: ToolSpec,
     exposure: ToolExposure,
-    search_text: String,
 }
 
 impl DynamicToolHandler {
@@ -62,12 +61,10 @@ impl DynamicToolHandler {
             } else {
                 ToolExposure::Direct
             },
-            search_text: build_dynamic_search_text(tool),
         })
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
     fn tool_name(&self) -> ToolName {
         self.tool_name.clone()
@@ -82,8 +79,7 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
-        ToolSearchInfo::from_spec(
-            self.search_text.clone(),
+        ToolSearchInfo::from_tool_spec(
             self.spec(),
             Some(ToolSearchSourceInfo {
                 name: "Dynamic tools".to_string(),
@@ -92,7 +88,13 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         )
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl DynamicToolHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -222,18 +224,3 @@ async fn request_dynamic_tool(
 
     response
 }
-
-fn build_dynamic_search_text(tool: &DynamicToolSpec) -> String {
-    let mut builder = SearchTextBuilder::new();
-    builder.push(&tool.name);
-    builder.push(&tool.description);
-    if let Some(namespace) = &tool.namespace {
-        builder.push(namespace);
-    }
-    builder.push_schema_terms(&tool.input_schema);
-    builder.finish()
-}
-
-#[cfg(test)]
-#[path = "dynamic_tests.rs"]
-mod tests;
