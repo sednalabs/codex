@@ -93,6 +93,21 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(super) fn on_context_compaction_completed(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            |q| q.push_item_completed(item),
+            |s| s.handle_context_compaction_completed_now(),
+        );
+    }
+
+    fn handle_context_compaction_completed_now(&mut self) {
+        self.add_info_message("Context compacted".to_string(), /*hint*/ None);
+        if self.bottom_pane.is_task_running() {
+            self.set_status_header(String::from("Context compacted"));
+        }
+        self.request_redraw();
+    }
+
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.record_visible_turn_activity();
         self.flush_answer_stream_with_separator();
@@ -383,6 +398,9 @@ impl ChatWidget {
             item @ ThreadItem::McpToolCall { .. } => self.handle_mcp_tool_call_completed_now(item),
             item @ ThreadItem::ComputerUseCall { .. } => {
                 self.handle_computer_use_call_completed_now(item);
+            }
+            ThreadItem::ContextCompaction { .. } => {
+                self.handle_context_compaction_completed_now();
             }
             _ => {}
         }
