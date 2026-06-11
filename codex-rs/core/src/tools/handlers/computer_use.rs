@@ -117,7 +117,6 @@ impl ComputerUseHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
     fn tool_name(&self) -> ToolName {
         self.tool_name.clone()
@@ -144,7 +143,13 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
         )
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ComputerUseHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {

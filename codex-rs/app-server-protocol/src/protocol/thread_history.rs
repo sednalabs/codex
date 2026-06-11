@@ -213,6 +213,7 @@ impl ThreadHistoryBuilder {
             EventMsg::CollabAgentInteractionEnd(payload) => {
                 self.handle_collab_agent_interaction_end(payload)
             }
+            EventMsg::SubAgentActivity(payload) => self.handle_sub_agent_activity(payload),
             EventMsg::CollabWaitingBegin(payload) => self.handle_collab_waiting_begin(payload),
             EventMsg::CollabWaitingEnd(payload) => self.handle_collab_waiting_end(payload),
             EventMsg::CollabCloseBegin(payload) => self.handle_collab_close_begin(payload),
@@ -680,7 +681,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states: HashMap::new(),
         };
@@ -716,7 +717,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states,
         });
@@ -762,6 +763,18 @@ impl ThreadHistoryBuilder {
             reasoning_effort: None,
             timed_out: false,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
+        });
+    }
+
+    fn handle_sub_agent_activity(
+        &mut self,
+        payload: &codex_protocol::protocol::SubAgentActivityEvent,
+    ) {
+        self.upsert_item_in_current_turn(ThreadItem::SubAgentActivity {
+            id: payload.event_id.clone(),
+            kind: payload.kind.into(),
+            agent_thread_id: payload.agent_thread_id.to_string(),
+            agent_path: String::from(payload.agent_path.clone()),
         });
     }
 
@@ -3078,6 +3091,7 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                window_id: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

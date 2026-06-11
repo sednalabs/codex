@@ -15,6 +15,7 @@ use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SandboxPolicy;
+use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -44,14 +45,23 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
-    /// Canonical agent path for thread-spawned subagents, when available.
+    /// Canonical v2 agent path, when the thread was observed through v2 activity.
     pub(crate) agent_path: Option<String>,
+    /// Whether the latest liveness refresh says the agent thread is actively working.
+    pub(crate) is_running: bool,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
     /// Unix timestamp (seconds) when the thread was created, if known.
     pub(crate) created_at: Option<i64>,
     /// Unix timestamp (seconds) when the thread was last updated, if known.
     pub(crate) updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubAgentActivityDisplay {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) agent_path: String,
+    pub(crate) is_running_hint: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -146,7 +156,7 @@ fn format_agent_picker_item_description_at(
         if let Some(model) = model {
             model_parts.push(model.to_string());
         }
-        if let Some(reasoning_effort) = usage.reasoning_effort {
+        if let Some(reasoning_effort) = &usage.reasoning_effort {
             model_parts.push(reasoning_effort.to_string());
         }
         parts.push(model_parts.join(" "));
@@ -331,7 +341,7 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
             ..
         } => Some(SpawnRequestSummary {
             model: model.clone(),
-            reasoning_effort: *reasoning_effort,
+            reasoning_effort: reasoning_effort.clone(),
         }),
         _ => None,
     }
@@ -345,7 +355,7 @@ pub(crate) fn tool_call_history_cell(
     let ThreadItem::CollabAgentToolCall {
         tool,
         status,
-        sender_thread_id,
+        sender_thread_id: _,
         receiver_thread_ids,
         prompt,
         timed_out,
@@ -359,7 +369,6 @@ pub(crate) fn tool_call_history_cell(
     let first_receiver = receiver_thread_ids
         .first()
         .and_then(|id| parse_thread_id(id));
-    let sender_thread_id = parse_thread_id(sender_thread_id);
     let prompt = prompt.as_deref().unwrap_or_default();
 
     match tool {
@@ -416,12 +425,59 @@ pub(crate) fn tool_call_history_cell(
                 return None;
             }
             first_receiver
-                .zip(sender_thread_id)
-                .map(|(receiver_thread_id, sender_thread_id)| {
-                    close_end(receiver_thread_id, sender_thread_id, &mut agent_metadata)
-                })
+                .map(|receiver_thread_id| close_end(receiver_thread_id, &mut agent_metadata))
         }
     }
+}
+
+pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentActivityDisplay> {
+    let ThreadItem::SubAgentActivity {
+        kind,
+        agent_thread_id,
+        agent_path,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    Some(SubAgentActivityDisplay {
+        thread_id: parse_thread_id(agent_thread_id)?,
+        agent_path: agent_path.clone(),
+        is_running_hint: !matches!(kind, SubAgentActivityKind::Interrupted),
+    })
+}
+
+pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
+    let ThreadItem::SubAgentActivity {
+        kind, agent_path, ..
+    } = item
+    else {
+        return None;
+    };
+    Some(collab_event(
+        sub_agent_activity_title(*kind, agent_path),
+        Vec::new(),
+    ))
+}
+
+pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path: &str) -> String {
+    match kind {
+        SubAgentActivityKind::Started => format!("Started `{agent_path}`"),
+        SubAgentActivityKind::Interacted => format!("Interacted with `{agent_path}`"),
+        SubAgentActivityKind::Interrupted => format!("Interrupted `{agent_path}`"),
+    }
+}
+
+fn sub_agent_activity_title(kind: SubAgentActivityKind, agent_path: &str) -> Line<'static> {
+    let (prefix, path) = match kind {
+        SubAgentActivityKind::Started => ("Started ", agent_path),
+        SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
+        SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
+    };
+    title_spans_line(vec![
+        Span::from(prefix).bold(),
+        Span::from(format!("`{path}`")).cyan(),
+    ])
 }
 
 fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> PlainHistoryCell {
@@ -552,7 +608,6 @@ fn waiting_end(
 
 fn close_end(
     receiver_thread_id: ThreadId,
-    sender_thread_id: ThreadId,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     collab_event(
@@ -561,15 +616,8 @@ fn close_end(
             agent_label(receiver_thread_id, &agent_metadata(receiver_thread_id)),
             /*spawn_request*/ None,
         ),
-        vec![
-            resume_target_line("Resume subagent: ", receiver_thread_id),
-            resume_target_line("Return to parent: ", sender_thread_id),
-        ],
+        Vec::new(),
     )
-}
-
-fn resume_target_line(label: &'static str, thread_id: ThreadId) -> Line<'static> {
-    Line::from(vec![label.into(), thread_id.to_string().cyan()])
 }
 
 fn resume_begin(
@@ -1317,9 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn collab_close_end_includes_resume_targets() {
-        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
-            .expect("valid sender thread id");
+    fn collab_close_end_omits_resume_targets() {
         let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid receiver thread id");
 
@@ -1333,16 +1379,20 @@ mod tests {
                 AgentMetadata::default()
             }
         };
-        let close = close_end(receiver_thread_id, sender_thread_id, &mut agent_metadata);
+        let close = close_end(receiver_thread_id, &mut agent_metadata);
         let rendered = cell_to_text(&close);
 
         assert!(
-            rendered.contains("Resume subagent: 00000000-0000-0000-0000-000000000002"),
-            "expected rendered close message to include subagent resume target, got: {rendered}"
+            rendered.contains("Closed Robie [explorer]"),
+            "expected rendered close message to identify the closed agent, got: {rendered}"
         );
         assert!(
-            rendered.contains("Return to parent: 00000000-0000-0000-0000-000000000001"),
-            "expected rendered close message to include parent resume target, got: {rendered}"
+            !rendered.contains("Resume subagent:"),
+            "expected rendered close message to omit subagent resume target, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Return to parent:"),
+            "expected rendered close message to omit parent resume target, got: {rendered}"
         );
     }
 

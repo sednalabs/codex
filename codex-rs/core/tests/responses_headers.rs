@@ -74,7 +74,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = codex_core::test_support::get_model_offline(config.model.as_deref());
     config.model = Some(model.clone());
@@ -85,6 +85,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
     let session_source = SessionSource::SubAgent(SubAgentSource::Review);
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let expected_window_id = format!("{thread_id}:0");
     let session_telemetry = SessionTelemetry::new(
         thread_id,
         model.as_str(),
@@ -126,6 +127,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
 
     let mut stream = client_session
         .stream(
+            &expected_window_id,
             &prompt,
             &model_info,
             &session_telemetry,
@@ -144,7 +146,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
     }
 
     let request = request_recorder.single_request();
-    let expected_window_id = format!("{thread_id}:0");
     assert_eq!(
         request.header("x-openai-subagent").as_deref(),
         Some("review")
@@ -157,6 +158,10 @@ async fn responses_stream_includes_subagent_header_on_review() {
     assert_eq!(
         request.body_json()["client_metadata"]["x-codex-installation-id"].as_str(),
         Some(TEST_INSTALLATION_ID)
+    );
+    assert_eq!(
+        request.body_json()["client_metadata"]["x-codex-window-id"].as_str(),
+        Some(expected_window_id.as_str())
     );
     assert_eq!(request.header("x-codex-sandbox"), None);
 }
@@ -202,7 +207,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = codex_core::test_support::get_model_offline(config.model.as_deref());
     config.model = Some(model.clone());
@@ -213,6 +218,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
     let session_source = SessionSource::SubAgent(SubAgentSource::Other("my-task".to_string()));
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let window_id = format!("{thread_id}:0");
 
     let session_telemetry = SessionTelemetry::new(
         thread_id,
@@ -255,6 +261,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
 
     let mut stream = client_session
         .stream(
+            &window_id,
             &prompt,
             &model_info,
             &session_telemetry,
@@ -318,7 +325,7 @@ async fn responses_respects_model_info_overrides_from_config() {
     config.model_provider = provider.clone();
     config.model_supports_reasoning_summaries = Some(true);
     config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = config.model.clone().expect("model configured");
     let config = Arc::new(config);
@@ -332,6 +339,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         SessionSource::SubAgent(SubAgentSource::Other("override-check".to_string()));
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let window_id = format!("{thread_id}:0");
     let session_telemetry = SessionTelemetry::new(
         thread_id,
         model.as_str(),
@@ -373,6 +381,7 @@ async fn responses_respects_model_info_overrides_from_config() {
 
     let mut stream = client_session
         .stream(
+            &window_id,
             &prompt,
             &model_info,
             &session_telemetry,

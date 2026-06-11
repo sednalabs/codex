@@ -160,6 +160,28 @@
       ],
       "type": "object"
     },
+    "AgentMessageInputContent": {
+      "oneOf": [
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "encrypted_content",
+              "title": "EncryptedContentAgentMessageInputContentType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "encrypted_content"
+          ],
+          "title": "EncryptedContentAgentMessageInputContent",
+          "type": "object"
+        }
+      ]
+    },
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
       "properties": {
@@ -512,6 +534,16 @@
         {
           "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "type": "string"
+        },
+        {
+          "const": "personalAccessToken",
+          "description": "Programmatic Codex auth backed by a personal access token.",
+          "type": "string"
+        },
+        {
+          "const": "bedrockApiKey",
+          "description": "Amazon Bedrock bearer token managed by Codex.",
           "type": "string"
         }
       ]
@@ -2446,6 +2478,12 @@
         },
         "status": {
           "$ref": "#/$defs/McpServerStartupState"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2997,15 +3035,8 @@
       "type": "string"
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningItemContent": {
@@ -3282,6 +3313,35 @@
             "content"
           ],
           "title": "MessageResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "author": {
+              "type": "string"
+            },
+            "content": {
+              "items": {
+                "$ref": "#/$defs/AgentMessageInputContent"
+              },
+              "type": "array"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_message",
+              "title": "AgentMessageResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "author",
+            "recipient",
+            "content"
+          ],
+          "title": "AgentMessageResponseItem",
           "type": "object"
         },
         {
@@ -3987,6 +4047,14 @@
       ],
       "type": "object"
     },
+    "SubAgentActivityKind": {
+      "enum": [
+        "started",
+        "interacted",
+        "interrupted"
+      ],
+      "type": "string"
+    },
     "SubAgentSource": {
       "oneOf": [
         {
@@ -4358,6 +4426,17 @@
       "type": "object"
     },
     "ThreadClosedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadDeletedNotification": {
       "properties": {
         "threadId": {
           "type": "string"
@@ -5009,6 +5088,36 @@
         },
         {
           "properties": {
+            "agentPath": {
+              "type": "string"
+            },
+            "agentThreadId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SubAgentActivityKind"
+            },
+            "type": {
+              "const": "subAgentActivity",
+              "title": "SubAgentActivityThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "agentThreadId",
+            "agentPath"
+          ],
+          "title": "SubAgentActivityThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -5464,12 +5573,6 @@
       "type": "object"
     },
     "ThreadSource": {
-      "enum": [
-        "memory_consolidation",
-        "side",
-        "subagent",
-        "user"
-      ],
       "type": "string"
     },
     "ThreadStartedNotification": {
@@ -5793,6 +5896,23 @@
           "type": "string"
         }
       ]
+    },
+    "TurnModerationMetadataNotification": {
+      "properties": {
+        "metadata": true,
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "metadata"
+      ],
+      "type": "object"
     },
     "TurnPlanStep": {
       "properties": {
@@ -6240,6 +6360,24 @@
         "params"
       ],
       "title": "Thread/archivedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/deleted",
+          "title": "Thread/deletedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadDeletedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/deletedNotification",
       "type": "object"
     },
     {
@@ -7020,6 +7158,24 @@
         "params"
       ],
       "title": "Model/verificationNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "turn/moderationMetadata",
+          "title": "Turn/moderationMetadataNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/TurnModerationMetadataNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Turn/moderationMetadataNotification",
       "type": "object"
     },
     {

@@ -48,6 +48,9 @@ Reruns only failed jobs (and dependencies) for a workflow run.
 
 Use the GraphQL `reviewThreads` view to decide whether review-comment history still reflects a current unresolved blocker. Historical review comments/submissions may remain in REST history after their threads are resolved; the watcher should treat those as non-actionable unless the live thread is still unresolved or the operator explicitly wants to resurface them.
 
+Use each inline comment's `pull_request_review_id` to find its parent review. Ignore parent reviews
+whose `state` is `PENDING`, along with their inline comments, until the review is submitted.
+
 ## JSON fields consumed by the watcher
 
 ### `gh pr view`

@@ -4,6 +4,8 @@ use codex_app_server_protocol::PluginInstallPolicy;
 use codex_login::CodexAuth;
 use codex_plugin::PluginCapabilitySummary;
 use std::collections::HashSet;
+use std::path::Component;
+use std::path::Path;
 use tracing::warn;
 
 use crate::OPENAI_BUNDLED_MARKETPLACE_NAME;
@@ -12,7 +14,6 @@ use crate::PluginsConfigInput;
 use crate::PluginsManager;
 use crate::marketplace::MarketplacePluginInstallPolicy;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
-use crate::remote::RemotePluginScope;
 
 const TOOL_SUGGEST_DISCOVERABLE_PLUGIN_ALLOWLIST: &[&str] = &[
     "github@openai-curated",
@@ -54,6 +55,9 @@ const TOOL_SUGGEST_DISCOVERABLE_MARKETPLACE_ALLOWLIST: &[&str] = &[
     REMOTE_GLOBAL_MARKETPLACE_NAME,
 ];
 
+const OPENAI_CURATED_MARKETPLACE_PATH_SUFFIX: &str =
+    ".tmp/plugins/.agents/plugins/marketplace.json";
+
 #[derive(Debug, Clone)]
 pub struct ToolSuggestPluginDiscoveryInput {
     pub plugins: PluginsConfigInput,
@@ -65,6 +69,7 @@ pub struct ToolSuggestPluginDiscoveryInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolSuggestDiscoverablePlugin {
     pub id: String,
+    pub remote_plugin_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub has_skills: bool,
@@ -83,7 +88,11 @@ impl PluginsManager {
         }
 
         let marketplaces = self
-            .list_marketplaces_for_config(&input.plugins, &[])
+            .list_marketplaces_for_config(
+                &input.plugins,
+                &[],
+                /*include_openai_curated*/ !input.plugins.remote_plugin_enabled,
+            )
             .context("failed to list plugin marketplaces for tool suggestions")?
             .marketplaces;
         let mut installed_app_connector_ids = self
@@ -96,7 +105,9 @@ impl PluginsManager {
             .collect::<HashSet<_>>();
         installed_app_connector_ids.extend(input.loaded_plugin_app_connector_ids.iter().cloned());
         let remote_installed_marketplaces = if input.plugins.remote_plugin_enabled {
-            self.build_remote_installed_plugin_marketplaces_from_cache(&[RemotePluginScope::Global])
+            self.build_remote_installed_plugin_marketplaces_from_cache(&[
+                REMOTE_GLOBAL_MARKETPLACE_NAME,
+            ])
         } else {
             None
         };
@@ -104,11 +115,10 @@ impl PluginsManager {
         let mut discoverable_plugins = Vec::<ToolSuggestDiscoverablePlugin>::new();
         for marketplace in marketplaces {
             let marketplace_name = marketplace.name;
-            if input.plugins.remote_plugin_enabled
-                && marketplace_name == OPENAI_CURATED_MARKETPLACE_NAME
-            {
-                continue;
-            }
+            let use_legacy_local_curated_filter = should_use_legacy_local_curated_discovery_filter(
+                &marketplace_name,
+                marketplace.path.as_path(),
+            );
             let is_allowlisted_marketplace = TOOL_SUGGEST_DISCOVERABLE_MARKETPLACE_ALLOWLIST
                 .contains(&marketplace_name.as_str());
 
@@ -121,6 +131,13 @@ impl PluginsManager {
                     || input.disabled_plugin_ids.contains(plugin.id.as_str())
                     || (!is_allowlisted_marketplace && !is_configured_plugin)
                 {
+                    continue;
+                }
+
+                // On Windows-backed WSL mounts, keep local curated discovery bounded to the
+                // legacy fallback/configured set instead of reading every plugin detail for app
+                // ids. Remote curated has cached app ids and still expands by installed apps.
+                if use_legacy_local_curated_filter && !is_configured_plugin && !is_fallback_plugin {
                     continue;
                 }
 
@@ -146,6 +163,7 @@ impl PluginsManager {
 
                         discoverable_plugins.push(ToolSuggestDiscoverablePlugin {
                             id: plugin.config_name,
+                            remote_plugin_id: None,
                             name: plugin.display_name,
                             description: plugin.description,
                             has_skills: plugin.has_skills,
@@ -201,6 +219,7 @@ impl PluginsManager {
 
                 discoverable_plugins.push(ToolSuggestDiscoverablePlugin {
                     id: plugin.config_id,
+                    remote_plugin_id: Some(plugin.remote_plugin_id),
                     name: plugin.name,
                     description: plugin.description,
                     has_skills: plugin.has_skills,
@@ -218,21 +237,29 @@ impl PluginsManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::TOOL_SUGGEST_DISCOVERABLE_PLUGIN_ALLOWLIST;
-
-    #[test]
-    fn bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable() {
-        for plugin_id in [
-            "browser-use@openai-bundled",
-            "chrome@openai-bundled",
-            "computer-use@openai-bundled",
-        ] {
-            assert!(
-                TOOL_SUGGEST_DISCOVERABLE_PLUGIN_ALLOWLIST.contains(&plugin_id),
-                "{plugin_id} should be tool-suggest discoverable"
-            );
-        }
-    }
+fn should_use_legacy_local_curated_discovery_filter(
+    marketplace_name: &str,
+    marketplace_path: &Path,
+) -> bool {
+    marketplace_name == OPENAI_CURATED_MARKETPLACE_NAME
+        && is_wsl_windows_drive_path(marketplace_path)
+        && marketplace_path.ends_with(Path::new(OPENAI_CURATED_MARKETPLACE_PATH_SUFFIX))
 }
+
+fn is_wsl_windows_drive_path(path: &Path) -> bool {
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir) {
+        return false;
+    }
+    if components.next().and_then(|part| part.as_os_str().to_str()) != Some("mnt") {
+        return false;
+    }
+    let Some(drive) = components.next().and_then(|part| part.as_os_str().to_str()) else {
+        return false;
+    };
+    drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic()
+}
+
+#[cfg(test)]
+#[path = "discoverable_tests.rs"]
+mod tests;

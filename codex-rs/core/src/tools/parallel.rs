@@ -306,7 +306,6 @@ mod tests {
         tool_name: codex_tools::ToolName,
     }
 
-    #[async_trait::async_trait]
     impl ToolExecutor<ToolInvocation> for ImmediateHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
             self.tool_name.clone()
@@ -323,14 +322,13 @@ mod tests {
             })
         }
 
-        async fn handle(
-            &self,
-            _invocation: ToolInvocation,
-        ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-            Ok(Box::new(FunctionToolOutput::from_text(
-                "ok".to_string(),
-                Some(true),
-            )))
+        fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            Box::pin(async {
+                Ok(
+                    Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
+                        as Box<dyn crate::tools::context::ToolOutput>,
+                )
+            })
         }
     }
 
@@ -343,7 +341,6 @@ mod tests {
         allow_cleanup: Arc<Notify>,
     }
 
-    #[async_trait::async_trait]
     impl ToolExecutor<ToolInvocation> for CancellationCleanupHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
             self.tool_name.clone()
@@ -360,7 +357,13 @@ mod tests {
             })
         }
 
-        async fn handle(
+        fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            Box::pin(self.handle_call(invocation))
+        }
+    }
+
+    impl CancellationCleanupHandler {
+        async fn handle_call(
             &self,
             invocation: ToolInvocation,
         ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -385,7 +388,7 @@ mod tests {
             Ok(Box::new(FunctionToolOutput::from_text(
                 "cleanup complete".to_string(),
                 Some(false),
-            )))
+            )) as Box<dyn crate::tools::context::ToolOutput>)
         }
     }
 

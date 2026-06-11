@@ -229,7 +229,8 @@ impl SpawnModelSelectionCarry {
             {
                 role_config
                     .model_reasoning_effort
-                    .or(config.model_reasoning_effort)
+                    .clone()
+                    .or_else(|| config.model_reasoning_effort.clone())
             } else {
                 None
             },
@@ -276,7 +277,7 @@ impl SpawnModelSelectionCarry {
                 preserve_current_profile,
                 active_profile_updates.model_reasoning_effort,
                 role_config.model_reasoning_effort.is_some(),
-                config.model_reasoning_effort,
+                config.model_reasoning_effort.clone(),
             ),
             model_reasoning_summary: sticky_spawn_setting(
                 preserve_current_profile,
@@ -303,8 +304,8 @@ impl SpawnModelSelectionCarry {
         if let Some(model) = &self.model {
             config.model = Some(model.clone());
         }
-        if let Some(reasoning_effort) = self.model_reasoning_effort {
-            config.model_reasoning_effort = Some(reasoning_effort);
+        if let Some(reasoning_effort) = &self.model_reasoning_effort {
+            config.model_reasoning_effort = Some(reasoning_effort.clone());
         }
         if let Some(reasoning_summary) = self.model_reasoning_summary {
             config.model_reasoning_summary = Some(reasoning_summary);

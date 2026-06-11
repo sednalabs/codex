@@ -11,6 +11,7 @@ use crate::session_state::MessageHistoryMetadata;
 use crate::session_state::ThreadSessionState;
 use crate::status::StatusAccountDisplay;
 use crate::status::plan_type_display_name;
+use crate::terminal_visualization_instructions::with_terminal_visualization_instructions;
 use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
@@ -52,6 +53,8 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadDeleteParams;
+use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadGoalClearParams;
@@ -127,10 +130,16 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use uuid::Uuid;
 
 const JSONRPC_INVALID_REQUEST: i64 = -32600;
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+pub(crate) const EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE: &str =
+    "A previous agent import is still running. Wait for it to finish before importing again.";
 const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
@@ -150,6 +159,7 @@ fn is_thread_settings_update_unsupported(source: &JSONRPCErrorError) -> bool {
 /// fetched asynchronously after bootstrap returns so that the TUI can render
 /// its first frame without waiting for the rate-limit round-trip.
 pub(crate) struct AppServerBootstrap {
+    pub(crate) duration: Duration,
     pub(crate) account_email: Option<String>,
     pub(crate) auth_mode: Option<TelemetryAuthMode>,
     pub(crate) status_account_display: Option<StatusAccountDisplay>,
@@ -172,6 +182,7 @@ pub(crate) struct AppServerSession {
     thread_settings_update_supported: bool,
     default_model: Option<String>,
     available_models: Vec<ModelPreset>,
+    external_agent_config_import_completion_pending: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +226,7 @@ impl AppServerSession {
             thread_settings_update_supported: true,
             default_model: None,
             available_models: Vec::new(),
+            external_agent_config_import_completion_pending: AtomicBool::new(false),
         }
     }
 
@@ -231,6 +243,10 @@ impl AppServerSession {
         matches!(self.thread_params_mode, ThreadParamsMode::Remote)
     }
 
+    pub(crate) fn uses_embedded_app_server(&self) -> bool {
+        matches!(&self.client, AppServerClient::InProcess(_))
+    }
+
     pub(crate) fn server_version(&self) -> Option<&str> {
         let AppServerClient::Remote(client) = &self.client else {
             return None;
@@ -239,6 +255,7 @@ impl AppServerSession {
     }
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
+        let started_at = Instant::now();
         let account = self.read_account().await?;
         let model_request_id = self.next_request_id();
         let models: ModelListResponse = self
@@ -314,6 +331,7 @@ impl AppServerSession {
             None => (None, None, None, None, FeedbackAudience::External, false),
         };
         Ok(AppServerBootstrap {
+            duration: started_at.elapsed(),
             account_email,
             auth_mode,
             status_account_display,
@@ -351,21 +369,48 @@ impl AppServerSession {
         self.client
             .request_typed(ClientRequest::ExternalAgentConfigDetect { request_id, params })
             .await
-            .wrap_err("externalAgentConfig/detect failed during TUI startup")
+            .wrap_err("externalAgentConfig/detect failed during agent import")
     }
 
     pub(crate) async fn external_agent_config_import(
         &mut self,
         migration_items: Vec<ExternalAgentConfigMigrationItem>,
-    ) -> Result<ExternalAgentConfigImportResponse> {
+    ) -> Result<()> {
+        // Mark the import active before sending the request so a fast completion notification
+        // cannot arrive before the TUI records it.
+        if self
+            .external_agent_config_import_completion_pending
+            .swap(true, Ordering::Relaxed)
+        {
+            color_eyre::eyre::bail!(EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE);
+        }
         let request_id = self.next_request_id();
-        self.client
+        let response: Result<ExternalAgentConfigImportResponse> = self
+            .client
             .request_typed(ClientRequest::ExternalAgentConfigImport {
                 request_id,
                 params: ExternalAgentConfigImportParams { migration_items },
             })
             .await
-            .wrap_err("externalAgentConfig/import failed during TUI startup")
+            .wrap_err("externalAgentConfig/import failed during agent import");
+        match response {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                self.external_agent_config_import_completion_pending
+                    .store(false, Ordering::Relaxed);
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn external_agent_config_import_in_progress(&self) -> bool {
+        self.external_agent_config_import_completion_pending
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn consume_external_agent_config_import_completion(&self) -> bool {
+        self.external_agent_config_import_completion_pending
+            .swap(false, Ordering::Relaxed)
     }
 
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
@@ -594,6 +639,21 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn thread_delete(&mut self, thread_id: ThreadId) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadDeleteResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadDelete {
+                request_id,
+                params: ThreadDeleteParams {
+                    thread_id: thread_id.to_string(),
+                },
+            })
+            .await
+            .wrap_err("failed to delete session")?;
+        Ok(())
+    }
+
     pub(crate) async fn thread_unarchive(&mut self, thread_id: ThreadId) -> Result<Thread> {
         let request_id = self.next_request_id();
         let response: ThreadUnarchiveResponse = self
@@ -719,12 +779,7 @@ impl AppServerSession {
                     additional_context: None,
                     environments: None,
                     cwd: Some(cwd),
-                    runtime_workspace_roots: Some(
-                        workspace_roots
-                            .iter()
-                            .map(AbsolutePathBuf::to_path_buf)
-                            .collect(),
-                    ),
+                    runtime_workspace_roots: Some(workspace_roots.to_vec()),
                     approval_policy: Some(approval_policy),
                     approvals_reviewer: Some(approvals_reviewer.into()),
                     sandbox_policy,
@@ -746,7 +801,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         turn_id: String,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), TypedRequestError> {
         let request_id = self.next_request_id();
         let _: TurnInterruptResponse = self
             .client
@@ -757,12 +812,14 @@ impl AppServerSession {
                     turn_id,
                 },
             })
-            .await
-            .wrap_err("turn/interrupt failed in TUI")?;
+            .await?;
         Ok(())
     }
 
-    pub(crate) async fn startup_interrupt(&mut self, thread_id: ThreadId) -> Result<()> {
+    pub(crate) async fn startup_interrupt(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> std::result::Result<(), TypedRequestError> {
         self.turn_interrupt(thread_id, String::new()).await
     }
 
@@ -1202,10 +1259,12 @@ pub(crate) fn status_account_display_from_auth_mode(
         Some(AuthMode::ApiKey) => Some(StatusAccountDisplay::ApiKey),
         Some(AuthMode::Chatgpt)
         | Some(AuthMode::ChatgptAuthTokens)
-        | Some(AuthMode::AgentIdentity) => Some(StatusAccountDisplay::ChatGpt {
+        | Some(AuthMode::AgentIdentity)
+        | Some(AuthMode::PersonalAccessToken) => Some(StatusAccountDisplay::ChatGpt {
             email: None,
             plan: plan_type.map(plan_type_display_name),
         }),
+        Some(AuthMode::BedrockApiKey) => None,
         None => None,
     }
 }
@@ -1215,7 +1274,6 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         let upgrade_info = model.upgrade_info.clone();
         ModelUpgrade {
             id: upgrade_id,
-            reasoning_effort_mapping: None,
             migration_config_key: model.model.clone(),
             model_link: upgrade_info
                 .as_ref()
@@ -1284,7 +1342,8 @@ fn config_request_overrides_from_config(
         "model_reasoning_effort",
         config
             .model_reasoning_effort
-            .map(|effort| effort.to_string()),
+            .as_ref()
+            .map(std::string::ToString::to_string),
     );
     insert(
         "model_reasoning_summary",
@@ -1414,13 +1473,7 @@ fn thread_start_params_from_config(
         model_provider: thread_params_mode.model_provider_from_config(config),
         service_tier: service_tier_override_from_config(config),
         cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
-        runtime_workspace_roots: Some(
-            config
-                .workspace_roots
-                .iter()
-                .map(AbsolutePathBuf::to_path_buf)
-                .collect(),
-        ),
+        runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox,
@@ -1429,7 +1482,9 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         session_start_source,
         thread_source: Some(ThreadSource::User),
-        dynamic_tools: configured_native_dynamic_tools(),
+        developer_instructions: with_terminal_visualization_instructions(
+            config, /*control_instructions*/ None,
+        ),
         ..ThreadStartParams::default()
     }
 }
@@ -1456,19 +1511,15 @@ fn thread_resume_params_from_config(
         model_provider: thread_params_mode.model_provider_from_config(&config),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
-        runtime_workspace_roots: Some(
-            config
-                .workspace_roots
-                .iter()
-                .map(AbsolutePathBuf::to_path_buf)
-                .collect(),
-        ),
+        runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox,
         permissions,
         config: config_request_overrides_from_config(&config),
-        dynamic_tools: configured_native_dynamic_tools(),
+        developer_instructions: with_terminal_visualization_instructions(
+            &config, /*control_instructions*/ None,
+        ),
         ..ThreadResumeParams::default()
     }
 }
@@ -1496,20 +1547,17 @@ fn thread_fork_params_from_config(
         model_provider: thread_params_mode.model_provider_from_config(&config),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
-        runtime_workspace_roots: Some(
-            config
-                .workspace_roots
-                .iter()
-                .map(AbsolutePathBuf::to_path_buf)
-                .collect(),
-        ),
+        runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox,
         permissions,
         config: config_request_overrides_from_config(&config),
         base_instructions: config.base_instructions.clone(),
-        developer_instructions: config.developer_instructions.clone(),
+        developer_instructions: with_terminal_visualization_instructions(
+            &config,
+            config.developer_instructions.clone(),
+        ),
         ephemeral: config.ephemeral,
         thread_source: Some(thread_source),
         dynamic_tools: configured_native_dynamic_tools(),
@@ -1608,7 +1656,7 @@ async fn thread_session_state_from_thread_start_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1649,7 +1697,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1681,7 +1729,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1788,6 +1836,7 @@ mod tests {
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnStatus;
+    use codex_features::Feature;
     use codex_protocol::config_types::Personality;
     use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::ServiceTier;
@@ -1907,13 +1956,7 @@ mod tests {
         assert_eq!(params.cwd, Some(config.cwd.to_string_lossy().to_string()));
         assert_eq!(
             params.runtime_workspace_roots,
-            Some(
-                config
-                    .workspace_roots
-                    .iter()
-                    .map(AbsolutePathBuf::to_path_buf)
-                    .collect()
-            )
+            Some(config.workspace_roots.clone())
         );
         assert_eq!(params.sandbox, None);
         assert_eq!(
@@ -2031,13 +2074,7 @@ mod tests {
             &config.permissions.effective_permission_profile(),
             config.cwd.as_path(),
         );
-        let expected_runtime_workspace_roots = Some(
-            config
-                .workspace_roots
-                .iter()
-                .map(AbsolutePathBuf::to_path_buf)
-                .collect::<Vec<_>>(),
-        );
+        let expected_runtime_workspace_roots = Some(config.workspace_roots.clone());
 
         let start = thread_start_params_from_config(
             &config,
@@ -2292,21 +2329,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_fork_params_omit_missing_instruction_overrides() {
+    async fn terminal_visualization_instructions_are_gated_for_all_tui_thread_flows() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let config = build_config(&temp_dir).await;
+        let mut config = build_config(&temp_dir).await;
+        config.developer_instructions = Some("Developer override.".to_string());
         let thread_id = ThreadId::new();
 
-        let params = thread_fork_params_from_config(
-            config,
+        let control_start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+        let control_resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+        let control_fork = thread_fork_params_from_config(
+            config.clone(),
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ThreadSource::User,
         );
 
-        assert_eq!(params.base_instructions, None);
-        assert_eq!(params.developer_instructions, None);
+        assert_eq!(control_start.developer_instructions, None);
+        assert_eq!(control_resume.developer_instructions, None);
+        assert_eq!(
+            control_fork.developer_instructions.as_deref(),
+            Some("Developer override.")
+        );
+
+        let _ = config
+            .features
+            .enable(Feature::TerminalVisualizationInstructions);
+        let treatment_start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+        let treatment_resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+        let treatment_fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ThreadSource::User,
+        );
+        let expected = format!(
+            "Developer override.\n\n{}",
+            crate::terminal_visualization_instructions::TERMINAL_VISUALIZATION_INSTRUCTIONS
+        );
+
+        assert_eq!(
+            treatment_start.developer_instructions.as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            treatment_resume.developer_instructions.as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            treatment_fork.developer_instructions.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[tokio::test]

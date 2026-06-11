@@ -287,7 +287,6 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
 
 struct WebRunExtensionTool;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced("web", "run")
@@ -308,17 +307,15 @@ impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
         })
     }
 
-    async fn handle(
-        &self,
-        _call: ExtensionToolCall,
-    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
-        Ok(Box::new(codex_tools::JsonToolOutput::new(json!({}))))
+    fn handle(&self, _call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async {
+            Ok(Box::new(codex_tools::JsonToolOutput::new(json!({}))) as Box<dyn ToolOutput>)
+        })
     }
 }
 
 struct DeferredExtensionTool;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ExtensionToolCall> for DeferredExtensionTool {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("extension_echo")
@@ -346,11 +343,8 @@ impl ToolExecutor<ExtensionToolCall> for DeferredExtensionTool {
         ToolExposure::Deferred
     }
 
-    async fn handle(
-        &self,
-        _call: ExtensionToolCall,
-    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
-        panic!("spec planning should not execute extension tools")
+    fn handle(&self, _call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async { panic!("spec planning should not execute extension tools") })
     }
 }
 
@@ -410,6 +404,7 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
 fn discoverable_plugin(id: &str, name: &str) -> DiscoverableTool {
     DiscoverablePluginInfo {
         id: id.to_string(),
+        remote_plugin_id: None,
         name: name.to_string(),
         description: Some(format!("{name} plugin")),
         has_skills: false,
@@ -623,136 +618,7 @@ async fn environment_count_controls_environment_backed_tools() {
 }
 
 #[tokio::test]
-async fn android_dynamic_tools_use_native_computer_use_runtime() {
-    let plan = probe_with(
-        |_| {},
-        ToolPlanInputs {
-            dynamic_tools: vec![
-                dynamic_tool(
-                    /*namespace*/ None,
-                    ANDROID_OBSERVE_TOOL_NAME,
-                    /*defer_loading*/ false,
-                ),
-                dynamic_tool(
-                    /*namespace*/ None,
-                    ANDROID_STEP_TOOL_NAME,
-                    /*defer_loading*/ false,
-                ),
-            ],
-            ..ToolPlanInputs::default()
-        },
-    )
-    .await;
-
-    plan.assert_visible_contains(&[ANDROID_OBSERVE_TOOL_NAME, ANDROID_STEP_TOOL_NAME]);
-    plan.assert_registered_contains(&[ANDROID_OBSERVE_TOOL_NAME, ANDROID_STEP_TOOL_NAME]);
-    assert_eq!(
-        plan.exposure(ANDROID_OBSERVE_TOOL_NAME),
-        ToolExposure::Direct
-    );
-
-    let ToolSpec::Function(observe_tool) = plan.visible_spec(ANDROID_OBSERVE_TOOL_NAME) else {
-        panic!("expected android observe to be a function tool");
-    };
-    assert_eq!(
-        observe_tool.description.as_str(),
-        "Capture the current Android screen as a model-visible screenshot, optionally with a compact UI digest."
-    );
-    assert!(
-        !observe_tool
-            .description
-            .contains("client-supplied observe description")
-    );
-}
-
-#[tokio::test]
-async fn duplicate_bare_android_dynamic_tools_register_native_handler_once() {
-    let plan = probe_with(
-        |_| {},
-        ToolPlanInputs {
-            dynamic_tools: vec![
-                dynamic_tool(
-                    /*namespace*/ None,
-                    ANDROID_OBSERVE_TOOL_NAME,
-                    /*defer_loading*/ false,
-                ),
-                dynamic_tool(
-                    /*namespace*/ None,
-                    ANDROID_OBSERVE_TOOL_NAME,
-                    /*defer_loading*/ false,
-                ),
-            ],
-            ..ToolPlanInputs::default()
-        },
-    )
-    .await;
-
-    assert_eq!(
-        plan.registered_names
-            .iter()
-            .filter(|name| name.as_str() == ANDROID_OBSERVE_TOOL_NAME)
-            .count(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn deferred_android_dynamic_tools_search_as_native_computer_use_tools() {
-    let plan = probe_with(
-        |turn| {
-            turn.model_info.supports_search_tool = true;
-        },
-        ToolPlanInputs {
-            dynamic_tools: vec![dynamic_tool(
-                /*namespace*/ None,
-                ANDROID_OBSERVE_TOOL_NAME,
-                /*defer_loading*/ true,
-            )],
-            ..ToolPlanInputs::default()
-        },
-    )
-    .await;
-
-    plan.assert_visible_contains(&["tool_search"]);
-    plan.assert_visible_lacks(&[ANDROID_OBSERVE_TOOL_NAME]);
-    plan.assert_registered_contains(&[ANDROID_OBSERVE_TOOL_NAME]);
-    assert_eq!(
-        plan.exposure(ANDROID_OBSERVE_TOOL_NAME),
-        ToolExposure::Deferred
-    );
-}
-
-#[tokio::test]
-async fn host_context_gates_goal_and_agent_job_tools() {
-    let feature_disabled = probe(|turn| {
-        set_feature(turn, Feature::Goals, /*enabled*/ false);
-        turn.goal_tools_supported = true;
-    })
-    .await;
-    feature_disabled.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
-
-    let host_disabled = probe(|turn| {
-        set_feature(turn, Feature::Goals, /*enabled*/ true);
-        turn.goal_tools_supported = false;
-    })
-    .await;
-    host_disabled.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
-
-    let enabled = probe(|turn| {
-        set_feature(turn, Feature::Goals, /*enabled*/ true);
-        turn.goal_tools_supported = true;
-    })
-    .await;
-    enabled.assert_visible_contains(&["get_goal", "create_goal", "update_goal"]);
-
-    let review_thread = probe(|turn| {
-        set_feature(turn, Feature::Goals, /*enabled*/ true);
-        turn.goal_tools_supported = true;
-        turn.session_source = SessionSource::SubAgent(SubAgentSource::Review);
-    })
-    .await;
-    review_thread.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
-
+async fn host_context_gates_agent_job_tools() {
     let normal_agent_job = probe(|turn| {
         set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);
     })
@@ -1043,26 +909,39 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 }
 
 #[tokio::test]
-async fn code_mode_leaves_direct_tool_descriptions_unaugmented() {
+async fn excluded_deferred_namespaces_do_not_enable_nested_tool_guidance() {
     let plan = probe_with(
         |turn| {
-            set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            set_feature(turn, Feature::Collab, /*enabled*/ false);
+            turn.model_info.supports_search_tool = true;
+            update_config(turn, |config| {
+                config.code_mode.excluded_tool_namespaces = vec!["excluded".to_string()];
+            });
         },
         ToolPlanInputs {
             dynamic_tools: vec![dynamic_tool(
-                /*namespace*/ None, "lookup", /*defer_loading*/ false,
+                Some("excluded"),
+                "lookup",
+                /*defer_loading*/ true,
             )],
             ..ToolPlanInputs::default()
         },
     )
     .await;
 
-    plan.assert_visible_contains(&["lookup", codex_code_mode::PUBLIC_TOOL_NAME]);
-    let ToolSpec::Function(tool) = plan.visible_spec("lookup") else {
-        panic!("expected lookup function spec");
+    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("expected code mode exec tool");
     };
-    assert_eq!(tool.description, "lookup dynamic tool");
-    assert!(!tool.description.contains("exec tool declaration:"));
+    assert!(
+        !exec
+            .description
+            .contains("Some deferred nested tools may be omitted")
+    );
+    plan.assert_registered_contains(&[
+        &ToolName::namespaced("excluded", "lookup").to_string(),
+        "tool_search",
+    ]);
 }
 
 #[tokio::test]
@@ -1079,6 +958,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "resume_agent",
         "wait_agent",
         "close_agent",
+        "interrupt_agent",
         "send_message",
         "followup_task",
         "assign_task",
@@ -1095,6 +975,30 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
             "wait_agent".to_string(),
         ]
     );
+    let ToolSpec::Namespace(namespace) = v1.visible_spec(MULTI_AGENT_V1_NAMESPACE) else {
+        panic!("expected v1 multi-agent namespace");
+    };
+    let Some(ResponsesApiNamespaceTool::Function(spawn_agent)) =
+        namespace.tools.iter().find(|tool| {
+            matches!(
+                tool,
+                ResponsesApiNamespaceTool::Function(tool) if tool.name == "spawn_agent"
+            )
+        })
+    else {
+        panic!("expected v1 spawn_agent function");
+    };
+    let properties = spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("spawn_agent should use object params");
+    for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
+        assert!(
+            properties.contains_key(property),
+            "expected v1 spawn_agent to expose `{property}`"
+        );
+    }
 
     let v2 = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
@@ -1108,16 +1012,16 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "send_message",
         "followup_task",
         "wait_agent",
-        "close_agent",
+        "interrupt_agent",
         "list_agents",
         "inspect_agent_tree",
     ]);
-    v2.assert_visible_lacks(&["send_input", "resume_agent", "assign_task"]);
+    v2.assert_visible_lacks(&["send_input", "resume_agent", "assign_task", "close_agent"]);
     let spawn_agent_description = match v2.visible_spec("spawn_agent") {
         ToolSpec::Function(tool) => tool.description.as_str(),
         other => panic!("expected spawn_agent function spec, got {other:?}"),
     };
-    assert!(spawn_agent_description.contains("max_concurrent_threads_per_session = 17"));
+    assert!(!spawn_agent_description.contains("max_concurrent_threads_per_session"));
 
     let direct_model_only = probe(|turn| {
         set_features(
@@ -1143,6 +1047,30 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_message_schemas_are_encrypted() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+    })
+    .await;
+    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
+        let ToolSpec::Function(tool) = plan.visible_spec(tool_name) else {
+            panic!("expected {tool_name} function spec");
+        };
+        let properties = tool
+            .parameters
+            .properties
+            .as_ref()
+            .expect("tool should use object params");
+        assert_eq!(
+            properties
+                .get("message")
+                .and_then(|schema| schema.encrypted),
+            Some(true)
+        );
+    }
 }
 
 #[tokio::test]
@@ -1175,6 +1103,7 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
         "resume_agent",
         "wait_agent",
         "close_agent",
+        "interrupt_agent",
     ]);
     for tool_name in [
         "spawn_agent",
@@ -1233,7 +1162,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
         "send_message",
         "followup_task",
         "wait_agent",
-        "close_agent",
+        "interrupt_agent",
         "list_agents",
         "inspect_agent_tree",
     ] {
@@ -1324,7 +1253,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         "send_message",
         "followup_task",
         "wait_agent",
-        "close_agent",
+        "interrupt_agent",
         "list_agents",
         "inspect_agent_tree",
     ] {
@@ -1398,7 +1327,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
             "send_message",
             "followup_task",
             "wait_agent",
-            "close_agent",
+            "interrupt_agent",
             "list_agents",
             // Hosted Responses tools.
             "web_search",

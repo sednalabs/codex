@@ -29,6 +29,7 @@ use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
+use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -360,6 +361,14 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    SubAgentActivity {
+        id: String,
+        kind: SubAgentActivityKind,
+        agent_thread_id: String,
+        agent_path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     WebSearch {
         id: String,
         query: String,
@@ -458,6 +467,7 @@ impl ThreadItem {
             | ThreadItem::DynamicToolCall { id, .. }
             | ThreadItem::ComputerUseCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
+            | ThreadItem::SubAgentActivity { id, .. }
             | ThreadItem::WebSearch { id, .. }
             | ThreadItem::ImageView { id, .. }
             | ThreadItem::ImageGeneration { id, .. }
@@ -1082,6 +1092,25 @@ pub enum CollabAgentToolCallStatus {
     InProgress,
     Completed,
     Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum SubAgentActivityKind {
+    Started,
+    Interacted,
+    Interrupted,
+}
+
+impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
+    fn from(value: CoreSubAgentActivityKind) -> Self {
+        match value {
+            CoreSubAgentActivityKind::Started => SubAgentActivityKind::Started,
+            CoreSubAgentActivityKind::Interacted => SubAgentActivityKind::Interacted,
+            CoreSubAgentActivityKind::Interrupted => SubAgentActivityKind::Interrupted,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

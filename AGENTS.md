@@ -84,6 +84,8 @@ In the codex-rs folder where the rust code lives:
   - Implementations may still use `async fn foo(&self, ...) -> T` when they satisfy that contract.
   - Do not use `#[allow(async_fn_in_trait)]` as a shortcut around spelling the future contract explicitly.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
+- Do not add tests for values that are statically defined.
+- Do not add negative tests for logic that was removed.
 - Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
 - Prefer private modules and explicitly exported public crate API.
 - Keep native computer-use runtime work behind provider seams:
@@ -269,6 +271,12 @@ When UI or text output changes intentionally, update the snapshots as follows:
 If you don’t have the tool:
 
 - `cargo install --locked cargo-insta`
+
+### Benchmarks
+
+cargo benchmarks can be run with `just bench`, use the divan crate to write new ones.
+
+Use `just bench-smoke` to dry-run the benchmark for a single iteration to ensure it works.
 
 ### Test assertions
 

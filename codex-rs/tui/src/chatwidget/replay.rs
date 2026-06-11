@@ -197,6 +197,7 @@ impl ChatWidget {
                 timed_out,
                 agents_states,
             }),
+            item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::DynamicToolCall { .. } => {}
         }
 

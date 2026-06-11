@@ -319,10 +319,15 @@ fn consolidator_manifest<'a>(
     agent_config: &'a Config,
     prompt: &'a [UserInput],
 ) -> anyhow::Result<ConsolidatorManifest<'a>> {
-    let model = agent_config.model.as_deref().unwrap_or(stage_two::MODEL);
+    let model = agent_config
+        .model
+        .as_deref()
+        .or(base_config.model.as_deref())
+        .unwrap_or("unknown");
     let reasoning_effort = agent_config
         .model_reasoning_effort
-        .unwrap_or(stage_two::REASONING_EFFORT)
+        .as_ref()
+        .unwrap_or(&stage_two::REASONING_EFFORT)
         .to_string();
     let sandbox_policy = agent_config.legacy_sandbox_policy();
     anyhow::ensure!(

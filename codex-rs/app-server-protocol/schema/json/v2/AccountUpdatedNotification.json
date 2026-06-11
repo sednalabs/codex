@@ -22,6 +22,16 @@
           "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
           "type": "string"
+        },
+        {
+          "const": "personalAccessToken",
+          "description": "Programmatic Codex auth backed by a personal access token.",
+          "type": "string"
+        },
+        {
+          "const": "bedrockApiKey",
+          "description": "Amazon Bedrock bearer token managed by Codex.",
+          "type": "string"
         }
       ]
     },

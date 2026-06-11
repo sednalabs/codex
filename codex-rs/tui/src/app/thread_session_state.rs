@@ -125,7 +125,7 @@ impl App {
         session.rollout_path = thread.path.clone();
         let mut model_settings = SessionModelSettings {
             model: thread.model.clone(),
-            reasoning_effort: thread.reasoning_effort,
+            reasoning_effort: thread.reasoning_effort.clone(),
         };
         if model_settings.model.is_none() || model_settings.reasoning_effort.is_none() {
             let stored_settings = read_session_model_settings(
