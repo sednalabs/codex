@@ -155,9 +155,9 @@ fn photo_jpeg(size: ImageSize) -> Vec<u8> {
         let texture = ((x.wrapping_mul(17) ^ y.wrapping_mul(31) ^ (x / 7) ^ (y / 11)) & 0xff) as u8;
 
         Rgb([
-            blend_channel(x_gradient, texture, 3),
-            blend_channel((x_gradient + y_gradient) / 2, texture, 5),
-            blend_channel(255 - y_gradient, texture, 4),
+            blend_channel(x_gradient, texture, /*divisor*/ 3),
+            blend_channel((x_gradient + y_gradient) / 2, texture, /*divisor*/ 5),
+            blend_channel(255 - y_gradient, texture, /*divisor*/ 4),
         ])
     });
 

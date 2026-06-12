@@ -555,6 +555,16 @@ fn spawn_tool_spec_marks_role_locked_service_tier() {
 }
 
 #[test]
+fn spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort() {
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+    assert!(spec.contains("terminal-babysitter"));
+    assert!(spec.contains(
+        "- This role's model is set to `gpt-5.4-mini` and its reasoning effort is set to `low`. These settings cannot be changed."
+    ));
+}
+
+#[test]
 fn built_in_config_file_contents_resolves_explorer_only() {
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),

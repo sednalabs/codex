@@ -11,6 +11,8 @@ use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::WriteStdinRequest;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_protocol::protocol::TerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -38,7 +40,6 @@ struct WriteStdinArgs {
 
 pub struct WriteStdinHandler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("write_stdin")
@@ -48,7 +49,13 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         create_write_stdin_tool()
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl WriteStdinHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -74,6 +81,21 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
             args.max_output_tokens,
             turn.truncation_policy,
         ));
+        let terminal_wait = if args.terminal_wait.wait_until_terminal {
+            Some(TerminalWaitInfo {
+                primitive: TerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
+                max_wait_ms: args.terminal_wait.max_wait_ms,
+                heartbeat_interval_ms: args.terminal_wait.heartbeat_interval_ms,
+            })
+        } else if args.chars.is_empty() {
+            Some(TerminalWaitInfo {
+                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
+                max_wait_ms: None,
+                heartbeat_interval_ms: None,
+            })
+        } else {
+            None
+        };
         let response = session
             .services
             .unified_exec_manager
@@ -89,6 +111,21 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
+        let emitted_terminal_interaction = if args.terminal_wait.wait_until_terminal {
+            let process_id = response.process_id.unwrap_or(args.session_id);
+            let interaction = TerminalInteractionEvent {
+                call_id: response.event_call_id.clone(),
+                process_id: process_id.to_string(),
+                stdin: args.chars.clone(),
+                terminal_wait: terminal_wait.clone(),
+            };
+            session
+                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                .await;
+            true
+        } else {
+            false
+        };
         let response = if args.terminal_wait.wait_until_terminal {
             let Some(capability) = unified_exec_blocking_wait_capability() else {
                 return Ok(boxed_tool_output(response));
@@ -115,12 +152,15 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         // still a live process for the UI to wait on. Non-empty stdin is a real
         // terminal interaction and should remain visible even if it completes
         // the process before the response returns.
-        if !args.chars.is_empty() || response.process_id.is_some() {
+        if !emitted_terminal_interaction
+            && (!args.chars.is_empty() || response.process_id.is_some())
+        {
             let process_id = response.process_id.unwrap_or(args.session_id);
             let interaction = TerminalInteractionEvent {
                 call_id: response.event_call_id.clone(),
                 process_id: process_id.to_string(),
                 stdin: args.chars.clone(),
+                terminal_wait,
             };
             session
                 .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))

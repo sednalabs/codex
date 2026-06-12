@@ -22,6 +22,11 @@ permissions:
   checks: read
   pull-requests: read
 
+# Cargo's libgit2 transport has been flaky when fetching git dependencies with
+# nested submodules. Prefer the system git CLI across every Cargo invocation.
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   matrix_plan:
     name: Rust CI lane planner (informational)
@@ -468,13 +473,26 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs:
-      - matrix_plan
-      - changed
-    if: ${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}
+    needs: changed
+    environment:
+      name: bazel
+      deployment: false
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            timeout_minutes: 30
+          - name: macOS
+            runner: macos-15-xlarge
+            timeout_minutes: 30
+          - name: Windows
+            runner: windows-x64
+            timeout_minutes: 30
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     steps:
       - name: Check whether argument comment lint should run
         id: argument_comment_lint_gate
@@ -495,12 +513,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Run argument comment lint on codex-rs via Bazel
+      - name: Run argument comment lint on codex-rs
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         uses: ./.github/actions/run-argument-comment-lint
         with:
           target: ${{ runner.os }}
-          buildbuddy-api-key: ${{ secrets.BUILDBUDDY_API_KEY }}
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:

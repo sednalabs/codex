@@ -255,12 +255,16 @@ User-visible behavior:
 Why:
 - Let operators authenticate MCP servers from SSH-only or browserless hosts without installing temporary login helpers or copying fallback credential files by hand.
 - Preserve OAuth discovery metadata needed for standards-based Device Authorization Grant flows instead of flattening the authorization-server response down to browser-only fields.
-- Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with a public client id in config and user approval happening in the browser shown by the identity provider.
+- Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with either an explicitly configured public client id or standards-based dynamic client registration when the authorization server advertises a registration endpoint.
+- Preserve grant-aware registration shape so device-login DCR asks for the Device Authorization Grant, keeps `token_endpoint_auth_method=none`, and only requests `refresh_token` when server metadata does not rule it out.
 
 User-visible behavior:
 - `codex mcp login --device-auth <server>` uses the discovered `device_authorization_endpoint` and requires `grant_types_supported` to include `urn:ietf:params:oauth:grant-type:device_code`.
-- The command uses the configured public MCP OAuth `client_id`, requests a device code with PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
-- Discovery keeps `token_endpoint`, `device_authorization_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- The command uses the configured public MCP OAuth `client_id` when one is present; otherwise it performs dynamic client registration from OAuth discovery before requesting the device code.
+- Dynamic registration keeps the request public-client shaped (`token_endpoint_auth_method=none`), uses `grant_types=["urn:ietf:params:oauth:grant-type:device_code"]`, adds `refresh_token` only when server metadata permits or omits grant support, and forwards the configured scope string when scopes are requested.
+- The device-code step uses PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
+- Discovery keeps `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- If no configured client id exists and the authorization server does not advertise dynamic registration, the CLI fails with an explicit public-client-id-required error instead of reporting a misleading generic registration failure.
 - This is an intentional downstream carry until upstream has an equivalent headless MCP OAuth login path. If upstream lands native device-login support, compare behavior and drop or re-home this carry rather than keeping both paths.
 
 ### App-server transport: raw-byte websocket auth secrets
@@ -338,6 +342,18 @@ User-visible behavior:
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
 - `/quit` remains immediate while a task is running instead of being queued behind the active turn.
+
+### TUI: Side conversation local exit
+
+Why:
+- Keep `/side` conversations scoped to their parent session so closing a side
+  question does not end the whole TUI session.
+- Preserve the existing main-thread `/quit` and `/exit` behavior.
+
+User-visible behavior:
+- `/quit` and `/exit` in an active side conversation close that side conversation
+  and return to the parent thread.
+- `/quit` and `/exit` in the main conversation remain application exits.
 
 ### Review + history: downstream accounting and runtime-context alignment
 

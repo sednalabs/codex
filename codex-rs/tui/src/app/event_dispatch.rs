@@ -5,6 +5,10 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::config_update::format_config_error;
+use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
+#[cfg(target_os = "windows")]
+use codex_config::types::WindowsSandboxModeToml;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
@@ -58,7 +62,7 @@ impl App {
                 )
                 .await;
             }
-            AppEvent::OpenResumePicker => {
+            AppEvent::OpenResumePicker { side_only } => {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,
                     &self.app_server_target,
@@ -75,15 +79,26 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
-                match crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
-                    tui,
-                    &self.config,
-                    /*show_all*/ false,
-                    /*include_non_interactive*/ false,
-                    picker_app_server,
-                )
-                .await?
-                {
+                let selection = if side_only {
+                    crate::resume_picker::run_side_resume_picker_from_existing_session_with_app_server(
+                        tui,
+                        &self.config,
+                        /*show_all*/ false,
+                        /*include_non_interactive*/ false,
+                        picker_app_server,
+                    )
+                    .await?
+                } else {
+                    crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
+                        tui,
+                        &self.config,
+                        /*show_all*/ false,
+                        /*include_non_interactive*/ false,
+                        picker_app_server,
+                    )
+                    .await?
+                };
+                match selection {
                     SessionSelection::Resume(target_session) => {
                         match self
                             .resume_target_session(tui, app_server, target_session)
@@ -107,6 +122,31 @@ impl App {
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::OpenExternalAgentConfigMigration => {
+                match crate::external_agent_config_migration_flow::handle_external_agent_config_migration_prompt(
+                    tui,
+                    app_server,
+                    &self.config,
+                )
+                .await
+                {
+                    Ok(ExternalAgentConfigMigrationFlowOutcome::Started(message)) => {
+                        self.chat_widget.add_info_message(message, /*hint*/ None);
+                    }
+                    Ok(ExternalAgentConfigMigrationFlowOutcome::NoItems) => {
+                        self.chat_widget.add_info_message(
+                            crate::external_agent_config_migration_flow::EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE
+                                .to_string(),
+                            /*hint*/ None,
+                        );
+                    }
+                    Ok(ExternalAgentConfigMigrationFlowOutcome::Cancelled) => {}
+                    Err(error_message) => {
+                        self.chat_widget.add_error_message(error_message);
+                    }
+                }
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
                 match crate::lookup_session_target_with_app_server(app_server, &id_or_name).await? {
                     Some(target_session) => {
@@ -120,6 +160,12 @@ impl App {
                         ));
                     }
                 }
+            }
+            AppEvent::ArchiveCurrentThread => {
+                return Ok(self.archive_current_thread(app_server).await);
+            }
+            AppEvent::DeleteCurrentThread => {
+                return Ok(self.delete_current_thread(app_server).await);
             }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
@@ -302,6 +348,9 @@ impl App {
                 }
                 return Ok(self.handle_exit_mode(app_server, mode).await);
             }
+            AppEvent::ExitSideConversation => {
+                self.exit_active_side_conversation(tui, app_server).await?;
+            }
             AppEvent::Logout => match app_server.logout_account().await {
                 Ok(()) => {
                     self.show_shutdown_feedback(tui)?;
@@ -319,7 +368,11 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                self.chat_widget.prepare_local_op_submission(&op);
                 self.submit_active_thread_op(app_server, op).await?;
+            }
+            AppEvent::RestoreCancelledTurn(prompt) => {
+                self.apply_cancelled_turn_edit(prompt);
             }
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
@@ -393,6 +446,9 @@ impl App {
             }
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
+            }
+            AppEvent::OpenDesktopThread { thread_id } => {
+                self.open_desktop_thread(thread_id);
             }
             AppEvent::PetSelected { pet_id } => {
                 self.handle_pet_selected(tui, pet_id);
@@ -560,14 +616,14 @@ impl App {
             }
             AppEvent::FetchPluginInstall {
                 cwd,
-                marketplace_path,
+                location,
                 plugin_name,
                 plugin_display_name,
             } => {
                 self.fetch_plugin_install(
                     app_server,
                     cwd,
-                    marketplace_path,
+                    location,
                     plugin_name,
                     plugin_display_name,
                 );
@@ -588,7 +644,7 @@ impl App {
             }
             AppEvent::PluginInstallLoaded {
                 cwd,
-                marketplace_path,
+                location,
                 plugin_name,
                 plugin_display_name,
                 result,
@@ -599,7 +655,7 @@ impl App {
                 }
                 let should_refresh_plugin_detail = self.chat_widget.on_plugin_install_loaded(
                     cwd.clone(),
-                    marketplace_path.clone(),
+                    location.clone(),
                     plugin_name.clone(),
                     plugin_display_name,
                     result,
@@ -608,12 +664,14 @@ impl App {
                 {
                     self.fetch_plugins_list(app_server, cwd.clone());
                     if should_refresh_plugin_detail {
+                        let (marketplace_path, remote_marketplace_name) =
+                            location.into_request_params();
                         self.fetch_plugin_detail(
                             app_server,
                             cwd,
                             PluginReadParams {
-                                marketplace_path: Some(marketplace_path),
-                                remote_marketplace_name: None,
+                                marketplace_path,
+                                remote_marketplace_name,
                                 plugin_name,
                             },
                         );
@@ -738,7 +796,7 @@ impl App {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
             AppEvent::UpdateReasoningEffort(effort) => {
-                self.on_update_reasoning_effort(effort);
+                self.on_update_reasoning_effort(effort.clone());
                 self.sync_active_thread_reasoning_setting(app_server, effort)
                     .await;
             }
@@ -751,7 +809,7 @@ impl App {
             }
             AppEvent::SelectModel { model, effort } => {
                 self.chat_widget.set_model(&model);
-                self.on_update_reasoning_effort(effort);
+                self.on_update_reasoning_effort(effort.clone());
                 self.chat_widget.maybe_send_next_queued_input();
                 self.app_event_tx
                     .send(AppEvent::PersistModelSelection { model, effort });
@@ -874,6 +932,19 @@ impl App {
                 preset,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                if !self.chat_widget.windows_sandbox_mode_allowed(
+                    codex_config::types::WindowsSandboxModeToml::Elevated,
+                ) {
+                    tracing::warn!(
+                        "refusing to set up elevated Windows sandbox mode disallowed by requirements"
+                    );
+                    self.chat_widget.add_info_message(
+                        "That Windows sandbox option is disallowed by requirements.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 #[cfg(target_os = "windows")]
                 {
                     let setup_permissions = match self
@@ -984,6 +1055,19 @@ impl App {
                 preset,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                if !self.chat_widget.windows_sandbox_mode_allowed(
+                    codex_config::types::WindowsSandboxModeToml::Unelevated,
+                ) {
+                    tracing::warn!(
+                        "refusing to set up unelevated Windows sandbox mode disallowed by requirements"
+                    );
+                    self.chat_widget.add_info_message(
+                        "That Windows sandbox option is disallowed by requirements.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 #[cfg(target_os = "windows")]
                 {
                     let setup_permissions = match self
@@ -1116,7 +1200,23 @@ impl App {
                             &[("result", "success")],
                         );
                     }
-                    let elevated_enabled = matches!(mode, WindowsSandboxEnableMode::Elevated);
+                    let selected_mode = match mode {
+                        WindowsSandboxEnableMode::Elevated => WindowsSandboxModeToml::Elevated,
+                        WindowsSandboxEnableMode::Legacy => WindowsSandboxModeToml::Unelevated,
+                    };
+                    let elevated_enabled = selected_mode == WindowsSandboxModeToml::Elevated;
+                    if !self.chat_widget.windows_sandbox_mode_allowed(selected_mode) {
+                        tracing::warn!(
+                            ?selected_mode,
+                            "refusing to persist Windows sandbox mode disallowed by requirements"
+                        );
+                        self.chat_widget.add_info_message(
+                            "That Windows sandbox option is disallowed by requirements."
+                                .to_string(),
+                            /*hint*/ None,
+                        );
+                        return Ok(AppRunControl::Continue);
+                    }
                     let edits =
                         crate::config_update::build_windows_sandbox_mode_edits(elevated_enabled);
                     match crate::config_update::write_config_batch(
@@ -1191,8 +1291,9 @@ impl App {
                                         /*personality*/ None,
                                     ),
                                 ));
-                                self.apply_permission_profile_selection(selection).await;
-                                let _ = mode;
+                                if self.apply_permission_profile_selection(selection).await {
+                                    self.chat_widget.submit_initial_user_message_if_pending();
+                                }
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
@@ -1226,7 +1327,6 @@ impl App {
                                     .send(AppEvent::UpdateActivePermissionProfile(
                                         preset.active_permission_profile.clone(),
                                     ));
-                                let _ = mode;
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
@@ -1256,29 +1356,34 @@ impl App {
             AppEvent::PersistModelSelection { model, effort } => {
                 match crate::config_update::write_config_batch(
                     app_server.request_handle(),
-                    crate::config_update::build_model_selection_edits(model.as_str(), effort),
+                    crate::config_update::build_model_selection_edits(
+                        model.as_str(),
+                        effort.as_ref(),
+                    ),
                 )
                 .await
                 {
                     Ok(_) => {
                         let effort_label = effort
-                            .map(|selected_effort| selected_effort.to_string())
+                            .as_ref()
+                            .map(std::string::ToString::to_string)
                             .unwrap_or_else(|| "default".to_string());
                         tracing::info!("Selected model: {model}, Selected effort: {effort_label}");
                         let mut message = format!("Model changed to {model}");
-                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                        if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
                             message.push(' ');
-                            message.push_str(label);
+                            message.push_str(&label);
                         }
                         self.chat_widget.add_info_message(message, /*hint*/ None);
                     }
                     Err(err) => {
+                        let error = format_config_error(&err);
                         tracing::error!(
-                            error = %err,
+                            error = %error,
                             "failed to persist model selection"
                         );
                         self.chat_widget
-                            .add_error_message(format!("Failed to save default model: {err}"));
+                            .add_error_message(format!("Failed to save default model: {error}"));
                     }
                 }
             }
@@ -1469,6 +1574,7 @@ impl App {
                     Some(RuntimePermissionProfileOverride::from_config(&self.config));
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
+                self.chat_widget.submit_initial_user_message_if_pending();
 
                 // If a managed filesystem sandbox is active, run the Windows
                 // world-writable scan.
@@ -1505,7 +1611,9 @@ impl App {
                 }
             }
             AppEvent::SelectPermissionProfile(selection) => {
-                self.apply_permission_profile_selection(selection).await;
+                if self.apply_permission_profile_selection(selection).await {
+                    self.chat_widget.submit_initial_user_message_if_pending();
+                }
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 self.config.approvals_reviewer = policy;
@@ -1560,7 +1668,7 @@ impl App {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
-                self.config.plan_mode_reasoning_effort = effort;
+                self.config.plan_mode_reasoning_effort = effort.clone();
                 self.chat_widget.set_plan_mode_reasoning_effort(effort);
                 self.sync_active_thread_plan_mode_reasoning_setting(app_server)
                     .await;
@@ -1816,12 +1924,20 @@ impl App {
                     ));
                 }
                 ApprovalRequest::Permissions {
+                    environment_id,
                     permissions,
                     reason,
                     ..
                 } => {
                     let _ = tui.enter_alt_screen();
                     let mut lines = Vec::new();
+                    if let Some(environment_id) = environment_id {
+                        lines.push(Line::from(vec![
+                            "Environment: ".into(),
+                            environment_id.bold(),
+                        ]));
+                        lines.push(Line::from(""));
+                    }
                     if let Some(reason) = reason {
                         lines.push(Line::from(vec!["Reason: ".into(), reason.italic()]));
                         lines.push(Line::from(""));
@@ -1890,9 +2006,10 @@ impl App {
                         self.chat_widget.setup_status_line(items, use_theme_colors);
                     }
                     Err(err) => {
-                        tracing::error!(error = %err, "failed to persist status line settings; keeping previous selection");
+                        let error = format_config_error(&err);
+                        tracing::error!(error = %error, "failed to persist status line settings; keeping previous selection");
                         self.chat_widget.add_error_message(format!(
-                            "Failed to save status line settings: {err}"
+                            "Failed to save status line settings: {error}"
                         ));
                     }
                 }
@@ -2157,6 +2274,60 @@ impl App {
             ExitMode::Immediate => {
                 self.pending_shutdown_exit_thread_id = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
+            }
+        }
+    }
+
+    pub(super) async fn archive_current_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) -> AppRunControl {
+        let Some(thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
+            self.chat_widget
+                .add_error_message("A thread must start before it can be archived.".to_string());
+            return AppRunControl::Continue;
+        };
+        if self.side_threads.contains_key(&thread_id) {
+            self.chat_widget.add_error_message(
+                "'/archive' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
+                    .to_string(),
+            );
+            return AppRunControl::Continue;
+        }
+
+        match app_server.thread_archive(thread_id).await {
+            Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to archive current thread: {err}"));
+                AppRunControl::Continue
+            }
+        }
+    }
+
+    pub(super) async fn delete_current_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) -> AppRunControl {
+        let Some(thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
+            self.chat_widget
+                .add_error_message("A thread must start before it can be deleted.".to_string());
+            return AppRunControl::Continue;
+        };
+        if self.side_threads.contains_key(&thread_id) {
+            self.chat_widget.add_error_message(
+                "'/delete' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
+                    .to_string(),
+            );
+            return AppRunControl::Continue;
+        }
+
+        match app_server.thread_delete(thread_id).await {
+            Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to delete current thread: {err}"));
+                AppRunControl::Continue
             }
         }
     }

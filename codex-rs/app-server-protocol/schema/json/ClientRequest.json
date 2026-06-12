@@ -33,6 +33,28 @@
       ],
       "type": "string"
     },
+    "AgentMessageInputContent": {
+      "oneOf": [
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "encrypted_content",
+              "title": "EncryptedContentAgentMessageInputContentType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "encrypted_content"
+          ],
+          "title": "EncryptedContentAgentMessageInputContent",
+          "type": "object"
+        }
+      ]
+    },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -154,6 +176,34 @@
         "loginId"
       ],
       "type": "object"
+    },
+    "CapabilityRootLocation": {
+      "description": "Location used to resolve a selected capability root.",
+      "oneOf": [
+        {
+          "description": "A path owned by an execution environment.",
+          "properties": {
+            "environmentId": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "environment",
+              "title": "EnvironmentCapabilityRootLocationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "environmentId",
+            "path"
+          ],
+          "title": "EnvironmentCapabilityRootLocation",
+          "type": "object"
+        }
+      ]
     },
     "ClientInfo": {
       "properties": {
@@ -2199,6 +2249,13 @@
       ],
       "type": "object"
     },
+    "RealtimeConversationVersion": {
+      "enum": [
+        "v1",
+        "v2"
+      ],
+      "type": "string"
+    },
     "RealtimeOutputModality": {
       "enum": [
         "text",
@@ -2231,15 +2288,8 @@
       "type": "string"
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningItemContent": {
@@ -2322,6 +2372,88 @@
         }
       ]
     },
+    "RemoteControlClientsListOrder": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "RemoteControlClientsListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "order": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteControlClientsListOrder"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "RemoteControlClientsRevokeParams": {
+      "properties": {
+        "clientId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "clientId"
+      ],
+      "type": "object"
+    },
+    "RemoteControlPairingStartParams": {
+      "properties": {
+        "manualCode": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RemoteControlPairingStatusParams": {
+      "properties": {
+        "manualPairingCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pairingCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "RequestId": {
       "anyOf": [
         {
@@ -2375,6 +2507,35 @@
             "content"
           ],
           "title": "MessageResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "author": {
+              "type": "string"
+            },
+            "content": {
+              "items": {
+                "$ref": "#/$defs/AgentMessageInputContent"
+              },
+              "type": "array"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_message",
+              "title": "AgentMessageResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "author",
+            "recipient",
+            "content"
+          ],
+          "title": "AgentMessageResponseItem",
           "type": "object"
         },
         {
@@ -3093,6 +3254,24 @@
         }
       ]
     },
+    "SelectedCapabilityRoot": {
+      "description": "A user-selected root that can expose one or more runtime capabilities.",
+      "properties": {
+        "id": {
+          "description": "Stable identifier supplied by the capability selection platform.",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/CapabilityRootLocation",
+          "description": "Where the selected root can be resolved."
+        }
+      },
+      "required": [
+        "id",
+        "location"
+      ],
+      "type": "object"
+    },
     "SendAddCreditsNudgeEmailParams": {
       "properties": {
         "creditType": {
@@ -3286,6 +3465,48 @@
       ],
       "type": "object"
     },
+    "ThreadBackgroundTerminalsListParams": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional page size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadBackgroundTerminalsTerminateParams": {
+      "properties": {
+        "processId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "processId"
+      ],
+      "type": "object"
+    },
     "ThreadCompactStartParams": {
       "properties": {
         "threadId": {
@@ -3302,6 +3523,17 @@
       "properties": {
         "threadId": {
           "description": "Thread whose out-of-band elicitation counter should be decremented.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadDeleteParams": {
+      "properties": {
+        "threadId": {
           "type": "string"
         }
       },
@@ -3404,14 +3636,10 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
+          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -3652,6 +3880,16 @@
             "null"
           ]
         },
+        "threadSources": {
+          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "useStateDbOnly": {
           "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
           "type": "boolean"
@@ -3843,6 +4081,13 @@
     "ThreadRealtimeStartParams": {
       "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
       "properties": {
+        "model": {
+          "description": "Overrides the configured realtime model for this session only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "outputModality": {
           "$ref": "#/$defs/RealtimeOutputModality",
           "description": "Selects text or audio output for the realtime session. Transport and voice stay\nindependent so clients can choose how they connect separately from what the model emits."
@@ -3871,6 +4116,17 @@
               "type": "null"
             }
           ]
+        },
+        "version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RealtimeConversationVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Overrides the configured realtime protocol version for this session only."
         },
         "voice": {
           "anyOf": [
@@ -4087,10 +4343,6 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "personality": {
           "anyOf": [
             {
@@ -4102,9 +4354,9 @@
           ]
         },
         "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
+          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -4209,6 +4461,16 @@
           "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
           "items": {
             "$ref": "#/$defs/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "threadSources": {
+          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
           },
           "type": [
             "array",
@@ -4376,11 +4638,6 @@
       "type": "string"
     },
     "ThreadSource": {
-      "enum": [
-        "user",
-        "subagent",
-        "memory_consolidation"
-      ],
       "type": "string"
     },
     "ThreadSourceKind": {
@@ -4501,10 +4758,6 @@
             "null"
           ]
         },
-        "persistExtendedHistory": {
-          "description": "Deprecated and ignored by app-server. Kept only so older clients can\ncontinue sending the field while rollout persistence always uses the\nlimited history policy.",
-          "type": "boolean"
-        },
         "personality": {
           "anyOf": [
             {
@@ -4516,9 +4769,9 @@
           ]
         },
         "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Relative paths are\nresolved against the effective cwd for the thread.",
+          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -4533,6 +4786,16 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "selectedCapabilityRoots": {
+          "description": "Capability roots selected for this thread by the hosting platform.",
+          "items": {
+            "$ref": "#/$defs/SelectedCapabilityRoot"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         },
         "serviceName": {
@@ -4774,6 +5037,12 @@
           ],
           "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
         },
+        "clientUserMessageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "collaborationMode": {
           "anyOf": [
             {
@@ -4784,12 +5053,6 @@
             }
           ],
           "description": "EXPERIMENTAL - Set a pre-set collaboration mode.\nTakes precedence over model, reasoning_effort, and developer instructions if set.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means\n\"use the built-in instructions for the selected mode\"."
-        },
-        "clientUserMessageId": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "cwd": {
           "description": "Override the working directory for this turn and subsequent turns.",
@@ -4810,7 +5073,7 @@
           "description": "Override the reasoning effort for this turn and subsequent turns."
         },
         "environments": {
-          "description": "Optional turn-scoped environments.\n\nOmitted uses the thread sticky environments. Empty disables\nenvironment access for this turn. Non-empty selects the first\nenvironment as the current turn environment for this turn.",
+          "description": "Optional environments for this turn and subsequent turns.\n\nOmitted uses the thread sticky environments. Empty disables\nenvironment access for this turn. Non-empty selects the first\nenvironment as the current turn environment for this turn.",
           "items": {
             "$ref": "#/$defs/TurnEnvironmentParams"
           },
@@ -4864,9 +5127,9 @@
           ]
         },
         "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots for this turn and\nsubsequent turns. Relative paths are resolved against the effective\ncwd for the turn.",
+          "description": "Replace the thread's runtime workspace roots for this turn and\nsubsequent turns. Paths must be absolute.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -5242,6 +5505,28 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
+          "const": "thread/delete",
+          "title": "Thread/deleteRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadDeleteParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Thread/deleteRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
           "const": "thread/unsubscribe",
           "title": "Thread/unsubscribeRequestMethod",
           "type": "string"
@@ -5604,8 +5889,8 @@
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Skills/extraRoots/setRequest",
@@ -6617,6 +6902,27 @@
         "id"
       ],
       "title": "Account/rateLimits/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "account/usage/read",
+          "title": "Account/usage/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "method",
+        "id"
+      ],
+      "title": "Account/usage/readRequest",
       "type": "object"
     },
     {

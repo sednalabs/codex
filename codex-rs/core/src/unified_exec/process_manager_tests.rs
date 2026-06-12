@@ -179,6 +179,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
             .environments
             .primary_environment()
             .expect("primary environment"),
+        shell_mode: codex_tools::UnifiedExecShellMode::Direct,
         network: None,
         tty: true,
         sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
@@ -186,6 +187,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         additional_permissions_preapproved: false,
         justification: None,
         prefix_rule: None,
+        terminal_wait: None,
     };
 
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));

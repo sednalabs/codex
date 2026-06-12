@@ -2318,7 +2318,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     for step in run_job.get("steps") or []
                     if step.get("name") == "Configure sccache backend"
                 )
-                self.assertIn("configure_sccache_backend.sh", configure_step.get("run") or "")
+                workflow_src_prefix = (
+                    "../.workflow-src"
+                    if workflow_name == "_sedna-linux-rust.yml"
+                    else ".workflow-src"
+                )
+                self.assertEqual(
+                    configure_step.get("run"),
+                    f"bash {workflow_src_prefix}/.github/scripts/configure_sccache_backend.sh '${{{{ inputs.cache_policy }}}}'",
+                )
 
                 save_step = next(
                     step
@@ -2691,6 +2699,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {"uses": "security-and-quality"},
                     {"uses": "./.github/codeql/rust-computer-use-contract"},
                 ],
+                "paths": ["codex-rs", "tools"],
+                "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
                 "threat-models": "local",
             },
         )
@@ -4076,14 +4086,11 @@ class RustCiModeScriptTests(unittest.TestCase):
         lint_steps = [
             step
             for step in arglint_steps
-            if step.get("name") == "Run argument comment lint on codex-rs via Bazel"
+            if step.get("name") == "Run argument comment lint on codex-rs"
         ]
         self.assertEqual(len(lint_steps), 1)
         self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
-        self.assertEqual(
-            (lint_steps[0].get("with") or {}).get("buildbuddy-api-key"),
-            "${{ secrets.BUILDBUDDY_API_KEY }}",
-        )
+        self.assertNotIn("buildbuddy-api-key", lint_steps[0].get("with") or {})
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(

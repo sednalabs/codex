@@ -60,6 +60,7 @@ use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::WebSearchAction;
 #[cfg(test)]
 use codex_config::types::McpServerTransportConfig;
+use codex_config::types::TuiTranscriptDetailMode;
 #[cfg(test)]
 use codex_mcp::qualified_mcp_tool_name_prefix;
 use codex_otel::RuntimeMetricsSummary;
@@ -147,6 +148,37 @@ mod tests;
 pub(crate) enum HistoryRenderMode {
     Rich,
     Raw,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptDetailMode {
+    Verbose,
+    Compact,
+}
+
+impl TranscriptDetailMode {
+    pub(crate) fn opposite(self) -> Self {
+        match self {
+            Self::Verbose => Self::Compact,
+            Self::Compact => Self::Verbose,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Verbose => "verbose",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+impl From<TuiTranscriptDetailMode> for TranscriptDetailMode {
+    fn from(mode: TuiTranscriptDetailMode) -> Self {
+        match mode {
+            TuiTranscriptDetailMode::Verbose => Self::Verbose,
+            TuiTranscriptDetailMode::Compact => Self::Compact,
+        }
+    }
 }
 
 pub(crate) fn raw_lines_from_source(source: &str) -> Vec<Line<'static>> {
@@ -255,32 +287,83 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         plain_hyperlink_lines(self.transcript_lines(width))
     }
 
+    /// Returns transcript-overlay lines plus terminal hyperlink metadata for compact detail mode.
+    ///
+    /// Defaults to the viewport/display representation so cells without a transcript-specific
+    /// compact summary keep their current compact behavior.
+    fn compact_transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
+
+    /// Returns transcript overlay lines for the selected render mode.
+    fn transcript_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
+        match mode {
+            HistoryRenderMode::Rich => self.transcript_lines(width),
+            HistoryRenderMode::Raw => self.raw_lines(),
+        }
+    }
+
+    /// Returns transcript overlay lines plus terminal hyperlink metadata for the selected render mode.
+    fn transcript_hyperlink_lines_for_mode(
+        &self,
+        width: u16,
+        mode: HistoryRenderMode,
+    ) -> Vec<HyperlinkLine> {
+        match mode {
+            HistoryRenderMode::Rich => self.transcript_hyperlink_lines(width),
+            HistoryRenderMode::Raw => plain_hyperlink_lines(self.raw_lines()),
+        }
+    }
+
+    /// Returns transcript overlay lines plus terminal hyperlink metadata for the selected detail mode.
+    fn transcript_hyperlink_lines_for_detail_mode(
+        &self,
+        width: u16,
+        render_mode: HistoryRenderMode,
+        detail_mode: TranscriptDetailMode,
+    ) -> Vec<HyperlinkLine> {
+        match detail_mode {
+            TranscriptDetailMode::Verbose => {
+                self.transcript_hyperlink_lines_for_mode(width, render_mode)
+            }
+            TranscriptDetailMode::Compact => self.compact_transcript_hyperlink_lines(width),
+        }
+    }
+
     /// Returns the number of viewport rows for the transcript overlay.
     ///
     /// Uses the same `Paragraph::line_count` measurement as
     /// `desired_height`. Contains a workaround for a ratatui bug where
     /// a single whitespace-only line reports 2 rows instead of 1.
+    #[allow(dead_code)]
     fn desired_transcript_height(&self, width: u16) -> u16 {
-        let lines = visible_lines(self.transcript_hyperlink_lines(width));
-        // Workaround: ratatui's line_count returns 2 for a single
-        // whitespace-only line. Clamp to 1 in that case.
-        if let [line] = &lines[..]
-            && line
-                .spans
-                .iter()
-                .all(|s| s.content.chars().all(char::is_whitespace))
-        {
-            return 1;
-        }
+        self.desired_transcript_height_for_mode(width, HistoryRenderMode::Rich)
+    }
 
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .line_count(width)
-            .try_into()
-            .unwrap_or(0)
+    fn desired_transcript_height_for_mode(&self, width: u16, mode: HistoryRenderMode) -> u16 {
+        let lines = visible_lines(self.transcript_hyperlink_lines_for_mode(width, mode));
+        desired_wrapped_line_height(lines, width)
+    }
+
+    fn desired_transcript_height_for_detail_mode(
+        &self,
+        width: u16,
+        render_mode: HistoryRenderMode,
+        detail_mode: TranscriptDetailMode,
+    ) -> u16 {
+        let lines = visible_lines(self.transcript_hyperlink_lines_for_detail_mode(
+            width,
+            render_mode,
+            detail_mode,
+        ));
+        desired_wrapped_line_height(lines, width)
     }
 
     fn is_stream_continuation(&self) -> bool {
+        false
+    }
+
+    fn is_user_prompt(&self) -> bool {
         false
     }
 
@@ -297,6 +380,25 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     fn transcript_animation_tick(&self) -> Option<u64> {
         None
     }
+}
+
+fn desired_wrapped_line_height(lines: Vec<Line<'static>>, width: u16) -> u16 {
+    // Workaround: ratatui's line_count returns 2 for a single
+    // whitespace-only line. Clamp to 1 in that case.
+    if let [line] = &lines[..]
+        && line
+            .spans
+            .iter()
+            .all(|s| s.content.chars().all(char::is_whitespace))
+    {
+        return 1;
+    }
+
+    Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+        .try_into()
+        .unwrap_or(0)
 }
 
 impl Renderable for Box<dyn HistoryCell> {

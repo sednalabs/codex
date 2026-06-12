@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/tests/exec_flow.rs
+source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
-• Waiting via background terminal · just fix
+• Waiting · primitive: write_stdin(empty stdin poll) · just fix

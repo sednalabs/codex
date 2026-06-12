@@ -200,7 +200,7 @@ jobs:
       - name: Install DotSlash
         uses: facebook/install-dotslash@v2
 
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: dtolnay/rust-toolchain@1.95.0
         if: ${{ inputs.setup_class != 'light' }}
         with:
           targets: x86_64-unknown-linux-gnu

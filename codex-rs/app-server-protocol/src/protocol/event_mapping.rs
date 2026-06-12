@@ -185,6 +185,20 @@ pub fn item_event_to_server_notification(
                 completed_at_ms: end_event.completed_at_ms,
             })
         }
+        EventMsg::SubAgentActivity(activity) => {
+            let item = ThreadItem::SubAgentActivity {
+                id: activity.event_id,
+                kind: activity.kind.into(),
+                agent_thread_id: activity.agent_thread_id.to_string(),
+                agent_path: String::from(activity.agent_path),
+            };
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id,
+                turn_id,
+                item,
+                completed_at_ms: activity.occurred_at_ms,
+            })
+        }
         EventMsg::CollabWaitingBegin(begin_event) => {
             let receiver_thread_ids = begin_event
                 .receiver_thread_ids
@@ -455,6 +469,7 @@ pub fn item_event_to_server_notification(
                 item_id: terminal_event.call_id,
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
+                terminal_wait: terminal_event.terminal_wait.map(Into::into),
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
@@ -473,11 +488,16 @@ pub fn item_event_to_server_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::v2::TerminalWaitInfo;
+    use crate::protocol::v2::TerminalWaitPrimitive;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::TerminalInteractionEvent;
+    use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
+    use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -509,6 +529,16 @@ mod tests {
                 assert_eq!(payload, expected)
             }
             other => panic!("expected command execution output delta, got {other:?}"),
+        }
+    }
+
+    fn assert_terminal_interaction_server_notification(
+        notification: Option<ServerNotification>,
+        expected: TerminalInteractionNotification,
+    ) {
+        match notification.expect("supported event should map to notification") {
+            ServerNotification::TerminalInteraction(payload) => assert_eq!(payload, expected),
+            other => panic!("expected terminal interaction notification, got {other:?}"),
         }
     }
 
@@ -622,6 +652,40 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 item_id: "call-1".to_string(),
                 delta: "hello".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn terminal_interaction_maps_terminal_wait_metadata() {
+        let notification = item_event_to_server_notification(
+            EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                call_id: "call-wait".to_string(),
+                process_id: "123".to_string(),
+                stdin: String::new(),
+                terminal_wait: Some(CoreTerminalWaitInfo {
+                    primitive: CoreTerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
+                    max_wait_ms: Some(10_000),
+                    heartbeat_interval_ms: Some(1_000),
+                }),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        assert_terminal_interaction_server_notification(
+            notification,
+            TerminalInteractionNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-wait".to_string(),
+                process_id: "123".to_string(),
+                stdin: String::new(),
+                terminal_wait: Some(TerminalWaitInfo {
+                    primitive: TerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
+                    max_wait_ms: Some(10_000),
+                    heartbeat_interval_ms: Some(1_000),
+                }),
             },
         );
     }

@@ -16,6 +16,7 @@ Options:
   -t, --target <TARGET>  Optional tmux target (session/window target)
   --launch-cwd           Open every window in the current directory instead of
                          each session's recorded cwd
+  --include-side         Include side-chat sessions in the selection
   --dry-run              Print selected IDs without opening tmux windows
   -h, --help             Show this help
 
@@ -32,6 +33,7 @@ prefix="cx"
 target=""
 dry_run=0
 launch_cwd=0
+include_side_chats=0
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 history_file="$codex_home/history.jsonl"
 
@@ -59,6 +61,10 @@ while (($# > 0)); do
       ;;
     --launch-cwd)
       launch_cwd=1
+      shift
+      ;;
+    --include-side|--include-side-chats)
+      include_side_chats=1
       shift
       ;;
     --dry-run)
@@ -105,16 +111,18 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
+session_file_for_id() {
+  local id="$1"
+  find "$codex_home/sessions" -type f -name "*${id}.jsonl" 2>/dev/null | head -n 1 || true
+}
+
 session_cwd() {
   local id="$1"
-  local session_file
   local recorded_cwd
+  local session_file
 
-  session_file="$(find "$codex_home/sessions" -type f -name "*${id}.jsonl" -print -quit 2>/dev/null || true)"
-  if [[ -z "$session_file" ]]; then
-    return 1
-  fi
-
+  session_file="$(session_file_for_id "$id")"
+  [[ -z "$session_file" ]] && return 1
   recorded_cwd="$(jq -r 'select(.type == "session_meta") | .payload.cwd // empty' "$session_file" | head -n 1)"
   if [[ -n "$recorded_cwd" && -d "$recorded_cwd" ]]; then
     printf '%s\n' "$recorded_cwd"
@@ -122,6 +130,58 @@ session_cwd() {
   fi
 
   return 1
+}
+
+session_meta_marks_side_chat() {
+  local session_file="$1"
+  jq -n -e '
+    any(
+      inputs | select(.type == "session_meta");
+      (.payload.thread_source? //
+       .payload.threadSource? //
+       .payload.meta.thread_source? //
+       .payload.meta.threadSource? //
+       "") == "side"
+    )
+  ' "$session_file" >/dev/null 2>&1
+}
+
+usage_db_marks_side_chat() {
+  local id="$1"
+  local db
+  local marker
+
+  [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+
+  for db in "$codex_home/usage.sqlite" "$codex_home/usage_1.sqlite"; do
+    [[ -f "$db" ]] || continue
+    marker="$(
+      sqlite3 -readonly "$db" \
+        "SELECT 1 FROM pragma_table_info('usage_threads') WHERE name = 'thread_source' LIMIT 1;" \
+        2>/dev/null || true
+    )"
+    [[ "$marker" == "1" ]] || continue
+    marker="$(
+      sqlite3 -readonly "$db" \
+        "SELECT 1 FROM usage_threads WHERE thread_id = '$id' AND thread_source = 'side' LIMIT 1;" \
+        2>/dev/null || true
+    )"
+    [[ "$marker" == "1" ]] && return 0
+  done
+
+  return 1
+}
+
+session_is_side_chat() {
+  local id="$1"
+  local session_file
+
+  session_file="$(session_file_for_id "$id")"
+  if [[ -n "$session_file" ]] && session_meta_marks_side_chat "$session_file"; then
+    return 0
+  fi
+  usage_db_marks_side_chat "$id"
 }
 
 mapfile -t running_ids < <(
@@ -150,6 +210,9 @@ selected_ids=()
 for id in "${recent_ids[@]}"; do
   [[ -z "$id" ]] && continue
   if [[ -n "${running_map[$id]+x}" ]]; then
+    continue
+  fi
+  if ((include_side_chats == 0)) && session_is_side_chat "$id"; then
     continue
   fi
   selected_ids+=("$id")

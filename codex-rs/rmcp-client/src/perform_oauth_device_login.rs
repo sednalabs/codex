@@ -9,8 +9,10 @@ use anyhow::anyhow;
 use oauth2::PkceCodeChallenge;
 use reqwest::Client;
 use reqwest::StatusCode;
+use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
+use serde::Serialize;
 use tokio::time::sleep;
 
 use crate::StoredOAuthTokens;
@@ -18,8 +20,8 @@ use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::perform_oauth_login::OAuthProviderError;
 use crate::save_oauth_tokens;
-use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
+use crate::utils::build_reqwest_client;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -38,18 +40,20 @@ pub async fn perform_oauth_device_login(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
-    oauth_client_id: &str,
+    oauth_client_id: Option<&str>,
     oauth_resource: Option<&str>,
     device_authorization_endpoint: &str,
     token_endpoint: &str,
     mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let http_client = apply_default_headers(Client::builder(), &default_headers).build()?;
+    let http_client = build_reqwest_client(Client::builder(), &default_headers)?;
+    let oauth_client_id =
+        resolve_device_oauth_client_id(server_url, &http_client, scopes, oauth_client_id).await?;
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
         &http_client,
         device_authorization_endpoint,
-        oauth_client_id,
+        &oauth_client_id,
         scopes,
         oauth_resource,
     )
@@ -60,7 +64,7 @@ pub async fn perform_oauth_device_login(
     let token_response = match poll_device_token(
         &http_client,
         token_endpoint,
-        oauth_client_id,
+        &oauth_client_id,
         oauth_resource,
         &details,
         pkce.as_ref(),
@@ -72,7 +76,7 @@ pub async fn perform_oauth_device_login(
             let details = request_device_authorization(
                 &http_client,
                 device_authorization_endpoint,
-                oauth_client_id,
+                &oauth_client_id,
                 scopes,
                 oauth_resource,
                 /*pkce*/ None,
@@ -85,7 +89,7 @@ pub async fn perform_oauth_device_login(
             poll_device_token(
                 &http_client,
                 token_endpoint,
-                oauth_client_id,
+                &oauth_client_id,
                 oauth_resource,
                 &details,
                 /*pkce*/ None,
@@ -101,11 +105,101 @@ pub async fn perform_oauth_device_login(
     let stored = StoredOAuthTokens {
         server_name: server_name.to_string(),
         url: server_url.to_string(),
-        client_id: oauth_client_id.to_string(),
+        client_id: oauth_client_id,
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at,
     };
     save_oauth_tokens(server_name, &stored, store_mode)
+}
+
+async fn resolve_device_oauth_client_id(
+    server_url: &str,
+    http_client: &Client,
+    scopes: &[String],
+    oauth_client_id: Option<&str>,
+) -> Result<String> {
+    if let Some(client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty()) {
+        return Ok(client_id.trim().to_string());
+    }
+
+    let mut auth_manager = AuthorizationManager::new(server_url).await?;
+    auth_manager.with_client(http_client.clone())?;
+    let metadata = auth_manager.discover_metadata().await?;
+    let registration_endpoint = metadata
+        .registration_endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "OAuth device login requires a configured public OAuth client id because the authorization server does not advertise dynamic client registration."
+            )
+        })?;
+    let supports_refresh_token = metadata_supports_refresh_token(&metadata.additional_fields);
+
+    register_device_oauth_client(
+        http_client,
+        registration_endpoint,
+        scopes,
+        supports_refresh_token,
+    )
+    .await
+}
+
+async fn register_device_oauth_client(
+    http_client: &Client,
+    registration_endpoint: &str,
+    scopes: &[String],
+    supports_refresh_token: bool,
+) -> Result<String> {
+    let mut grant_types = vec![DEVICE_CODE_GRANT_TYPE];
+    if supports_refresh_token {
+        grant_types.push("refresh_token");
+    }
+    let request = DeviceClientRegistrationRequest {
+        client_name: "Codex",
+        grant_types,
+        token_endpoint_auth_method: "none",
+        scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
+    };
+    let response = http_client
+        .post(registration_endpoint)
+        .json(&request)
+        .send()
+        .await
+        .context("failed to dynamically register OAuth device client")?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .context("failed to read OAuth dynamic client registration response")?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "OAuth dynamic client registration failed with HTTP {status}. Response: {}",
+            body_preview(&body)
+        ));
+    }
+
+    let registration = serde_json::from_slice::<DeviceClientRegistrationResponse>(&body)
+        .context("failed to parse OAuth dynamic client registration response")?;
+    let client_id = registration.client_id.trim();
+    if client_id.is_empty() {
+        return Err(anyhow!(
+            "OAuth dynamic client registration response did not include a client_id"
+        ));
+    }
+
+    Ok(client_id.to_string())
+}
+
+fn metadata_supports_refresh_token(additional_fields: &HashMap<String, serde_json::Value>) -> bool {
+    additional_fields
+        .get("grant_types_supported")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|grant_types| {
+            grant_types
+                .iter()
+                .any(|grant_type| grant_type.as_str() == Some("refresh_token"))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,18 +537,35 @@ enum DevicePollOutcome {
     SlowDown,
 }
 
+#[derive(Debug, Serialize)]
+struct DeviceClientRegistrationRequest<'a> {
+    client_name: &'a str,
+    grant_types: Vec<&'static str>,
+    token_endpoint_auth_method: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceClientRegistrationResponse {
+    client_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::Form;
+    use axum::Json;
     use axum::Router;
     use axum::http::StatusCode;
     use axum::http::header::CONTENT_TYPE;
     use axum::response::IntoResponse;
     use axum::response::Response;
+    use axum::routing::get;
     use axum::routing::post;
     use oauth2::TokenResponse;
     use pretty_assertions::assert_eq;
+    use serde_json::Value;
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -474,6 +585,74 @@ mod tests {
     struct RejectPkceState {
         device_request_count: Arc<AtomicUsize>,
         poll_count: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone)]
+    struct RegistrationState {
+        registration_count: Arc<AtomicUsize>,
+        expected_grant_types: Vec<&'static str>,
+    }
+
+    #[tokio::test]
+    async fn device_login_dynamic_registration_uses_device_grant_shape() {
+        let registration_count = Arc::new(AtomicUsize::new(0));
+        let server = spawn_device_registration_server(registration_count.clone()).await;
+        let client = Client::builder().no_proxy().build().expect("client");
+
+        let client_id = resolve_device_oauth_client_id(
+            &format!("{server}/mcp"),
+            &client,
+            &["profile".to_string(), "ops:read".to_string()],
+            /*oauth_client_id*/ None,
+        )
+        .await
+        .expect("dynamic device registration");
+
+        assert_eq!(client_id, "dynamic-device-client");
+        assert_eq!(registration_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn device_login_dynamic_registration_omits_refresh_when_not_supported() {
+        let registration_count = Arc::new(AtomicUsize::new(0));
+        let server = spawn_device_registration_server_with_grants(
+            registration_count.clone(),
+            vec![DEVICE_CODE_GRANT_TYPE],
+            vec![DEVICE_CODE_GRANT_TYPE],
+        )
+        .await;
+        let client = Client::builder().no_proxy().build().expect("client");
+
+        let client_id = resolve_device_oauth_client_id(
+            &format!("{server}/mcp"),
+            &client,
+            &["profile".to_string(), "ops:read".to_string()],
+            /*oauth_client_id*/ None,
+        )
+        .await
+        .expect("dynamic device registration");
+
+        assert_eq!(client_id, "dynamic-device-client");
+        assert_eq!(registration_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn device_login_configured_client_id_skips_dynamic_registration() {
+        let registration_count = Arc::new(AtomicUsize::new(0));
+        let server = spawn_device_registration_server(registration_count.clone()).await;
+        let client = Client::builder().no_proxy().build().expect("client");
+
+        let client_id = resolve_device_oauth_client_id(
+            &format!("{server}/mcp"),
+            &client,
+            &["profile".to_string(), "ops:read".to_string()],
+            Some("configured-device-client"),
+        )
+        .await
+        .expect("configured client id");
+
+        assert_eq!(client_id, "configured-device-client");
+        assert_eq!(registration_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -577,6 +756,83 @@ mod tests {
             device_authorization_expires_in(&details),
             MAX_DEVICE_EXPIRES_IN_SECS
         );
+    }
+
+    async fn spawn_device_registration_server(registration_count: Arc<AtomicUsize>) -> String {
+        spawn_device_registration_server_with_grants(
+            registration_count,
+            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+        )
+        .await
+    }
+
+    async fn spawn_device_registration_server_with_grants(
+        registration_count: Arc<AtomicUsize>,
+        grant_types_supported: Vec<&'static str>,
+        expected_grant_types: Vec<&'static str>,
+    ) -> String {
+        async fn register(
+            axum::extract::State(state): axum::extract::State<RegistrationState>,
+            Json(body): Json<Value>,
+        ) -> Response {
+            state.registration_count.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(body["client_name"], "Codex");
+            assert_eq!(body["token_endpoint_auth_method"], "none");
+            assert_eq!(body["scope"], "profile ops:read");
+            assert_eq!(body["grant_types"], json!(state.expected_grant_types));
+            assert!(body.get("redirect_uris").is_none());
+            assert!(body.get("response_types").is_none());
+
+            json_response(
+                StatusCode::CREATED,
+                json!({
+                    "client_id": "dynamic-device-client"
+                }),
+            )
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind metadata listener");
+        let addr = listener.local_addr().expect("read metadata listener addr");
+        let base_url = format!("http://{addr}");
+        let metadata = json!({
+            "authorization_endpoint": format!("{base_url}/oauth/authorize"),
+            "token_endpoint": format!("{base_url}/token"),
+            "registration_endpoint": format!("{base_url}/register"),
+            "device_authorization_endpoint": format!("{base_url}/device"),
+            "grant_types_supported": grant_types_supported,
+            "scopes_supported": ["offline_access"],
+        });
+        let path_scoped_metadata = metadata.clone();
+        let router = Router::new()
+            .route(
+                "/.well-known/oauth-authorization-server/mcp",
+                get(move || {
+                    let metadata = path_scoped_metadata.clone();
+                    async move { json_response(StatusCode::OK, metadata) }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get(move || {
+                    let metadata = metadata.clone();
+                    async move { json_response(StatusCode::OK, metadata) }
+                }),
+            )
+            .route("/register", post(register))
+            .with_state(RegistrationState {
+                registration_count,
+                expected_grant_types,
+            });
+
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve oauth metadata");
+        });
+        base_url
     }
 
     async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {

@@ -1961,7 +1961,7 @@
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/handlers/tool_search.rs",
-        "codex-rs/core/src/tools/tool_search_entry.rs",
+        "codex-rs/tools/src/tool_search.rs",
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
         "codex-rs/tools/src/browser_tool.rs",

@@ -1,13 +1,15 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::bail;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::DEFAULT_CLIENT_NAME;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::start_analytics_events_server;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
@@ -21,6 +23,8 @@ use axum::http::header::AUTHORIZATION;
 use axum::routing::get;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AppSummary;
+use codex_app_server_protocol::AppsListParams;
+use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
@@ -68,7 +72,7 @@ const TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS: &str =
 #[tokio::test]
 async fn plugin_install_rejects_relative_marketplace_paths() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -95,7 +99,7 @@ async fn plugin_install_rejects_relative_marketplace_paths() -> Result<()> {
 #[tokio::test]
 async fn plugin_install_rejects_missing_install_source() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -124,7 +128,7 @@ async fn plugin_install_rejects_missing_install_source() -> Result<()> {
 #[tokio::test]
 async fn plugin_install_rejects_multiple_install_sources() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -161,7 +165,7 @@ async fn plugin_install_rejects_remote_marketplace_when_plugins_are_disabled() -
 plugins = false
 "#,
     )?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -227,7 +231,7 @@ async fn plugin_install_writes_remote_plugin_to_cloud_and_cache() -> Result<()> 
     )
     .await;
 
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.path(),
         &[(TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1"))],
     )
@@ -285,6 +289,58 @@ async fn plugin_install_writes_remote_plugin_to_cloud_and_cache() -> Result<()> 
 }
 
 #[tokio::test]
+async fn plugin_install_uses_remote_apps_needing_auth_response() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = MockServer::start().await;
+    let bundle_url = mount_remote_plugin_bundle(
+        &server,
+        /*status_code*/ 200,
+        remote_plugin_bundle_tar_gz_bytes("linear")?,
+    )
+    .await;
+    configure_remote_plugin_with_apps_test(codex_home.path(), &server)?;
+    mount_remote_plugin_detail(&server, REMOTE_PLUGIN_ID, "1.2.3", Some(&bundle_url)).await;
+    mount_empty_remote_installed_plugins(&server).await;
+    mount_remote_plugin_install_with_apps_needing_auth(&server, REMOTE_PLUGIN_ID, &["alpha"]).await;
+
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[(TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1"))],
+    )
+    .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = send_remote_plugin_install_request(&mut mcp, REMOTE_PLUGIN_ID).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let response: PluginInstallResponse = to_response(response)?;
+
+    assert_eq!(
+        response,
+        PluginInstallResponse {
+            auth_policy: PluginAuthPolicy::OnUse,
+            apps_needing_auth: vec![AppSummary {
+                id: "alpha".to_string(),
+                name: "alpha".to_string(),
+                description: None,
+                install_url: Some("https://chatgpt.com/apps/alpha/alpha".to_string()),
+            }],
+        }
+    );
+    wait_for_remote_plugin_request_count(
+        &server,
+        "GET",
+        "/backend-api/connectors/directory/list",
+        /*expected_count*/ 0,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn plugin_install_rejects_missing_remote_bundle_url() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = MockServer::start().await;
@@ -298,7 +354,7 @@ async fn plugin_install_rejects_missing_remote_bundle_url() -> Result<()> {
     .await;
     mount_empty_remote_installed_plugins(&server).await;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = send_remote_plugin_install_request(&mut mcp, REMOTE_PLUGIN_ID).await?;
@@ -339,7 +395,7 @@ async fn plugin_install_rejects_plain_http_remote_bundle_url() -> Result<()> {
     mount_remote_plugin_detail(&server, REMOTE_PLUGIN_ID, "1.2.3", Some(&bundle_url)).await;
     mount_empty_remote_installed_plugins(&server).await;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = send_remote_plugin_install_request(&mut mcp, REMOTE_PLUGIN_ID).await?;
@@ -385,7 +441,7 @@ async fn plugin_install_rejects_invalid_remote_release_version() -> Result<()> {
     .await;
     mount_empty_remote_installed_plugins(&server).await;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = send_remote_plugin_install_request(&mut mcp, REMOTE_PLUGIN_ID).await?;
@@ -417,7 +473,7 @@ async fn plugin_install_rejects_invalid_remote_release_version() -> Result<()> {
 async fn plugin_install_rejects_invalid_remote_plugin_name() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_remote_plugin_catalog_config(codex_home.path(), "https://example.invalid/backend-api/")?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -460,7 +516,7 @@ async fn plugin_install_rejects_remote_plugin_disabled_by_admin_before_download(
     .await;
     mount_empty_remote_installed_plugins(&server).await;
 
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.path(),
         &[(TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1"))],
     )
@@ -540,7 +596,7 @@ async fn plugin_install_rejects_when_workspace_codex_plugins_disabled() -> Resul
         .mount(&server)
         .await;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -569,7 +625,7 @@ async fn plugin_install_rejects_when_workspace_codex_plugins_disabled() -> Resul
 #[tokio::test]
 async fn plugin_install_returns_invalid_request_for_missing_marketplace_file() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -610,7 +666,7 @@ async fn plugin_install_returns_invalid_request_for_not_available_plugin() -> Re
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -660,7 +716,7 @@ async fn plugin_install_returns_invalid_request_for_disallowed_product_plugin() 
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
     let mut mcp =
-        McpProcess::new_with_args(codex_home.path(), &["--session-source", "atlas"]).await?;
+        TestAppServer::new_with_args(codex_home.path(), &["--session-source", "atlas"]).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -709,7 +765,7 @@ async fn plugin_install_tracks_analytics_event() -> Result<()> {
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -764,7 +820,7 @@ async fn plugin_install_tracks_remote_plugin_analytics_event() -> Result<()> {
     mount_remote_plugin_install(&server, REMOTE_PLUGIN_ID).await;
     mount_backend_analytics_events(&server).await;
 
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.path(),
         &[(TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1"))],
     )
@@ -816,7 +872,7 @@ async fn plugin_install_errors_when_remote_bundle_download_fails() -> Result<()>
     mount_empty_remote_installed_plugins(&server).await;
     mount_remote_plugin_install(&server, REMOTE_PLUGIN_ID).await;
 
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.path(),
         &[(TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1"))],
     )
@@ -890,7 +946,7 @@ async fn plugin_install_returns_apps_needing_auth() -> Result<()> {
         },
     ];
     let tools = vec![connector_tool("beta", "Beta App")?];
-    let (server_url, server_handle) = start_apps_server(connectors, tools).await?;
+    let (server_url, server_handle, server_control) = start_apps_server(connectors, tools).await?;
 
     let codex_home = TempDir::new()?;
     write_connectors_config(codex_home.path(), &server_url)?;
@@ -916,8 +972,9 @@ async fn plugin_install_returns_apps_needing_auth() -> Result<()> {
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let directory_requests_before_install = server_control.directory_request_count();
 
     let request_id = mcp
         .send_plugin_install_request(PluginInstallParams {
@@ -943,10 +1000,10 @@ async fn plugin_install_returns_apps_needing_auth() -> Result<()> {
                 name: "Alpha".to_string(),
                 description: Some("Alpha connector".to_string()),
                 install_url: Some("https://chatgpt.com/apps/alpha/alpha".to_string()),
-                needs_auth: true,
             }],
         }
     );
+    assert!(server_control.directory_request_count() > directory_requests_before_install);
 
     server_handle.abort();
     let _ = server_handle.await;
@@ -970,7 +1027,8 @@ async fn plugin_install_filters_disallowed_apps_needing_auth() -> Result<()> {
         is_enabled: true,
         plugin_display_names: Vec::new(),
     }];
-    let (server_url, server_handle) = start_apps_server(connectors, Vec::new()).await?;
+    let (server_url, server_handle, server_control) =
+        start_apps_server(connectors, Vec::new()).await?;
 
     let codex_home = TempDir::new()?;
     write_connectors_config(codex_home.path(), &server_url)?;
@@ -1000,8 +1058,10 @@ async fn plugin_install_filters_disallowed_apps_needing_auth() -> Result<()> {
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let directory_requests_before_install =
+        warm_app_directory_cache(&mut mcp, &server_control, "Alpha").await?;
 
     let request_id = mcp
         .send_plugin_install_request(PluginInstallParams {
@@ -1027,9 +1087,12 @@ async fn plugin_install_filters_disallowed_apps_needing_auth() -> Result<()> {
                 name: "Alpha".to_string(),
                 description: Some("Alpha connector".to_string()),
                 install_url: Some("https://chatgpt.com/apps/alpha/alpha".to_string()),
-                needs_auth: true,
             }],
         }
+    );
+    assert_eq!(
+        server_control.directory_request_count(),
+        directory_requests_before_install
     );
 
     server_handle.abort();
@@ -1067,7 +1130,7 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -1113,6 +1176,46 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
 #[derive(Clone)]
 struct AppsServerState {
     response: Arc<StdMutex<serde_json::Value>>,
+    directory_request_count: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct AppsServerControl {
+    directory_request_count: Arc<AtomicUsize>,
+}
+
+impl AppsServerControl {
+    fn directory_request_count(&self) -> usize {
+        self.directory_request_count.load(Ordering::SeqCst)
+    }
+}
+
+async fn warm_app_directory_cache(
+    mcp: &mut TestAppServer,
+    server_control: &AppsServerControl,
+    expected_app_name: &str,
+) -> Result<usize> {
+    let app_list_request_id = mcp
+        .send_apps_list_request(AppsListParams {
+            force_refetch: true,
+            ..Default::default()
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(app_list_request_id)),
+    )
+    .await??;
+    let response: AppsListResponse = to_response(response)?;
+    assert!(
+        response
+            .data
+            .iter()
+            .any(|app| app.name == expected_app_name)
+    );
+    let directory_request_count = server_control.directory_request_count();
+    assert!(directory_request_count > 0);
+    Ok(directory_request_count)
 }
 
 #[derive(Clone)]
@@ -1149,12 +1252,17 @@ impl ServerHandler for PluginInstallMcpServer {
 async fn start_apps_server(
     connectors: Vec<AppInfo>,
     tools: Vec<Tool>,
-) -> Result<(String, JoinHandle<()>)> {
+) -> Result<(String, JoinHandle<()>, AppsServerControl)> {
+    let directory_request_count = Arc::new(AtomicUsize::new(0));
     let state = Arc::new(AppsServerState {
         response: Arc::new(StdMutex::new(
             json!({ "apps": connectors, "next_token": null }),
         )),
+        directory_request_count: directory_request_count.clone(),
     });
+    let server_control = AppsServerControl {
+        directory_request_count,
+    };
     let tools = Arc::new(StdMutex::new(tools));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -1178,13 +1286,13 @@ async fn start_apps_server(
             get(list_directory_connectors),
         )
         .with_state(state)
-        .nest_service("/api/codex/apps", mcp_service);
+        .nest_service("/api/codex/ps/mcp", mcp_service);
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
 
-    Ok((format!("http://{addr}"), handle))
+    Ok((format!("http://{addr}"), handle, server_control))
 }
 
 async fn list_directory_connectors(
@@ -1192,6 +1300,8 @@ async fn list_directory_connectors(
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    state.directory_request_count.fetch_add(1, Ordering::SeqCst);
+
     let bearer_ok = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -1328,6 +1438,34 @@ remote_plugin = true
 
 fn configure_remote_plugin_test(codex_home: &std::path::Path, server: &MockServer) -> Result<()> {
     write_remote_plugin_catalog_config(codex_home, &format!("{}/backend-api/", server.uri()))?;
+    write_chatgpt_auth(
+        codex_home,
+        ChatGptAuthFixture::new("chatgpt-token")
+            .account_id("account-123")
+            .chatgpt_user_id("user-123")
+            .chatgpt_account_id("account-123"),
+        AuthCredentialsStoreMode::File,
+    )
+}
+
+fn configure_remote_plugin_with_apps_test(
+    codex_home: &std::path::Path,
+    server: &MockServer,
+) -> Result<()> {
+    std::fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            r#"
+chatgpt_base_url = "{}/backend-api/"
+
+[features]
+plugins = true
+remote_plugin = true
+connectors = true
+"#,
+            server.uri()
+        ),
+    )?;
     write_chatgpt_auth(
         codex_home,
         ChatGptAuthFixture::new("chatgpt-token")
@@ -1492,6 +1630,27 @@ async fn mount_remote_plugin_install(server: &MockServer, remote_plugin_id: &str
         .await;
 }
 
+async fn mount_remote_plugin_install_with_apps_needing_auth(
+    server: &MockServer,
+    remote_plugin_id: &str,
+    app_ids_needing_auth: &[&str],
+) {
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/backend-api/ps/plugins/{remote_plugin_id}/install"
+        )))
+        .and(query_param("includeAppsNeedingAuth", "true"))
+        .and(header("authorization", "Bearer chatgpt-token"))
+        .and(header("chatgpt-account-id", "account-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": remote_plugin_id,
+            "enabled": true,
+            "app_ids_needing_auth": app_ids_needing_auth,
+        })))
+        .mount(server)
+        .await;
+}
+
 #[derive(Debug, Clone)]
 struct CacheManifestExists {
     manifest_path: std::path::PathBuf,
@@ -1524,7 +1683,7 @@ async fn mount_remote_plugin_install_after_cache_write(
 }
 
 async fn send_remote_plugin_install_request(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     remote_plugin_id: &str,
 ) -> Result<i64> {
     mcp.send_plugin_install_request(PluginInstallParams {

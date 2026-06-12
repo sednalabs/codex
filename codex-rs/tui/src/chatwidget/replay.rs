@@ -170,8 +170,8 @@ impl ChatWidget {
             ThreadItem::ExitedReviewMode { .. } => {
                 self.exit_review_mode_after_item();
             }
-            ThreadItem::ContextCompaction { .. } => {
-                self.add_info_message("Context compacted".to_string(), /*hint*/ None);
+            item @ ThreadItem::ContextCompaction { .. } => {
+                self.on_context_compaction_completed(item)
             }
             ThreadItem::HookPrompt { .. } => {}
             ThreadItem::CollabAgentToolCall {
@@ -197,6 +197,7 @@ impl ChatWidget {
                 timed_out,
                 agents_states,
             }),
+            item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::DynamicToolCall { .. } => {}
         }
 

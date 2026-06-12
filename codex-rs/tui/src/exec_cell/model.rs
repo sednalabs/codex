@@ -9,6 +9,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::TerminalWaitInfo;
 use codex_protocol::parse_command::ParsedCommand;
 
 #[derive(Clone, Debug, Default)]
@@ -30,6 +31,7 @@ pub(crate) struct ExecCall {
     pub(crate) start_time: Option<Instant>,
     pub(crate) duration: Option<Duration>,
     pub(crate) interaction_input: Option<String>,
+    pub(crate) terminal_wait: Option<TerminalWaitInfo>,
 }
 
 #[derive(Debug)]
@@ -53,6 +55,7 @@ impl ExecCell {
         parsed: Vec<ParsedCommand>,
         source: ExecCommandSource,
         interaction_input: Option<String>,
+        terminal_wait: Option<TerminalWaitInfo>,
     ) -> Option<Self> {
         let call = ExecCall {
             call_id,
@@ -63,6 +66,7 @@ impl ExecCell {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input,
+            terminal_wait,
         };
         if self.is_exploring_cell() && Self::is_exploring_call(&call) {
             Some(Self {

@@ -1,5 +1,6 @@
 mod archive_thread;
 mod create_thread;
+mod delete_thread;
 mod helpers;
 mod list_threads;
 mod live_writer;
@@ -24,6 +25,7 @@ use tokio::sync::Mutex;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::CreateThreadParams;
+use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
@@ -288,6 +290,10 @@ impl ThreadStore for LocalThreadStore {
     ) -> ThreadStoreResult<StoredThread> {
         unarchive_thread::unarchive_thread(self, params).await
     }
+
+    async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()> {
+        delete_thread::delete_thread(self, params).await
+    }
 }
 
 #[cfg(test)]
@@ -305,7 +311,6 @@ mod tests {
 
     use super::*;
     use crate::LiveThread;
-    use crate::ThreadEventPersistenceMode;
     use crate::ThreadPersistenceMetadata;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
@@ -541,7 +546,6 @@ mod tests {
                     model_provider: "different-provider".to_string(),
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             },
         )
         .await
@@ -596,7 +600,6 @@ mod tests {
                     model_provider: "different-provider".to_string(),
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             },
         )
         .await
@@ -722,7 +725,6 @@ mod tests {
                 history: None,
                 include_archived: true,
                 metadata: thread_metadata(),
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect("resume live thread");
@@ -783,7 +785,6 @@ mod tests {
                 history: None,
                 include_archived: true,
                 metadata: thread_metadata(),
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect_err("duplicate live resume should fail");
@@ -810,7 +811,6 @@ mod tests {
                     model_provider: "test-provider".to_string(),
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect_err("missing cwd should fail");
@@ -836,7 +836,6 @@ mod tests {
                 history: None,
                 include_archived: true,
                 metadata: thread_metadata(),
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect("resume live thread");
@@ -885,7 +884,6 @@ mod tests {
                 history: None,
                 include_archived: true,
                 metadata: thread_metadata(),
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect("resume live thread");
@@ -924,7 +922,6 @@ mod tests {
                 history: None,
                 include_archived: true,
                 metadata: thread_metadata(),
-                event_persistence_mode: ThreadEventPersistenceMode::Limited,
             })
             .await
             .expect("resume live archived thread");
@@ -1024,13 +1021,15 @@ mod tests {
     fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         CreateThreadParams {
             thread_id,
+            extra_config: None,
             forked_from_id: None,
+            parent_thread_id: None,
             source: SessionSource::Exec,
             thread_source: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
+            multi_agent_version: None,
             metadata: thread_metadata(),
-            event_persistence_mode: ThreadEventPersistenceMode::Limited,
         }
     }
 
