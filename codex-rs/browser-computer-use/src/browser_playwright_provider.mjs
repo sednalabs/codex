@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   actionSummary,
   captureBundle,
@@ -26,20 +28,41 @@ const ISOLATION_SHARED = "shared";
 const ISOLATION_THREAD = "thread";
 const ISOLATION_ENVIRONMENT = "environment";
 const ISOLATION_CALL = "call";
+const SESSION_RESTORE_PATH_SEGMENTS = [
+  ["Current Session"],
+  ["Current Tabs"],
+  ["Last Session"],
+  ["Last Tabs"],
+  ["Sessions"],
+  ["Default", "Current Session"],
+  ["Default", "Current Tabs"],
+  ["Default", "Last Session"],
+  ["Default", "Last Tabs"],
+  ["Default", "Sessions"],
+];
 
-main().catch((error) => {
-  writeResponse({
-    contentItems: [
-      {
-        type: "inputText",
-        text: `Browser Playwright provider failed: ${error?.stack || error}`,
-      },
-    ],
-    success: false,
-    error: String(error?.message || error),
+if (isDirectExecution()) {
+  main().catch((error) => {
+    writeResponse({
+      contentItems: [
+        {
+          type: "inputText",
+          text: `Browser Playwright provider failed: ${error?.stack || error}`,
+        },
+      ],
+      success: false,
+      error: String(error?.message || error),
+    });
+    process.exitCode = 0;
   });
-  process.exitCode = 0;
-});
+}
+
+function isDirectExecution() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+}
 
 async function main() {
   const request = JSON.parse(await readStdin());
@@ -49,6 +72,7 @@ async function main() {
     const headless = playwrightHeadless();
     const viewport = viewportFromRequest(request);
     const serviceHeaders = serviceHeaderPlan(request);
+    await clearBrowserSessionRestore(profile.stateDir);
     const context = await chromium.launchPersistentContext(profile.stateDir, {
       ...launchOptions({ headless, viewport, profile }),
       headless,
@@ -355,6 +379,29 @@ async function restoreOrNavigate(page, request, stateDir) {
     }
   }
   await restoreScroll(page, request);
+}
+
+async function clearBrowserSessionRestore(stateDir) {
+  const profileRoot = path.resolve(stateDir);
+  await Promise.all(
+    browserSessionRestorePaths(profileRoot).map((entry) =>
+      fs.rm(entry, { recursive: true, force: true }).catch(() => {}),
+    ),
+  );
+}
+
+function browserSessionRestorePaths(stateDir) {
+  const profileRoot = path.resolve(stateDir);
+  return SESSION_RESTORE_PATH_SEGMENTS.map((segments) => profilePath(profileRoot, segments));
+}
+
+function profilePath(profileRoot, segments) {
+  const entry = path.resolve(profileRoot, ...segments);
+  const relative = path.relative(profileRoot, entry);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to remove browser session restore path outside profile: ${entry}`);
+  }
+  return entry;
 }
 
 function canonicalActions(argumentsValue) {
@@ -826,3 +873,9 @@ function trimmedEnv(name) {
 function writeResponse(response) {
   process.stdout.write(JSON.stringify(response));
 }
+
+export const __test = {
+  browserSessionRestorePaths,
+  clearBrowserSessionRestore,
+  profilePath,
+};

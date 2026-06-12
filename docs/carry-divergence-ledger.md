@@ -278,6 +278,11 @@ docs-only refresh commit that records this snapshot.
   viewport capture, UI digests, input execution, and provider-side build
   installation. Solar Gravity Lab is a proving and consumer app, not the
   generic owner of Codex computer-use tooling.
+- The built-in Playwright browser provider clears Chromium tab-session restore
+  artifacts before opening a persistent browser context, so stale restored tabs
+  cannot hit an old localhost target before an explicit requested navigation.
+  Provider-managed `state.json`, cookies, local storage, and other profile data
+  are preserved.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
