@@ -3717,6 +3717,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
         self.assertIn(
+            '--workflow-file "sedna-heavy-tests.yml"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
+            '--event-policy "pull_request_exact_head_lane_fingerprint"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
             '--planner-fingerprint "${{ needs.metadata.outputs.planner_fingerprint }}"',
             (steps[3] or {}).get("run") or "",
         )
