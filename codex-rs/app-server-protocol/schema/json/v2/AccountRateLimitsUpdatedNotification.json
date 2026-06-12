@@ -27,6 +27,7 @@
         "go",
         "plus",
         "pro",
+        "prolite",
         "team",
         "self_serve_business_usage_based",
         "business",
@@ -37,12 +38,32 @@
       ],
       "type": "string"
     },
+    "RateLimitReachedType": {
+      "enum": [
+        "rate_limit_reached",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached"
+      ],
+      "type": "string"
+    },
     "RateLimitSnapshot": {
       "properties": {
         "credits": {
           "anyOf": [
             {
               "$ref": "#/$defs/CreditsSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -75,6 +96,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitReachedType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -119,9 +150,35 @@
         "usedPercent"
       ],
       "type": "object"
+    },
+    "SpendControlLimitSnapshot": {
+      "properties": {
+        "limit": {
+          "type": "string"
+        },
+        "remainingPercent": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "resetsAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "used": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "used",
+        "remainingPercent",
+        "resetsAt"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response\nor refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and\ndoes not clear a previously observed value.",
   "properties": {
     "rateLimits": {
       "$ref": "#/$defs/RateLimitSnapshot"

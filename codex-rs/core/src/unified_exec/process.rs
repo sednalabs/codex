@@ -12,17 +12,19 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::exec::ExecToolCallOutput;
-use crate::exec::StreamOutput;
 use crate::exec::is_likely_sandbox_denied;
 use codex_exec_server::ExecProcess;
+use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
 use codex_exec_server::ReadResponse as ExecReadResponse;
 use codex_exec_server::StartedExecProcess;
 use codex_exec_server::WriteStatus;
+use codex_protocol::exec_output::ExecToolCallOutput;
+use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_sandboxing::SandboxType;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
+use codex_utils_pty::ProcessSignal as PtyProcessSignal;
 use codex_utils_pty::SpawnedPty;
 
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
@@ -31,7 +33,6 @@ use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
-
 pub(crate) trait SpawnLifecycle: std::fmt::Debug + Send + Sync {
     /// Returns file descriptors that must stay open across the child `exec()`.
     ///
@@ -66,10 +67,11 @@ pub(crate) struct OutputHandles {
 /// Transport-specific process handle used by unified exec.
 enum ProcessHandle {
     Local(Box<ExecCommandSession>),
-    Remote(Arc<dyn ExecProcess>),
+    ExecServer(Arc<dyn ExecProcess>),
 }
 
-/// Unified wrapper over local PTY sessions and exec-server-backed processes.
+/// Unified wrapper over directly spawned PTY sessions and exec-server-backed
+/// processes.
 pub(crate) struct UnifiedExecProcess {
     process_handle: ProcessHandle,
     output_tx: broadcast::Sender<Vec<u8>>,
@@ -135,7 +137,7 @@ impl UnifiedExecProcess {
                 .send(data.to_vec())
                 .await
                 .map_err(|_| UnifiedExecError::WriteToStdin),
-            ProcessHandle::Remote(process_handle) => {
+            ProcessHandle::ExecServer(process_handle) => {
                 match process_handle.write(data.to_vec()).await {
                     Ok(response) => match response.status {
                         WriteStatus::Accepted => Ok(()),
@@ -179,7 +181,7 @@ impl UnifiedExecProcess {
         let state = self.state_rx.borrow().clone();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => state.has_exited || process_handle.has_exited(),
-            ProcessHandle::Remote(_) => state.has_exited,
+            ProcessHandle::ExecServer(_) => state.has_exited,
         }
     }
 
@@ -189,26 +191,65 @@ impl UnifiedExecProcess {
             ProcessHandle::Local(process_handle) => {
                 state.exit_code.or_else(|| process_handle.exit_code())
             }
-            ProcessHandle::Remote(_) => state.exit_code,
+            ProcessHandle::ExecServer(_) => state.exit_code,
+        }
+    }
+
+    fn finish_termination(&self) {
+        self.output_closed.store(true, Ordering::Release);
+        self.output_closed_notify.notify_waiters();
+        self.cancellation_token.cancel();
+        if let Some(output_task) = &self.output_task {
+            output_task.abort();
         }
     }
 
     pub(super) fn terminate(&self) {
-        self.output_closed.store(true, Ordering::Release);
-        self.output_closed_notify.notify_waiters();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),
-            ProcessHandle::Remote(process_handle) => {
+            ProcessHandle::ExecServer(process_handle) => {
                 let process_handle = Arc::clone(process_handle);
                 tokio::spawn(async move {
                     let _ = process_handle.terminate().await;
                 });
             }
         }
-        self.cancellation_token.cancel();
-        if let Some(output_task) = &self.output_task {
-            output_task.abort();
+        self.finish_termination();
+    }
+
+    pub(super) async fn terminate_confirmed(&self) -> Result<(), UnifiedExecError> {
+        match &self.process_handle {
+            ProcessHandle::Local(process_handle) => process_handle.terminate(),
+            ProcessHandle::ExecServer(process_handle) => {
+                process_handle
+                    .terminate()
+                    .await
+                    .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?;
+            }
         }
+        self.signal_exit(self.exit_code());
+        self.finish_termination();
+        Ok(())
+    }
+
+    pub(super) async fn interrupt(&self) -> Result<(), UnifiedExecError> {
+        match &self.process_handle {
+            ProcessHandle::Local(process_handle) => process_handle
+                .signal(PtyProcessSignal::Interrupt)
+                .map_err(|err| UnifiedExecError::process_failed(err.to_string())),
+            ProcessHandle::ExecServer(process_handle) => process_handle
+                .signal(ExecServerProcessSignal::Interrupt)
+                .await
+                .map_err(|err| UnifiedExecError::process_failed(err.to_string())),
+        }
+    }
+
+    pub(super) fn fail_and_terminate(&self, message: String) {
+        let state = self.state_rx.borrow().clone();
+        if state.failure_message.is_none() {
+            let _ = self.state_tx.send_replace(state.failed(message));
+        }
+        self.terminate();
     }
 
     async fn snapshot_output(&self) -> Vec<Vec<u8>> {
@@ -331,14 +372,14 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    pub(super) async fn from_remote_started(
+    pub(super) async fn from_exec_server_started(
         started: StartedExecProcess,
         sandbox_type: SandboxType,
     ) -> Result<Self, UnifiedExecError> {
-        let process_handle = ProcessHandle::Remote(Arc::clone(&started.process));
+        let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
         let output_handles = managed.output_handles();
-        managed.output_task = Some(Self::spawn_remote_output_task(
+        managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
             output_handles,
             managed.output_tx.clone(),
@@ -366,7 +407,7 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
-    fn spawn_remote_output_task(
+    fn spawn_exec_server_output_task(
         started: StartedExecProcess,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,

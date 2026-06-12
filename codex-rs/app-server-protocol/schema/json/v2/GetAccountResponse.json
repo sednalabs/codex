@@ -37,6 +37,20 @@
           ],
           "title": "ChatgptAccount",
           "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockAccountType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AmazonBedrockAccount",
+          "type": "object"
         }
       ]
     },
@@ -46,6 +60,7 @@
         "go",
         "plus",
         "pro",
+        "prolite",
         "team",
         "self_serve_business_usage_based",
         "business",

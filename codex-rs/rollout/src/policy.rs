@@ -1,20 +1,20 @@
+#[cfg(test)]
+use crate::protocol::ComputerUseCallResponseEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
+#[cfg(test)]
+use codex_protocol::computer_use::ComputerUseCallRequest;
+#[cfg(test)]
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::models::ResponseItem;
+#[cfg(test)]
+use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum EventPersistenceMode {
-    #[default]
-    Limited,
-    Extended,
-}
-
-/// Whether a rollout `item` should be persisted in rollout files for the
-/// provided persistence `mode`.
-pub fn is_persisted_response_item(item: &RolloutItem, mode: EventPersistenceMode) -> bool {
+/// Whether a rollout `item` should be persisted in rollout files.
+pub fn is_persisted_rollout_item(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
-        RolloutItem::EventMsg(ev) => should_persist_event_msg(ev, mode),
+        RolloutItem::EventMsg(ev) => should_persist_event_msg(ev),
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {
             true
@@ -22,11 +22,23 @@ pub fn is_persisted_response_item(item: &RolloutItem, mode: EventPersistenceMode
     }
 }
 
+/// Return the canonical rollout items that should be persisted for a live append.
+pub fn persisted_rollout_items(items: &[RolloutItem]) -> Vec<RolloutItem> {
+    let mut persisted = Vec::new();
+    for item in items {
+        if is_persisted_rollout_item(item) {
+            persisted.push(item.clone());
+        }
+    }
+    persisted
+}
+
 /// Whether a `ResponseItem` should be persisted in rollout files.
 #[inline]
 pub fn should_persist_response_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
@@ -37,8 +49,9 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::WebSearchCall { .. }
         | ResponseItem::ImageGenerationCall { .. }
-        | ResponseItem::GhostSnapshot { .. }
-        | ResponseItem::Compaction { .. } => true,
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::ContextCompaction { .. } => true,
+        ResponseItem::CompactionTrigger => false,
         ResponseItem::Other => false,
     }
 }
@@ -56,72 +69,47 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::WebSearchCall { .. } => true,
-        ResponseItem::Reasoning { .. }
+        ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
         | ResponseItem::ImageGenerationCall { .. }
-        | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger
+        | ResponseItem::ContextCompaction { .. }
         | ResponseItem::Other => false,
     }
 }
 
-/// Whether an `EventMsg` should be persisted in rollout files for the
-/// provided persistence `mode`.
+/// Whether an `EventMsg` should be persisted in rollout files.
 #[inline]
-pub fn should_persist_event_msg(ev: &EventMsg, mode: EventPersistenceMode) -> bool {
-    match mode {
-        EventPersistenceMode::Limited => should_persist_event_msg_limited(ev),
-        EventPersistenceMode::Extended => should_persist_event_msg_extended(ev),
-    }
-}
-
-fn should_persist_event_msg_limited(ev: &EventMsg) -> bool {
-    matches!(
-        event_msg_persistence_mode(ev),
-        Some(EventPersistenceMode::Limited)
-    )
-}
-
-fn should_persist_event_msg_extended(ev: &EventMsg) -> bool {
-    matches!(
-        event_msg_persistence_mode(ev),
-        Some(EventPersistenceMode::Limited) | Some(EventPersistenceMode::Extended)
-    )
-}
-
-/// Returns the minimum persistence mode that includes this event.
-/// `None` means the event should never be persisted.
-fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
+pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
     match ev {
         EventMsg::UserMessage(_)
         | EventMsg::AgentMessage(_)
         | EventMsg::AgentReasoning(_)
         | EventMsg::AgentReasoningRawContent(_)
+        | EventMsg::PatchApplyEnd(_)
         | EventMsg::TokenCount(_)
+        | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
+        | EventMsg::McpToolCallEnd(_)
         | EventMsg::ThreadRolledBack(_)
-        | EventMsg::UndoCompleted(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)
-        | EventMsg::ImageGenerationEnd(_) => Some(EventPersistenceMode::Limited),
+        | EventMsg::WebSearchEnd(_)
+        | EventMsg::ImageGenerationEnd(_)
+        | EventMsg::SubAgentActivity(_) => true,
         EventMsg::ItemCompleted(event) => {
             // Plan items are derived from streaming tags and are not part of the
             // raw ResponseItem history, so we persist their completion to replay
             // them on resume without bloating rollouts with every item lifecycle.
-            if matches!(event.item, codex_protocol::items::TurnItem::Plan(_)) {
-                Some(EventPersistenceMode::Limited)
-            } else {
-                None
-            }
+            matches!(event.item, codex_protocol::items::TurnItem::Plan(_))
         }
         EventMsg::Error(_)
         | EventMsg::GuardianAssessment(_)
-        | EventMsg::WebSearchEnd(_)
         | EventMsg::ExecCommandEnd(_)
-        | EventMsg::PatchApplyEnd(_)
-        | EventMsg::McpToolCallEnd(_)
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::CollabAgentSpawnEnd(_)
         | EventMsg::CollabAgentInteractionEnd(_)
@@ -129,21 +117,23 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::DynamicToolCallRequest(_)
-        | EventMsg::DynamicToolCallResponse(_) => Some(EventPersistenceMode::Extended),
-        EventMsg::Warning(_)
+        | EventMsg::DynamicToolCallResponse(_)
+        | EventMsg::ComputerUseCallRequest(_)
+        | EventMsg::ComputerUseCallResponse(_)
+        | EventMsg::Warning(_)
+        | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
+        | EventMsg::RealtimeConversationSdp(_)
         | EventMsg::RealtimeConversationRealtime(_)
         | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::ModelReroute(_)
-        | EventMsg::AgentMessageDelta(_)
-        | EventMsg::AgentReasoningDelta(_)
-        | EventMsg::AgentReasoningRawContentDelta(_)
+        | EventMsg::ModelVerification(_)
+        | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::ThreadNameUpdated(_)
+        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::McpToolCallBegin(_)
-        | EventMsg::WebSearchBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandOutputDelta(_)
@@ -152,16 +142,14 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::RequestUserInput(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ApplyPatchApprovalRequest(_)
-        | EventMsg::BackgroundEvent(_)
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyBegin(_)
+        | EventMsg::PatchApplyUpdated(_)
         | EventMsg::TurnDiff(_)
-        | EventMsg::GetHistoryEntryResponse(_)
-        | EventMsg::UndoStarted(_)
-        | EventMsg::McpListToolsResponse(_)
+        | EventMsg::RealtimeConversationListVoicesResponse(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
-        | EventMsg::ListSkillsResponse(_)
+        | EventMsg::WebSearchBegin(_)
         | EventMsg::PlanUpdate(_)
         | EventMsg::ShutdownComplete
         | EventMsg::DeprecationNotice(_)
@@ -172,36 +160,45 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::PlanDelta(_)
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
-        | EventMsg::SkillsUpdateAvailable
+        | EventMsg::ImageGenerationBegin(_)
         | EventMsg::CollabAgentSpawnBegin(_)
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_)
-        | EventMsg::ImageGenerationBegin(_) => None,
+        | EventMsg::CollabResumeBegin(_) => false,
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::EventPersistenceMode;
-    use super::should_persist_event_msg;
-    use codex_protocol::protocol::EventMsg;
-    use codex_protocol::protocol::ImageGenerationEndEvent;
+#[test]
+fn computer_use_events_are_live_only_in_single_persistence_policy() {
+    let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
+        call_id: "call-android-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        environment_id: Some("env-1".to_string()),
+        adapter: "android".to_string(),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({"scope": "screen_and_ui"}),
+    });
+    let response = EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
+        call_id: "call-android-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        environment_id: Some("env-1".to_string()),
+        adapter: "android".to_string(),
+        tool: "android_observe".to_string(),
+        arguments: serde_json::json!({"scope": "screen_and_ui"}),
+        content_items: vec![ComputerUseOutputContentItem::InputText {
+            text: "screen summary".to_string(),
+        }],
+        success: true,
+        error: None,
+        duration: Duration::from_millis(12),
+    });
 
-    #[test]
-    fn persists_image_generation_end_events_in_limited_mode() {
-        let event = EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
-            call_id: "ig_123".into(),
-            status: "completed".into(),
-            revised_prompt: Some("final prompt".into()),
-            result: "Zm9v".into(),
-            saved_path: None,
-        });
-
-        assert!(should_persist_event_msg(
-            &event,
-            EventPersistenceMode::Limited
-        ));
-    }
+    assert_eq!(
+        vec![
+            should_persist_event_msg(&request),
+            should_persist_event_msg(&response),
+        ],
+        vec![false, false]
+    );
 }

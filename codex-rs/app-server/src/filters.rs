@@ -2,6 +2,7 @@ use codex_app_server_protocol::ThreadSourceKind;
 use codex_core::INTERACTIVE_SESSION_SOURCES;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
+use codex_protocol::protocol::ThreadSource as CoreThreadSource;
 
 pub(crate) fn compute_source_filters(
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -81,6 +82,18 @@ pub(crate) fn source_kind_matches(source: &CoreSessionSource, filter: &[ThreadSo
     })
 }
 
+pub(crate) fn thread_source_matches(
+    thread_source: Option<CoreThreadSource>,
+    filter: Option<&[CoreThreadSource]>,
+) -> bool {
+    match filter {
+        Some(filter) if !filter.is_empty() => {
+            thread_source.is_some_and(|thread_source| filter.contains(&thread_source))
+        }
+        Some(_) | None => !matches!(thread_source, Some(CoreThreadSource::Side)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +167,41 @@ mod tests {
             &spawn,
             &[ThreadSourceKind::SubAgentReview]
         ));
+    }
+
+    #[test]
+    fn thread_source_filter_excludes_side_by_default() {
+        let no_thread_source = Option::<CoreThreadSource>::None;
+        let no_filter = Option::<&[CoreThreadSource]>::None;
+
+        assert!(thread_source_matches(no_thread_source, no_filter));
+        assert!(thread_source_matches(
+            Some(CoreThreadSource::User),
+            no_filter
+        ));
+        assert!(!thread_source_matches(
+            Some(CoreThreadSource::Side),
+            no_filter
+        ));
+        assert!(!thread_source_matches(
+            Some(CoreThreadSource::Side),
+            Some(&[])
+        ));
+    }
+
+    #[test]
+    fn thread_source_filter_matches_side_only_when_requested() {
+        let filter = [CoreThreadSource::Side];
+        let no_thread_source = Option::<CoreThreadSource>::None;
+
+        assert!(thread_source_matches(
+            Some(CoreThreadSource::Side),
+            Some(&filter)
+        ));
+        assert!(!thread_source_matches(
+            Some(CoreThreadSource::User),
+            Some(&filter)
+        ));
+        assert!(!thread_source_matches(no_thread_source, Some(&filter)));
     }
 }

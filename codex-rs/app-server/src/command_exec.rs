@@ -18,12 +18,12 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::CommandExecWriteResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
-use codex_core::bytes_to_string_smart;
 use codex_core::config::StartedNetworkProxy;
-use codex_core::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS;
 use codex_core::exec::ExecExpiration;
+use codex_core::exec::ExecExpirationOutcome;
 use codex_core::exec::IO_DRAIN_TIMEOUT_MS;
 use codex_core::sandboxing::ExecRequest;
+use codex_protocol::exec_output::bytes_to_string_smart;
 use codex_sandboxing::SandboxType;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use codex_utils_pty::ProcessHandle;
@@ -34,9 +34,9 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
-use crate::error_code::INTERNAL_ERROR_CODE;
-use crate::error_code::INVALID_PARAMS_ERROR_CODE;
-use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::error_code::internal_error;
+use crate::error_code::invalid_params;
+use crate::error_code::invalid_request;
 use crate::extensions::NotificationDispatchKind;
 use crate::extensions::dispatch_notification_to_connection;
 use crate::outgoing_message::ConnectionId;
@@ -160,7 +160,7 @@ impl CommandExecManager {
         } = params;
         if process_id.is_none() && (tty || stream_stdin || stream_stdout_stderr) {
             return Err(invalid_request(
-                "command/exec tty or streaming requires a client-supplied processId".to_string(),
+                "command/exec tty or streaming requires a client-supplied processId",
             ));
         }
         let process_id = process_id.map_or_else(
@@ -180,12 +180,12 @@ impl CommandExecManager {
         if matches!(exec_request.sandbox, SandboxType::WindowsRestrictedToken) {
             if tty || stream_stdin || stream_stdout_stderr {
                 return Err(invalid_request(
-                    "streaming command/exec is not supported with windows sandbox".to_string(),
+                    "streaming command/exec is not supported with windows sandbox",
                 ));
             }
             if output_bytes_cap != Some(DEFAULT_OUTPUT_BYTES_CAP) {
                 return Err(invalid_request(
-                    "custom outputBytesCap is not supported with windows sandbox".to_string(),
+                    "custom outputBytesCap is not supported with windows sandbox",
                 ));
             }
             if let InternalProcessId::Client(_) = &process_id {
@@ -251,7 +251,7 @@ impl CommandExecManager {
         let sessions = Arc::clone(&self.sessions);
         let (program, args) = command
             .split_first()
-            .ok_or_else(|| invalid_request("command must not be empty".to_string()))?;
+            .ok_or_else(|| invalid_request("command must not be empty"))?;
         {
             let mut sessions = self.sessions.lock().await;
             if sessions.contains_key(&process_key) {
@@ -314,7 +314,7 @@ impl CommandExecManager {
     ) -> Result<CommandExecWriteResponse, JSONRPCErrorError> {
         if params.delta_base64.is_none() && !params.close_stdin {
             return Err(invalid_params(
-                "command/exec/write requires deltaBase64 or closeStdin".to_string(),
+                "command/exec/write requires deltaBase64 or closeStdin",
             ));
         }
 
@@ -423,7 +423,7 @@ impl CommandExecManager {
         };
         let CommandExecSession::Active { control_tx } = session else {
             return Err(invalid_request(
-                "command/exec/write, command/exec/terminate, and command/exec/resize are not supported for windows sandbox processes".to_string(),
+                "command/exec/write, command/exec/terminate, and command/exec/resize are not supported for windows sandbox processes",
             ));
         };
         let (response_tx, response_rx) = oneshot::channel();
@@ -455,17 +455,7 @@ async fn run_command(params: RunCommandParams) {
     } = params;
     let mut control_rx = control_rx;
     let mut control_open = true;
-    let expiration = async {
-        match expiration {
-            ExecExpiration::Timeout(duration) => tokio::time::sleep(duration).await,
-            ExecExpiration::DefaultTimeout => {
-                tokio::time::sleep(Duration::from_millis(DEFAULT_EXEC_COMMAND_TIMEOUT_MS)).await;
-            }
-            ExecExpiration::Cancellation(cancel) => {
-                cancel.cancelled().await;
-            }
-        }
-    };
+    let expiration = expiration.wait_with_outcome();
     tokio::pin!(expiration);
     let SpawnedProcess {
         session,
@@ -474,7 +464,7 @@ async fn run_command(params: RunCommandParams) {
         exit_rx,
     } = spawned;
     tokio::pin!(exit_rx);
-    let mut timed_out = false;
+    let mut expiration_outcome = None;
     let (stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
 
     let stdout_handle = spawn_process_output(SpawnProcessOutputParams {
@@ -489,7 +479,7 @@ async fn run_command(params: RunCommandParams) {
     });
     let stderr_handle = spawn_process_output(SpawnProcessOutputParams {
         connection_id: request_id.connection_id,
-        process_id,
+        process_id: process_id.clone(),
         output_rx: stderr_rx,
         stdio_timeout_rx,
         outgoing: Arc::clone(&outgoing),
@@ -530,12 +520,12 @@ async fn run_command(params: RunCommandParams) {
                     }
                 }
             }
-            _ = &mut expiration, if !timed_out => {
-                timed_out = true;
+            outcome = &mut expiration, if expiration_outcome.is_none() => {
+                expiration_outcome = Some(outcome);
                 session.request_terminate();
             }
             exit = &mut exit_rx => {
-                if timed_out {
+                if matches!(expiration_outcome, Some(ExecExpirationOutcome::TimedOut)) {
                     break EXEC_TIMEOUT_EXIT_CODE;
                 } else {
                     break exit.unwrap_or(-1);
@@ -638,7 +628,7 @@ async fn handle_process_write(
 ) -> Result<(), JSONRPCErrorError> {
     if !stream_stdin {
         return Err(invalid_request(
-            "stdin streaming is not enabled for this command/exec".to_string(),
+            "stdin streaming is not enabled for this command/exec",
         ));
     }
     if !delta.is_empty() {
@@ -646,7 +636,7 @@ async fn handle_process_write(
             .writer_sender()
             .send(delta)
             .await
-            .map_err(|_| invalid_request("stdin is already closed".to_string()))?;
+            .map_err(|_| invalid_request("stdin is already closed"))?;
     }
     if close_stdin {
         session.close_stdin();
@@ -668,7 +658,7 @@ pub(crate) fn terminal_size_from_protocol(
 ) -> Result<TerminalSize, JSONRPCErrorError> {
     if size.rows == 0 || size.cols == 0 {
         return Err(invalid_params(
-            "command/exec size rows and cols must be greater than 0".to_string(),
+            "command/exec size rows and cols must be greater than 0",
         ));
     }
     Ok(TerminalSize {
@@ -684,40 +674,15 @@ fn command_no_longer_running_error(process_id: &InternalProcessId) -> JSONRPCErr
     ))
 }
 
-fn invalid_request(message: String) -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: INVALID_REQUEST_ERROR_CODE,
-        message,
-        data: None,
-    }
-}
-
-fn invalid_params(message: String) -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: INVALID_PARAMS_ERROR_CODE,
-        message,
-        data: None,
-    }
-}
-
-fn internal_error(message: String) -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: INTERNAL_ERROR_CODE,
-        message,
-        data: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use crate::error_code::INVALID_REQUEST_ERROR_CODE;
     use codex_protocol::config_types::WindowsSandboxLevel;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
-    use codex_protocol::protocol::ReadOnlyAccess;
-    use codex_protocol::protocol::SandboxPolicy;
+    use codex_protocol::models::PermissionProfile;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     #[cfg(not(target_os = "windows"))]
     use tokio::time::Duration;
@@ -733,23 +698,19 @@ mod tests {
     use crate::outgoing_message::OutgoingMessage;
 
     fn windows_sandbox_exec_request() -> ExecRequest {
-        let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
-            network_access: false,
-        };
+        let cwd = AbsolutePathBuf::current_dir().expect("current dir");
         ExecRequest::new(
             vec!["cmd".to_string()],
-            PathBuf::from("."),
+            cwd.clone(),
             HashMap::new(),
             /*network*/ None,
             ExecExpiration::DefaultTimeout,
             codex_core::exec::ExecCapturePolicy::ShellTool,
             SandboxType::WindowsRestrictedToken,
+            vec![cwd],
             WindowsSandboxLevel::Disabled,
             /*windows_sandbox_private_desktop*/ false,
-            sandbox_policy.clone(),
-            FileSystemSandboxPolicy::from(&sandbox_policy),
-            NetworkSandboxPolicy::from(&sandbox_policy),
+            PermissionProfile::read_only(),
             /*arg0*/ None,
         )
     }
@@ -760,7 +721,10 @@ mod tests {
         let manager = CommandExecManager::default();
         let err = manager
             .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
                 request_id: ConnectionRequestId {
                     connection_id: ConnectionId(1),
                     request_id: codex_app_server_protocol::RequestId::Integer(42),
@@ -796,7 +760,10 @@ mod tests {
 
         manager
             .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
                 request_id: request_id.clone(),
                 process_id: Some("proc-99".to_string()),
                 exec_request: windows_sandbox_exec_request(),
@@ -839,29 +806,28 @@ mod tests {
             connection_id: ConnectionId(8),
             request_id: codex_app_server_protocol::RequestId::Integer(100),
         };
-        let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
-            network_access: false,
-        };
+        let cwd = AbsolutePathBuf::current_dir().expect("current dir");
 
         manager
             .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
                 request_id: request_id.clone(),
                 process_id: Some("proc-100".to_string()),
                 exec_request: ExecRequest::new(
                     vec!["sh".to_string(), "-lc".to_string(), "sleep 30".to_string()],
-                    PathBuf::from("."),
+                    cwd.clone(),
                     HashMap::new(),
                     /*network*/ None,
                     ExecExpiration::Cancellation(CancellationToken::new()),
                     codex_core::exec::ExecCapturePolicy::ShellTool,
                     SandboxType::None,
+                    vec![cwd.clone()],
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
-                    sandbox_policy.clone(),
-                    FileSystemSandboxPolicy::from(&sandbox_policy),
-                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    PermissionProfile::read_only(),
                     /*arg0*/ None,
                 ),
                 started_network_proxy: None,
@@ -914,6 +880,78 @@ mod tests {
         assert_eq!(response.stdout, "");
         // The deferred response now drains any already-emitted stderr before
         // replying, so shell startup noise is allowed here.
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn timeout_or_cancellation_reports_cancellation_without_timeout_exit_code() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let manager = CommandExecManager::default();
+        let request_id = ConnectionRequestId {
+            connection_id: ConnectionId(9),
+            request_id: codex_app_server_protocol::RequestId::Integer(101),
+        };
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let cwd = AbsolutePathBuf::current_dir().expect("current dir");
+
+        manager
+            .start(StartCommandExecParams {
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
+                request_id: request_id.clone(),
+                process_id: Some("proc-101".to_string()),
+                exec_request: ExecRequest::new(
+                    vec!["sh".to_string(), "-lc".to_string(), "sleep 30".to_string()],
+                    cwd.clone(),
+                    HashMap::new(),
+                    /*network*/ None,
+                    ExecExpiration::TimeoutOrCancellation {
+                        timeout: Duration::from_secs(30),
+                        cancellation,
+                    },
+                    codex_core::exec::ExecCapturePolicy::ShellTool,
+                    SandboxType::None,
+                    vec![cwd],
+                    WindowsSandboxLevel::Disabled,
+                    /*windows_sandbox_private_desktop*/ false,
+                    PermissionProfile::read_only(),
+                    /*arg0*/ None,
+                ),
+                started_network_proxy: None,
+                tty: false,
+                stream_stdin: false,
+                stream_stdout_stderr: false,
+                output_bytes_cap: Some(DEFAULT_OUTPUT_BYTES_CAP),
+                size: None,
+            })
+            .await
+            .expect("timeout-or-cancellation exec should start");
+
+        cancel.cancel();
+
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for outgoing message")
+            .expect("channel closed before outgoing message");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            panic!("expected connection-scoped outgoing message");
+        };
+        assert_eq!(connection_id, request_id.connection_id);
+        let OutgoingMessage::Response(response) = message else {
+            panic!("expected execution response after cancellation");
+        };
+        assert_eq!(response.id, request_id.request_id);
+        let response: CommandExecResponse =
+            serde_json::from_value(response.result).expect("deserialize command/exec response");
+        assert_ne!(response.exit_code, EXEC_TIMEOUT_EXIT_CODE);
     }
 
     #[tokio::test]
@@ -1029,10 +1067,7 @@ mod tests {
     async fn streamed_command_output_does_not_wait_for_transport_write_completion() {
         let (tx, rx) = mpsc::channel(2);
         let (response_tx, response_rx) = tokio::sync::oneshot::channel::<CommandExecResponse>();
-        let sandbox_policy = SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
-            network_access: false,
-        };
+        let permission_profile = PermissionProfile::read_only();
         tokio::spawn({
             let mut write_complete_sentinels = Vec::<tokio::sync::oneshot::Sender<()>>::new();
             let mut rx = rx;
@@ -1060,7 +1095,10 @@ mod tests {
         let manager = CommandExecManager::default();
         manager
             .start(StartCommandExecParams {
-                outgoing: Arc::new(OutgoingMessageSender::new(tx)),
+                outgoing: Arc::new(OutgoingMessageSender::new(
+                    tx,
+                    codex_analytics::AnalyticsEventsClient::disabled(),
+                )),
                 request_id: ConnectionRequestId {
                     connection_id: ConnectionId(14),
                     request_id: codex_app_server_protocol::RequestId::Integer(14),
@@ -1072,17 +1110,16 @@ mod tests {
                         "-c".to_string(),
                         "printf 'streaming-output'".to_string(),
                     ],
-                    PathBuf::from("."),
+                    AbsolutePathBuf::try_from(PathBuf::from(".")).unwrap(),
                     HashMap::new(),
                     /*network*/ None,
                     ExecExpiration::DefaultTimeout,
                     codex_core::exec::ExecCapturePolicy::ShellTool,
                     SandboxType::None,
+                    /*windows_sandbox_workspace_roots*/ Vec::new(),
                     WindowsSandboxLevel::Disabled,
                     /*windows_sandbox_private_desktop*/ false,
-                    sandbox_policy.clone(),
-                    FileSystemSandboxPolicy::from(&sandbox_policy),
-                    NetworkSandboxPolicy::from(&sandbox_policy),
+                    permission_profile,
                     /*arg0*/ None,
                 ),
                 started_network_proxy: None,
@@ -1109,7 +1146,10 @@ mod tests {
     #[tokio::test]
     async fn streamed_output_delta_delivery_waits_for_queue_capacity_instead_of_dropping_chunks() {
         let (tx, mut rx) = mpsc::channel(1);
-        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
         let (output_tx, output_rx) = mpsc::channel(4);
         let (_stdio_timeout_tx, stdio_timeout_rx) = watch::channel(false);
 

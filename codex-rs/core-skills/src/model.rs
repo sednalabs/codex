@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::fmt;
+use std::io;
 use std::sync::Arc;
 
+use codex_exec_server::ExecutorFileSystem;
+use codex_exec_server::LOCAL_FS;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillMetadata {
@@ -15,12 +19,13 @@ pub struct SkillMetadata {
     pub dependencies: Option<SkillDependencies>,
     pub policy: Option<SkillPolicy>,
     /// Path to the SKILLS.md file that declares this skill.
-    pub path_to_skills_md: PathBuf,
+    pub path_to_skills_md: AbsolutePathBuf,
     pub scope: SkillScope,
+    pub plugin_id: Option<String>,
 }
 
 impl SkillMetadata {
-    fn allow_implicit_invocation(&self) -> bool {
+    pub fn allows_implicit_invocation(&self) -> bool {
         self.policy
             .as_ref()
             .and_then(|policy| policy.allow_implicit_invocation)
@@ -55,8 +60,8 @@ pub struct SkillPolicy {
 pub struct SkillInterface {
     pub display_name: Option<String>,
     pub short_description: Option<String>,
-    pub icon_small: Option<PathBuf>,
-    pub icon_large: Option<PathBuf>,
+    pub icon_small: Option<AbsolutePathBuf>,
+    pub icon_large: Option<AbsolutePathBuf>,
     pub brand_color: Option<String>,
     pub default_prompt: Option<String>,
 }
@@ -78,7 +83,7 @@ pub struct SkillToolDependency {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillError {
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
     pub message: String,
 }
 
@@ -86,9 +91,12 @@ pub struct SkillError {
 pub struct SkillLoadOutcome {
     pub skills: Vec<SkillMetadata>,
     pub errors: Vec<SkillError>,
-    pub disabled_paths: HashSet<PathBuf>,
-    pub(crate) implicit_skills_by_scripts_dir: Arc<HashMap<PathBuf, SkillMetadata>>,
-    pub(crate) implicit_skills_by_doc_path: Arc<HashMap<PathBuf, SkillMetadata>>,
+    pub disabled_paths: HashSet<AbsolutePathBuf>,
+    pub(crate) skill_roots: Vec<AbsolutePathBuf>,
+    pub(crate) skill_root_by_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
+    pub(crate) file_systems_by_skill_path: SkillFileSystemsByPath,
+    pub(crate) implicit_skills_by_scripts_dir: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
+    pub(crate) implicit_skills_by_doc_path: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
 }
 
 impl SkillLoadOutcome {
@@ -97,7 +105,7 @@ impl SkillLoadOutcome {
     }
 
     pub fn is_skill_allowed_for_implicit_invocation(&self, skill: &SkillMetadata) -> bool {
-        self.is_skill_enabled(skill) && skill.allow_implicit_invocation()
+        self.is_skill_enabled(skill) && skill.allows_implicit_invocation()
     }
 
     pub fn allowed_skills_for_implicit_invocation(&self) -> Vec<SkillMetadata> {
@@ -113,6 +121,75 @@ impl SkillLoadOutcome {
             .iter()
             .map(|skill| (skill, self.is_skill_enabled(skill)))
     }
+
+    pub(crate) fn file_system_for_skill(
+        &self,
+        skill: &SkillMetadata,
+    ) -> Option<Arc<dyn ExecutorFileSystem>> {
+        self.file_systems_by_skill_path
+            .get(&skill.path_to_skills_md)
+    }
+}
+
+/// Host-loaded skills for one turn, including the filesystem mapping needed to
+/// read skill bodies through the environment that loaded them.
+#[derive(Debug, Clone)]
+pub struct HostLoadedSkills {
+    outcome: Arc<SkillLoadOutcome>,
+}
+
+impl HostLoadedSkills {
+    pub fn new(outcome: Arc<SkillLoadOutcome>) -> Self {
+        Self { outcome }
+    }
+
+    pub fn outcome(&self) -> &SkillLoadOutcome {
+        self.outcome.as_ref()
+    }
+
+    pub async fn read_skill_text(&self, skill: &SkillMetadata) -> io::Result<String> {
+        let fs = self
+            .outcome
+            .file_system_for_skill(skill)
+            .unwrap_or_else(|| Arc::clone(&LOCAL_FS));
+        fs.read_file_text(&skill.path_to_skills_md, /*sandbox*/ None)
+            .await
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SkillFileSystemsByPath {
+    values: Arc<HashMap<AbsolutePathBuf, Arc<dyn ExecutorFileSystem>>>,
+}
+
+impl SkillFileSystemsByPath {
+    pub(crate) fn new(values: HashMap<AbsolutePathBuf, Arc<dyn ExecutorFileSystem>>) -> Self {
+        Self {
+            values: Arc::new(values),
+        }
+    }
+
+    fn get(&self, path: &AbsolutePathBuf) -> Option<Arc<dyn ExecutorFileSystem>> {
+        self.values.get(path).map(Arc::clone)
+    }
+
+    fn retain_paths(&mut self, paths: &HashSet<AbsolutePathBuf>) {
+        self.values = Arc::new(
+            self.values
+                .iter()
+                .filter(|(path, _)| paths.contains(*path))
+                .map(|(path, fs)| (path.clone(), Arc::clone(fs)))
+                .collect(),
+        );
+    }
+}
+
+impl fmt::Debug for SkillFileSystemsByPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SkillFileSystemsByPath")
+            .field("len", &self.values.len())
+            .finish()
+    }
 }
 
 pub fn filter_skill_load_outcome_for_product(
@@ -122,6 +199,27 @@ pub fn filter_skill_load_outcome_for_product(
     outcome
         .skills
         .retain(|skill| skill.matches_product_restriction_for_product(restriction_product));
+    let retained_paths: HashSet<AbsolutePathBuf> = outcome
+        .skills
+        .iter()
+        .map(|skill| skill.path_to_skills_md.clone())
+        .collect();
+    outcome
+        .file_systems_by_skill_path
+        .retain_paths(&retained_paths);
+    outcome.skill_root_by_path = Arc::new(
+        outcome
+            .skill_root_by_path
+            .iter()
+            .filter(|(path, _)| retained_paths.contains(*path))
+            .map(|(path, root)| (path.clone(), root.clone()))
+            .collect(),
+    );
+    let retained_roots: HashSet<AbsolutePathBuf> =
+        outcome.skill_root_by_path.values().cloned().collect();
+    outcome
+        .skill_roots
+        .retain(|root| retained_roots.contains(root));
     outcome.implicit_skills_by_scripts_dir = Arc::new(
         outcome
             .implicit_skills_by_scripts_dir

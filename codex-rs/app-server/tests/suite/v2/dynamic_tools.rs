@@ -1,6 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
@@ -21,6 +21,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -34,6 +35,11 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use wiremock::MockServer;
 
+// macOS and Windows Bazel CI can spend tens of seconds starting app-server
+// subprocesses or processing test RPCs under load.
+#[cfg(any(target_os = "macos", windows))]
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ensures dynamic tool specs are serialized into the model request payload.
@@ -45,7 +51,7 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     // Use a minimal JSON schema so we can assert the tool payload round-trips.
@@ -58,10 +64,13 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         "additionalProperties": false,
     });
     let dynamic_tool = DynamicToolSpec {
+        namespace: None,
         name: "demo_tool".to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: input_schema.clone(),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     // Thread start injects dynamic tools into the thread's tool registry.
@@ -82,6 +91,7 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
@@ -127,10 +137,11 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
         name: "hidden_tool".to_string(),
         description: "Hidden dynamic tool".to_string(),
         input_schema: json!({
@@ -142,6 +153,8 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
             "additionalProperties": false,
         }),
         defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -160,6 +173,7 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
@@ -191,10 +205,95 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result<()> {
+    let server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: None,
+        name: "hidden_tool".to_string(),
+        description: "Hidden dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool]),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("hidden_tool"));
+    assert!(error.error.message.contains("namespace"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Result<()> {
+    let server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex.app".to_string()),
+        name: "lookup.ticket".to_string(),
+        description: "Invalid dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool]),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("Responses API"));
+    assert!(error.error.message.contains("lookup.ticket"));
+
+    Ok(())
+}
+
 /// Exercises the full dynamic tool call path (server request, client response, model output).
 #[tokio::test]
 async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Result<()> {
     let call_id = "dyn-call-1";
+    let tool_namespace = "codex_app";
     let tool_name = "demo_tool";
     let tool_args = json!({ "city": "Paris" });
     let tool_call_arguments = serde_json::to_string(&tool_args)?;
@@ -203,7 +302,16 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let responses = vec![
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, tool_name, &tool_call_arguments),
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "namespace": tool_namespace,
+                    "name": tool_name,
+                    "arguments": tool_call_arguments,
+                }
+            }),
             responses::ev_completed("resp-1"),
         ]),
         create_final_assistant_message_sse_response("Done")?,
@@ -213,10 +321,11 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let dynamic_tool = DynamicToolSpec {
+        namespace: Some(tool_namespace.to_string()),
         name: tool_name.to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: json!({
@@ -228,6 +337,8 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -248,6 +359,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.clone(),
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Run the tool".to_string(),
                 text_elements: Vec::new(),
@@ -268,6 +380,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     assert_eq!(started.turn_id, turn_id.clone());
     let ThreadItem::DynamicToolCall {
         id,
+        namespace,
         tool,
         arguments,
         status,
@@ -279,6 +392,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         panic!("expected dynamic tool call item");
     };
     assert_eq!(id, call_id);
+    assert_eq!(namespace.as_deref(), Some(tool_namespace));
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, DynamicToolCallStatus::InProgress);
@@ -301,6 +415,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         thread_id: thread_id.clone(),
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
+        namespace: Some(tool_namespace.to_string()),
         tool: tool_name.to_string(),
         arguments: tool_args.clone(),
     };
@@ -321,6 +436,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     assert_eq!(completed.turn_id, turn_id);
     let ThreadItem::DynamicToolCall {
         id,
+        namespace,
         tool,
         arguments,
         status,
@@ -332,6 +448,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         panic!("expected dynamic tool call item");
     };
     assert_eq!(id, call_id);
+    assert_eq!(namespace.as_deref(), Some(tool_namespace));
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, DynamicToolCallStatus::Completed);
@@ -382,10 +499,11 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let dynamic_tool = DynamicToolSpec {
+        namespace: None,
         name: tool_name.to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: json!({
@@ -397,6 +515,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             "additionalProperties": false,
         }),
         defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
     };
 
     let thread_req = mcp
@@ -416,6 +536,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.clone(),
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Run the tool".to_string(),
                 text_elements: Vec::new(),
@@ -449,6 +570,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         thread_id,
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
+        namespace: None,
         tool: tool_name.to_string(),
         arguments: tool_args,
     };
@@ -460,23 +582,18 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: "data:image/png;base64,AAA".to_string(),
+            detail: Some("original".to_string()),
         },
     ];
-    let content_items = response_content_items
-        .clone()
-        .into_iter()
-        .map(|item| match item {
-            DynamicToolCallOutputContentItem::InputText { text } => {
-                FunctionCallOutputContentItem::InputText { text }
-            }
-            DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                FunctionCallOutputContentItem::InputImage {
-                    image_url,
-                    detail: None,
-                }
-            }
-        })
-        .collect::<Vec<FunctionCallOutputContentItem>>();
+    let expected_model_content_items = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: "dynamic-ok".to_string(),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image_url: "data:image/png;base64,AAA".to_string(),
+            detail: Some(DEFAULT_IMAGE_DETAIL),
+        },
+    ];
     let response = DynamicToolCallResponse {
         content_items: response_content_items,
         success: true,
@@ -505,6 +622,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some("original".to_string()),
             },
         ])
     );
@@ -530,7 +648,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             {
                 "type": "input_image",
-                "image_url": "data:image/png;base64,AAA"
+                "image_url": "data:image/png;base64,AAA",
+                "detail": "high"
             }
         ])
     );
@@ -541,12 +660,12 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         .context("expected function_call_output in follow-up request")?;
     assert_eq!(
         payload.body,
-        FunctionCallOutputBody::ContentItems(content_items.clone())
+        FunctionCallOutputBody::ContentItems(expected_model_content_items.clone())
     );
     assert_eq!(payload.success, None);
     assert_eq!(
         serde_json::to_string(&payload)?,
-        serde_json::to_string(&content_items)?
+        serde_json::to_string(&expected_model_content_items)?
     );
 
     Ok(())
@@ -597,7 +716,7 @@ fn function_call_output_raw_output(body: &Value, call_id: &str) -> Option<Value>
 }
 
 async fn wait_for_dynamic_tool_started(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     call_id: &str,
 ) -> Result<ItemStartedNotification> {
     loop {
@@ -617,7 +736,7 @@ async fn wait_for_dynamic_tool_started(
 }
 
 async fn wait_for_dynamic_tool_completed(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     call_id: &str,
 ) -> Result<ItemCompletedNotification> {
     loop {

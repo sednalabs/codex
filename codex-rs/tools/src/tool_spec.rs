@@ -1,5 +1,7 @@
 use crate::FreeformTool;
 use crate::JsonSchema;
+use crate::LoadableToolSpec;
+use crate::ResponsesApiNamespace;
 use crate::ResponsesApiTool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -15,14 +17,14 @@ use serde_json::Value;
 pub enum ToolSpec {
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "namespace")]
+    Namespace(ResponsesApiNamespace),
     #[serde(rename = "tool_search")]
     ToolSearch {
         execution: String,
         description: String,
         parameters: JsonSchema,
     },
-    #[serde(rename = "local_shell")]
-    LocalShell {},
     #[serde(rename = "image_generation")]
     ImageGeneration { output_format: String },
     // TODO: Understand why we get an error on web_search although the API docs
@@ -52,8 +54,8 @@ impl ToolSpec {
     pub fn name(&self) -> &str {
         match self {
             ToolSpec::Function(tool) => tool.name.as_str(),
+            ToolSpec::Namespace(namespace) => namespace.name.as_str(),
             ToolSpec::ToolSearch { .. } => "tool_search",
-            ToolSpec::LocalShell {} => "local_shell",
             ToolSpec::ImageGeneration { .. } => "image_generation",
             ToolSpec::WebSearch { .. } => "web_search",
             ToolSpec::Freeform(tool) => tool.name.as_str(),
@@ -61,22 +63,12 @@ impl ToolSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConfiguredToolSpec {
-    pub spec: ToolSpec,
-    pub supports_parallel_tool_calls: bool,
-}
-
-impl ConfiguredToolSpec {
-    pub fn new(spec: ToolSpec, supports_parallel_tool_calls: bool) -> Self {
-        Self {
-            spec,
-            supports_parallel_tool_calls,
+impl From<LoadableToolSpec> for ToolSpec {
+    fn from(value: LoadableToolSpec) -> Self {
+        match value {
+            LoadableToolSpec::Function(tool) => ToolSpec::Function(tool),
+            LoadableToolSpec::Namespace(namespace) => ToolSpec::Namespace(namespace),
         }
-    }
-
-    pub fn name(&self) -> &str {
-        self.spec.name()
     }
 }
 

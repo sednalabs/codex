@@ -1,13 +1,7 @@
 use crate::color::perceptual_distance;
+use codex_terminal_detection::TerminalName;
+use codex_terminal_detection::terminal_info;
 use ratatui::style::Color;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-
-static DEFAULT_PALETTE_VERSION: AtomicU64 = AtomicU64::new(0);
-
-fn bump_palette_version() {
-    DEFAULT_PALETTE_VERSION.fetch_add(1, Ordering::Relaxed);
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StdoutColorLevel {
@@ -38,25 +32,54 @@ pub fn indexed_color(index: u8) -> Color {
 
 /// Returns the closest color to the target color that the terminal can display.
 pub fn best_color(target: (u8, u8, u8)) -> Color {
-    let color_level = stdout_color_level();
-    if color_level == StdoutColorLevel::TrueColor {
-        rgb_color(target)
-    } else if color_level == StdoutColorLevel::Ansi256
-        && let Some((i, _)) = xterm_fixed_colors().min_by(|(_, a), (_, b)| {
-            perceptual_distance(*a, target)
-                .partial_cmp(&perceptual_distance(*b, target))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    best_color_for_color_level(target, effective_stdout_color_level())
+}
+
+fn effective_stdout_color_level() -> StdoutColorLevel {
+    stdout_color_level_for_terminal(
+        stdout_color_level(),
+        terminal_info().name,
+        std::env::var_os("WT_SESSION").is_some(),
+        std::env::var_os("FORCE_COLOR").is_some(),
+    )
+}
+
+fn stdout_color_level_for_terminal(
+    stdout_level: StdoutColorLevel,
+    terminal_name: TerminalName,
+    has_wt_session: bool,
+    has_force_color_override: bool,
+) -> StdoutColorLevel {
+    if has_wt_session && !has_force_color_override {
+        return StdoutColorLevel::TrueColor;
+    }
+
+    if stdout_level == StdoutColorLevel::Ansi16
+        && terminal_name == TerminalName::WindowsTerminal
+        && !has_force_color_override
     {
-        indexed_color(i as u8)
+        StdoutColorLevel::TrueColor
     } else {
-        Color::default()
+        stdout_level
+    }
+}
+
+fn best_color_for_color_level(target: (u8, u8, u8), color_level: StdoutColorLevel) -> Color {
+    match color_level {
+        StdoutColorLevel::TrueColor => rgb_color(target),
+        StdoutColorLevel::Ansi256 => xterm_fixed_colors()
+            .min_by(|(_, a), (_, b)| {
+                perceptual_distance(*a, target)
+                    .partial_cmp(&perceptual_distance(*b, target))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map_or_else(Color::default, |(i, _)| indexed_color(i as u8)),
+        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Color::default(),
     }
 }
 
 pub fn requery_default_colors() {
     imp::requery_default_colors();
-    bump_palette_version();
 }
 
 #[derive(Clone, Copy)]
@@ -77,12 +100,11 @@ pub fn default_bg() -> Option<(u8, u8, u8)> {
     default_colors().map(|c| c.bg)
 }
 
-/// Returns a monotonic counter that increments whenever `requery_default_colors()` runs
-/// successfully so cached renderers can know when their styling assumptions (e.g.
-/// background colors baked into cached transcript rows) are stale and need invalidation.
-#[allow(dead_code)]
-pub fn palette_version() -> u64 {
-    DEFAULT_PALETTE_VERSION.load(Ordering::Relaxed)
+#[cfg(any(unix, windows))]
+pub(crate) fn set_default_colors_from_startup_probe(
+    colors: Option<crate::terminal_probe::DefaultColors>,
+) {
+    imp::set_default_colors_from_startup_probe(colors);
 }
 
 #[cfg(all(unix, not(test)))]
@@ -116,10 +138,103 @@ mod imp {
             }
             self.value
         }
+    }
 
-        fn refresh_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
-            self.value = init();
-            self.attempted = true;
+    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColors>> {
+        static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(Cache::default()))
+    }
+
+    pub(super) fn default_colors() -> Option<DefaultColors> {
+        let cache = default_colors_cache();
+        let mut cache = cache.lock().ok()?;
+        cache.get_or_init_with(query_default_colors)
+    }
+
+    pub(super) fn set_default_colors_from_startup_probe(
+        colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
+        if let Ok(mut cache) = default_colors_cache().lock() {
+            cache.value = colors.map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            });
+            cache.attempted = true;
+        }
+    }
+
+    pub(super) fn requery_default_colors() {
+        if let Ok(mut cache) = default_colors_cache().lock() {
+            // Don't try to refresh if the cache is already attempted and failed.
+            if cache.attempted && cache.value.is_none() {
+                return;
+            }
+
+            // Focus events arrive after crossterm's event stream is active. Requery through
+            // crossterm here so unrelated input stays in crossterm's skipped-event queue instead
+            // of being consumed by the bounded startup probe's direct tty reads.
+            let fg = query_foreground_color()
+                .ok()
+                .flatten()
+                .and_then(color_to_tuple);
+            let bg = query_background_color()
+                .ok()
+                .flatten()
+                .and_then(color_to_tuple);
+            cache.value = fg.zip(bg).map(|(fg, bg)| DefaultColors { fg, bg });
+            cache.attempted = true;
+        }
+    }
+
+    /// Queries terminal default colors through the bounded startup probe path.
+    ///
+    /// The palette cache treats `None` as an attempted-but-unavailable result, so this function
+    /// collapses I/O errors and missing responses into the same fallback path used for terminals
+    /// that simply do not support OSC 10/11 queries.
+    fn query_default_colors() -> Option<DefaultColors> {
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+            .ok()
+            .flatten()
+            .map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            })
+    }
+
+    fn color_to_tuple(color: CrosstermColor) -> Option<(u8, u8, u8)> {
+        match color {
+            CrosstermColor::Rgb { r, g, b } => Some((r, g, b)),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    use super::DefaultColors;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    struct Cache<T> {
+        attempted: bool,
+        value: Option<T>,
+    }
+
+    impl<T> Default for Cache<T> {
+        fn default() -> Self {
+            Self {
+                attempted: false,
+                value: None,
+            }
+        }
+    }
+
+    impl<T: Copy> Cache<T> {
+        fn get_or_init_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
+            if !self.attempted {
+                self.value = init();
+                self.attempted = true;
+            }
             self.value
         }
     }
@@ -132,39 +247,46 @@ mod imp {
     pub(super) fn default_colors() -> Option<DefaultColors> {
         let cache = default_colors_cache();
         let mut cache = cache.lock().ok()?;
-        cache.get_or_init_with(|| query_default_colors().unwrap_or_default())
+        cache.get_or_init_with(query_default_colors)
     }
 
-    pub(super) fn requery_default_colors() {
+    pub(super) fn set_default_colors_from_startup_probe(
+        colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
         if let Ok(mut cache) = default_colors_cache().lock() {
-            // Don't try to refresh if the cache is already attempted and failed.
-            if cache.attempted && cache.value.is_none() {
-                return;
-            }
-            cache.refresh_with(|| query_default_colors().unwrap_or_default());
+            cache.value = colors.map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            });
+            cache.attempted = true;
         }
     }
 
-    fn query_default_colors() -> std::io::Result<Option<DefaultColors>> {
-        let fg = query_foreground_color()?.and_then(color_to_tuple);
-        let bg = query_background_color()?.and_then(color_to_tuple);
-        Ok(fg.zip(bg).map(|(fg, bg)| DefaultColors { fg, bg }))
-    }
+    pub(super) fn requery_default_colors() {}
 
-    fn color_to_tuple(color: CrosstermColor) -> Option<(u8, u8, u8)> {
-        match color {
-            CrosstermColor::Rgb { r, g, b } => Some((r, g, b)),
-            _ => None,
-        }
+    fn query_default_colors() -> Option<DefaultColors> {
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+            .ok()
+            .flatten()
+            .map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            })
     }
 }
 
-#[cfg(not(all(unix, not(test))))]
+#[cfg(not(any(all(unix, not(test)), windows)))]
 mod imp {
     use super::DefaultColors;
 
     pub(super) fn default_colors() -> Option<DefaultColors> {
         None
+    }
+
+    #[cfg(any(unix, windows))]
+    pub(super) fn set_default_colors_from_startup_probe(
+        _colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
     }
 
     pub(super) fn requery_default_colors() {}
@@ -437,3 +559,64 @@ pub const XTERM_COLORS: [(u8, u8, u8); 256] = [
     (228, 228, 228), // 254 Grey89
     (238, 238, 238), // 255 Grey93
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn best_color_uses_truecolor_without_quantization() {
+        assert_eq!(
+            best_color_for_color_level((12, 34, 56), StdoutColorLevel::TrueColor),
+            rgb_color((12, 34, 56))
+        );
+    }
+
+    #[test]
+    fn best_color_resets_for_ansi16() {
+        assert_eq!(
+            best_color_for_color_level((12, 34, 56), StdoutColorLevel::Ansi16),
+            Color::Reset
+        );
+    }
+
+    #[test]
+    fn windows_terminal_wt_session_promotes_to_truecolor() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::Unknown,
+                /*has_wt_session*/ true,
+                /*has_force_color_override*/ false,
+            ),
+            StdoutColorLevel::TrueColor
+        );
+    }
+
+    #[test]
+    fn windows_terminal_name_promotes_ansi16_to_truecolor() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::WindowsTerminal,
+                /*has_wt_session*/ false,
+                /*has_force_color_override*/ false,
+            ),
+            StdoutColorLevel::TrueColor
+        );
+    }
+
+    #[test]
+    fn force_color_keeps_reported_stdout_level() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::WindowsTerminal,
+                /*has_wt_session*/ true,
+                /*has_force_color_override*/ true,
+            ),
+            StdoutColorLevel::Ansi16
+        );
+    }
+}

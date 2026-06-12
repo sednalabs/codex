@@ -19,7 +19,9 @@ use tokio::task::JoinHandle;
 
 use crate::process::ChildTerminator;
 use crate::process::ProcessHandle;
+use crate::process::ProcessSignal;
 use crate::process::SpawnedProcess;
+use crate::process::exit_code_from_status;
 
 #[cfg(target_os = "linux")]
 use libc;
@@ -32,6 +34,22 @@ struct PipeChildTerminator {
 }
 
 impl ChildTerminator for PipeChildTerminator {
+    fn signal(&mut self, signal: ProcessSignal) -> io::Result<()> {
+        match signal {
+            ProcessSignal::Interrupt => {
+                #[cfg(unix)]
+                {
+                    crate::process_group::interrupt_process_group(self.process_group_id)
+                }
+
+                #[cfg(not(unix))]
+                {
+                    Err(crate::process::unsupported_signal(signal))
+                }
+            }
+        }
+    }
+
     fn kill(&mut self) -> io::Result<()> {
         #[cfg(unix)]
         {
@@ -162,12 +180,11 @@ async fn spawn_process_with_stdin_mode(
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(128);
     let writer_handle = if let Some(stdin) = stdin {
-        let writer = Arc::new(tokio::sync::Mutex::new(stdin));
         tokio::spawn(async move {
+            let mut writer = stdin;
             while let Some(bytes) = writer_rx.recv().await {
-                let mut guard = writer.lock().await;
-                let _ = guard.write_all(&bytes).await;
-                let _ = guard.flush().await;
+                let _ = writer.write_all(&bytes).await;
+                let _ = writer.flush().await;
             }
         })
     } else {
@@ -210,7 +227,7 @@ async fn spawn_process_with_stdin_mode(
     let wait_exit_code = Arc::clone(&exit_code);
     let wait_handle: JoinHandle<()> = tokio::spawn(async move {
         let code = match child.wait().await {
-            Ok(status) => status.code().unwrap_or(-1),
+            Ok(status) => exit_code_from_status(status),
             Err(_) => -1,
         };
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -235,6 +252,7 @@ async fn spawn_process_with_stdin_mode(
         exit_status,
         exit_code,
         /*pty_handles*/ None,
+        /*resizer*/ None,
     );
 
     Ok(SpawnedProcess {

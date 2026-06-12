@@ -1,9 +1,14 @@
 {
   "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
         "user",
+        "auto_review",
         "guardian_subagent"
       ],
       "type": "string"
@@ -58,6 +63,75 @@
         }
       ]
     },
+    "DynamicToolCapability": {
+      "properties": {
+        "capabilityScope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "leaseMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutationClass": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DynamicToolSpec": {
+      "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicToolCapability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deferLoading": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": true,
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persistOnResume": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
+      ],
+      "type": "object"
+    },
     "SandboxMode": {
       "enum": [
         "read-only",
@@ -66,16 +140,12 @@
       ],
       "type": "string"
     },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
+    "ThreadSource": {
       "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "There are two ways to fork a thread:\n1. By thread_id: load the thread from disk by thread_id and fork it into a new thread.\n2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using path, the thread_id param will be ignored.\n\nPrefer using thread_id whenever possible.",
+  "description": "There are two ways to fork a thread:\n1. By thread_id: load the thread from disk by thread_id and fork it into a new thread.\n2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored.\nEmpty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
@@ -150,17 +220,24 @@
       ]
     },
     "serviceTier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ServiceTier"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "threadId": {
       "type": "string"
+    },
+    "threadSource": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional client-supplied analytics source classification for this forked thread."
     }
   },
   "required": [

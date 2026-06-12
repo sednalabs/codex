@@ -6,106 +6,16 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
-## Connecting to MCP servers
+## Lifecycle hooks
 
-Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:
+Admins can set top-level `allow_managed_hooks_only = true` in
+`requirements.toml` to ignore user, project, and session hook configs while
+still allowing managed hooks from requirements and managed config layers. This
+setting is only supported in `requirements.toml`; putting it in `config.toml`
+does not enable managed-hooks-only mode.
 
-- https://developers.openai.com/codex/config-reference
+## Prompt stack
 
-## MCP tool approvals
-
-Codex stores per-tool approval overrides for custom MCP servers under
-`mcp_servers` in `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.docs.tools.search]
-approval_mode = "approve"
-```
-
-## Apps (Connectors)
-
-Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible
-apps. The `/apps` command lists available and installed apps. Connected apps appear first
-and are labeled as connected; others are marked as can be installed.
-
-## Notify
-
-Codex can run a notification hook when the agent finishes a turn. See the configuration reference for the latest notification settings:
-
-- https://developers.openai.com/codex/config-reference
-
-When Codex knows which client started the turn, the legacy notify JSON payload also includes a top-level `client` field. The TUI reports `codex-tui`, and the app server reports the `clientInfo.name` value from `initialize`.
-
-## JSON Schema
-
-The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
-
-## SQLite State DB
-
-Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
-`CODEX_SQLITE_HOME` environment variable. When unset, WorkspaceWrite sandbox
-sessions default to a temp directory; other modes default to `CODEX_HOME`.
-
-## Custom CA Certificates
-
-Codex can trust a custom root CA bundle for outbound HTTPS and secure websocket
-connections when enterprise proxies or gateways intercept TLS. This applies to
-login flows and to Codex's other external connections, including Codex
-components that build reqwest clients or secure websocket clients through the
-shared `codex-client` CA-loading path and remote MCP connections that use it.
-
-Set `CODEX_CA_CERTIFICATE` to the path of a PEM file containing one or more
-certificate blocks to use a Codex-specific CA bundle. If
-`CODEX_CA_CERTIFICATE` is unset, Codex falls back to `SSL_CERT_FILE`. If
-neither variable is set, Codex uses the system root certificates.
-
-`CODEX_CA_CERTIFICATE` takes precedence over `SSL_CERT_FILE`. Empty values are
-treated as unset.
-
-The PEM file may contain multiple certificates. Codex also tolerates OpenSSL
-`TRUSTED CERTIFICATE` labels and ignores well-formed `X509 CRL` sections in the
-same bundle. If the file is empty, unreadable, or malformed, the affected Codex
-HTTP or secure websocket connection reports a user-facing error that points
-back to these environment variables.
-
-## Notices
-
-Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
-
-## Plan mode defaults
-
-`plan_mode_reasoning_effort` lets you set a Plan-mode-specific default reasoning
-effort override. When unset, Plan mode uses the built-in Plan preset default
-(currently `medium`). When explicitly set (including `none`), it overrides the
-Plan preset. The string value `none` means "no reasoning" (an explicit Plan
-override), not "inherit the global default". There is currently no separate
-config value for "follow the global default in Plan mode".
-
-## Realtime start instructions
-
-`experimental_realtime_start_instructions` lets you replace the built-in
-developer message Codex inserts when realtime becomes active. It only affects
-the realtime start message in prompt history and does not change websocket
-backend prompt settings or the realtime end/inactive message.
-
-For how this developer-layer message fits into the assembled prompt stack, see
-[Prompt Stack Deep Dive](prompt-stack-deep-dive.md#8-realtime-transition-instructions).
-
-Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
-
-## Realtime startup context
-
-`experimental_realtime_ws_startup_context` overrides the synthesized realtime
-startup context sent on session start. Provide a string to replace the
-generated context entirely, or set it to the empty string to disable sending a
-startup context. When unset, Codex synthesizes a context from recent thread
-history, work, and workspace map; it explicitly notes that AGENTS files,
-project-doc blends, and memory summaries are **not** included in that payload.
-
-This setting is independent of
-[`AGENTS.md` / `AGENTS.override.md` precedence](agents_md.md#local-override-precedence),
-which controls project instructions rather than realtime startup context.
-
-For the broader prompt-stack position of realtime developer messages,
-`user_instructions`, and project-doc instructions, see
+For how configuration-supplied instructions, realtime transition messages, and
+project-doc instructions fit into the assembled prompt stack, see
 [Prompt Stack Deep Dive](prompt-stack-deep-dive.md).

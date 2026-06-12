@@ -1,5 +1,11 @@
 set working-directory := "codex-rs"
 set positional-arguments
+export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
+set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
+set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
+
+rust_min_stack := "8388608" # 8 MiB
+python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help
 help:
@@ -8,48 +14,94 @@ help:
 # `codex`
 alias c := codex
 codex *args:
-    cargo run --bin codex -- "$@"
+    cargo run --bin codex -- {args}
 
 # `codex exec`
 exec *args:
-    cargo run --bin codex -- exec "$@"
+    cargo run --bin codex -- exec {args}
 
-# Start codex-exec-server and run codex-tui.
+# Start `codex exec-server` and run codex-tui.
 [no-cd]
+[positional-arguments]
+[unix]
 tui-with-exec-server *args:
-    ./scripts/run_tui_with_exec_server.sh "$@"
+    {{ justfile_directory() }}/scripts/run_tui_with_exec_server.sh "$@"
 
 # Run the CLI version of the file-search crate.
 file-search *args:
-    cargo run --bin codex-file-search -- "$@"
+    cargo run --bin codex-file-search -- {args}
 
 # Build the CLI and run the app-server test client
 app-server-test-client *args:
     cargo build -p codex-cli
-    cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex "$@"
+    cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex {args}
 
-# format code
+# Format the justfile, Rust, Python SDK code, and Python scripts.
 fmt:
-    cargo fmt -- --config imports_granularity=Item 2>/dev/null
+    {{ python }} ../scripts/format.py
+
+# Check formatting without modifying files.
+fmt-check:
+    {{ python }} ../scripts/format.py --check
+
+core-websocket-targeted:
+    set -euo pipefail; \
+    export CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}"; \
+    cargo test -p codex-core --test all suite::agent_websocket -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::client_websockets -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::websocket_fallback -- --exact --test-threads=1; \
+    cargo test -p codex-core --test all suite::turn_state::websocket_turn_state_persists_within_turn_and_resets_after -- --exact --test-threads=1
 
 fix *args:
-    cargo clippy --fix --tests --allow-dirty "$@"
+    cargo clippy --fix --tests --allow-dirty {args}
 
 clippy *args:
-    cargo clippy --tests "$@"
+    cargo clippy --tests {args}
 
+[unix]
 install:
     rustup show active-toolchain
     cargo fetch
 
-# Run `cargo nextest` since it's faster than `cargo test`, though including
-# --no-fail-fast is important to ensure all tests are run.
+[windows]
+install:
+    #!powershell.exe -File
+    $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if (-not $pwsh) {
+        winget install --exact --id Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    rustup show active-toolchain
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    cargo fetch
+    exit $LASTEXITCODE
+
+# Run nextest with --no-fail-fast so all tests are run.
 #
-# Run `cargo install cargo-nextest` if you don't have it installed.
-# Prefer this for routine local runs; use explicit `cargo test --all-features`
-# only when you specifically need full feature coverage.
-test:
-    cargo nextest run --no-fail-fast
+# Run `cargo install --locked cargo-nextest` if you don't have it installed.
+# Prefer this for routine local runs. Workspace crate features are banned, so
+# there should be no need to add `--all-features`.
+[unix]
+test *args:
+    RUST_MIN_STACK={{ rust_min_stack }} NEXTEST_PROFILE=local cargo nextest run --no-fail-fast "$@"
+
+[windows]
+test *args:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; $env:NEXTEST_PROFILE = "local"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
+
+# Run from the repository root so scripts that resolve paths from `cwd` see
+# the same layout they use in GitHub Actions.
+[no-cd]
+test-github-scripts:
+    {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
+
+# Run explicit workspace benchmark targets.
+bench *args:
+    cargo bench --workspace --bench '*' {args}
+
+# Run benchmark targets once to ensure they start successfully.
+bench-smoke:
+    just bench -- --test
 
 # Compile-focused guardrail for high-churn core + sandbox seams.
 core-compile-smoke:
@@ -57,11 +109,12 @@ core-compile-smoke:
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_wait_until_terminal_returns_exit_metadata --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
 
 # Carry-only downstream behavior smoke checks (TUI/UI seam).
 core-carry-ui-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::slash_approvals_enter_queues_while_task_running_and_replays_on_completion chatwidget::tests::alt_up_restores_most_recent_queued_slash_command app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::slash_commands::queued_popup_command_replay_waits_before_submitting_next_message chatwidget::tests::slash_commands::slash_quit_in_side_conversation_requests_side_exit chatwidget::tests::slash_commands::slash_exit_in_side_conversation_requests_side_exit chatwidget::tests::composer_submission::alt_up_restores_most_recent_queued_slash_command chatwidget::tests::composer_submission::alt_up_restored_state_with_missing_insert_order_preserves_front_back_recall_order app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
 
 # Compatibility wrapper while callers migrate to split core/UI smoke lanes.
 core-carry-smoke:
@@ -74,7 +127,11 @@ core-startup-sync-targeted:
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status_and_last_task_message multi_agent_v2_list_agents_keeps_active_descendant_hint_under_path_filter multi_agent_v2_list_agents_flags_active_descendants test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume test_gpt_5_defaults test_gpt_5_1_defaults test_codex_5_1_mini_defaults test_gpt_5_1_codex_max_unified_exec_web_search test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search test_gpt_5_1_codex_max_defaults
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields
+
+# Focused inspect_agent_tree stale-descendant fallback regression.
+core-subagent-inspect-tree-fallback-targeted:
+    cargo test -p codex-core inspect_agent_tree_without_state_db_points_to_subagent_tail --lib -- --exact --test-threads=1
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
@@ -89,6 +146,7 @@ core-subagent-notification-visibility-targeted:
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
     cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_settings::tests::permission_overrides_project_disabled_profile_without_active_profile --lib -- --exact --test-threads=1
 
 # Focused TUI config-refresh session-state persistence slice.
 tui-config-refresh-session-targeted:
@@ -149,9 +207,18 @@ tui-agent-picker-usage-targeted:
 tui-agent-usage-totals-targeted:
     cargo test -p codex-tui app::tests::sync_session_tree_token_usage_updates_combined_status_line_items --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::sync_session_tree_token_usage_prefers_selected_subagent_usage_for_status_line --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_context_compaction_start_updates_status_header --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_context_compaction_completion_updates_status_header --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_compaction_item_completion_restores_finished_status --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_token_items_use_session_totals --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_combined_used_tokens_footer_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui status::tests::status_snapshot_distinguishes_session_and_thread_token_usage --lib -- --exact --test-threads=1
+
+# Focused TUI weekly usage pacing status-line slice.
+tui-weekly-pacing-status-line-targeted:
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_renders_stale_suffix_over_pace_details --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::status_and_layout::status_line_weekly_limit_omits_pacing_when_inputs_are_missing --lib -- --exact --test-threads=1
 
 # Focused TUI interrupt confirmation slice for Alt/meta-safe Esc handling.
 tui-esc-interrupt-targeted:
@@ -160,6 +227,10 @@ tui-esc-interrupt-targeted:
 # Focused TUI queued-follow-up front-insert slice.
 tui-front-queue-submit-targeted:
     cargo test -p codex-tui bottom_pane::chat_composer::tests::ctrl_shift_q_queues_front_when_task_running --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::active_turn_model_slash_opens_picker_and_selection_does_not_start_turn --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::active_turn_permissions_slash_opens_picker_and_selection_does_not_start_turn --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::active_turn_plan_with_args_queues_prompt_under_plan_mode --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::active_turn_fast_slash_applies_service_tier_without_starting_turn --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::front_queued_follow_up_runs_before_back_queued_follow_up --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::replayed_turn_complete_submits_restored_front_queued_follow_up_first --lib -- --exact --test-threads=1
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
@@ -171,11 +242,67 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1
 
+# Focused brokered-tool replay slice for app-server dynamic-tool begin/end
+# projection and TUI replay visibility.
+tui-brokered-tool-replay-targeted:
+    cargo test -p codex-tui bridges_dynamic_tool_items_from_server_notifications --lib -- --exact --test-threads=1
+    cargo test -p codex-tui replays_in_progress_dynamic_tool_items_without_completion_event --lib -- --exact --test-threads=1
+    cargo test -p codex-tui live_app_server_dynamic_tool_item_start_clears_compaction_status_header --lib -- --exact --test-threads=1
+    cargo test -p codex-tui active_dynamic_tool_call_renders_exact_arguments_and_preview --lib -- --exact --test-threads=1
+    cargo test -p codex-tui replays_computer_use_items_from_turn_snapshots --lib -- --exact --test-threads=1
+    cargo test -p codex-tui computer_use_fallback_message_only_shows_for_primary_thread --lib -- --exact --test-threads=1
+
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_and_last_task_message --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
+
+# Focused blocking-wait slice covering direct unified-exec waits, agent waits,
+# app-server command execution completion ordering, and MCP task completion.
+blocking-waits-targeted:
+    cargo test -p codex-core capacity_retry::tests --lib -- --test-threads=1
+    cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::auto_remote_compact_retries_server_overloaded -- --exact --test-threads=1
+    cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
+    # The hosted frontier lane runs this after several core/tui checks; clear the
+    # shared target dir before the late cross-crate app-server/mcp checks.
+    cargo clean
+    cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
+    cargo clean
+    cargo nextest run -j 1 -p codex-mcp-server --test all -- suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response --exact
+
+# Focused custom-prompt discovery and review-flow slice.
+custom-prompts-targeted:
+    cargo test -p codex-core custom_prompts::tests:: --lib -- --test-threads=1
+    cargo test -p codex-core review_prompts::tests:: --lib -- --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::review_popup_custom_prompt_action_sends_event --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_submit_sends_review_op --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_enter_empty_does_not_send --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::review_mode::review_custom_prompt_escape_navigates_back_then_dismisses --lib -- --exact --test-threads=1
+
+# Focused downstream MCP safety slice for config mutability and OAuth fallback
+# hardening.
+mcp-safety-targeted:
+    cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1
+    cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_serializes_tool_approval_overrides --lib -- --exact --test-threads=1
+    cargo test -p codex-core config::service_tests::write_value_supports_custom_mcp_server_default_tool_approval_mode --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client load_oauth_tokens_ --lib -- --test-threads=1
+    cargo test -p codex-rmcp-client refresh_expires_in_from_timestamp_marks_expired_tokens --lib -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
+
+# Focused downstream MCP OAuth device-login slice for browserless hosts.
+mcp-device-login-targeted:
+    cargo test -p codex-rmcp-client auth_status::tests::discover_streamable_http_oauth_returns_normalized_scopes --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_login::tests::start_authorization_routes_dynamic_registration_through_configured_client --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_dynamic_registration_uses_device_grant_shape --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_dynamic_registration_omits_refresh_when_not_supported --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_polls_until_authorized --lib -- --exact --test-threads=1
+    cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
@@ -204,9 +331,111 @@ app-server-thread-cwd-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_list:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_read_returns_summary_without_turns -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_honors_explicit_null_thread_instructions -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_honors_explicit_null_thread_instructions -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
+
+# Focused app-server v2 contract slice for high-signal client-facing RPCs.
+app-server-v2-contract-targeted:
+    cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+
+# Focused MCP server contract slice for approval and tool response ordering.
+mcp-server-contract-targeted:
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response -- --exact --test-threads=1
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_patch_approval_triggers_elicitation -- --exact --test-threads=1
+
+# Focused exec-server protocol slice for websocket startup and process basics.
+exec-server-targeted:
+    cargo test --locked -p codex-exec-server --test initialize -- --test-threads=1
+    cargo test --locked -p codex-exec-server --test websocket -- --test-threads=1
+    cargo test --locked -p codex-exec-server --test process exec_server_starts_process_over_websocket -- --exact --test-threads=1
+
+# Focused CLI surface slice for parser, subcommand, and diagnostics contracts.
+cli-surface-targeted:
+    cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
+    cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
+    cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
+
+# Focused native computer-use bridge slice for app-server protocol routing,
+# client response handling, and Android tool lifecycle injection.
+app-server-computer-use-targeted:
+    cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
+
+# Focused native computer-use TUI app-server request and provider routing slice.
+tui-native-computer-use-targeted:
+    cargo test --locked -p codex-tui app::app_server_requests::tests::does_not_mark_computer_use_calls_as_unsupported --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui computer_use_display::tests::action_labels_match_native_surfaces --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui history_cell::tests::computer_use_call_labels_native_surfaces --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui history_cell::tests::computer_use_call_failure_is_visible --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui chatwidget::tests::history_replay::replayed_completed_computer_use_call_is_visible --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-tui chatwidget::tests::history_replay::live_computer_use_call_is_visible_while_active_and_after_completion --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-browser-computer-use --lib -- --test-threads=1
+    cargo test --locked -p codex-tui desktop_computer_use_provider::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
+
+# Focused exec native computer-use slice for configured browser tool
+# advertisement and provider request handling in non-interactive sessions.
+exec-native-computer-use-targeted:
+    cargo test --locked -p codex-exec tests::thread_lifecycle_params_include_configured_native_dynamic_tools --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-exec --test all event_processor_with_json_output::computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
+
+# Focused native computer-use tool registry slice for canonical schema conversion
+# and deferred tool-search discovery.
+native-computer-use-tool-registry-targeted:
+    cargo test --locked -p codex-core-plugins bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable --lib -- --test-threads=1
+    cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools canonical_browser_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools desktop_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools browser_backend_schema_exposes_supported_provider_backends --lib -- --test-threads=1
+    cargo test --locked -p codex-tools native_computer_use_registry_classifies_android_and_browser_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-tools native_computer_use_registry_classifies_desktop_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-android-computer-use configured_android_tools_load_from_explicit_codex_home --lib -- --test-threads=1
+    cargo test --locked -p codex-android-computer-use prefer_stable_ui_defaults_to_true_unless_disabled --lib -- --test-threads=1
+    cargo test --locked -p codex-core duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --test-threads=1
+    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
+    cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
+    cargo test --locked -p codex-core thread_spawn_subagent_inherits_parent_dynamic_tools --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
+    cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
+    cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
+    cargo test --locked -p codex-browser-computer-use browser_provider_response_preserves_native_image --lib -- --test-threads=1
+    cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
+
+# Focused native computer-use operator diagnostics slice.
+native-computer-use-doctor-targeted:
+    cargo test --locked -p codex-cli doctor::tests::native_computer_use_check_reports_android_browser_and_desktop_config_files -- --exact --test-threads=1
+
+# Focused downstream agent-workflow helper sanity slice.
+[no-cd]
+agent-workflow-sanity:
+    cd "{{justfile_directory()}}" && python3 -m py_compile \
+        .codex/skills/babysit-pr/scripts/gh_pr_watch.py \
+        .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py \
+        .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py \
+        .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py
+    cd "{{justfile_directory()}}" && python3 .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py --help >/dev/null
+
+# Focused shell-tool-mcp package sanity slice.
+[no-cd]
+shell-tool-mcp-ci:
+    cd "{{justfile_directory()}}" && corepack enable
+    cd "{{justfile_directory()}}" && pnpm install --frozen-lockfile
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run format
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp test
+    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run build
+
+# Focused build/config policy sanity slice for install and workspace checks.
+[no-cd]
+build-policy-sanity:
+    cd "{{justfile_directory()}}" && bash -n scripts/install/install.sh
+    cd "{{justfile_directory()}}" && python3 -m py_compile scripts/stage_npm_packages.py .github/scripts/verify_bazel_clippy_lints.py .github/scripts/verify_cargo_workspace_manifests.py
+    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_bazel_clippy_lints.py
+    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_cargo_workspace_manifests.py
 
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:
@@ -222,8 +451,14 @@ core-context-serialization-targeted:
 
 # Focused attestation contract slice for phase-2 fail-closed reuse semantics.
 core-attestation-targeted:
-    cargo test -p codex-core consolidation_artifacts_ready_rejects_ --lib -- --test-threads=1
-    cargo test -p codex-state global_phase2_attestation_requirement_is_root_scoped -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-memories-write phase2_attestation --lib -- --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-memories-write memories_startup_phase2 --lib -- --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-state phase2_attestation --lib -- --test-threads=1
+
+# Focused startup repair slice for state DBs with schema changes applied but
+# missing SQLx migration records.
+state-migration-repair-targeted:
+    cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
@@ -232,7 +467,7 @@ core-ledger-smoke:
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 # one bounded runtime shard.
 core-runtime-surface-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
@@ -268,20 +503,22 @@ downstream-ledger-seam:
 
 [no-cd]
 downstream-docs-check:
-    git diff --check -- docs/downstream.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+    git diff --check -- docs/downstream.md docs/native-computer-use.md docs/native-computer-use-cleanroom.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+    cd "{{justfile_directory()}}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
+    cd "{{justfile_directory()}}" && python3 .github/scripts/check_markdown_links.py
 
 [no-cd]
 workflow-ci-sanity:
-    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py
+    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py scripts/downstream-divergence-audit.py
     cd "{{justfile_directory()}}" && python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
-    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
+    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/codeql.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/sedna-release.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
 
 [no-cd]
 downstream-divergence-audit:
     cd "{{justfile_directory()}}" && python3 scripts/downstream-divergence-audit.py --repo . --downstream-remote origin --downstream-branch main --mirror-remote origin --mirror-branch upstream-main --upstream-remote upstream --upstream-branch main --registry-path docs/divergences/index.yaml --output-dir target/downstream-divergence-audit --format both --code-only --enforce-registry
 
 # Early non-publishing Linux release-build smoke coverage.
-release-linux-build-smoke:
+sedna-release-linux-smoke:
     CODEX_RELEASE_VERSION="${CODEX_RELEASE_VERSION:-0.0.0-sedna.smoke}" cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
 
 # Fast smoke checks for fragile codex-core integration buckets.
@@ -303,38 +540,49 @@ core-test-progressive:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast
 
 # Build and run Codex from source using Bazel.
-# Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
-# to ensure that Bazel runs the command in the current working directory.
+# On Unix, use `[no-cd]` and `--run_under="cd $PWD &&"` to ensure Bazel runs
+# the command in the current working directory.
 [no-cd]
+[unix]
 bazel-codex *args:
     bazel run //codex-rs/cli:codex --run_under="cd $PWD &&" -- "$@"
+
+[windows]
+bazel-codex *args:
+    bazel run //codex-rs/cli:codex --run_under='cd /d "{{ invocation_directory_native() }}" &&' -- @($args | Select-Object -Skip 1)
 
 [no-cd]
 bazel-lock-update:
     bazel mod deps --lockfile_mode=update
 
 [no-cd]
+[unix]
 bazel-lock-check:
-    ./scripts/check-module-bazel-lock.sh
+    {{ justfile_directory() }}/scripts/check-module-bazel-lock.sh
+
+[windows]
+bazel-lock-check:
+    bazel mod deps --lockfile_mode=error; if ($LASTEXITCODE -ne 0) { Write-Error "MODULE.bazel.lock is out of date. Run 'just bazel-lock-update' and commit the updated lockfile."; exit 1 }
 
 bazel-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
 
+[no-cd]
+[unix]
 bazel-clippy:
-    bazel build --config=clippy -- //codex-rs/... -//codex-rs/v8-poc:all
+    bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && bazel build --config=clippy -- ${bazel_targets}
 
 [no-cd]
-bazel-argument-comment-lint: _run-bazel-argument-comment-lint
-
-bazel-remote-test:
-    bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
+[unix]
+bazel-argument-comment-lint:
+    bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
 
 build-for-release:
-    bazel build //codex-rs/cli:release_binaries --config=remote
+    bazel build //codex-rs/cli:release_binaries
 
 # Run the MCP server
 mcp-server-run *args:
-    cargo run -p codex-mcp-server -- "$@"
+    cargo run -p codex-mcp-server -- {args}
 
 # Regenerate the json schema for config.toml from the current config types.
 write-config-schema:
@@ -342,29 +590,36 @@ write-config-schema:
 
 # Regenerate vendored app-server protocol schema artifacts.
 write-app-server-schema *args:
-    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- "$@"
+    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- {args}
 
 [no-cd]
 write-hooks-schema:
-    cargo run --manifest-path ./codex-rs/Cargo.toml -p codex-hooks --bin write_hooks_schema_fixtures
+    cargo run --manifest-path {{ justfile_directory() }}/codex-rs/Cargo.toml -p codex-hooks --bin write_hooks_schema_fixtures
 
 # Run the argument-comment Dylint checks across codex-rs.
 [no-cd]
+[unix]
 _run-bazel-argument-comment-lint:
     cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
 
 [no-cd]
+[unix]
 argument-comment-lint *args:
     if [ "$#" -eq 0 ]; then \
-      "{{just_executable()}}" _run-bazel-argument-comment-lint; \
+      bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh); \
     else \
-      "{{justfile_directory()}}"/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
+      {{ justfile_directory() }}/tools/argument-comment-lint/run-prebuilt-linter.py "$@"; \
     fi
 
 [no-cd]
 argument-comment-lint-from-source *args:
-    "{{justfile_directory()}}"/tools/argument-comment-lint/run.py "$@"
+    {{ python }} {{ justfile_directory() }}/tools/argument-comment-lint/run.py {args}
 
 # Tail logs from the state SQLite database
+[unix]
 log *args:
     if [ "${1:-}" = "--" ]; then shift; fi; cargo run -p codex-state --bin logs_client -- "$@"
+
+[windows]
+log *args:
+    $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-state --bin logs_client -- @forwarded_args

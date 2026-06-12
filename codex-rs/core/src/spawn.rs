@@ -1,4 +1,5 @@
 use codex_network_proxy::NetworkProxy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -29,7 +30,7 @@ pub enum StdioPolicy {
     Inherit,
 }
 
-/// Spawns the appropriate child process for the ExecParams and SandboxPolicy,
+/// Spawns the appropriate child process for the exec params and sandbox settings,
 /// ensuring the args and environment variables used to create the `Command`
 /// (and `Child`) honor the configuration.
 ///
@@ -40,7 +41,7 @@ pub(crate) struct SpawnChildRequest<'a> {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub arg0: Option<&'a str>,
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
     pub network_sandbox_policy: NetworkSandboxPolicy,
     pub network: Option<&'a NetworkProxy>,
     pub stdio_policy: StdioPolicy,

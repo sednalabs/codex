@@ -1,8 +1,11 @@
 use super::RuntimeState;
+use super::callbacks::clear_timeout_callback;
 use super::callbacks::exit_callback;
+use super::callbacks::generated_image_callback;
 use super::callbacks::image_callback;
 use super::callbacks::load_callback;
 use super::callbacks::notify_callback;
+use super::callbacks::set_timeout_callback;
 use super::callbacks::store_callback;
 use super::callbacks::text_callback;
 use super::callbacks::tool_callback;
@@ -10,16 +13,18 @@ use super::callbacks::yield_control_callback;
 
 pub(super) fn install_globals(scope: &mut v8::PinScope<'_, '_>) -> Result<(), String> {
     let global = scope.get_current_context().global(scope);
-    let console = v8::String::new(scope, "console")
-        .ok_or_else(|| "failed to allocate global `console`".to_string())?;
-    if global.delete(scope, console.into()) != Some(true) {
-        return Err("failed to remove global `console`".to_string());
-    }
+    delete_global(scope, global, "console")?;
+    delete_global(scope, global, "Atomics")?;
+    delete_global(scope, global, "SharedArrayBuffer")?;
+    delete_global(scope, global, "WebAssembly")?;
 
     let tools = build_tools_object(scope)?;
     let all_tools = build_all_tools_value(scope)?;
+    let clear_timeout = helper_function(scope, "clearTimeout", clear_timeout_callback)?;
+    let set_timeout = helper_function(scope, "setTimeout", set_timeout_callback)?;
     let text = helper_function(scope, "text", text_callback)?;
     let image = helper_function(scope, "image", image_callback)?;
+    let generated_image = helper_function(scope, "generatedImage", generated_image_callback)?;
     let store = helper_function(scope, "store", store_callback)?;
     let load = helper_function(scope, "load", load_callback)?;
     let notify = helper_function(scope, "notify", notify_callback)?;
@@ -28,8 +33,11 @@ pub(super) fn install_globals(scope: &mut v8::PinScope<'_, '_>) -> Result<(), St
 
     set_global(scope, global, "tools", tools.into())?;
     set_global(scope, global, "ALL_TOOLS", all_tools)?;
+    set_global(scope, global, "clearTimeout", clear_timeout.into())?;
+    set_global(scope, global, "setTimeout", set_timeout.into())?;
     set_global(scope, global, "text", text.into())?;
     set_global(scope, global, "image", image.into())?;
+    set_global(scope, global, "generatedImage", generated_image.into())?;
     set_global(scope, global, "store", store.into())?;
     set_global(scope, global, "load", load.into())?;
     set_global(scope, global, "notify", notify.into())?;
@@ -47,10 +55,10 @@ fn build_tools_object<'s>(
         .map(|state| state.enabled_tools.clone())
         .unwrap_or_default();
 
-    for tool in enabled_tools {
+    for (tool_index, tool) in enabled_tools.iter().enumerate() {
         let name = v8::String::new(scope, &tool.global_name)
             .ok_or_else(|| "failed to allocate tool name".to_string())?;
-        let function = tool_function(scope, &tool.call_name)?;
+        let function = tool_function(scope, tool_index)?;
         tools.set(scope, name.into(), function.into());
     }
     Ok(tools)
@@ -73,7 +81,11 @@ fn build_all_tools_value<'s>(
 
     for (index, tool) in enabled_tools.iter().enumerate() {
         let item = v8::Object::new(scope);
-        let name = v8::String::new(scope, &tool.tool_name)
+        let all_tools_name = tool
+            .all_tools_name
+            .as_deref()
+            .unwrap_or(tool.global_name.as_str());
+        let name = v8::String::new(scope, all_tools_name)
             .ok_or_else(|| "failed to allocate ALL_TOOLS name".to_string())?;
         let description = v8::String::new(scope, &tool.description)
             .ok_or_else(|| "failed to allocate ALL_TOOLS description".to_string())?;
@@ -81,7 +93,7 @@ fn build_all_tools_value<'s>(
         if item.set(scope, name_key.into(), name.into()) != Some(true) {
             return Err("failed to set ALL_TOOLS name".to_string());
         }
-        if let Some(module) = &tool.module {
+        if let Some(module) = &tool.all_tools_module {
             let module = v8::String::new(scope, module)
                 .ok_or_else(|| "failed to allocate ALL_TOOLS module".to_string())?;
             if item.set(scope, module_key.into(), module.into()) != Some(true) {
@@ -119,9 +131,9 @@ where
 
 fn tool_function<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    tool_name: &str,
+    tool_index: usize,
 ) -> Result<v8::Local<'s, v8::Function>, String> {
-    let data = v8::String::new(scope, tool_name)
+    let data = v8::String::new(scope, &tool_index.to_string())
         .ok_or_else(|| "failed to allocate tool callback data".to_string())?;
     let template = v8::FunctionTemplate::builder(tool_callback)
         .data(data.into())
@@ -143,5 +155,19 @@ fn set_global<'s>(
         Ok(())
     } else {
         Err(format!("failed to set global `{name}`"))
+    }
+}
+
+fn delete_global<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    global: v8::Local<'s, v8::Object>,
+    name: &str,
+) -> Result<(), String> {
+    let key = v8::String::new(scope, name)
+        .ok_or_else(|| format!("failed to allocate global `{name}`"))?;
+    if global.delete(scope, key.into()) == Some(true) {
+        Ok(())
+    } else {
+        Err(format!("failed to remove global `{name}`"))
     }
 }

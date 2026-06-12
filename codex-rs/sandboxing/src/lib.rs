@@ -17,9 +17,33 @@ pub use manager::SandboxTransformError;
 pub use manager::SandboxTransformRequest;
 pub use manager::SandboxType;
 pub use manager::SandboxablePreference;
+pub use manager::compatibility_sandbox_policy_for_permission_profile;
 pub use manager::get_platform_sandbox;
+pub use manager::with_managed_mitm_ca_readable_root;
+
+use codex_protocol::error::CodexErr;
 
 #[cfg(not(target_os = "linux"))]
-pub fn system_bwrap_warning() -> Option<String> {
+pub fn system_bwrap_warning(
+    _permission_profile: &codex_protocol::models::PermissionProfile,
+) -> Option<String> {
     None
+}
+
+impl From<SandboxTransformError> for CodexErr {
+    fn from(err: SandboxTransformError) -> Self {
+        match err {
+            SandboxTransformError::MissingLinuxSandboxExecutable => {
+                CodexErr::LandlockSandboxExecutableNotProvided
+            }
+            #[cfg(target_os = "linux")]
+            SandboxTransformError::Wsl1UnsupportedForBubblewrap => {
+                CodexErr::UnsupportedOperation(crate::bwrap::WSL1_BWRAP_WARNING.to_string())
+            }
+            #[cfg(not(target_os = "macos"))]
+            SandboxTransformError::SeatbeltUnavailable => CodexErr::UnsupportedOperation(
+                "seatbelt sandbox is only available on macOS".to_string(),
+            ),
+        }
+    }
 }

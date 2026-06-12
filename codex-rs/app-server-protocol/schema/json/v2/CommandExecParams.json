@@ -35,49 +35,6 @@
       ],
       "type": "string"
     },
-    "ReadOnlyAccess": {
-      "oneOf": [
-        {
-          "properties": {
-            "includePlatformDefaults": {
-              "default": true,
-              "type": "boolean"
-            },
-            "readableRoots": {
-              "default": [],
-              "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "RestrictedReadOnlyAccess",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "fullAccess",
-              "title": "FullAccessReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FullAccessReadOnlyAccess",
-          "type": "object"
-        }
-      ]
-    },
     "SandboxPolicy": {
       "oneOf": [
         {
@@ -96,12 +53,6 @@
         },
         {
           "properties": {
-            "access": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "networkAccess": {
               "default": false,
               "type": "boolean"
@@ -149,12 +100,6 @@
             "networkAccess": {
               "default": false,
               "type": "boolean"
-            },
-            "readOnlyAccess": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
             },
             "type": {
               "const": "workspaceWrite",
@@ -241,7 +186,7 @@
           "type": "null"
         }
       ],
-      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and\ndefaults to the user's configured policy when omitted."
+      "description": "Optional sandbox policy for this command.\n\nUses the same shape as thread/turn execution sandbox configuration and\ndefaults to the user's configured policy when omitted. Cannot be\ncombined with `permissionProfile`."
     },
     "size": {
       "anyOf": [

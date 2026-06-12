@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use codex_config::CONFIG_TOML_FILE;
-use codex_core::CodexAuth;
 use codex_core::NewThread;
 use codex_features::Feature;
+use codex_login::CodexAuth;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::WarningEvent;
@@ -43,10 +43,9 @@ async fn emits_warning_when_unstable_features_enabled_via_config() {
         ..
     } = thread_manager
         .resume_thread_with_history(
-            config,
+            config.clone(),
             InitialHistory::New,
             auth_manager,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -90,10 +89,9 @@ async fn suppresses_warning_when_configured() {
         ..
     } = thread_manager
         .resume_thread_with_history(
-            config,
+            config.clone(),
             InitialHistory::New,
             auth_manager,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await

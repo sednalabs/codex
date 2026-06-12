@@ -16,12 +16,36 @@ jobs:
   sync:
     runs-on: ubuntu-24.04
     outputs:
-      synced_upstream_main_sha: ${{ steps.capture-synced-sha.outputs.synced_upstream_main_sha }}
+      synced_upstream_main_sha: ${{ steps.sync-mirror.outputs.synced_upstream_main_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Resolve upstream sync credential mode
+        id: credential-mode
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_CLIENT_ID:-}" ] && [ -n "${APP_PRIVATE_KEY:-}" ]; then
+            echo "use_app_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_app_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate upstream sync app token
+        id: generate-sync-token
+        if: ${{ steps.credential-mode.outputs.use_app_token == 'true' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
 
       - name: Configure git identity
         shell: bash
@@ -30,47 +54,29 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fast-forward upstream mirror
+        id: sync-mirror
         shell: bash
         env:
-          SYNC_UPSTREAM_PUSH_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
+          SYNC_UPSTREAM_APP_TOKEN: ${{ steps.generate-sync-token.outputs.token }}
+          SYNC_UPSTREAM_LEGACY_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
         run: |
           set -euo pipefail
 
-          if [ -z "${SYNC_UPSTREAM_PUSH_TOKEN:-}" ]; then
-            echo "Missing SEDNA_SYNC_UPSTREAM_PUSH_TOKEN secret with permission to update workflow files." >&2
+          if [ -n "${SYNC_UPSTREAM_APP_TOKEN:-}" ]; then
+            export SYNC_UPSTREAM_PUSH_TOKEN="${SYNC_UPSTREAM_APP_TOKEN}"
+            echo "Using GitHub App installation token for upstream mirror sync"
+          elif [ -n "${SYNC_UPSTREAM_LEGACY_TOKEN:-}" ]; then
+            export SYNC_UPSTREAM_PUSH_TOKEN="${SYNC_UPSTREAM_LEGACY_TOKEN}"
+            echo "::warning title=Legacy upstream sync token::Using SEDNA_SYNC_UPSTREAM_PUSH_TOKEN fallback; replace it with the GitHub App credential."
+          else
+            echo "Missing upstream sync credential. Configure SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID and SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY." >&2
             exit 1
           fi
 
-          git remote set-url origin "https://x-access-token:${SYNC_UPSTREAM_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-          if git remote get-url upstream >/dev/null 2>&1; then
-            git remote set-url upstream https://github.com/openai/codex.git
-          else
-            git remote add upstream https://github.com/openai/codex.git
-          fi
-
-          git fetch upstream main
-          git fetch origin upstream-main || true
-
-          if git show-ref --verify --quiet refs/remotes/origin/upstream-main; then
-            if ! git merge-base --is-ancestor refs/remotes/origin/upstream-main refs/remotes/upstream/main; then
-              echo "origin/upstream-main is not an ancestor of upstream/main; refusing non-fast-forward sync" >&2
-              exit 1
-            fi
-
-            if [ "$(git rev-parse refs/remotes/origin/upstream-main)" = "$(git rev-parse refs/remotes/upstream/main)" ]; then
-              echo "Already up to date"
-              exit 0
-            fi
-          fi
-
-          git push origin refs/remotes/upstream/main:refs/heads/upstream-main
-
-      - id: capture-synced-sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "synced_upstream_main_sha=$(git rev-parse refs/remotes/upstream/main)" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/sync_upstream_mirror.py \
+            --repo "$PWD" \
+            --mode required-write \
+            --github-output "$GITHUB_OUTPUT"
 
   audit:
     needs: sync

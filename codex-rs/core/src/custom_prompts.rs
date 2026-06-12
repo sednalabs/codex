@@ -9,7 +9,7 @@ use tokio::fs;
 pub fn default_prompts_dir() -> Option<PathBuf> {
     crate::config::find_codex_home()
         .ok()
-        .map(|home| home.join("prompts"))
+        .map(|home| home.join("prompts").to_path_buf())
 }
 
 /// Discover prompt files in the given directory, returning entries sorted by name.

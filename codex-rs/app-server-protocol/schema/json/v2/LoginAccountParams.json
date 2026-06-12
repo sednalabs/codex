@@ -21,6 +21,9 @@
     },
     {
       "properties": {
+        "codexStreamlinedLogin": {
+          "type": "boolean"
+        },
         "type": {
           "const": "chatgpt",
           "title": "Chatgptv2::LoginAccountParamsType",

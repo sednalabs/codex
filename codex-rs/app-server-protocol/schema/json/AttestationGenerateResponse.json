@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "token": {
+      "description": "Opaque client attestation token.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token"
+  ],
+  "title": "AttestationGenerateResponse",
+  "type": "object"
+}

@@ -6,7 +6,25 @@
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileSystemSandboxEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "read": {
+          "description": "This will be removed in favor of `entries`.",
           "items": {
             "$ref": "#/$defs/AbsolutePathBuf"
           },
@@ -16,6 +34,7 @@
           ]
         },
         "write": {
+          "description": "This will be removed in favor of `entries`.",
           "items": {
             "$ref": "#/$defs/AbsolutePathBuf"
           },
@@ -58,7 +77,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Partial overlay used for per-command permission requests."
         }
       },
       "type": "object"
@@ -100,6 +120,9 @@
       ],
       "type": "object"
     },
+    "AttestationGenerateParams": {
+      "type": "object"
+    },
     "ChatgptAuthTokensRefreshParams": {
       "properties": {
         "previousAccountId": {
@@ -138,7 +161,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -348,11 +371,15 @@
           ]
         },
         "cwd": {
-          "description": "The command's working directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The command's working directory."
         },
         "itemId": {
           "type": "string"
@@ -395,6 +422,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -405,7 +437,43 @@
       "required": [
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "ComputerUseCallParams": {
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "arguments": true,
+        "callId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "callId",
+        "adapter",
+        "tool",
+        "arguments"
       ],
       "type": "object"
     },
@@ -414,6 +482,12 @@
         "arguments": true,
         "callId": {
           "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -564,6 +638,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -574,9 +653,188 @@
       "required": [
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
       ],
       "type": "object"
+    },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            "type": {
+              "const": "path",
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "glob_pattern",
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "special",
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/$defs/FileSystemPath"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "minimal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_roots",
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tmpdir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "slash_tmp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "McpElicitationArrayType": {
       "enum": [
@@ -1330,6 +1588,16 @@
     },
     "PermissionsRequestApprovalParams": {
       "properties": {
+        "cwd": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "environmentId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -1342,6 +1610,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -1353,6 +1626,8 @@
         "threadId",
         "turnId",
         "itemId",
+        "startedAtMs",
+        "cwd",
         "permissions"
       ],
       "type": "object"
@@ -1620,6 +1895,29 @@
       "type": "object"
     },
     {
+      "description": "Execute a native computer-use call on the client.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "item/computerUse/call",
+          "title": "Item/computerUse/callRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ComputerUseCallParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Item/computerUse/callRequest",
+      "type": "object"
+    },
+    {
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"
@@ -1639,6 +1937,29 @@
         "params"
       ],
       "title": "Account/chatgptAuthTokens/refreshRequest",
+      "type": "object"
+    },
+    {
+      "description": "Generate a fresh upstream attestation result on demand.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "attestation/generate",
+          "title": "Attestation/generateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AttestationGenerateParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Attestation/generateRequest",
       "type": "object"
     },
     {
