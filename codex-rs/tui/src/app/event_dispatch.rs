@@ -348,6 +348,9 @@ impl App {
                 }
                 return Ok(self.handle_exit_mode(app_server, mode).await);
             }
+            AppEvent::ExitSideConversation => {
+                self.exit_active_side_conversation(tui, app_server).await?;
+            }
             AppEvent::Logout => match app_server.logout_account().await {
                 Ok(()) => {
                     self.show_shutdown_feedback(tui)?;

@@ -397,8 +397,14 @@ docs-only refresh commit that records this snapshot.
   falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- `/quit` and `/exit` inside an active `/side` conversation close only that side
+  conversation and return to the parent session; the same commands in the main
+  conversation remain application exits.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`

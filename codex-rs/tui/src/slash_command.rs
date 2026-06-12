@@ -181,6 +181,8 @@ impl SlashCommand {
                 | SlashCommand::Mention
                 | SlashCommand::Status
                 | SlashCommand::Ide
+                | SlashCommand::Quit
+                | SlashCommand::Exit
         )
     }
 

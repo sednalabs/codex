@@ -343,6 +343,18 @@ User-visible behavior:
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
 - `/quit` remains immediate while a task is running instead of being queued behind the active turn.
 
+### TUI: Side conversation local exit
+
+Why:
+- Keep `/side` conversations scoped to their parent session so closing a side
+  question does not end the whole TUI session.
+- Preserve the existing main-thread `/quit` and `/exit` behavior.
+
+User-visible behavior:
+- `/quit` and `/exit` in an active side conversation close that side conversation
+  and return to the parent thread.
+- `/quit` and `/exit` in the main conversation remain application exits.
+
 ### Review + history: downstream accounting and runtime-context alignment
 
 Why:

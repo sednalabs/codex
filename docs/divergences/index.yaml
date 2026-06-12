@@ -1255,12 +1255,16 @@
       ],
       "files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, and marks usage_threads.thread_source as \"side\" for resume filtering.",
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1273,6 +1277,8 @@
         "thread_fork_side_source_persists_and_uses_side_filter",
         "thread_list_hides_side_threads_until_side_filter_requested",
         "side_fork_config_is_persistent_and_appends_developer_guardrails",
+        "slash_quit_in_side_conversation_requests_side_exit",
+        "slash_exit_in_side_conversation_requests_side_exit",
         "bash -n scripts/codex-resume-recent.sh"
       ],
       "owner": "downstream",
@@ -1281,6 +1287,9 @@
       "boundary_type": "interactive-history-and-ledger",
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/*.sql",
