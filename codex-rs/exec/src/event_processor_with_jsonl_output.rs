@@ -855,6 +855,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
