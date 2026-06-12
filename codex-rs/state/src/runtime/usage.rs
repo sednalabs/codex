@@ -997,7 +997,7 @@ WHERE thread_id = ?
             runtime
                 .latest_usage_provider_display_model(thread_id)
                 .await?,
-            Some("provider-final-model".to_string())
+            Some("actual-model".to_string())
         );
         let missing_thread_id = ThreadId::new();
         let display_models = runtime
@@ -1005,7 +1005,7 @@ WHERE thread_id = ?
             .await?;
         assert_eq!(
             display_models.get(&thread_id),
-            Some(&"provider-final-model".to_string())
+            Some(&"actual-model".to_string())
         );
         assert!(!display_models.contains_key(&missing_thread_id));
 
@@ -1090,6 +1090,22 @@ WHERE thread_id = ?
                 status: Some("ok".to_string()),
             }
         );
+
+        assert_eq!(
+            runtime
+                .latest_usage_provider_display_model(thread_id)
+                .await?,
+            Some("provider-final-model".to_string())
+        );
+        let missing_thread_id = ThreadId::new();
+        let display_models = runtime
+            .latest_usage_provider_display_models(&[thread_id, missing_thread_id])
+            .await?;
+        assert_eq!(
+            display_models.get(&thread_id),
+            Some(&"provider-final-model".to_string())
+        );
+        assert!(!display_models.contains_key(&missing_thread_id));
 
         Ok(())
     }
