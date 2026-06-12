@@ -558,6 +558,8 @@ pub(crate) struct ChatWidget {
     raw_output_mode: bool,
     /// Runtime value resolved by core. `config.service_tier` remains the explicit user choice.
     effective_service_tier: Option<String>,
+    /// Last provider-confirmed model identity shown by status surfaces for this thread.
+    observed_model_display_name: Option<String>,
     /// The unmasked collaboration mode settings (always Default mode).
     ///
     /// Masks are applied on top of this base mode to derive the effective mode.

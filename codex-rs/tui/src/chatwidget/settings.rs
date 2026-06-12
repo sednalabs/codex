@@ -253,6 +253,7 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
+        self.observed_model_display_name = None;
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model.to_string()),
             /*effort*/ None,
@@ -580,6 +581,7 @@ impl ChatWidget {
     pub(super) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
         let mode_kind = mode.mode;
         let settings = mode.settings;
+        self.observed_model_display_name = None;
         if mode_kind == ModeKind::Default {
             self.current_collaboration_mode = CollaborationMode {
                 mode: ModeKind::Default,
@@ -721,6 +723,7 @@ impl ChatWidget {
                 .insert(self.plan_mode_nudge_scope());
         }
         self.active_collaboration_mask = Some(mask);
+        self.observed_model_display_name = None;
         self.update_collaboration_mode_indicator();
         self.refresh_plan_mode_nudge();
         self.refresh_model_dependent_surfaces();

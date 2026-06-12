@@ -625,6 +625,37 @@ WHERE thread_id = ?
         Ok(parent_thread_id)
     }
 
+    pub async fn latest_usage_provider_display_model(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<String>> {
+        let pool = self.usage_ledger_pool();
+        let model = sqlx::query_scalar::<_, String>(
+            r#"
+SELECT COALESCE(
+  NULLIF(final_model, ''),
+  NULLIF(model_snapshot, ''),
+  NULLIF(actual_model_used, ''),
+  NULLIF(requested_model, '')
+)
+FROM usage_provider_calls
+WHERE thread_id = ?
+  AND COALESCE(
+    NULLIF(final_model, ''),
+    NULLIF(model_snapshot, ''),
+    NULLIF(actual_model_used, ''),
+    NULLIF(requested_model, '')
+  ) IS NOT NULL
+ORDER BY completed_at DESC, started_at DESC, provider_call_id DESC
+LIMIT 1
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(pool.as_ref())
+        .await?;
+        Ok(model)
+    }
+
     pub async fn record_usage_fork_snapshot(
         &self,
         child_thread_id: ThreadId,
@@ -923,6 +954,13 @@ WHERE thread_id = ?
                 quota_percent_remaining: 87.5,
                 quota_percent_used: 12.5,
             }
+        );
+
+        assert_eq!(
+            runtime
+                .latest_usage_provider_display_model(thread_id)
+                .await?,
+            Some("provider-final-model".to_string())
         );
 
         Ok(())
