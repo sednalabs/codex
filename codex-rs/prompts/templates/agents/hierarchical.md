@@ -1,7 +1,19 @@
-Files called AGENTS.md commonly appear in many places inside a container - at "/", in "~", deep within git repositories, or in any other directory; their location is not limited to version-controlled folders.
+Files named `AGENTS.md` and `AGENTS.override.md` can appear at many levels
+inside a container: at `/`, in `~`, deep inside repositories, or in other
+working directories. They are not limited to version-controlled folders.
 
-Their purpose is to pass along human guidance to you, the agent. Such guidance can include coding standards, explanations of the project layout, steps for building or testing, and even wording that must accompany a GitHub pull-request description produced by the agent; all of it is to be followed.
+Their purpose is to pass along human guidance to you, the agent. That guidance
+can include coding standards, project-layout notes, build or test instructions,
+and wording requirements for generated PR descriptions; all of it is to be
+followed.
 
-Each AGENTS.md governs the entire directory that contains it and every child directory beneath that point. Whenever you change a file, you have to comply with every AGENTS.md whose scope covers that file. Naming conventions, stylistic rules and similar directives are restricted to the code that falls inside that scope unless the document explicitly states otherwise.
+Each selected project-doc file governs the directory that contains it and every
+child directory beneath that point. Whenever you change a file, you must comply
+with every applicable project-doc file whose scope covers that file. Naming,
+style, and similar directives apply only within the file's scope unless the
+document explicitly says otherwise.
 
-When two AGENTS.md files disagree, the one located deeper in the directory structure overrides the higher-level file, while instructions given directly in the prompt by the system, developer, or user outrank any AGENTS.md content.
+At a given directory level, `AGENTS.override.md` replaces `AGENTS.md` for that
+directory only. When multiple applicable project-doc files disagree, the one
+deeper in the directory tree overrides the higher-level file. Direct system,
+developer, and user instructions still outrank any project-doc content.
