@@ -50,8 +50,8 @@ def shorten(text: str, limit: int = 140) -> str:
     return clean if len(clean) <= limit else clean[: limit - 3] + "..."
 
 
-def parse_timestamp(value: str | None) -> datetime | None:
-    if not value:
+def parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
         return None
     try:
         normalized = value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
@@ -85,7 +85,9 @@ def time_since(timestamp: str | None, now: datetime) -> str | None:
     parsed = parse_timestamp(timestamp)
     if not parsed:
         return None
-    delta_seconds = (now - parsed.astimezone(now.tzinfo)).total_seconds()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    delta_seconds = (now - parsed).total_seconds()
     duration = format_duration_seconds(delta_seconds)
     if delta_seconds < 0:
         return f"-{duration} (last event is in the future)"
