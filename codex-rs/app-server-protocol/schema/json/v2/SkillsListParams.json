@@ -1,24 +1,4 @@
 {
-  "$defs": {
-    "SkillsListExtraRootsForCwd": {
-      "properties": {
-        "cwd": {
-          "type": "string"
-        },
-        "extraUserRoots": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "cwd",
-        "extraUserRoots"
-      ],
-      "type": "object"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cwds": {
@@ -31,17 +11,6 @@
     "forceReload": {
       "description": "When true, bypass the skills cache and re-scan skills from disk.",
       "type": "boolean"
-    },
-    "perCwdExtraUserRoots": {
-      "default": null,
-      "description": "Optional per-cwd extra roots to scan as user-scoped skills.",
-      "items": {
-        "$ref": "#/$defs/SkillsListExtraRootsForCwd"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
     }
   },
   "title": "SkillsListParams",

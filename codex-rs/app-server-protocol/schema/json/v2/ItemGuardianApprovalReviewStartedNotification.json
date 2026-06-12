@@ -61,7 +61,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -173,7 +173,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -534,7 +533,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "[UNSTABLE] Temporary notification payload for guardian automatic approval\nreview. This shape is expected to change soon.\n\nTODO(ccunningham): Attach guardian review state to the reviewed tool item's\nlifecycle instead of sending separate standalone review notifications so the\napp-server API can persist and replay review state via `thread/read`.",
+  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This\nshape is expected to change soon.",
   "properties": {
     "action": {
       "$ref": "#/$defs/GuardianApprovalReviewAction"
@@ -545,6 +544,11 @@
     "reviewId": {
       "description": "Stable identifier for this review.",
       "type": "string"
+    },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this review started.",
+      "format": "int64",
+      "type": "integer"
     },
     "targetItemId": {
       "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
@@ -563,6 +567,7 @@
   "required": [
     "threadId",
     "turnId",
+    "startedAtMs",
     "reviewId",
     "review",
     "action"

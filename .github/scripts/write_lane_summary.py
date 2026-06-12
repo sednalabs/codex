@@ -11,6 +11,14 @@ from pathlib import Path
 ERROR_RE = re.compile(r"(^error:|^thread '.*' panicked|\bFAILED\b|failures:|error\[|panic\b)")
 PATH_RE = re.compile(r"(/home/\S+|/Users/\S+)")
 WHITESPACE_RE = re.compile(r"\s+")
+SCHEMA_CONTENT_DRIFT_RE = re.compile(
+    r"Vendored (?P<family>json|typescript) app-server schema fixture "
+    r"(?P<fixture>.+?) differs from generated output\. Run `(?P<command>[^`]+)`",
+)
+SCHEMA_FILE_SET_DRIFT_RE = re.compile(
+    r"Vendored (?P<family>json|typescript) app-server schema fixture file set "
+    r"doesn't match freshly generated output\. Run `(?P<command>[^`]+)`",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +65,9 @@ def read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
 
-def primary_signal(error_lines: list[str], tail_lines: list[str]) -> str:
+def primary_signal(error_lines: list[str], tail_lines: list[str], schema_drift: dict) -> str:
+    if schema_drift:
+        return sanitize_line(str(schema_drift.get("summary") or ""))
     if error_lines:
         return sanitize_line(error_lines[0])
     for line in reversed(tail_lines):
@@ -100,12 +110,53 @@ def sanitize_line(raw: str) -> str:
     return compact[:240]
 
 
+def detect_schema_fixture_drift(lines: list[str]) -> dict:
+    file_set_match: re.Match[str] | None = None
+    for line in lines:
+        match = SCHEMA_CONTENT_DRIFT_RE.search(line)
+        if match:
+            family = match.group("family")
+            fixture = sanitize_line(match.group("fixture"))
+            return {
+                "kind": "app_server_schema_fixture_drift",
+                "fixture_family": family,
+                "fixture_path": fixture,
+                "direction": "vendored_differs_from_generated",
+                "recommended_fix": sanitize_line(match.group("command")),
+                "recommended_proof": {
+                    "profile": "targeted",
+                    "lane_ids": ["codex.app-server-protocol-test"],
+                },
+                "summary": f"{family} app-server schema fixture {fixture} differs from generated output",
+            }
+        if file_set_match is None:
+            file_set_match = SCHEMA_FILE_SET_DRIFT_RE.search(line)
+
+    if file_set_match:
+        family = file_set_match.group("family")
+        return {
+            "kind": "app_server_schema_fixture_drift",
+            "fixture_family": family,
+            "fixture_path": "",
+            "direction": "vendored_file_set_differs_from_generated",
+            "recommended_fix": sanitize_line(file_set_match.group("command")),
+            "recommended_proof": {
+                "profile": "targeted",
+                "lane_ids": ["codex.app-server-protocol-test"],
+            },
+            "summary": f"{family} app-server schema fixture file set differs from generated output",
+        }
+
+    return {}
+
+
 def main() -> None:
     args = parse_args()
     log_path = Path(args.log_file) if args.log_file else None
     lines = read_lines(log_path) if log_path is not None else []
     error_lines = [line for line in lines if ERROR_RE.search(line)][:20]
     tail_lines = lines[-80:]
+    schema_drift = detect_schema_fixture_drift(lines)
     script_args = json.loads(args.script_args_json or "[]")
 
     payload = {
@@ -139,7 +190,8 @@ def main() -> None:
         "batch_weight_seconds": parse_u64(args.batch_weight_seconds),
         "batch_setup_duration_ms": parse_u64(args.batch_setup_duration_ms),
         "log_available": bool(lines),
-        "primary_signal": primary_signal(error_lines, tail_lines),
+        "primary_signal": primary_signal(error_lines, tail_lines, schema_drift),
+        "schema_fixture_drift": schema_drift,
         "artifact_name": args.artifact_name or "",
     }
 

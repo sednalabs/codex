@@ -38,8 +38,26 @@ pub fn get_git_repo_root(base_dir: &Path) -> Option<PathBuf> {
     find_ancestor_git_entry(base).map(|(repo_root, _)| repo_root)
 }
 
+/// Return the repository root for `cwd` using the provided filesystem.
+///
+/// This mirrors [`get_git_repo_root`] for local paths, but works when `cwd`
+/// only exists inside a selected remote environment.
+pub async fn get_git_repo_root_with_fs(
+    fs: &dyn ExecutorFileSystem,
+    cwd: &AbsolutePathBuf,
+) -> Option<AbsolutePathBuf> {
+    let base = match fs.get_metadata(cwd, /*sandbox*/ None).await {
+        Ok(metadata) if metadata.is_directory => cwd.clone(),
+        _ => cwd.parent()?,
+    };
+    find_ancestor_git_entry_with_fs(fs, &base)
+        .await
+        .map(|(repo_root, _)| repo_root)
+}
+
 /// Timeout for git commands to prevent freezing on large repositories
 const GIT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_secs(5);
+const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct GitInfo {
@@ -158,8 +176,113 @@ pub async fn get_head_commit_hash(cwd: &Path) -> Option<GitSha> {
     }
 }
 
+pub fn canonicalize_git_remote_url(url: &str) -> Option<String> {
+    let url = trim_git_suffix(url.trim().trim_end_matches('/'));
+    if url.is_empty() {
+        return None;
+    }
+
+    if let Some((scheme, rest)) = url.split_once("://") {
+        return canonicalize_git_url_like_remote(scheme, rest);
+    }
+
+    if let Some((host_part, path)) = parse_scp_like_remote(url) {
+        return canonicalize_git_remote_host_path(host_part, path, /*default_port*/ None);
+    }
+
+    let (host_part, path) = url.split_once('/')?;
+    canonicalize_git_remote_host_path(host_part, path, /*default_port*/ None)
+}
+
+fn canonicalize_git_url_like_remote(scheme: &str, rest: &str) -> Option<String> {
+    let default_port = match scheme {
+        "git" => Some("9418"),
+        "http" => Some("80"),
+        "https" => Some("443"),
+        "ssh" => Some("22"),
+        _ => return None,
+    };
+
+    let rest = rest
+        .find(['?', '#'])
+        .map_or(rest, |suffix_index| &rest[..suffix_index]);
+    let (host_part, path) = rest.split_once('/')?;
+    canonicalize_git_remote_host_path(host_part, path, default_port)
+}
+
+fn parse_scp_like_remote(remote: &str) -> Option<(&str, &str)> {
+    if remote.contains('/')
+        && remote
+            .find('/')
+            .is_some_and(|slash| remote.find(':').is_none_or(|colon| slash < colon))
+    {
+        return None;
+    }
+
+    let (host_part, path) = remote.split_once(':')?;
+    if host_part.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some((host_part, path))
+}
+
+fn canonicalize_git_remote_host_path(
+    host_part: &str,
+    path: &str,
+    default_port: Option<&str>,
+) -> Option<String> {
+    let host = normalize_remote_host(
+        host_part
+            .rsplit_once('@')
+            .map_or(host_part, |(_, host)| host)
+            .trim()
+            .trim_end_matches('/'),
+        default_port,
+    );
+    if host.is_empty() {
+        return None;
+    }
+
+    let path = trim_git_suffix(path.trim().trim_matches('/'));
+    let components = path
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let [owner, repo, ..] = components.as_slice() else {
+        return None;
+    };
+    if matches!((*owner, *repo), ("." | "..", _) | (_, "." | "..")) {
+        return None;
+    }
+    let path = components.join("/");
+
+    if host == "github.com" {
+        Some(format!("{host}/{}", path.to_ascii_lowercase()))
+    } else {
+        Some(format!("{host}/{path}"))
+    }
+}
+
+fn normalize_remote_host(host: &str, default_port: Option<&str>) -> String {
+    let host = host.to_ascii_lowercase();
+    if let Some(default_port) = default_port
+        && let Some((host_without_port, port)) = host.rsplit_once(':')
+        && port == default_port
+    {
+        return host_without_port.to_string();
+    }
+    host
+}
+
+fn trim_git_suffix(value: &str) -> &str {
+    value.strip_suffix(".git").unwrap_or(value)
+}
+
 pub async fn get_has_changes(cwd: &Path) -> Option<bool> {
-    let output = run_git_command_with_timeout(&["status", "--porcelain"], cwd).await?;
+    let git = Path::new("git");
+    let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
+    let output =
+        run_git_command_with_timeout_from(git, &["status", "--porcelain"], cwd, fsmonitor).await?;
     if !output.status.success() {
         return None;
     }
@@ -270,9 +393,53 @@ pub async fn git_diff_to_remote(cwd: &Path) -> Option<GitDiffToRemote> {
 
 /// Run a git command with a timeout to prevent blocking on large repositories
 async fn run_git_command_with_timeout(args: &[&str], cwd: &Path) -> Option<std::process::Output> {
-    let mut command = Command::new("git");
+    // These callers only inspect repository metadata. Worktree workflows probe
+    // once and pass their override directly to the lower-level runner.
+    run_git_command_with_timeout_from(
+        Path::new("git"),
+        args,
+        cwd,
+        crate::FsmonitorOverride::Disabled,
+    )
+    .await
+}
+
+struct LocalFsmonitorProbeRunner<'a> {
+    git: &'a Path,
+    cwd: &'a Path,
+}
+
+impl crate::FsmonitorProbeRunner for LocalFsmonitorProbeRunner<'_> {
+    async fn run_probe(&mut self, args: &[&str]) -> Option<Vec<u8>> {
+        // Both probes are fast, bounded metadata queries that do not inspect the
+        // worktree or index, so do not reduce the requested command's timeout.
+        let mut command = Command::new(self.git);
+        command.args(args).current_dir(self.cwd).kill_on_drop(true);
+        match timeout(GIT_COMMAND_TIMEOUT, command.output()).await {
+            Ok(Ok(output)) if output.status.success() => Some(output.stdout),
+            _ => None,
+        }
+    }
+}
+
+async fn detect_local_fsmonitor_override(git: &Path, cwd: &Path) -> crate::FsmonitorOverride {
+    let mut runner = LocalFsmonitorProbeRunner { git, cwd };
+    crate::detect_fsmonitor_override(&mut runner).await
+}
+
+async fn run_git_command_with_timeout_from(
+    git: &Path,
+    args: &[&str],
+    cwd: &Path,
+    fsmonitor: crate::FsmonitorOverride,
+) -> Option<std::process::Output> {
+    let mut command = Command::new(git);
     command
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // Keep internal Git commands independent of repository-selected hooks
+        // and fsmonitor helpers while preserving built-in fsmonitor acceleration.
+        .args(["-c", &format!("core.hooksPath={DISABLED_HOOKS_PATH}")])
+        .args(["-c", fsmonitor.git_config_arg()])
         .args(args)
         .current_dir(cwd)
         .kill_on_drop(true);
@@ -561,9 +728,15 @@ async fn find_closest_sha(cwd: &Path, branches: &[String], remotes: &[String]) -
 }
 
 async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
-    let output =
-        run_git_command_with_timeout(&["diff", "--no-textconv", "--no-ext-diff", &sha.0], cwd)
-            .await?;
+    let git = Path::new("git");
+    let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
+    let output = run_git_command_with_timeout_from(
+        git,
+        &["diff", "--no-textconv", "--no-ext-diff", &sha.0],
+        cwd,
+        fsmonitor,
+    )
+    .await?;
     // 0 is success and no diff.
     // 1 is success but there is a diff.
     let exit_ok = output.status.code().is_some_and(|c| c == 0 || c == 1);
@@ -572,8 +745,13 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
     }
     let mut diff = String::from_utf8(output.stdout).ok()?;
 
-    if let Some(untracked_output) =
-        run_git_command_with_timeout(&["ls-files", "--others", "--exclude-standard"], cwd).await
+    if let Some(untracked_output) = run_git_command_with_timeout_from(
+        git,
+        &["ls-files", "--others", "--exclude-standard"],
+        cwd,
+        fsmonitor,
+    )
+    .await
         && untracked_output.status.success()
     {
         let untracked: Vec<String> = String::from_utf8(untracked_output.stdout)
@@ -599,7 +777,7 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
                     null_device,
                     &file_owned,
                 ];
-                run_git_command_with_timeout(&args_vec, cwd).await
+                run_git_command_with_timeout_from(git, &args_vec, cwd, fsmonitor).await
             });
             let results = join_all(futures_iter).await;
             for extra in results.into_iter().flatten() {
@@ -623,11 +801,8 @@ pub async fn resolve_root_git_project_for_trust(
     fs: &dyn ExecutorFileSystem,
     cwd: &AbsolutePathBuf,
 ) -> Option<AbsolutePathBuf> {
-    let base = match fs.get_metadata(cwd, /*sandbox*/ None).await {
-        Ok(metadata) if metadata.is_directory => cwd.clone(),
-        _ => cwd.parent()?,
-    };
-    let (repo_root, dot_git) = find_ancestor_git_entry_with_fs(fs, &base).await?;
+    let repo_root = get_git_repo_root_with_fs(fs, cwd).await?;
+    let dot_git = repo_root.join(".git");
     if fs
         .get_metadata(&dot_git, /*sandbox*/ None)
         .await
@@ -723,4 +898,191 @@ pub async fn current_branch_name(cwd: &Path) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|name| !name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn canonicalize_git_remote_url_normalizes_github_variants() {
+        for remote in [
+            "git@github.com:OpenAI/Codex.git",
+            "ssh://git@github.com/openai/codex.git",
+            "ssh://git@github.com:22/OpenAI/Codex.git",
+            "https://github.com/openai/codex.git",
+            "https://github.com:443/openai/codex.git",
+            "https://token@github.com/openai/codex/",
+            "github.com/OpenAI/Codex.git",
+        ] {
+            assert_eq!(
+                canonicalize_git_remote_url(remote),
+                Some("github.com/openai/codex".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_git_remote_url_handles_ghe_without_lowercasing_path() {
+        assert_eq!(
+            canonicalize_git_remote_url("git@ghe.company.com:Org/Repo.git"),
+            Some("ghe.company.com/Org/Repo".to_string())
+        );
+        assert_eq!(
+            canonicalize_git_remote_url("ssh://git@ghe.company.com:2222/Org/Repo.git"),
+            Some("ghe.company.com:2222/Org/Repo".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_git_remote_url_rejects_non_repository_values() {
+        for remote in ["", "file:///tmp/repo", "github.com/openai", "/tmp/repo"] {
+            assert_eq!(canonicalize_git_remote_url(remote), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fsmonitor_override_rejects_configured_helper() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let git = temp_dir.path().join("git");
+        let log = temp_dir.path().join("git.log");
+        std::fs::write(
+            &git,
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >>\"$0.log\"\n\
+             case \"$1\" in\n\
+             config) printf '/tmp/fsmonitor-helper\\000' ;;\n\
+             *) printf 'worktree output\\n' ;;\n\
+             esac\n",
+        )
+        .expect("write fake Git");
+        let mut permissions = std::fs::metadata(&git)
+            .expect("read fake Git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&git, permissions).expect("mark fake Git executable");
+
+        // The config response mirrors:
+        // git -c core.fsmonitor=/tmp/fsmonitor-helper \
+        //   config --null --get core.fsmonitor
+        let fsmonitor = detect_local_fsmonitor_override(&git, temp_dir.path()).await;
+        let output = run_git_command_with_timeout_from(
+            &git,
+            &["status", "--porcelain"],
+            temp_dir.path(),
+            fsmonitor,
+        )
+        .await
+        .expect("run fake Git");
+
+        assert_eq!(
+            (output.status.code(), output.stdout),
+            (Some(0), b"worktree output\n".to_vec())
+        );
+        let disabled_hooks = format!("core.hooksPath={DISABLED_HOOKS_PATH}");
+        assert_eq!(
+            std::fs::read_to_string(log)
+                .expect("read fake Git log")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "config --null --get core.fsmonitor".to_string(),
+                "config --null --type=bool --fixed-value --get core.fsmonitor /tmp/fsmonitor-helper"
+                    .to_string(),
+                format!("-c {disabled_hooks} -c core.fsmonitor=false status --porcelain"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fsmonitor_override_uses_effective_layered_config_value() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo = temp_dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("create repository directory");
+        let init_status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .expect("initialize test repository");
+        assert_eq!(init_status.code(), Some(0), "initialize test repository");
+
+        let git = temp_dir.path().join("git");
+        let global_config = temp_dir.path().join("git.global");
+        let log = temp_dir.path().join("git.log");
+        std::fs::write(
+            &git,
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >>\"$0.log\"\n\
+             case \"$1\" in\n\
+             config)\n\
+               GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=\"$0.global\" exec git \"$@\"\n\
+               ;;\n\
+             version) printf 'feature: fsmonitor--daemon\\n' ;;\n\
+             *) printf 'worktree output\\n' ;;\n\
+             esac\n",
+        )
+        .expect("write layered-config Git");
+        let mut permissions = std::fs::metadata(&git)
+            .expect("read layered-config Git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&git, permissions).expect("mark layered-config Git executable");
+
+        let global_status = std::process::Command::new("git")
+            .args([
+                "config",
+                "--file",
+                global_config.to_str().expect("global config path"),
+                "core.fsmonitor",
+                "/tmp/fsmonitor-helper",
+            ])
+            .status()
+            .expect("write global fsmonitor helper");
+        assert_eq!(
+            global_status.code(),
+            Some(0),
+            "write global fsmonitor helper"
+        );
+        let local_status = std::process::Command::new("git")
+            .args(["config", "core.fsmonitor", "true"])
+            .current_dir(&repo)
+            .status()
+            .expect("write local built-in fsmonitor config");
+        assert_eq!(
+            local_status.code(),
+            Some(0),
+            "write local built-in fsmonitor config"
+        );
+
+        let fsmonitor = detect_local_fsmonitor_override(&git, repo.as_path()).await;
+        let output = run_git_command_with_timeout_from(
+            &git,
+            &["status", "--porcelain"],
+            repo.as_path(),
+            fsmonitor,
+        )
+        .await
+        .expect("run Git with layered config");
+        assert_eq!(
+            (output.status.code(), output.stdout),
+            (Some(0), b"worktree output\n".to_vec())
+        );
+
+        let actual = std::fs::read_to_string(log).expect("read layered-config Git log");
+        let disabled_hooks = format!("core.hooksPath={DISABLED_HOOKS_PATH}");
+        assert_eq!(
+            actual.lines().map(str::to_string).collect::<Vec<_>>(),
+            vec![
+                "config --null --get core.fsmonitor".to_string(),
+                "version --build-options".to_string(),
+                format!("-c {disabled_hooks} -c core.fsmonitor=true status --porcelain"),
+            ]
+        );
+    }
 }

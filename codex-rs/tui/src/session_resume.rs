@@ -14,17 +14,19 @@ use crate::cwd_prompt::CwdPromptOutcome;
 use crate::cwd_prompt::CwdSelection;
 use crate::tui::Tui;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_rollout::open_rollout_line_reader;
 use codex_state::StateRuntime;
 use codex_utils_path as path_utils;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
 
 #[derive(Default)]
 struct RolloutResumeState {
     thread_id: Option<ThreadId>,
     cwd: Option<PathBuf>,
     model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +39,8 @@ struct SessionMetadata {
 struct TurnContextResumeState {
     cwd: PathBuf,
     model: String,
+    #[serde(default)]
+    effort: Option<ReasoningEffort>,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +53,12 @@ struct RawRecord {
 pub(crate) enum ResolveCwdOutcome {
     Continue(Option<PathBuf>),
     Exit,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionModelSettings {
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
 }
 
 pub(crate) async fn resolve_session_thread_id(
@@ -64,23 +74,32 @@ pub(crate) async fn resolve_session_thread_id(
     }
 }
 
-pub(crate) async fn read_session_model(
+pub(crate) async fn read_session_model_settings(
     state_db_ctx: Option<&StateRuntime>,
     thread_id: ThreadId,
     path: Option<&Path>,
-) -> Option<String> {
+) -> SessionModelSettings {
+    let mut settings = SessionModelSettings::default();
+
     if let Some(state_db_ctx) = state_db_ctx
         && let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await
-        && let Some(model) = metadata.model
     {
-        return Some(model);
+        settings.model = metadata.model;
+        settings.reasoning_effort = metadata.reasoning_effort;
     }
 
-    let path = path?;
-    read_rollout_resume_state(path)
-        .await
-        .ok()
-        .and_then(|state| state.model)
+    if settings.model.is_some() && settings.reasoning_effort.is_some() {
+        return settings;
+    }
+
+    if let Some(path) = path
+        && let Ok(state) = read_rollout_resume_state(path).await
+    {
+        settings.model = settings.model.or(state.model);
+        settings.reasoning_effort = settings.reasoning_effort.or(state.reasoning_effort);
+    }
+
+    settings
 }
 
 pub(crate) async fn resolve_cwd_for_resume_or_fork(
@@ -142,13 +161,11 @@ pub(crate) fn cwds_differ(current_cwd: &Path, session_cwd: &Path) -> bool {
 }
 
 async fn read_rollout_resume_state(path: &Path) -> io::Result<RolloutResumeState> {
-    let file = tokio::fs::File::open(path).await?;
-    let reader = tokio::io::BufReader::new(file);
-    let mut lines = reader.lines();
+    let mut reader = open_rollout_line_reader(path).await?;
     let mut state = RolloutResumeState::default();
     let mut saw_record = false;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = reader.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -173,6 +190,7 @@ async fn read_rollout_resume_state(path: &Path) -> io::Result<RolloutResumeState
                 {
                     state.cwd = Some(turn_context.cwd);
                     state.model = Some(turn_context.model);
+                    state.reasoning_effort = turn_context.effort;
                 }
             }
             _ => {}
@@ -239,12 +257,20 @@ mod tests {
                 rollout_line(
                     "t1",
                     "turn_context",
-                    serde_json::json!({ "cwd": temp_dir.path().join("middle"), "model": "middle" }),
+                    serde_json::json!({
+                        "cwd": temp_dir.path().join("middle"),
+                        "model": "middle",
+                        "effort": "low",
+                    }),
                 ),
                 rollout_line(
                     "t2",
                     "turn_context",
-                    serde_json::json!({ "cwd": latest.clone(), "model": "latest" }),
+                    serde_json::json!({
+                        "cwd": latest.clone(),
+                        "model": "latest",
+                        "effort": "high",
+                    }),
                 ),
             ],
         )?;
@@ -254,6 +280,7 @@ mod tests {
         assert_eq!(state.thread_id, Some(thread_id));
         assert_eq!(state.cwd, Some(latest));
         assert_eq!(state.model, Some("latest".to_string()));
+        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::High));
         Ok(())
     }
 
@@ -282,6 +309,7 @@ mod tests {
         assert_eq!(state.thread_id, Some(thread_id));
         assert_eq!(state.cwd, Some(cwd));
         assert_eq!(state.model, None);
+        assert_eq!(state.reasoning_effort, None);
         Ok(())
     }
 

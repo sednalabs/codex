@@ -1,213 +1,210 @@
 use super::*;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
-use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
+use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
+use codex_tools::ToolSpec;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    options: SpawnAgentToolOptions,
+}
 
-impl ToolHandler for Handler {
-    type Output = SpawnAgentResult;
+impl Handler {
+    pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {
+        Self { options }
+    }
+}
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+impl ToolExecutor<ToolInvocation> for Handler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("spawn_agent")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> ToolSpec {
+        create_spawn_agent_tool_v2(self.options.clone())
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            payload,
-            call_id,
-            ..
-        } = invocation;
-        let arguments = function_arguments(payload)?;
-        let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-        let requested_model = args.model.clone();
-        let requested_reasoning_effort = args.reasoning_effort;
-        let fork_mode = args.fork_mode()?;
-        let role_name = args
-            .agent_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|role| !role.is_empty());
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
+    }
+}
 
-        let initial_operation = parse_collab_input(Some(args.message), /*items*/ None)?;
-        let prompt = render_input_preview(&initial_operation);
+async fn handle_spawn_agent(
+    invocation: ToolInvocation,
+) -> Result<SpawnAgentResult, FunctionCallError> {
+    let ToolInvocation {
+        session,
+        turn,
+        payload,
+        call_id,
+        ..
+    } = invocation;
+    let arguments = function_arguments(payload)?;
+    let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+    let fork_mode = args.fork_mode()?;
+    let role_name = args
+        .agent_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty());
 
-        let session_source = turn.session_source.clone();
-        let child_depth = next_thread_spawn_depth(&session_source);
-        session
-            .send_event(
-                &turn,
-                CollabAgentSpawnBeginEvent {
-                    call_id: call_id.clone(),
-                    started_at_ms: now_unix_timestamp_ms(),
-                    sender_thread_id: session.conversation_id,
-                    prompt: prompt.clone(),
-                    model: args.model.clone().unwrap_or_default(),
-                    reasoning_effort: args.reasoning_effort.unwrap_or_default(),
-                }
-                .into(),
-            )
-            .await;
-        let mut config =
-            build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-        if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
-            reject_full_fork_spawn_overrides(
-                role_name,
-                args.model.as_deref(),
-                args.reasoning_effort,
-            )?;
-        } else {
-            Box::pin(apply_spawn_agent_model_selection(
-                &session,
-                turn.as_ref(),
-                &mut config,
-                role_name,
-                args.model.as_deref(),
-                args.reasoning_effort,
-            ))
-            .await?;
-        }
-        apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-        apply_spawn_agent_overrides(&mut config, child_depth);
-
-        let spawn_source = thread_spawn_source(
-            session.conversation_id,
-            &turn.session_source,
-            child_depth,
+    let message = args.message.clone();
+    let initial_operation = parse_collab_input(Some(args.message), /*items*/ None)?;
+    let session_source = turn.session_source.clone();
+    let child_depth = next_thread_spawn_depth(&session_source);
+    let mut config =
+        build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+    if let Some(service_tier) = args.service_tier.as_ref() {
+        config.service_tier = Some(service_tier.clone());
+    }
+    if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+        reject_full_fork_spawn_overrides(
             role_name,
-            Some(args.task_name.clone()),
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
         )?;
-        let result = session
-            .services
-            .agent_control
-            .spawn_agent_with_metadata(
-                config,
-                match (spawn_source.get_agent_path(), initial_operation) {
-                    (Some(recipient), Op::UserInput { items, .. })
-                        if items
-                            .iter()
-                            .all(|item| matches!(item, UserInput::Text { .. })) =>
-                    {
-                        Op::InterAgentCommunication {
-                            communication: InterAgentCommunication::new(
-                                turn.session_source
-                                    .get_agent_path()
-                                    .unwrap_or_else(AgentPath::root),
-                                recipient,
-                                Vec::new(),
-                                prompt.clone(),
-                                /*trigger_turn*/ true,
-                            ),
-                        }
-                    }
-                    (_, initial_operation) => initial_operation,
-                },
-                Some(spawn_source),
-                SpawnAgentOptions {
-                    fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
-                    fork_mode,
-                    environments: Some(turn.environments.to_selections()),
-                },
-            )
-            .await
-            .map_err(collab_spawn_error);
-        let (new_thread_id, new_agent_metadata, status) = match &result {
-            Ok(spawned_agent) => (
-                Some(spawned_agent.thread_id),
-                Some(spawned_agent.metadata.clone()),
-                spawned_agent.status.clone(),
-            ),
-            Err(_) => (None, None, AgentStatus::NotFound),
-        };
-        let agent_snapshot = match new_thread_id {
-            Some(thread_id) => {
-                session
-                    .services
-                    .agent_control
-                    .get_agent_config_snapshot(thread_id)
-                    .await
-            }
-            None => None,
-        };
-        let (new_agent_path, new_agent_nickname, new_agent_role) =
-            match (&agent_snapshot, new_agent_metadata) {
-                (Some(snapshot), _) => (
-                    snapshot.session_source.get_agent_path().map(String::from),
-                    snapshot.session_source.get_nickname(),
-                    snapshot.session_source.get_agent_role(),
-                ),
-                (None, Some(metadata)) => (
-                    metadata.agent_path.map(String::from),
-                    metadata.agent_nickname,
-                    metadata.agent_role,
-                ),
-                (None, None) => (None, None, None),
-            };
-        let effective_model = agent_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.model.clone());
-        let effective_reasoning_effort = agent_snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.reasoning_effort)
-            .or(requested_reasoning_effort);
-        let requested_model_honored_flag =
-            requested_model_honored(requested_model.as_deref(), effective_model.as_deref());
-        let effective_model_for_event = effective_model.clone().unwrap_or_default();
-        let effective_reasoning_effort_for_event = effective_reasoning_effort.unwrap_or_default();
-        let nickname = new_agent_nickname.clone();
-        session
-            .send_event(
-                &turn,
-                CollabAgentSpawnEndEvent {
-                    call_id,
-                    completed_at_ms: now_unix_timestamp_ms(),
-                    sender_thread_id: session.conversation_id,
-                    new_thread_id,
-                    new_agent_nickname,
-                    new_agent_role,
-                    prompt,
-                    model: effective_model_for_event,
-                    reasoning_effort: effective_reasoning_effort_for_event,
-                    status,
-                }
-                .into(),
-            )
-            .await;
-        let _ = result?;
-        let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-        turn.session_telemetry.counter(
-            "codex.multi_agent.spawn",
-            /*inc*/ 1,
-            &[("role", role_tag)],
-        );
-        let task_name = new_agent_path.ok_or_else(|| {
-            FunctionCallError::RespondToModel(
-                "spawned agent is missing a canonical task name".to_string(),
-            )
-        })?;
+    } else {
+        apply_spawn_agent_model_selection(
+            &session,
+            turn.as_ref(),
+            &mut config,
+            role_name,
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
+        )
+        .await?;
+    }
+    apply_spawn_agent_service_tier(
+        &session,
+        &mut config,
+        turn.config.service_tier.as_deref(),
+        args.service_tier.as_deref(),
+    )
+    .await?;
+    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
+    let spawn_source = thread_spawn_source(
+        session.thread_id,
+        &turn.session_source,
+        child_depth,
+        role_name,
+        Some(args.task_name.clone()),
+    )?;
+    let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "spawned agent is missing a canonical task name".to_string(),
+        )
+    })?;
+    let spawned_agent = Box::pin(
+        session.services.agent_control.spawn_agent_with_metadata(
+            config,
+            match initial_operation {
+                Op::UserInput { items, .. }
+                    if items
+                        .iter()
+                        .all(|item| matches!(item, UserInput::Text { .. })) =>
+                {
+                    let author = turn
+                        .session_source
+                        .get_agent_path()
+                        .unwrap_or_else(AgentPath::root);
+                    let communication =
+                        communication_from_tool_message(author, new_agent_path.clone(), message);
+                    Op::InterAgentCommunication { communication }
+                }
+                initial_operation => initial_operation,
+            },
+            Some(spawn_source),
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
+                fork_mode,
+                parent_thread_id: Some(session.thread_id),
+                environments: Some(turn.environments.to_selections()),
+            },
+        ),
+    )
+    .await
+    .map_err(collab_spawn_error)?;
+    let new_thread_id = spawned_agent.thread_id;
+    let agent_snapshot = session
+        .services
+        .agent_control
+        .get_agent_config_snapshot(new_thread_id)
+        .await;
+    let nickname = agent_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.session_source.get_nickname())
+        .or(spawned_agent.metadata.agent_nickname);
+    let effective_model = agent_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.model.clone())
+        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+    let effective_reasoning_effort = agent_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.reasoning_effort.clone())
+        .unwrap_or_else(|| args.reasoning_effort.clone().unwrap_or_default());
+    session
+        .send_event(
+            &turn,
+            SubAgentActivityEvent {
+                event_id: call_id,
+                occurred_at_ms: now_unix_timestamp_ms(),
+                agent_thread_id: new_thread_id,
+                agent_path: new_agent_path.clone(),
+                kind: SubAgentActivityKind::Started,
+            }
+            .into(),
+        )
+        .await;
+    let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    turn.session_telemetry.counter(
+        "codex.multi_agent.spawn",
+        /*inc*/ 1,
+        &[("role", role_tag), ("version", "v2")],
+    );
+    let task_name = String::from(new_agent_path);
+
+    let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
+    if hide_agent_metadata {
         Ok(SpawnAgentResult {
             agent_id: None,
             task_name,
-            nickname,
-            requested_model,
-            requested_reasoning_effort,
-            effective_model,
-            requested_model_honored: requested_model_honored_flag,
-            effective_reasoning_effort,
+            nickname: None,
+            requested_model: args.model.clone(),
+            requested_reasoning_effort: args.reasoning_effort.clone(),
+            effective_model: Some(effective_model.clone()),
+            requested_model_honored: args
+                .model
+                .as_ref()
+                .map(|requested_model| requested_model == &effective_model),
+            effective_reasoning_effort: Some(effective_reasoning_effort.clone()),
         })
+    } else {
+        Ok(SpawnAgentResult {
+            agent_id: Some(new_thread_id.to_string()),
+            task_name,
+            nickname,
+            requested_model: args.model.clone(),
+            requested_reasoning_effort: args.reasoning_effort.clone(),
+            effective_model: Some(effective_model.clone()),
+            requested_model_honored: args
+                .model
+                .as_ref()
+                .map(|requested_model| requested_model == &effective_model),
+            effective_reasoning_effort: Some(effective_reasoning_effort),
+        })
+    }
+}
+
+impl CoreToolRuntime for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 
@@ -219,6 +216,7 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
     #[serde(default)]
     spawn_approval: SpawnAgentApproval,
     fork_turns: Option<String>,

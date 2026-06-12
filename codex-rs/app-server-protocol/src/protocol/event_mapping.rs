@@ -7,8 +7,6 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
-use crate::protocol::v2::ComputerUseCallOutputContentItem;
-use crate::protocol::v2::ComputerUseCallStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -20,7 +18,6 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
-use codex_protocol::computer_use::ComputerUseOutputContentItem as CoreComputerUseOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
@@ -76,48 +73,6 @@ pub fn item_event_to_server_notification(
                 turn_id: response.turn_id,
                 item,
                 completed_at_ms: response.completed_at_ms,
-            })
-        }
-        EventMsg::ComputerUseCallResponse(response) => {
-            let status = if response.success {
-                ComputerUseCallStatus::Completed
-            } else {
-                ComputerUseCallStatus::Failed
-            };
-            let duration_ms = i64::try_from(response.duration.as_millis()).ok();
-            let item = ThreadItem::ComputerUseCall {
-                id: response.call_id,
-                environment_id: response.environment_id,
-                adapter: response.adapter,
-                tool: response.tool,
-                arguments: response.arguments,
-                status,
-                content_items: Some(
-                    response
-                        .content_items
-                        .into_iter()
-                        .map(|item| match item {
-                            CoreComputerUseOutputContentItem::InputText { text } => {
-                                ComputerUseCallOutputContentItem::InputText { text }
-                            }
-                            CoreComputerUseOutputContentItem::InputImage { image_url, detail } => {
-                                ComputerUseCallOutputContentItem::InputImage { image_url, detail }
-                            }
-                        })
-                        .collect(),
-                ),
-                success: Some(response.success),
-                error: response.error,
-                duration_ms,
-            };
-            ServerNotification::ItemCompleted(ItemCompletedNotification {
-                thread_id,
-                turn_id: response.turn_id,
-                item,
-                // The computer-use core response event does not currently carry
-                // completion wall-clock metadata. Preserve the v2 notification
-                // shape without inventing a timestamp.
-                completed_at_ms: 0,
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
@@ -228,6 +183,20 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 completed_at_ms: end_event.completed_at_ms,
+            })
+        }
+        EventMsg::SubAgentActivity(activity) => {
+            let item = ThreadItem::SubAgentActivity {
+                id: activity.event_id,
+                kind: activity.kind.into(),
+                agent_thread_id: activity.agent_thread_id.to_string(),
+                agent_path: String::from(activity.agent_path),
+            };
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id,
+                turn_id,
+                item,
+                completed_at_ms: activity.occurred_at_ms,
             })
         }
         EventMsg::CollabWaitingBegin(begin_event) => {
@@ -500,6 +469,7 @@ pub fn item_event_to_server_notification(
                 item_id: terminal_event.call_id,
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
+                terminal_wait: terminal_event.terminal_wait.map(Into::into),
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
@@ -518,11 +488,16 @@ pub fn item_event_to_server_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::v2::TerminalWaitInfo;
+    use crate::protocol::v2::TerminalWaitPrimitive;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::TerminalInteractionEvent;
+    use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
+    use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -557,15 +532,21 @@ mod tests {
         }
     }
 
+    fn assert_terminal_interaction_server_notification(
+        notification: Option<ServerNotification>,
+        expected: TerminalInteractionNotification,
+    ) {
+        match notification.expect("supported event should map to notification") {
+            ServerNotification::TerminalInteraction(payload) => assert_eq!(payload, expected),
+            other => panic!("expected terminal interaction notification, got {other:?}"),
+        }
+    }
+
     #[test]
     fn unsupported_event_returns_none_instead_of_panicking() {
         assert!(
-            item_event_to_server_notification(
-                EventMsg::SkillsUpdateAvailable,
-                "thread-1",
-                "turn-1",
-            )
-            .is_none()
+            item_event_to_server_notification(EventMsg::ShutdownComplete, "thread-1", "turn-1",)
+                .is_none()
         );
     }
 
@@ -671,6 +652,40 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 item_id: "call-1".to_string(),
                 delta: "hello".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn terminal_interaction_maps_terminal_wait_metadata() {
+        let notification = item_event_to_server_notification(
+            EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                call_id: "call-wait".to_string(),
+                process_id: "123".to_string(),
+                stdin: String::new(),
+                terminal_wait: Some(CoreTerminalWaitInfo {
+                    primitive: CoreTerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
+                    max_wait_ms: Some(10_000),
+                    heartbeat_interval_ms: Some(1_000),
+                }),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        assert_terminal_interaction_server_notification(
+            notification,
+            TerminalInteractionNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-wait".to_string(),
+                process_id: "123".to_string(),
+                stdin: String::new(),
+                terminal_wait: Some(TerminalWaitInfo {
+                    primitive: TerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
+                    max_wait_ms: Some(10_000),
+                    heartbeat_interval_ms: Some(1_000),
+                }),
             },
         );
     }

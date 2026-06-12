@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-import re
+import importlib.metadata
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_TARGETS = [
-    Path("src/codex_app_server/generated/notification_registry.py"),
-    Path("src/codex_app_server/generated/v2_all.py"),
-    Path("src/codex_app_server/api.py"),
+    Path("src/openai_codex/generated/notification_registry.py"),
+    Path("src/openai_codex/generated/v2_all.py"),
+    Path("src/openai_codex/api.py"),
 ]
 
 
 def _snapshot_target(root: Path, rel_path: Path) -> dict[str, bytes] | bytes | None:
+    """Capture one generated artifact so regeneration drift is easy to compare."""
     target = root / rel_path
     if not target.exists():
         return None
@@ -29,16 +31,19 @@ def _snapshot_target(root: Path, rel_path: Path) -> dict[str, bytes] | bytes | N
 
 
 def _snapshot_targets(root: Path) -> dict[str, dict[str, bytes] | bytes | None]:
-    return {
-        str(rel_path): _snapshot_target(root, rel_path) for rel_path in GENERATED_TARGETS
-    }
+    """Capture all checked-in generated artifacts before and after regeneration."""
+    return {str(rel_path): _snapshot_target(root, rel_path) for rel_path in GENERATED_TARGETS}
 
 
 def test_generated_files_are_up_to_date():
+    """Regenerating from the pinned runtime package should leave artifacts unchanged."""
     before = _snapshot_targets(ROOT)
 
-    # Regenerate contract artifacts via single maintenance entrypoint.
+    # Regenerate contract artifacts via the pinned runtime package, not a local
+    # app-server binary from the checkout or CI environment.
+    assert importlib.metadata.version("openai-codex-cli-bin") == "0.137.0a4"
     env = os.environ.copy()
+    env.pop("CODEX_EXEC_PATH", None)
     python_bin = str(Path(sys.executable).parent)
     env["PATH"] = f"{python_bin}{os.pathsep}{env.get('PATH', '')}"
 
@@ -54,7 +59,7 @@ def test_generated_files_are_up_to_date():
 
 
 def test_generated_v2_all_has_no_redundant_pass_before_model_config():
-    source = (ROOT / "src/codex_app_server/generated/v2_all.py").read_text()
+    source = (ROOT / "src/openai_codex/generated/v2_all.py").read_text()
     assert not re.search(
         r"^class [A-Za-z_][A-Za-z0-9_]*\(.*BaseModel\):\n    pass\n    model_config = ConfigDict\(",
         source,

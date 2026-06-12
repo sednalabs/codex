@@ -74,19 +74,20 @@ async fn responses_stream_includes_subagent_header_on_review() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = codex_core::test_support::get_model_offline(config.model.as_deref());
     config.model = Some(model.clone());
     let config = Arc::new(config);
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let auth_mode = TelemetryAuthMode::Chatgpt;
     let session_source = SessionSource::SubAgent(SubAgentSource::Review);
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let expected_window_id = format!("{thread_id}:0");
     let session_telemetry = SessionTelemetry::new(
-        conversation_id,
+        thread_id,
         model.as_str(),
         model_info.slug.as_str(),
         /*account_id*/ None,
@@ -100,14 +101,17 @@ async fn responses_stream_includes_subagent_header_on_review() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        conversation_id,
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         session_source,
+        /*parent_thread_id*/ None,
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
     );
     let mut client_session = client.new_session();
 
@@ -123,6 +127,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
 
     let mut stream = client_session
         .stream(
+            &expected_window_id,
             &prompt,
             &model_info,
             &session_telemetry,
@@ -141,7 +146,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
     }
 
     let request = request_recorder.single_request();
-    let expected_window_id = format!("{conversation_id}:0");
     assert_eq!(
         request.header("x-openai-subagent").as_deref(),
         Some("review")
@@ -154,6 +158,10 @@ async fn responses_stream_includes_subagent_header_on_review() {
     assert_eq!(
         request.body_json()["client_metadata"]["x-codex-installation-id"].as_str(),
         Some(TEST_INSTALLATION_ID)
+    );
+    assert_eq!(
+        request.body_json()["client_metadata"]["x-codex-window-id"].as_str(),
+        Some(expected_window_id.as_str())
     );
     assert_eq!(request.header("x-codex-sandbox"), None);
 }
@@ -199,20 +207,21 @@ async fn responses_stream_includes_subagent_header_on_other() {
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = codex_core::test_support::get_model_offline(config.model.as_deref());
     config.model = Some(model.clone());
     let config = Arc::new(config);
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let auth_mode = TelemetryAuthMode::Chatgpt;
     let session_source = SessionSource::SubAgent(SubAgentSource::Other("my-task".to_string()));
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let window_id = format!("{thread_id}:0");
 
     let session_telemetry = SessionTelemetry::new(
-        conversation_id,
+        thread_id,
         model.as_str(),
         model_info.slug.as_str(),
         /*account_id*/ None,
@@ -226,14 +235,17 @@ async fn responses_stream_includes_subagent_header_on_other() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        conversation_id,
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         session_source,
+        /*parent_thread_id*/ None,
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
     );
     let mut client_session = client.new_session();
 
@@ -249,6 +261,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
 
     let mut stream = client_session
         .stream(
+            &window_id,
             &prompt,
             &model_info,
             &session_telemetry,
@@ -312,12 +325,12 @@ async fn responses_respects_model_info_overrides_from_config() {
     config.model_provider = provider.clone();
     config.model_supports_reasoning_summaries = Some(true);
     config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
-    let effort = config.model_reasoning_effort;
+    let effort = config.model_reasoning_effort.clone();
     let summary = config.model_reasoning_summary;
     let model = config.model.clone().expect("model configured");
     let config = Arc::new(config);
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let auth_mode =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("Test API Key"))
             .auth_mode()
@@ -326,8 +339,9 @@ async fn responses_respects_model_info_overrides_from_config() {
         SessionSource::SubAgent(SubAgentSource::Other("override-check".to_string()));
     let model_info =
         codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let window_id = format!("{thread_id}:0");
     let session_telemetry = SessionTelemetry::new(
-        conversation_id,
+        thread_id,
         model.as_str(),
         model_info.slug.as_str(),
         /*account_id*/ None,
@@ -341,14 +355,17 @@ async fn responses_respects_model_info_overrides_from_config() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        conversation_id,
+        thread_id.into(),
+        thread_id,
         /*installation_id*/ TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         session_source,
+        /*parent_thread_id*/ None,
         config.model_verbosity,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
     );
     let mut client_session = client.new_session();
 
@@ -364,6 +381,7 @@ async fn responses_respects_model_info_overrides_from_config() {
 
     let mut stream = client_session
         .stream(
+            &window_id,
             &prompt,
             &model_info,
             &session_telemetry,
@@ -452,7 +470,7 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         initial_parsed
             .get("thread_source")
             .and_then(serde_json::Value::as_str),
-        Some("user")
+        None
     );
 
     let git_config_global = cwd.join("empty-git-config");
@@ -565,13 +583,13 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         first_parsed
             .get("thread_source")
             .and_then(serde_json::Value::as_str),
-        Some("user")
+        None
     );
     assert_eq!(
         second_parsed
             .get("thread_source")
             .and_then(serde_json::Value::as_str),
-        Some("user")
+        None
     );
     assert_eq!(
         first_turn_id, second_turn_id,

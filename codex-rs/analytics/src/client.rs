@@ -9,6 +9,7 @@ use crate::facts::AnalyticsJsonRpcError;
 use crate::facts::AppInvocation;
 use crate::facts::AppMentionedInput;
 use crate::facts::AppUsedInput;
+use crate::facts::CodexGoalEvent;
 use crate::facts::CustomAnalyticsFact;
 use crate::facts::HookRunFact;
 use crate::facts::HookRunInput;
@@ -18,6 +19,8 @@ use crate::facts::SkillInvocation;
 use crate::facts::SkillInvokedInput;
 use crate::facts::SubAgentThreadStartedInput;
 use crate::facts::TrackEventsContext;
+use crate::facts::TurnCodexErrorFact;
+use crate::facts::TurnProfileFact;
 use crate::facts::TurnResolvedConfigFact;
 use crate::facts::TurnTokenUsageFact;
 use crate::reducer::AnalyticsReducer;
@@ -30,8 +33,10 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerResponse;
 use codex_login::AuthManager;
+use codex_login::CodexAuth;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginTelemetryMetadata;
+use codex_protocol::request_permissions::RequestPermissionsResponse;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -171,9 +176,10 @@ impl AnalyticsEventsClient {
         &self,
         tracking: &GuardianReviewTrackContext,
         result: GuardianReviewAnalyticsResult,
+        completed_at_ms: u64,
     ) {
         self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::GuardianReview(
-            Box::new(tracking.event_params(result)),
+            Box::new(tracking.event_params(result, completed_at_ms)),
         )));
     }
 
@@ -241,6 +247,12 @@ impl AnalyticsEventsClient {
         )));
     }
 
+    pub fn track_goal_event(&self, event: CodexGoalEvent) {
+        self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::Goal(Box::new(
+            event,
+        ))));
+    }
+
     pub fn track_turn_resolved_config(&self, fact: TurnResolvedConfigFact) {
         self.record_fact(AnalyticsFact::Custom(
             CustomAnalyticsFact::TurnResolvedConfig(Box::new(fact)),
@@ -249,6 +261,18 @@ impl AnalyticsEventsClient {
 
     pub fn track_turn_token_usage(&self, fact: TurnTokenUsageFact) {
         self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::TurnTokenUsage(
+            Box::new(fact),
+        )));
+    }
+
+    pub fn track_turn_profile(&self, fact: TurnProfileFact) {
+        self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::TurnProfile(
+            Box::new(fact),
+        )));
+    }
+
+    pub fn track_turn_codex_error(&self, fact: TurnCodexErrorFact) {
+        self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::TurnCodexError(
             Box::new(fact),
         )));
     }
@@ -333,10 +357,6 @@ impl AnalyticsEventsClient {
         });
     }
 
-    pub fn track_notification(&self, notification: ServerNotification) {
-        self.record_fact(AnalyticsFact::Notification(Box::new(notification)));
-    }
-
     pub fn track_server_request(&self, connection_id: u64, request: ServerRequest) {
         self.record_fact(AnalyticsFact::ServerRequest {
             connection_id,
@@ -344,10 +364,47 @@ impl AnalyticsEventsClient {
         });
     }
 
-    pub fn track_server_response(&self, response: ServerResponse) {
+    pub fn track_server_response(&self, completed_at_ms: u64, response: ServerResponse) {
         self.record_fact(AnalyticsFact::ServerResponse {
+            completed_at_ms,
             response: Box::new(response),
         });
+    }
+
+    pub fn track_effective_permissions_approval_response(
+        &self,
+        completed_at_ms: u64,
+        request_id: RequestId,
+        response: RequestPermissionsResponse,
+    ) {
+        self.record_fact(AnalyticsFact::EffectivePermissionsApprovalResponse {
+            completed_at_ms,
+            request_id,
+            response: Box::new(response),
+        });
+    }
+
+    pub fn track_server_request_aborted(&self, completed_at_ms: u64, request_id: RequestId) {
+        self.record_fact(AnalyticsFact::ServerRequestAborted {
+            completed_at_ms,
+            request_id,
+        });
+    }
+
+    pub fn track_notification(&self, notification: ServerNotification) {
+        if !matches!(
+            notification,
+            ServerNotification::TurnStarted(_)
+                | ServerNotification::TurnCompleted(_)
+                | ServerNotification::TurnDiffUpdated(_)
+                | ServerNotification::ItemStarted(_)
+                | ServerNotification::ItemCompleted(_)
+                | ServerNotification::ItemGuardianApprovalReviewStarted(_)
+                | ServerNotification::ItemGuardianApprovalReviewCompleted(_)
+        ) {
+            return;
+        }
+        self.record_fact(AnalyticsFact::Notification(Box::new(notification)));
     }
 }
 
@@ -359,6 +416,7 @@ async fn send_track_events(
     if events.is_empty() {
         return;
     }
+
     let Some(auth) = auth_manager.auth().await else {
         return;
     };
@@ -368,12 +426,45 @@ async fn send_track_events(
 
     let base_url = base_url.trim_end_matches('/');
     let url = format!("{base_url}/codex/analytics-events/events");
+    for events in track_event_request_batches(events) {
+        send_track_events_request(&auth, &url, events).await;
+    }
+}
+
+fn track_event_request_batches(events: Vec<TrackEventRequest>) -> Vec<Vec<TrackEventRequest>> {
+    let mut batches = Vec::new();
+    let mut current_batch = Vec::new();
+
+    for event in events {
+        if event.should_send_in_isolated_request() {
+            if !current_batch.is_empty() {
+                batches.push(current_batch);
+                current_batch = Vec::new();
+            }
+            batches.push(vec![event]);
+        } else {
+            current_batch.push(event);
+        }
+    }
+
+    if !current_batch.is_empty() {
+        batches.push(current_batch);
+    }
+
+    batches
+}
+
+async fn send_track_events_request(auth: &CodexAuth, url: &str, events: Vec<TrackEventRequest>) {
+    if events.is_empty() {
+        return;
+    }
+
     let payload = TrackEventsRequest { events };
 
     let response = create_client()
-        .post(&url)
+        .post(url)
         .timeout(ANALYTICS_EVENTS_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(&auth).to_auth_headers())
+        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers())
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()

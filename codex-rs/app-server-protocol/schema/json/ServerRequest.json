@@ -120,6 +120,9 @@
       ],
       "type": "object"
     },
+    "AttestationGenerateParams": {
+      "type": "object"
+    },
     "ChatgptAuthTokensRefreshParams": {
       "properties": {
         "previousAccountId": {
@@ -419,6 +422,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -429,7 +437,8 @@
       "required": [
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
       ],
       "type": "object"
     },
@@ -629,6 +638,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -639,7 +653,8 @@
       "required": [
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
       ],
       "type": "object"
     },
@@ -647,7 +662,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -759,7 +774,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1577,6 +1591,13 @@
         "cwd": {
           "$ref": "#/$defs/AbsolutePathBuf"
         },
+        "environmentId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -1589,6 +1610,11 @@
             "null"
           ]
         },
+        "startedAtMs": {
+          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "format": "int64",
+          "type": "integer"
+        },
         "threadId": {
           "type": "string"
         },
@@ -1600,6 +1626,7 @@
         "threadId",
         "turnId",
         "itemId",
+        "startedAtMs",
         "cwd",
         "permissions"
       ],
@@ -1910,6 +1937,29 @@
         "params"
       ],
       "title": "Account/chatgptAuthTokens/refreshRequest",
+      "type": "object"
+    },
+    {
+      "description": "Generate a fresh upstream attestation result on demand.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "attestation/generate",
+          "title": "Attestation/generateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AttestationGenerateParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Attestation/generateRequest",
       "type": "object"
     },
     {

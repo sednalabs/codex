@@ -46,6 +46,10 @@ on:
         required: false
         type: string
         default: medium
+      timeout_minutes:
+        required: false
+        type: number
+        default: 30
       working_directory:
         required: false
         type: string
@@ -106,7 +110,7 @@ jobs:
   run:
     name: ${{ inputs.summary_title }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Record lane start
         id: lane_timing

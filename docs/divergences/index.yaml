@@ -28,7 +28,15 @@
         "workflow audit job runs after mirror sync"
       ],
       "owner": "downstream",
-      "notes": "Tracks the audit plumbing itself so the new enforcement path remains intentional."
+      "notes": "Tracks the audit plumbing itself so the new enforcement path remains intentional.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "operator-workflow",
+      "hotspot_files": [
+        ".github/workflows/sedna-sync-upstream.yml",
+        "scripts/downstream-divergence-audit.py",
+        "justfile"
+      ],
+      "extraction_target": "operator-owned sync and divergence-audit workflow"
     },
     {
       "id": "first-party-usage-ledger-ownership",
@@ -41,11 +49,13 @@
       ],
       "files": [
         "codex-rs/core/src/codex.rs",
+        "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql"
       ],
-      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in this repo.",
+      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in an extension-owned storage namespace.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -53,10 +63,18 @@
       },
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
+        "extension_storage_migrations_use_namespace_versions",
         "usage_logger_* focused table-contract tests"
       ],
       "owner": "downstream",
-      "notes": "Keeps the canonical local usage ledger with the downstream fork."
+      "notes": "Keeps the canonical local usage ledger with the downstream fork.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "extension-owned-state",
+      "hotspot_files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/state/src/runtime.rs"
+      ],
+      "extraction_target": "extension-owned usage ledger storage namespace"
     },
     {
       "id": "usage-event-logging-and-metadata-capture",
@@ -70,14 +88,16 @@
       "files": [
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/state/service.rs",
+        "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/state/src/lib.rs",
         "codex-rs/state/src/migrations.rs",
         "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata for downstream audit workflows.",
+      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata through the usage-ledger extension storage namespace for downstream audit workflows.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -85,10 +105,19 @@
       },
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
+        "extension_storage_migrations_use_namespace_versions",
         "usage_logger_* focused table-contract tests"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data."
+      "notes": "Extends the ledger with event-level auditing data.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "extension-owned-state",
+      "hotspot_files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/runtime.rs"
+      ],
+      "extraction_target": "extension-owned usage event and spawn metadata storage"
     },
     {
       "id": "phase2-memory-attestation-and-fingerprinting",
@@ -100,15 +129,19 @@
         "prepared-input fingerprinting"
       ],
       "files": [
-        "codex-rs/core/src/memories/phase2.rs",
-        "codex-rs/core/src/memories/phase2_attestation_tests.rs",
-        "codex-rs/core/src/memories/tests.rs",
+        "codex-rs/ext/extension-api/src/state.rs",
+        "codex-rs/memories/write/src/phase2.rs",
+        "codex-rs/memories/write/src/phase2_attestation.rs",
+        "codex-rs/memories/write/src/phase2_attestation_tests.rs",
+        "codex-rs/memories/write/src/startup_tests.rs",
+        "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/phase2_attestation.rs",
         "codex-rs/state/migrations/0024_phase2_attestation_roots.sql",
+        "codex-rs/state/migrations/0038_phase2_attested_baselines.sql",
         "codex-rs/state/migrations/0031_device_key_bindings.sql",
         "codex-rs/state/migrations/0032_thread_goals.sql"
       ],
-      "behavior": "Downstream requires phase-2 attestation roots and fingerprints before consolidation can complete, and preserves unique state migration versions when upstream migrations are replayed after downstream-only slots.",
+      "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -116,11 +149,19 @@
       },
       "guardrail_lane": "codex.core-attestation-targeted",
       "tests": [
-        "consolidation_artifacts_ready_rejects_*",
-        "global_phase2_attestation_requirement_is_root_scoped"
+        "extension_storage_migrations_use_namespace_versions",
+        "phase2_attestation::*",
+        "memories_startup_phase2_*",
+        "runtime::phase2_attestation::*"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to the downstream state runtime. Upstream device key bindings and thread goals keep their SQL content but use the next free downstream migration versions."
+      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "extension-owned-state",
+      "hotspot_files": [
+        "codex-rs/state/src/runtime.rs"
+      ],
+      "extraction_target": "extension-owned phase-2 attestation storage namespace"
     },
     {
       "id": "cli-git-metadata-and-rebuild-triggers",
@@ -146,7 +187,11 @@
         "build script rebuild smoke"
       ],
       "owner": "downstream",
-      "notes": "Keeps version stamping tied to live git state."
+      "notes": "Keeps version stamping tied to live git state.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "build-metadata-hook",
+      "hotspot_files": [],
+      "extraction_target": "CLI build metadata rebuild hook"
     },
     {
       "id": "subagent-orchestration-override-preservation",
@@ -161,13 +206,18 @@
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
         "codex-rs/core/src/agent/role.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "codex-rs/core/src/tools/spec.rs"
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/tools/spec.rs",
+        "codex-rs/core/src/tools/spec_plan.rs",
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides and richer agent inventory plus wait semantics.",
+      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, and return_when semantics are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -177,10 +227,28 @@
       "tests": [
         "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
         "multi_agent_v2_list_agents_returns_completed_status_and_last_task_message",
-        "multi_agent_v2_wait_agent_honors_return_when_all"
+        "multi_agent_v2_list_agents_flags_active_descendants",
+        "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
+        "multi_agent_v2_wait_agent_honors_return_when_all",
+        "wait_agent_output_omits_capability_owned_fields_without_provider",
+        "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable."
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tool-runtime-capability",
+      "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/tools/spec.rs",
+        "codex-rs/core/src/tools/spec_plan.rs",
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
+      ],
+      "extraction_target": "multi-agent runtime capability declarations"
     },
     {
       "id": "dead-cwd-absolute-path-handling",
@@ -205,7 +273,11 @@
         "dead_cwd absolute-path regression"
       ],
       "owner": "downstream",
-      "notes": "Preserves path resolution after the cwd goes away."
+      "notes": "Preserves path resolution after the cwd goes away.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [],
+      "extraction_target": "upstreamable absolute-path utility fix"
     },
     {
       "id": "blocking-unified-exec-waits",
@@ -221,11 +293,16 @@
         "turn completion metadata"
       ],
       "files": [
+        "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs",
+        "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/core/src/codex.rs"
       ],
-      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata.",
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -244,12 +321,26 @@
         "shell_command_approval_emits_task_complete_before_tool_response",
         "exec_command_tool_matches_expected_spec",
         "write_stdin_tool_matches_expected_spec",
+        "unified_exec_wait_fields_are_capability_gated",
+        "terminal_outcome_helper_honors_capability_flag",
         "unified_exec_tools_include_wait_until_terminal_contract_fields",
         "exec_command_args_reject_invalid_wait_until_terminal_type",
-        "write_stdin_wait_until_terminal_requires_empty_chars"
+        "write_stdin_wait_until_terminal_requires_empty_chars",
+        "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling."
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tool-runtime-capability",
+      "hotspot_files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/tools/handlers/shell_spec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "extraction_target": "tool runtime wait and terminal-outcome capabilities"
     },
     {
       "id": "review-and-history-accounting-alignment",
@@ -275,7 +366,14 @@
         "review history accounting snapshot"
       ],
       "owner": "downstream",
-      "notes": "Keeps review-mode accounting deterministic."
+      "notes": "Keeps review-mode accounting deterministic.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "runtime-accounting-adapter",
+      "hotspot_files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "extraction_target": "review/history accounting contributor"
     },
     {
       "id": "mcp-server-safety-policy-extensions",
@@ -303,7 +401,11 @@
         "write_value_supports_custom_mcp_server_default_tool_approval_mode"
       ],
       "owner": "downstream",
-      "notes": "Preserves the downstream mutability guardrails."
+      "notes": "Preserves the downstream mutability guardrails.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "config-policy-adapter",
+      "hotspot_files": [],
+      "extraction_target": "MCP safety policy config adapter"
     },
     {
       "id": "mcp-oauth-fallback-file-hardening",
@@ -312,12 +414,15 @@
       "category": "mcp",
       "surface": [
         "oauth fallback credentials file",
-        "best-effort fallback recovery"
+        "best-effort fallback recovery",
+        "cached token expiry restoration"
       ],
       "files": [
-        "codex-rs/rmcp-client/src/oauth.rs"
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials files as best-effort state: empty or corrupt files no longer abort auth loading, and writes replace the fallback file atomically.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, and restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -326,10 +431,57 @@
       "guardrail_lane": "codex.mcp-safety-targeted",
       "tests": [
         "load_oauth_tokens_ignores_empty_fallback_file",
-        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors"
+        "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors",
+        "refresh_expires_in_from_timestamp_marks_expired_tokens",
+        "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken or partially-written fallback credential files from turning into hard auth failures during MCP login and reconnect flows."
+      "notes": "Keeps broken, partially-written, or expired fallback credential state from turning into hard auth failures during MCP login and reconnect flows.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "client-hardening-fix",
+      "hotspot_files": [],
+      "extraction_target": "upstreamable OAuth fallback-file hardening"
+    },
+    {
+      "id": "mcp-oauth-device-login",
+      "title": "MCP OAuth device login for headless servers",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "operator-facing",
+      "surface": [
+        "codex mcp login --device-auth",
+        "dynamic client registration fallback",
+        "Streamable HTTP OAuth discovery metadata",
+        "MCP OAuth token cache"
+      ],
+      "files": [
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs",
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "justfile"
+      ],
+      "behavior": "Downstream adds a standards-based OAuth Device Authorization Grant login path for headless MCP servers. It preserves discovery metadata, uses a configured public client id when available, dynamically registers a public device client when the authorization server advertises registration, and stores tokens in the existing MCP cache.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "5a9c53213d6bcbda108ee7297e6cbb02625cb835",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-device-login-targeted",
+      "tests": [
+        "discover_streamable_http_oauth_returns_normalized_scopes",
+        "device_login_dynamic_registration_uses_device_grant_shape",
+        "device_login_dynamic_registration_omits_refresh_when_not_supported",
+        "device_login_configured_client_id_skips_dynamic_registration",
+        "device_login_polls_until_authorized",
+        "mcp_login_parses_device_auth_flag"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths."
     },
     {
       "id": "startup-plugin-sync-bounded-wait",
@@ -356,7 +508,11 @@
         "startup_remote_plugin_sync_rearms_after_curated_repo_completion_signal_uses_latest_config_and_auth_snapshot"
       ],
       "owner": "downstream",
-      "notes": "No live code diff remains after the 2026-04-24 upstream sync; keep this as historical registry context only."
+      "notes": "No live code diff remains after the 2026-04-24 upstream sync; keep this as historical registry context only.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "upstream-equivalent-history",
+      "hotspot_files": [],
+      "extraction_target": "historical upstream-equivalent startup sync fix"
     },
     {
       "id": "tui-session-state-and-usage-surfaces",
@@ -366,6 +522,7 @@
       "surface": [
         "thread session continuity",
         "queued turn handling",
+        "status indicator lifecycle labels",
         "usage summaries"
       ],
       "files": [
@@ -374,11 +531,13 @@
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/status/card.rs",
         "codex-rs/tui/src/status/rate_limits.rs"
       ],
-      "behavior": "Per-thread session state and queued interaction semantics stay stable across the TUI surfaces.",
+      "behavior": "Per-thread session state, queued interaction semantics, and active-turn status labels stay stable across the TUI surfaces, including showing \"Compacting context\" while a context compaction item is running.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -387,10 +546,87 @@
       "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
       "tests": [
         "sync_session_tree_token_usage_updates_combined_status_line_items",
+        "live_app_server_context_compaction_start_updates_status_header",
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, and thread policy aligned."
+      "notes": "Keeps queued interaction, usage totals, thread policy, and user-visible active-turn status labels aligned.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tui-contributor-slot",
+      "hotspot_files": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs"
+      ],
+      "extraction_target": "TUI status/session contributor slots"
+    },
+    {
+      "id": "tui-transcript-compact-mode",
+      "title": "TUI transcript compact detail mode",
+      "status": "live",
+      "category": "tui",
+      "surface": [
+        "Ctrl+T transcript overlay",
+        "verbose/compact transcript detail toggle",
+        "transcript footer hints and prompt navigation"
+      ],
+      "files": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/config/src/profile_toml.rs",
+        "codex-rs/config/src/types.rs",
+        "codex-rs/core-api/src/lib.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/transcript.rs",
+        "codex-rs/tui/src/footer_hints.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/hook_cell.rs",
+        "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap_setup.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/thread-manager-sample/src/main.rs"
+      ],
+      "behavior": "Downstream carries a Ctrl+T transcript overlay detail mode that defaults to verbose mode but lets users toggle to compact mode, where the overlay focuses on user prompts and agent-facing responses while collapsing injected context, noisy context-only hook entries, and terminal/tool chatter that belongs in the full verbose transcript. The overlay labels the current mode and switch hotkeys directly in the header/footer, and `[tui].transcript_default_detail_mode = \"verbose\" | \"compact\"` selects the default at startup and after active config refreshes without changing an already-open transcript.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "b9e72a751b75d8b03ffa6d2adab9d3fc2a6262d9",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.tui-transcript-viewport-targeted",
+      "tests": [
+        "transcript_overlay_compact_mode_uses_display_lines",
+        "transcript_overlay_state_round_trips_scroll_selection_and_mode",
+        "transcript_overlay_renders_live_tail",
+        "transcript_overlay_footer_status_snapshot",
+        "tui_transcript_default_detail_mode_defaults_to_verbose",
+        "tui_transcript_default_detail_mode_deserializes_from_toml",
+        "runtime_config_uses_tui_transcript_default_detail_mode",
+        "profile_tui_transcript_default_detail_mode_deserializes_from_toml",
+        "profile_v2_config_file_uses_tui_transcript_default_detail_mode",
+        "refresh_in_memory_config_from_disk_updates_transcript_default_detail_mode",
+        "UserHistoryCell compact transcript coverage",
+        "HookCell compact transcript coverage"
+      ],
+      "owner": "downstream",
+      "notes": "This is an intentional downstream TUI carry for operator transcript ergonomics. Preserve both verbose mode for complete audit detail and compact mode for prompt/agent review; preserve the config default seam so users can choose quiet startup behavior without editing overlay hot paths. If upstream lands an equivalent transcript detail-mode model, compare behavior before dropping this carry.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "tui-ergonomics",
+      "hotspot_files": [
+        "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/app_backtrack.rs"
+      ],
+      "extraction_target": "upstreamable transcript overlay detail-mode support"
     },
     {
       "id": "custom-prompt-discovery-and-review-flow",
@@ -428,7 +664,13 @@
         "review_custom_prompt_escape_navigates_back_then_dismisses"
       ],
       "owner": "downstream",
-      "notes": "The carried file-backed prompt catalogue remains documented in core/protocol, while the targeted lane also guards the live ad hoc custom-review prompt path."
+      "notes": "The carried file-backed prompt catalogue remains documented in core/protocol, while the targeted lane also guards the live ad hoc custom-review prompt path.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "prompt-catalog-adapter",
+      "hotspot_files": [
+        "codex-rs/tui/src/app.rs"
+      ],
+      "extraction_target": "custom prompt and review-flow contributor"
     },
     {
       "id": "code-mode-declaration-formatting",
@@ -453,7 +695,11 @@
         "code mode declaration formatting"
       ],
       "owner": "downstream",
-      "notes": "Keeps code-mode declarations namespaced and legible."
+      "notes": "Keeps code-mode declarations namespaced and legible.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "upstream-equivalent-history",
+      "hotspot_files": [],
+      "extraction_target": "historical upstream-equivalent code-mode formatting"
     },
     {
       "id": "agent-orchestration-skills",
@@ -492,7 +738,11 @@
         "inspect_subagent_tail.py --help"
       ],
       "owner": "downstream",
-      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable."
+      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "agent-workflow-skill",
+      "hotspot_files": [],
+      "extraction_target": "operator-owned agent workflow skills"
     },
     {
       "id": "ci-workflow-automation",
@@ -514,7 +764,8 @@
         "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
-        "scripts/start-codex-exec.sh"
+        "scripts/start-codex-exec.sh",
+        "scripts/dispatch_sedna_release"
       ],
       "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
       "upstream_equivalent": false,
@@ -525,10 +776,18 @@
       "guardrail_lane": "codex.workflow-ci-sanity",
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
-        "workflow sync job exports expected metadata"
+        "workflow sync job exports expected metadata",
+        "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files."
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "operator-workflow",
+      "hotspot_files": [
+        ".github/validation-lanes.json",
+        ".github/workflows/"
+      ],
+      "extraction_target": "operator-owned validation and CI workflow layer"
     },
     {
       "id": "codex-app-server-suite",
@@ -549,7 +808,9 @@
         "sdk/python/examples/06_thread_lifecycle_and_controls/sync.py",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/src/codex_app_server/generated/v2_all.py",
-        "sdk/python/tests/test_contract_generation.py"
+        "sdk/python/tests/test_contract_generation.py",
+        "codex-rs/app-server-transport/",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
       ],
       "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
@@ -567,18 +828,27 @@
         "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder."
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, and blocking-waits lanes instead of a stale single-lane placeholder.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "app-server-contributor",
+      "hotspot_files": [
+        "codex-rs/app-server/src/",
+        "codex-rs/app-server-protocol/src/protocol/"
+      ],
+      "extraction_target": "app-server lifecycle and policy contributors"
     },
     {
-      "id": "codex-native-computer-use-android",
-      "title": "Native computer-use and Android tool bridge",
+      "id": "codex-native-computer-use-adapters",
+      "title": "Native computer-use adapter bridge",
       "status": "live",
       "category": "core-protocol",
       "surface_type": "agent-facing",
       "surface": [
         "native computer-use protocol events",
         "Android observe/step/install function tools",
-        "native Android image output",
+        "browser observe/step function tools",
+        "desktop observe/step function tools",
+        "native screenshot and browser viewport image output",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
       ],
@@ -587,16 +857,27 @@
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/protocol/src/dynamic_tools.rs",
         "codex-rs/tools/src/android_tool.rs",
-        "codex-rs/tools/src/tool_registry_plan.rs",
+        "codex-rs/tools/src/browser_tool.rs",
+        "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
+        "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
-        "codex-rs/core/src/tools/tool_search_entry.rs",
+        "codex-rs/tools/src/tool_search.rs",
         "codex-rs/app-server/src/computer_use.rs",
         "codex-rs/app-server/src/bespoke_event_handling.rs",
         "codex-rs/app-server-protocol/src/protocol/common.rs",
         "codex-rs/app-server-protocol/src/protocol/v2.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/android-computer-use/src/lib.rs",
         "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/browser-computer-use/src/lib.rs",
+        "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/exec/src/lib.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
         "codex-rs/tui/src/history_cell.rs",
@@ -604,10 +885,14 @@
         "codex-rs/rollout-trace/src/protocol_event.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
-        "codex-rs/tools/src/tool_registry_plan_tests.rs",
-        "docs/native-computer-use.md"
+        "codex-rs/tools/src/browser_tool_tests.rs",
+        "codex-rs/tools/src/computer_use_tool_tests.rs",
+        "codex-rs/tools/src/desktop_tool_tests.rs",
+        "docs/native-computer-use.md",
+        "docs/native-computer-use-cleanroom.md",
+        "codex-rs/browser-computer-use/"
       ],
-      "behavior": "Bare android_observe, android_step, and android_install_build_from_run dynamic tools are promoted to canonical Codex native computer-use handlers. Codex owns the transcript, native image-output contract, app-server, TUI, rollout, and trace semantics while Android runtime providers supply device capability and provider-side build installation.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -619,9 +904,45 @@
         "thread_resume_injects_native_android_tools_into_model_requests",
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
         "thread_fork_injects_native_android_tools_into_model_requests",
-        "native_android_computer_use_events_render_in_transcript_and_overlay",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "android_dynamic_tools_use_canonical_codex_tool_definitions",
+        "action_kind_accepts_current_and_compatibility_fields",
+        "action_failure_summary_lists_completed_actions_without_payload_echo",
+        "configured_android_tools_load_from_explicit_codex_home",
+        "android_config_loads_provider_defaults_from_config_file",
+        "launch_app_args_uses_configured_default_package_and_activity",
+        "input_args_applies_default_serial_without_clobbering_explicit_serial",
+        "failed_response_classifies_transient_provider_unavailability",
+        "prefer_stable_ui_defaults_to_true_unless_disabled",
+        "canonical_browser_dynamic_tool_preserves_supported_browser_tool_names",
+        "browser_observe_schema_exposes_ux_review_capture_bundle",
+        "canonical_desktop_observe_schema_exposes_screen_and_ui_scope",
+        "canonical_desktop_step_schema_exposes_cleanroom_action_set",
+        "browser_backend_schema_exposes_supported_provider_backends",
+        "native_computer_use_registry_classifies_android_and_browser_tools",
+        "native_computer_use_registry_classifies_desktop_tools",
+        "native_computer_use_provider_registry_declares_adapters_tools_and_backends",
+        "native_computer_use_provider_registry_does_not_claim_unknown_tools",
+        "browser_step_schema_exposes_human_like_input_primitives",
+        "browser_step_schema_exposes_service_headers_and_audit_artifacts",
+        "browser_handler_uses_browser_adapter",
+        "browser_provider_requires_configured_backend",
+        "configured_browser_tools_are_session_scoped_native_tools",
+        "configured_desktop_tools_are_session_scoped_native_tools",
+        "playwright_provider_exports_real_browser_environment",
+        "playwright_provider_carries_artifact_and_service_profile_config",
+        "provider clears Chromium tab session restore without deleting saved browser state",
+        "node --test codex-rs/browser-computer-use/src/browser_playwright_review_test.mjs",
+        "thread_lifecycle_params_include_configured_native_dynamic_tools",
+        "exec_computer_use_provider_registry_declares_supported_exec_adapters",
+        "exec_computer_use_provider_registry_does_not_claim_unknown_tools",
+        "desktop_provider_requires_configured_command",
+        "command_provider_bridge_returns_native_image_response",
+        "browser_provider_response_preserves_native_image",
+        "desktop_provider_response_without_native_image_fails_loudly",
+        "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
+        "native_computer_use_check_reports_android_browser_and_desktop_config_files",
+        "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
         "duplicate_bare_android_dynamic_tools_register_native_handler_once",
         "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
         "computer_use_call_times_out_and_unregisters_pending_response",
@@ -630,7 +951,17 @@
         "computer_use_call_response_is_tool_runtime_end"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android tooling outside Codex. Android screenshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract."
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "computer-use-provider-registry",
+      "hotspot_files": [
+        "codex-rs/app-server/src/",
+        "codex-rs/app-server-protocol/src/protocol/",
+        "codex-rs/core/src/tools/handlers/computer_use.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/tui/src/chatwidget.rs"
+      ],
+      "extraction_target": "shared native computer-use provider registry"
     },
     {
       "id": "codex-tui-session-surfaces",
@@ -640,26 +971,50 @@
       "surface_type": "agent-facing",
       "surface": [
         "multi-agent TUI state",
-        "usage & status line surfaces"
+        "usage & status line surfaces",
+        "active slash-command setting queues",
+        "TUI contributor slots"
       ],
       "files": [
+        "codex-rs/tui/src/slash_command.rs",
+        "codex-rs/tui/src/bottom_pane/slash_commands.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/contributor_slots.rs",
         "codex-rs/tui/src/",
         "codex-rs/tui/tests/",
         "codex-rs/tui/src/snapshots/"
       ],
-      "behavior": "Downstream\u2019s TUI layers enforce the queue, usage, and session-state surfaces that are unique to this fork.",
+      "behavior": "Downstream's TUI layers enforce queue, active slash-command setting selection, usage, session-state, status, history, bottom-pane, update-prompt, and computer-use display surfaces through registered contributor slots instead of editing only central orchestration files.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted; codex.tui-front-queue-submit-targeted",
       "tests": [
+        "active_turn_model_slash_opens_picker_and_selection_does_not_start_turn",
+        "active_turn_permissions_slash_opens_picker_and_selection_does_not_start_turn",
+        "active_turn_plan_with_args_queues_prompt_under_plan_mode",
+        "active_turn_fast_slash_applies_service_tier_without_starting_turn",
+        "contributor_slots::*",
+        "status_indicator_widget::* snapshots",
+        "update_prompt_snapshot",
+        "bottom_pane::* snapshots",
+        "computer_use_call_labels_native_surfaces",
         "TUI snapshot suites",
         "multi-agent interaction integration tests"
       ],
       "owner": "downstream",
-      "notes": "Keeps the fork\u2019s interactive surfaces deterministic."
+      "notes": "Keeps the fork's interactive surfaces deterministic while making recurring sync-conflict surfaces explicit extension slots.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tui-contributor-slot",
+      "hotspot_files": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/contributor_slots.rs",
+        "codex-rs/tui/src/chatwidget.rs"
+      ],
+      "extraction_target": "TUI status, history, bottom-pane, update-prompt, and computer-use display contributor slots"
     },
     {
       "id": "codex-core-and-ops-extensions",
@@ -676,7 +1031,7 @@
         "codex-rs/backend-client/",
         "codex-rs/chatgpt/",
         "codex-rs/cli/",
-        "codex-rs/cloud-requirements/",
+        "codex-rs/cloud-config/",
         "codex-rs/cloud-tasks/",
         "codex-rs/code-mode/",
         "codex-rs/config/",
@@ -720,7 +1075,13 @@
         "codex-rs/model-provider/",
         "codex-rs/plugin/",
         "codex-rs/thread-store/",
-        "codex-rs/tui/Cargo.toml"
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/agent-graph-store/",
+        "codex-rs/ext/",
+        "codex-rs/external-agent-sessions/",
+        "codex-rs/file-watcher/",
+        "codex-rs/memories/write/",
+        "codex-rs/thread-manager-sample/"
       ],
       "behavior": "Telemetry, CLI, config, and MCP extensions keep downstream tooling aligned with fork-specific policies and usage telemetry.",
       "upstream_equivalent": false,
@@ -738,7 +1099,14 @@
         "responses_websocket_usage_limit_error_emits_rate_limit_event"
       ],
       "owner": "downstream",
-      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only."
+      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "runtime-capability-adapter",
+      "hotspot_files": [
+        "codex-rs/core/src/codex.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "extraction_target": "domain-specific runtime capability adapters"
     },
     {
       "id": "shell-tool-mcp-project",
@@ -773,7 +1141,11 @@
         "pnpm --filter @openai/codex-shell-tool-mcp run build"
       ],
       "owner": "downstream",
-      "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed."
+      "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "helper-package",
+      "hotspot_files": [],
+      "extraction_target": "operator-owned shell helper package"
     },
     {
       "id": "downstream-documents-and-guides",
@@ -797,10 +1169,16 @@
       },
       "guardrail_lane": "codex.downstream-docs-check",
       "tests": [
-        "documentation audit smoke"
+        "documentation audit smoke",
+        "downstream-docs-check relative link audit",
+        "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Covers all downstream docs (carry policies, how-tos, matrices) so they are treated as intentional content."
+      "notes": "Covers all downstream docs (carry policies, how-tos, matrices) so they are treated as intentional content. Public docs should describe upstream-neutral architecture, validation, release assets, and generalized handoffs; operator deployment routing belongs outside tracked public surfaces.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "documentation-policy",
+      "hotspot_files": [],
+      "extraction_target": "operator-owned downstream documentation"
     },
     {
       "id": "downstream-build-config-and-patches",
@@ -838,7 +1216,9 @@
         "codex-rs/deny.toml",
         "upstream.json",
         "tools/argument-comment-lint/Cargo.lock",
-        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py"
+        "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
+        "package.json",
+        "scripts/codex-resume-recent.sh"
       ],
       "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork\u2019s CI and release policy.",
       "upstream_equivalent": false,
@@ -854,7 +1234,69 @@
         "py_compile of stage_npm_packages.py and policy verifier scripts"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate."
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "build-policy-config",
+      "hotspot_files": [
+        ".github/validation-lanes.json",
+        ".github/workflows/",
+        "justfile"
+      ],
+      "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "side-chat-persistence-and-usage-ledger",
+      "title": "Side chat persistence and usage ledger tracking",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "/side TUI command",
+        "app-server thread_source filtering",
+        "usage.sqlite fork lineage"
+      ],
+      "files": [
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
+        "scripts/codex-resume-recent.sh"
+      ],
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test; codex.tui-agent-picker-targeted",
+      "tests": [
+        "state_runtime_records_direct_fork_snapshot_from_provider_rows",
+        "fork_stopped_thread_from_rollout_preserves_side_thread_source",
+        "thread_fork_side_source_persists_and_uses_side_filter",
+        "thread_list_hides_side_threads_until_side_filter_requested",
+        "side_fork_config_is_persistent_and_appends_developer_guardrails",
+        "slash_quit_in_side_conversation_requests_side_exit",
+        "slash_exit_in_side_conversation_requests_side_exit",
+        "bash -n scripts/codex-resume-recent.sh"
+      ],
+      "owner": "downstream",
+      "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
+      "upstreamability_tier": "downstream-product",
+      "boundary_type": "interactive-history-and-ledger",
+      "hotspot_files": [
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/usage_migrations/*.sql",
+        "scripts/codex-resume-recent.sh"
+      ],
+      "extraction_target": "side-thread persistence and history filtering contract"
     }
   ]
 }

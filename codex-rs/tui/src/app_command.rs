@@ -15,8 +15,8 @@ use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -26,7 +26,9 @@ use serde_json::Value;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) enum AppCommand {
-    Interrupt,
+    Interrupt {
+        behavior: InterruptBehavior,
+    },
     CleanBackgroundTerminals,
     RealtimeConversationStart {
         transport: Option<ThreadRealtimeStartTransport>,
@@ -42,11 +44,11 @@ pub(crate) enum AppCommand {
         cwd: PathBuf,
         approval_policy: AskForApproval,
         approvals_reviewer: Option<ApprovalsReviewer>,
-        permission_profile: PermissionProfile,
+        active_permission_profile: Option<ActivePermissionProfile>,
         model: String,
         effort: Option<ReasoningEffortConfig>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
@@ -56,11 +58,12 @@ pub(crate) enum AppCommand {
         approval_policy: Option<AskForApproval>,
         approvals_reviewer: Option<ApprovalsReviewer>,
         permission_profile: Option<PermissionProfile>,
+        active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     },
@@ -104,21 +107,28 @@ pub(crate) enum AppCommand {
     Review {
         target: ReviewTarget,
     },
-    AddToHistory {
-        text: String,
-    },
-    GetHistoryEntryRequest {
-        offset: usize,
-        log_id: u64,
-    },
     ApproveGuardianDeniedAction {
         event: GuardianAssessmentEvent,
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum InterruptBehavior {
+    Default,
+    RestorePromptIfNoOutput,
+}
+
 impl AppCommand {
     pub(crate) fn interrupt() -> Self {
-        Self::Interrupt
+        Self::Interrupt {
+            behavior: InterruptBehavior::Default,
+        }
+    }
+
+    pub(crate) fn interrupt_and_restore_prompt_if_no_output() -> Self {
+        Self::Interrupt {
+            behavior: InterruptBehavior::RestorePromptIfNoOutput,
+        }
     }
 
     pub(crate) fn clean_background_terminals() -> Self {
@@ -150,11 +160,11 @@ impl AppCommand {
         items: Vec<UserInput>,
         cwd: PathBuf,
         approval_policy: AskForApproval,
-        permission_profile: PermissionProfile,
+        active_permission_profile: Option<ActivePermissionProfile>,
         model: String,
         effort: Option<ReasoningEffortConfig>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
@@ -164,7 +174,7 @@ impl AppCommand {
             cwd,
             approval_policy,
             approvals_reviewer: None,
-            permission_profile,
+            active_permission_profile,
             model,
             effort,
             summary,
@@ -181,11 +191,12 @@ impl AppCommand {
         approval_policy: Option<AskForApproval>,
         approvals_reviewer: Option<ApprovalsReviewer>,
         permission_profile: Option<PermissionProfile>,
+        active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     ) -> Self {
@@ -194,6 +205,7 @@ impl AppCommand {
             approval_policy,
             approvals_reviewer,
             permission_profile,
+            active_permission_profile,
             windows_sandbox_level,
             model,
             effort,
@@ -274,14 +286,6 @@ impl AppCommand {
 
     pub(crate) fn review(target: ReviewTarget) -> Self {
         Self::Review { target }
-    }
-
-    pub(crate) fn add_to_history(text: String) -> Self {
-        Self::AddToHistory { text }
-    }
-
-    pub(crate) fn history_lookup(offset: usize, log_id: u64) -> Self {
-        Self::GetHistoryEntryRequest { offset, log_id }
     }
 
     pub(crate) fn approve_guardian_denied_action(event: GuardianAssessmentEvent) -> Self {

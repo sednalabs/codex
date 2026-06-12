@@ -17,6 +17,17 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
         if feature.id == codex_features::Feature::Artifact {
             continue;
         }
+        if feature.id == codex_features::Feature::CodeMode {
+            properties.insert(
+                feature.key.to_string(),
+                schema_gen
+                    .subschema_for::<
+                        codex_features::FeatureToml<codex_features::CodeModeConfigToml>,
+                    >()
+                    .into(),
+            );
+            continue;
+        }
         if feature.id == codex_features::Feature::MultiAgentV2 {
             properties.insert(
                 feature.key.to_string(),
@@ -31,11 +42,16 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
         if feature.id == codex_features::Feature::AppsMcpPathOverride {
             properties.insert(
                 feature.key.to_string(),
+                removed_apps_mcp_path_override_schema(schema_gen).into(),
+            );
+            continue;
+        }
+        if feature.id == codex_features::Feature::NetworkProxy {
+            properties.insert(
+                feature.key.to_string(),
                 schema_gen
                     .subschema_for::<
-                        codex_features::FeatureToml<
-                            codex_features::AppsMcpPathOverrideConfigToml,
-                        >,
+                        codex_features::FeatureToml<codex_features::NetworkProxyConfigToml>,
                     >()
                     .into(),
             );
@@ -62,6 +78,34 @@ pub fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
     {
         Ok(schema) => schema,
         Err(err) => panic!("features schema should be valid: {err}"),
+    }
+}
+
+fn removed_apps_mcp_path_override_schema(schema_gen: &mut SchemaGenerator) -> Schema {
+    let mut properties = Map::new();
+    properties.insert(
+        "enabled".to_string(),
+        schema_gen.subschema_for::<bool>().into(),
+    );
+    properties.insert(
+        "path".to_string(),
+        schema_gen.subschema_for::<String>().into(),
+    );
+
+    match json!({
+        "anyOf": [
+            schema_gen.subschema_for::<bool>(),
+            {
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": false,
+            },
+        ],
+    })
+    .try_into()
+    {
+        Ok(schema) => schema,
+        Err(err) => panic!("removed apps MCP path override schema should be valid: {err}"),
     }
 }
 
@@ -102,7 +146,7 @@ fn canonicalize_with_key(key: Option<&str>, value: &Value) -> Value {
         ),
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_by_key(|(key, _)| *key);
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
                 sorted.insert(

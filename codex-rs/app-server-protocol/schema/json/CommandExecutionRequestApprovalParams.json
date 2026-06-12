@@ -260,7 +260,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -372,7 +372,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -560,6 +559,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -570,7 +574,8 @@
   "required": [
     "threadId",
     "turnId",
-    "itemId"
+    "itemId",
+    "startedAtMs"
   ],
   "title": "CommandExecutionRequestApprovalParams",
   "type": "object"

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::to_response;
@@ -65,6 +65,9 @@ const TEST_TOOL_NAME: &str = "echo_tool";
 const LARGE_RESPONSE_MESSAGE: &str = "large";
 const ELICITATION_TRIGGER_MESSAGE: &str = "confirm";
 const ELICITATION_MESSAGE: &str = "Allow this request?";
+const URL_ELICITATION_TRIGGER_MESSAGE: &str = "auth";
+const URL_ELICITATION_MESSAGE: &str = "Sign in to GitHub to continue.";
+const URL_ELICITATION_URL: &str = "https://github.example/login/device";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
@@ -91,7 +94,7 @@ url = "{mcp_server_url}/mcp"
     ));
     std::fs::write(config_path, config_toml)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_start_id = mcp
@@ -158,7 +161,7 @@ url = "{mcp_server_url}/mcp"
 #[tokio::test]
 async fn mcp_server_tool_call_returns_error_for_unknown_thread() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -209,7 +212,7 @@ url = "{mcp_server_url}/mcp"
     ));
     std::fs::write(config_path, config_toml)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_start_id = mcp
@@ -295,9 +298,112 @@ url = "{mcp_server_url}/mcp"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_forwards_url_elicitation() -> Result<()> {
+    let responses_server = responses::start_mock_server().await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    write_mock_responses_config_toml(
+        codex_home.path(),
+        &responses_server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 1024,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+
+    let config_path = codex_home.path().join("config.toml");
+    let mut config_toml = std::fs::read_to_string(&config_path)?;
+    config_toml.push_str(&format!(
+        r#"
+[mcp_servers.{TEST_SERVER_NAME}]
+url = "{mcp_server_url}/mcp"
+"#
+    ));
+    std::fs::write(config_path, config_toml)?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+            ..Default::default()
+        })
+        .await?;
+    let thread_start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
+
+    let tool_call_request_id = mcp
+        .send_mcp_server_tool_call_request(McpServerToolCallParams {
+            thread_id: thread.id.clone(),
+            server: TEST_SERVER_NAME.to_string(),
+            tool: TEST_TOOL_NAME.to_string(),
+            arguments: Some(json!({
+                "message": URL_ELICITATION_TRIGGER_MESSAGE,
+            })),
+            meta: None,
+        })
+        .await?;
+
+    let server_req = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_request_message(),
+    )
+    .await??;
+    let ServerRequest::McpServerElicitationRequest { request_id, params } = server_req else {
+        panic!("expected McpServerElicitationRequest request, got: {server_req:?}");
+    };
+    assert_eq!(
+        params,
+        McpServerElicitationRequestParams {
+            thread_id: thread.id,
+            turn_id: None,
+            server_name: TEST_SERVER_NAME.to_string(),
+            request: McpServerElicitationRequest::Url {
+                meta: None,
+                message: URL_ELICITATION_MESSAGE.to_string(),
+                url: URL_ELICITATION_URL.to_string(),
+                elicitation_id: "github-auth-123".to_string(),
+            },
+        }
+    );
+
+    mcp.send_response(
+        request_id,
+        serde_json::to_value(McpServerElicitationRequestResponse {
+            action: McpServerElicitationAction::Accept,
+            content: None,
+            meta: None,
+        })?,
+    )
+    .await?;
+
+    let tool_call_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(tool_call_request_id)),
+    )
+    .await??;
+    let response: McpServerToolCallResponse = to_response(tool_call_response)?;
+    assert_eq!(response.content.len(), 1);
+    assert_eq!(response.content[0].get("type"), Some(&json!("text")));
+    assert_eq!(response.content[0].get("text"), Some(&json!("accepted")));
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_tool_call_completion_notification_contains_truncated_large_result() -> Result<()> {
     let call_id = "call-large-mcp";
-    let namespace = format!("mcp__{TEST_SERVER_NAME}__");
+    let namespace = format!("mcp__{TEST_SERVER_NAME}");
     let responses = vec![
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
@@ -336,7 +442,7 @@ url = "{mcp_server_url}/mcp"
     ));
     std::fs::write(config_path, config_toml)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_start_id = mcp
@@ -355,6 +461,7 @@ url = "{mcp_server_url}/mcp"
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
+            client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "Call the large MCP tool".to_string(),
                 text_elements: Vec::new(),
@@ -406,6 +513,7 @@ url = "{mcp_server_url}/mcp"
         status,
         arguments: json!({ "message": LARGE_RESPONSE_MESSAGE }),
         mcp_app_resource_uri: None,
+        plugin_id: None,
         result: Some(result),
         error: None,
         duration_ms: None,
@@ -429,10 +537,7 @@ struct ToolAppsMcpServer;
 
 impl ServerHandler for ToolAppsMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..ServerInfo::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(
@@ -527,6 +632,28 @@ impl ServerHandler for ToolAppsMcpServer {
             return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
 
+        if message == URL_ELICITATION_TRIGGER_MESSAGE {
+            let result = context
+                .peer
+                .create_elicitation(CreateElicitationRequestParams::UrlElicitationParams {
+                    meta: None,
+                    message: URL_ELICITATION_MESSAGE.to_string(),
+                    url: URL_ELICITATION_URL.to_string(),
+                    elicitation_id: "github-auth-123".to_string(),
+                })
+                .await
+                .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
+            let output = match result.action {
+                ElicitationAction::Accept => {
+                    assert_eq!(result.content, Some(json!({})));
+                    "accepted"
+                }
+                ElicitationAction::Decline => "declined",
+                ElicitationAction::Cancel => "cancelled",
+            };
+            return Ok(CallToolResult::success(vec![Content::text(output)]));
+        }
+
         let mut result = CallToolResult::structured(json!({
             "echoed": message,
             "threadId": thread_id,
@@ -555,7 +682,7 @@ async fn start_mcp_server() -> Result<(String, JoinHandle<()>)> {
 }
 
 async fn wait_for_mcp_tool_call_completed(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     call_id: &str,
 ) -> Result<ItemCompletedNotification> {
     loop {

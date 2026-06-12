@@ -61,7 +61,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -173,7 +173,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -268,6 +267,13 @@
     "cwd": {
       "$ref": "#/$defs/AbsolutePathBuf"
     },
+    "environmentId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },
@@ -280,6 +286,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -291,6 +302,7 @@
     "threadId",
     "turnId",
     "itemId",
+    "startedAtMs",
     "cwd",
     "permissions"
   ],

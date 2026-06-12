@@ -1,10 +1,12 @@
 // GENERATED CODE! DO NOT MODIFY BY HAND!
 
 export type { AbsolutePathBuf } from "./AbsolutePathBuf";
+export type { AgentMessageInputContent } from "./AgentMessageInputContent";
 export type { AgentPath } from "./AgentPath";
 export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
 export type { ApplyPatchApprovalResponse } from "./ApplyPatchApprovalResponse";
 export type { AuthMode } from "./AuthMode";
+export type { AutoCompactTokenLimitScope } from "./AutoCompactTokenLimitScope";
 export type { ClientInfo } from "./ClientInfo";
 export type { ClientNotification } from "./ClientNotification";
 export type { ClientRequest } from "./ClientRequest";
@@ -12,6 +14,7 @@ export type { CollaborationMode } from "./CollaborationMode";
 export type { ContentItem } from "./ContentItem";
 export type { ConversationGitInfo } from "./ConversationGitInfo";
 export type { ConversationSummary } from "./ConversationSummary";
+export type { DynamicToolCapability } from "./DynamicToolCapability";
 export type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
 export type { ExecCommandApprovalResponse } from "./ExecCommandApprovalResponse";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
@@ -41,6 +44,7 @@ export type { InternalSessionSource } from "./InternalSessionSource";
 export type { LocalShellAction } from "./LocalShellAction";
 export type { LocalShellExecAction } from "./LocalShellExecAction";
 export type { LocalShellStatus } from "./LocalShellStatus";
+export type { McpServerInfo } from "./McpServerInfo";
 export type { MessagePhase } from "./MessagePhase";
 export type { ModeKind } from "./ModeKind";
 export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";
@@ -64,7 +68,6 @@ export type { ResponseItem } from "./ResponseItem";
 export type { ReviewDecision } from "./ReviewDecision";
 export type { ServerNotification } from "./ServerNotification";
 export type { ServerRequest } from "./ServerRequest";
-export type { ServiceTier } from "./ServiceTier";
 export type { SessionSource } from "./SessionSource";
 export type { Settings } from "./Settings";
 export type { SubAgentSource } from "./SubAgentSource";
