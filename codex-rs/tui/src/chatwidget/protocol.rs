@@ -256,6 +256,12 @@ impl ChatWidget {
         notification: TurnCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        let observed_model_display_name = notification
+            .final_model
+            .as_ref()
+            .or(notification.model_snapshot.as_ref())
+            .filter(|model| !model.trim().is_empty())
+            .cloned();
         // User-message dedupe only suppresses the app-server echo of a prompt
         // this TUI already rendered locally. Once that turn ends, another
         // client can submit the same text and it still needs its own user cell.
@@ -267,7 +273,11 @@ impl ChatWidget {
                     /*last_agent_message*/ None,
                     notification.turn.duration_ms,
                     replay_kind.is_some(),
-                )
+                );
+                if let Some(model) = observed_model_display_name {
+                    self.observed_model_display_name = Some(model);
+                    self.refresh_status_surfaces();
+                }
             }
             TurnStatus::Interrupted => {
                 self.last_non_retry_error = None;
