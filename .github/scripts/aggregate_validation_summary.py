@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--run-url", required=True)
+    parser.add_argument("--workflow-file", default="sedna-heavy-tests.yml")
+    parser.add_argument(
+        "--event-policy", default="pull_request_exact_head_lane_fingerprint"
+    )
     parser.add_argument("--run-selected-lanes", required=True)
     parser.add_argument("--run-smoke-gate", required=True)
     parser.add_argument("--smoke-gate-kind", default="")
@@ -829,6 +833,28 @@ def main() -> None:
         "lanes": results,
         "cache_occupancy": load_optional_json(args.cache_occupancy_json),
         "summary": summary,
+        "ci_proof_v1": {
+            "schema_version": "ci-proof-v1",
+            "repository": args.repo,
+            "workflow_file": args.workflow_file,
+            "lane": args.lane_set,
+            "planner_fingerprint": args.planner_fingerprint or "",
+            "head_sha": args.head_sha,
+            "event_policy": args.event_policy,
+            "inputs_hash": args.planner_fingerprint or "",
+            "conclusion": summary["overall_conclusion"],
+            "run_id": args.run_id,
+            "run_url": args.run_url,
+            "evidence_key": ":".join(
+                [
+                    args.repo,
+                    args.workflow_file,
+                    args.head_sha,
+                    args.lane_set,
+                    args.planner_fingerprint or "",
+                ]
+            ),
+        },
     }
 
     output_path = Path(args.output)
