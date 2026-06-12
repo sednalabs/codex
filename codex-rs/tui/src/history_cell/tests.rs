@@ -7,6 +7,7 @@ use crate::exec_cell::ExecCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::session_state::ThreadSessionState;
+use crate::terminal_hyperlinks::visible_lines;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::McpAuthStatus;
@@ -43,6 +44,24 @@ fn test_cwd() -> PathBuf {
     // These tests only need a stable absolute cwd; using temp_dir() avoids baking Unix- or
     // Windows-specific root semantics into the fixtures.
     std::env::temp_dir()
+}
+
+#[test]
+fn streaming_agent_tail_blank_line_uses_one_viewport_row() {
+    let cell = StreamingAgentTailCell::new(
+        vec![
+            HyperlinkLine::from("first"),
+            HyperlinkLine::from(""),
+            HyperlinkLine::from("second"),
+        ],
+        /*is_first_line*/ false,
+    );
+
+    let lines = cell.display_lines(/*width*/ 80);
+    insta::assert_snapshot!(render_lines(&lines).join("\n"), @"  first
+
+  second");
+    assert_eq!(cell.desired_height(/*width*/ 80), 3);
 }
 
 fn stdio_server_config(
@@ -278,10 +297,8 @@ fn proposed_plan_cell_renders_markdown_table() {
     let rendered = render_lines(&plan.display_lines(/*width*/ 80));
 
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains('│') || line.contains('┌')),
-        "expected boxed table in proposed plan output: {rendered:?}"
+        rendered.iter().any(|line| line.contains('━')),
+        "expected separated table in proposed plan output: {rendered:?}"
     );
     assert!(
         !rendered
@@ -298,6 +315,47 @@ fn proposed_plan_cell_renders_markdown_table() {
 }
 
 #[test]
+fn proposed_plan_cell_preserves_wrapped_table_web_links() {
+    let destination = "https://example.com/a/very/long/path/to/a/table/artifact";
+    let plan = new_proposed_plan(
+        format!("| Step | URL |\n| --- | --- |\n| Verify | {destination} |\n"),
+        &test_cwd(),
+    );
+
+    let lines = plan.display_hyperlink_lines(/*width*/ 32);
+    let linked_rows = lines
+        .iter()
+        .filter(|line| !line.hyperlinks.is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(linked_rows.len() > 1);
+    assert!(linked_rows.iter().all(|line| {
+        line.hyperlinks
+            .iter()
+            .all(|link| link.destination == destination)
+    }));
+}
+
+#[test]
+fn composite_cell_preserves_child_web_links() {
+    let destination = "https://chatgpt.com/codex/settings/usage";
+    let cell = CompositeHistoryCell::new(vec![
+        Box::new(PlainHistoryCell::new(vec![Line::from("/status")])),
+        Box::new(WebHyperlinkHistoryCell::new(vec![Line::from(destination)])),
+    ]);
+
+    let lines = cell.display_hyperlink_lines(/*width*/ 80);
+
+    assert_eq!(
+        lines[2].hyperlinks,
+        vec![crate::terminal_hyperlinks::TerminalHyperlink {
+            columns: 0..destination.len(),
+            destination: destination.to_string(),
+        }]
+    );
+}
+
+#[test]
 fn proposed_plan_cell_unwraps_markdown_fenced_table() {
     let plan = new_proposed_plan(
         "## Plan\n\n```markdown\n| Step | Owner |\n| --- | --- |\n| Verify | Codex |\n```\n"
@@ -308,10 +366,8 @@ fn proposed_plan_cell_unwraps_markdown_fenced_table() {
     let rendered = render_lines(&plan.display_lines(/*width*/ 80));
 
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains('│') || line.contains('┌')),
-        "expected boxed table for markdown-fenced proposed plan output: {rendered:?}"
+        rendered.iter().any(|line| line.contains('━')),
+        "expected separated table for markdown-fenced proposed plan output: {rendered:?}"
     );
     assert!(
         !rendered.iter().any(|line| line.trim() == "```markdown"),
@@ -816,6 +872,7 @@ async fn mcp_tools_output_lists_tools_for_hyphenated_server_names() {
 fn mcp_tools_output_from_statuses_renders_status_only_servers() {
     let statuses = vec![McpServerStatus {
         name: "plugin_docs".to_string(),
+        server_info: None,
         tools: HashMap::from([(
             "lookup".to_string(),
             Tool {
@@ -845,6 +902,7 @@ fn mcp_tools_output_from_statuses_renders_status_only_servers() {
 fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
     let statuses = vec![McpServerStatus {
         name: "plugin_docs".to_string(),
+        server_info: None,
         tools: HashMap::from([(
             "lookup".to_string(),
             Tool {
@@ -1038,6 +1096,32 @@ fn web_search_history_cell_snapshot() {
 }
 
 #[test]
+fn standalone_unix_update_available_history_cell_snapshot() {
+    let cell =
+        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn standalone_windows_update_available_history_cell_snapshot() {
+    let cell =
+        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn web_search_history_cell_without_detail_snapshot() {
+    let cell = new_web_search_call("call-1".to_string(), String::new(), WebSearchAction::Other);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 64)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn web_search_history_cell_wraps_with_indented_continuation() {
     let query = "example search query with several generic words to exercise wrapping".to_string();
     let cell = new_web_search_call(
@@ -1053,8 +1137,8 @@ fn web_search_history_cell_wraps_with_indented_continuation() {
     assert_eq!(
         rendered,
         vec![
-            "• Searched example search query with several generic words to".to_string(),
-            "  exercise wrapping".to_string(),
+            "• Searched the web for example search query with several generic".to_string(),
+            "  words to exercise wrapping".to_string(),
         ]
     );
 }
@@ -1072,7 +1156,10 @@ fn web_search_history_cell_short_query_does_not_wrap() {
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 64));
 
-    assert_eq!(rendered, vec!["• Searched short query".to_string()]);
+    assert_eq!(
+        rendered,
+        vec!["• Searched the web for short query".to_string()]
+    );
 }
 
 #[test]
@@ -1601,6 +1688,7 @@ fn coalesces_sequential_reads_within_one_call() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1628,6 +1716,7 @@ fn coalesces_reads_across_multiple_calls() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1645,6 +1734,7 @@ fn coalesces_reads_across_multiple_calls() {
             }],
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            /*terminal_wait*/ None,
         )
         .unwrap();
     cell.complete_call("c2", CommandOutput::default(), Duration::from_millis(1));
@@ -1660,6 +1750,7 @@ fn coalesces_reads_across_multiple_calls() {
             }],
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            /*terminal_wait*/ None,
         )
         .unwrap();
     cell.complete_call("c3", CommandOutput::default(), Duration::from_millis(1));
@@ -1697,6 +1788,7 @@ fn coalesced_reads_dedupe_names() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1721,6 +1813,7 @@ fn multiline_command_wraps_with_extra_indent_on_subsequent_lines() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1747,6 +1840,7 @@ fn single_line_command_compact_when_fits() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1771,6 +1865,7 @@ fn single_line_command_wraps_with_four_space_continuation() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1794,6 +1889,7 @@ fn multiline_command_without_wrap_uses_branch_then_eight_spaces() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1818,6 +1914,7 @@ fn multiline_command_both_lines_wrap_with_correct_prefixes() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1842,6 +1939,7 @@ fn stderr_tail_more_than_five_lines_snapshot() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -1892,6 +1990,7 @@ fn ran_cell_multiline_with_stderr_snapshot() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
@@ -2010,6 +2109,41 @@ fn user_history_cell_height_matches_rendered_lines_with_remote_images() {
         .unwrap_or(u16::MAX);
     assert_eq!(cell.desired_height(width), rendered_len);
     assert_eq!(cell.desired_transcript_height(width), rendered_len);
+}
+
+#[test]
+fn injected_context_collapses_only_in_rich_transcript_mode() {
+    let cell = UserHistoryCell {
+        message: "# AGENTS.md instructions for /tmp/example\nline one\nline two".to_string(),
+        text_elements: Vec::new(),
+        local_image_paths: Vec::new(),
+        remote_image_urls: Vec::new(),
+    };
+
+    let rich = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Rich));
+    let raw = render_lines(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw));
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
+    ));
+
+    assert_eq!(
+        rich,
+        vec!["AGENTS.md instructions: [collapsed in rich transcript; 3 lines]"]
+    );
+    assert_eq!(compact, rich);
+    assert_eq!(
+        raw,
+        vec![
+            "# AGENTS.md instructions for /tmp/example",
+            "line one",
+            "line two",
+        ]
+    );
+    assert!(!cell.is_user_prompt());
 }
 
 #[test]
@@ -2257,6 +2391,15 @@ fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
 
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
+
+    let compact = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines_for_detail_mode(
+            /*width*/ 80,
+            HistoryRenderMode::Rich,
+            TranscriptDetailMode::Compact,
+        ),
+    ));
+    assert_eq!(compact, rendered);
 }
 
 #[tokio::test]

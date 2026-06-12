@@ -2,7 +2,7 @@
 source: tui/src/multi_agents.rs
 expression: snapshot
 ---
-• Waiting via wait_agent · 2 agents
+• Waiting · primitive: wait_agent · 2 agents
   └ Robie [explorer]
     Bob [worker]
 

@@ -5,10 +5,11 @@ Codex fork. It is intentionally scoped to Codex-owned protocol, transcript,
 tool-registry, app-server, TUI, rollout, and validation behavior.
 
 Native runtime backends are supplied by external providers. Android is the
-first implemented provider. Browser is now a registered adapter with a TUI
-provider bridge that can either invoke an operator-configured command or use
-the built-in Playwright backend for `backend=auto`, `browser`, `chrome`, or
-`chromium`. Desktop is a registered adapter for cleanroom macOS Screen
+first implemented provider and now uses a shared provider bridge for TUI and
+`codex exec`. Browser is a registered adapter with a shared provider bridge
+that can either invoke an operator-configured command or use the built-in
+Playwright backend for `backend=auto`, `browser`, `chrome`, or `chromium`.
+Desktop is a registered adapter for cleanroom macOS Screen
 Recording/Accessibility-style runtimes and future native desktop providers.
 
 ## Ownership Boundaries
@@ -64,13 +65,31 @@ gives the provider reliable hands.
 
 `android-emulator-mcp` or a successor should therefore be reused when it can
 expose the current Android MCP tool contract (`android.inspect_ui`,
-`android.capture_screenshot`, `android.read_artifact`, `android.input.*`, and
-`interactive_session.install_build_from_run`). If a provider needs a different
-internal harness, adapt it inside the provider or through a thin provider-side
-compatibility layer rather than changing Codex hot core paths. Do not fold
-Android into the browser backend registry: Android is a peer native adapter,
-while the browser registry is the routing layer for browser-specific backends
-such as Playwright, in-app browser, and Chrome extension.
+`android.wait_for_stable_ui`, `android.capture_screenshot`,
+`android.read_artifact`, `android.input.*`, and
+`interactive_session.install_build_from_run`). Codex may consume MCP
+`content[]` image items directly, or use `android.read_artifact` to convert a
+screenshot artifact into native model-visible image output. A provider that
+only returns text, UI digests, or host-local artifact paths is not sufficient
+for native computer use. If a provider needs a different internal harness,
+adapt it inside the provider or through a thin provider-side compatibility
+layer rather than changing Codex hot core paths. Do not fold Android into the
+browser backend registry: Android is a peer native adapter, while the browser
+registry is the routing layer for browser-specific backends such as
+Playwright, in-app browser, and Chrome extension.
+
+Local Android bridge configuration lives in
+`~/.codex/android-computer-use.json`; the legacy
+`~/.codex/android-dynamic-tools.json` and
+`~/.codex/solarlab-android-dynamic-tools.json` names are still accepted while
+older provider configs converge. The bridge requires `mcp_url`, and may also read
+`default_serial`, `default_package_name`, and `default_activity`. Explicit tool
+arguments always win. When a serial is not supplied, the bridge applies
+`default_serial` to observe, step, screenshot fallback, and build-install
+provider calls. When `launch_app` omits a package, the bridge uses
+`default_package_name`; `default_activity` is applied only for the configured
+default package so an explicit package does not accidentally inherit the wrong
+activity.
 
 When an Android action fails, the native bridge should return the action error
 with a fresh post-failure observation when the provider can still capture one:
@@ -80,6 +99,13 @@ from blindly replaying mutating input after a partially completed flow. If
 post-failure screenshot capture is unavailable, the response must say that the
 current state is unproven and instruct the agent to recover with
 `android_observe` before making visual claims.
+
+When the Android provider itself is temporarily unreachable, including hosted
+provider tunnel failures surfaced as HTTP 530, Codex returns a failed
+computer-use response labeled `Android provider unavailable` with
+`retryability: retry_same_request`. That classification is an operator hint:
+the tool call did not prove anything about the Android screen, and retrying the
+same non-mutating observe call is reasonable after the provider is restored.
 
 Performance, memory, and jank analysis belong in a companion Android
 performance workflow rather than the hot `android_step` path. Use adb-backed
@@ -274,10 +300,12 @@ an error breadcrumb, not the normal contract.
 `codex doctor` includes a read-only browser computer-use check. It reports
 configured browser provider files, provider ids, declared backends, Android
 provider files, Android endpoint presence, desktop provider files, environment
-overrides, and whether configured browser, desktop, or Node executables are
-resolvable. It does not launch browsers, connect to user profiles, start
-emulators, call Android MCP servers, start desktop providers, or repair
-configuration.
+overrides, whether configured browser, desktop, or Node executables are
+resolvable, whether Node can resolve Playwright, whether Playwright has an
+installed default browser executable when no explicit executable or channel is
+configured, and the Android native-image contract. It does not launch browsers,
+connect to user profiles, start emulators, call Android MCP servers, start
+desktop providers, or repair configuration.
 
 ### Desktop
 
@@ -429,16 +457,20 @@ The visible transcript summarizes text output and records native screenshots as
 `<native screenshot>` without embedding screenshot data into the transcript
 text.
 
-For CLI/TUI sessions, a configured local browser provider also advertises the
-bare `browser_observe` and `browser_step` dynamic tools at thread start,
-resume, and fork time. The advertised tools are session-scoped and are not
-persisted blindly across resumes; each new TUI session re-checks local provider
-configuration before exposing native browser use to the model.
+For CLI/TUI sessions, configured local Android, browser, and desktop providers
+advertise the bare native dynamic tools at thread start, resume, and fork time.
+Android configuration advertises `android_observe`, `android_step`, and
+`android_install_build_from_run`; browser configuration advertises
+`browser_observe` and `browser_step`; desktop command-provider configuration
+advertises `desktop_observe` and `desktop_step`. The advertised tools are
+session-scoped and are not persisted blindly across resumes; each new CLI or
+TUI session re-checks local provider configuration before exposing native
+computer use to the model.
 Thread-spawned agents inherit the parent thread's advertised dynamic tools, so
-browser-capable sidecars can use the native `browser_observe` and
-`browser_step` surface instead of falling back to unrelated browser MCP
-adapters. Provider isolation still decides whether those sidecars share browser
-state with the parent or receive independent headed profiles.
+native-capable sidecars can use the native surface instead of falling back to
+unrelated MCP adapters. Provider isolation still decides whether browser
+sidecars share browser state with the parent or receive independent headed
+profiles.
 
 Transcript visibility depends on the native computer-use event path. Provider
 operations are expected to enter Codex as `ComputerUseCallRequest` and
@@ -503,9 +535,9 @@ The focused lanes are:
 - `codex.tui-native-computer-use-targeted`: native request/response events
   render as transcript-visible computer-use cells and can be inserted into the
   live `Ctrl+T` transcript overlay.
-- `codex.exec-native-computer-use-targeted`: configured browser dynamic-tool
-  advertisement, provider request handling, and compact computer-use event
-  projection in `codex exec`.
+- `codex.exec-native-computer-use-targeted`: configured Android and browser
+  dynamic-tool advertisement, provider request handling, and compact
+  computer-use event projection in `codex exec`.
 - `codex.native-computer-use-tool-registry-targeted`: canonical Android,
   browser, and desktop schema conversion, adapter classification, duplicate handling,
   deferred tool search, and core timeout cleanup.
@@ -537,6 +569,12 @@ browser-provider, or Solar Gravity Lab validation only when the question is the
 runtime provider or a consumer app, not the generic Codex computer-use
 contract.
 
+The built-in Playwright browser provider owns browser profile launch hygiene:
+before opening a persistent context, it clears Chromium tab-session restore
+artifacts so stale restored tabs cannot navigate to old localhost targets ahead
+of an explicit `browser_observe` or `browser_step` URL. Provider-managed
+`state.json`, cookies, local storage, and other profile data remain intact.
+
 ## Primary Files
 
 - `codex-rs/protocol/src/computer_use.rs`
@@ -547,13 +585,14 @@ contract.
 - `codex-rs/tools/src/computer_use_tool.rs`
 - `codex-rs/tools/src/desktop_tool.rs`
 - `codex-rs/core/src/tools/handlers/computer_use.rs`
-- `codex-rs/core/src/tools/tool_search_entry.rs`
+- `codex-rs/tools/src/tool_search.rs`
 - `codex-rs/core-plugins/src/lib.rs`
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
 - `codex-rs/app-server-protocol/src/protocol/common.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+- `codex-rs/android-computer-use/src/lib.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
 - `codex-rs/browser-computer-use/src/lib.rs`
 - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`

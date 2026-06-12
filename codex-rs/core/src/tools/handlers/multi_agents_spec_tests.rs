@@ -47,7 +47,6 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool {
@@ -69,7 +68,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         .expect("spawn_agent should use object params");
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
-    assert!(description.contains("`max_concurrent_threads_per_session = 4`"));
+    assert!(!description.contains("max_concurrent_threads_per_session"));
     assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(
         description
@@ -81,6 +80,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(!description.contains("hidden-model"));
     assert!(properties.contains_key("task_name"));
     assert!(properties.contains_key("message"));
+    assert_eq!(
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
+        Some(true)
+    );
     assert!(properties.contains_key("fork_turns"));
     assert!(!properties.contains_key("items"));
     assert!(!properties.contains_key("fork_context"));
@@ -118,7 +123,6 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: None,
     });
 
     let ToolSpec::Namespace(namespace) = tool else {
@@ -141,6 +145,12 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
     assert!(properties.contains_key("fork_context"));
     assert!(!properties.contains_key("fork_turns"));
+    assert_eq!(
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
+        None
+    );
     assert_eq!(
         properties
             .get("model")
@@ -170,7 +180,6 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
         hide_agent_type_model_reasoning: false,
         include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
     let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
@@ -187,6 +196,27 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
 }
 
 #[test]
+fn spawn_agent_tool_caps_reasoning_effort_value_length() {
+    let mut model = model_preset("visible", /*show_in_picker*/ true);
+    let custom_effort = ReasoningEffort::Custom(
+        "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION + 1),
+    );
+    model.default_reasoning_effort = custom_effort.clone();
+    model.supported_reasoning_efforts = vec![ReasoningEffortPreset {
+        effort: custom_effort,
+        description: "Model-defined".to_string(),
+    }];
+
+    assert_eq!(
+        spawn_agent_models_description(&[model]),
+        format!(
+            "Available model overrides (optional; inherited parent model is preferred):\n- `visible-model`: visible description Reasoning efforts: {} (default). Service tiers: priority.",
+            "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION)
+        )
+    );
+}
+
+#[test]
 fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
@@ -194,10 +224,14 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         hide_agent_type_model_reasoning: true,
         include_usage_hint: true,
         usage_hint_text: None,
-        max_concurrent_threads_per_session: Some(4),
     });
 
-    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = tool else {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        ..
+    }) = tool
+    else {
         panic!("spawn_agent should be a function tool");
     };
     let properties = parameters
@@ -209,6 +243,8 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("reasoning_effort"));
     assert!(!properties.contains_key("service_tier"));
+    assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
+    assert!(!description.contains("Available model overrides"));
 }
 
 #[test]
@@ -230,9 +266,15 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
         .as_ref()
         .expect("send_message should use object params");
     assert!(properties.contains_key("target"));
-    assert!(properties.contains_key("items"));
-    assert!(properties.contains_key("interrupt"));
-    assert!(!properties.contains_key("message"));
+    assert!(properties.contains_key("message"));
+    assert_eq!(
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
+        Some(true)
+    );
+    assert!(!properties.contains_key("interrupt"));
+    assert!(!properties.contains_key("items"));
     assert_eq!(
         properties
             .get("target")
@@ -275,6 +317,8 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
 #[test]
 fn followup_task_tool_requires_message_and_has_no_output_schema() {
     let ToolSpec::Function(ResponsesApiTool {
+        name,
+        description,
         parameters,
         output_schema,
         ..
@@ -282,6 +326,11 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
     else {
         panic!("followup_task should be a function tool");
     };
+    assert_eq!(name, "followup_task");
+    assert_eq!(
+        description,
+        "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+    );
     assert_eq!(
         parameters.schema_type,
         Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
@@ -292,6 +341,12 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         .expect("followup_task should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert_eq!(
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
+        Some(true)
+    );
     assert!(!properties.contains_key("items"));
     assert_eq!(
         parameters.required.as_ref(),
@@ -323,21 +378,65 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .properties
         .as_ref()
         .expect("wait_agent should use object params");
-    assert!(!properties.contains_key("targets"));
+    assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(properties.contains_key("return_when"));
+    assert!(description.contains("When `return_when` is `all`"));
     assert_eq!(
         properties
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
+        Some(
+            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits to avoid busy polling."
+        )
     );
-    assert_eq!(parameters.required.as_ref(), None);
+    assert_eq!(
+        parameters.required.as_ref(),
+        Some(&vec!["targets".to_string()])
+    );
     assert_eq!(
         output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
+    );
+}
+
+#[test]
+fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        output_schema,
+        ..
+    }) = create_wait_agent_tool_v2_with_capabilities(
+        WaitAgentTimeoutOptions::default(),
+        ToolRuntimeCapabilities::upstream_default(),
+    )
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    assert!(!properties.contains_key("return_when"));
+    assert!(!description.contains("return_when"));
+
+    let output_schema = output_schema.expect("wait output schema");
+    assert!(
+        !output_schema["properties"]
+            .as_object()
+            .expect("properties should be object")
+            .contains_key("pending_ids")
+    );
+    assert!(
+        !output_schema["properties"]
+            .as_object()
+            .expect("properties should be object")
+            .contains_key("completion_reason")
+    );
+    assert_eq!(
+        output_schema["required"],
+        json!(["message", "requested_ids", "timed_out"])
     );
 }
 
@@ -364,13 +463,17 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
         properties
             .get("path_prefix")
             .and_then(|schema| schema.description.as_deref()),
-        Some(
-            "Optional task-path prefix (not ending with trailing slash). Accepts the same relative or absolute task-path syntax."
-        )
+        Some("Task-path prefix filter without a trailing slash. Omit to list all live agents.")
     );
     assert_eq!(
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "has_active_subagents",
+            "active_subagent_count"
+        ])
     );
 }
 
@@ -390,6 +493,60 @@ fn list_agents_tool_status_schema_includes_interrupted() {
             "interrupted",
             "shutdown",
             "not_found"
+        ])
+    );
+}
+
+#[test]
+fn list_agents_tool_omits_active_descendants_without_capability_provider() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) =
+        create_list_agents_tool_with_capabilities(ToolRuntimeCapabilities::upstream_default())
+    else {
+        panic!("list_agents should be a function tool");
+    };
+
+    let output_schema = output_schema.expect("list_agents output schema");
+    let agent_properties = output_schema["properties"]["agents"]["items"]["properties"]
+        .as_object()
+        .expect("agent item properties should be object");
+    assert!(!agent_properties.contains_key("has_active_subagents"));
+    assert!(!agent_properties.contains_key("active_subagent_count"));
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["required"],
+        json!(["agent_name", "agent_status", "last_task_message"])
+    );
+}
+
+#[test]
+fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_inspect_agent_tree_tool()
+    else {
+        panic!("inspect_agent_tree should be a function tool");
+    };
+
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("inspect_agent_tree should use object params");
+    assert!(properties.contains_key("scope"));
+    assert!(properties.contains_key("agent_roots"));
+    let output_schema = output_schema.expect("inspect_agent_tree output schema");
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["required"],
+        json!([
+            "agent_name",
+            "depth",
+            "session_state",
+            "agent_status",
+            "nickname",
+            "role",
+            "direct_child_count",
+            "descendant_count",
+            "last_task_message_preview"
         ])
     );
 }

@@ -34,8 +34,8 @@ use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_extension_api::ExtensionStorageId;
 use codex_protocol::ThreadId;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::RolloutItem;
 use log::LevelFilter;
 use serde_json::Value;
@@ -62,11 +62,13 @@ use tracing::warn;
 
 mod agent_jobs;
 mod backfill;
+mod extension_storage;
 mod goals;
 mod logs;
 mod memories;
 mod migration_repair;
 mod phase2_attestation;
+mod recovery;
 mod remote_control;
 #[cfg(test)]
 mod test_support;
@@ -78,6 +80,12 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
+pub use recovery::RuntimeDbBackup;
+pub use recovery::backup_runtime_db_for_fresh_start;
+pub use recovery::is_sqlite_corruption_error;
+pub use recovery::runtime_db_path_for_corruption_error;
+pub use recovery::sqlite_error_detail_is_corruption;
+pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 
@@ -240,11 +248,23 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let started = Instant::now();
+        let extension_migrations_result =
+            extension_storage::run_state_extension_migrations(pool.as_ref()).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            extension_storage::state_extension_migration_phase(),
+            started.elapsed(),
+            &extension_migrations_result,
+        );
+        extension_migrations_result?;
         let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator, telemetry_override).await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open logs db at {}: {err}", logs_path.display());
+                close_sqlite_pools(&[pool.as_ref()]).await;
                 return Err(err);
             }
         };
@@ -253,6 +273,7 @@ impl StateRuntime {
                 Ok(db) => Arc::new(db),
                 Err(err) => {
                     warn!("failed to open goals db at {}: {err}", goals_path.display());
+                    close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref()]).await;
                     return Err(err);
                 }
             };
@@ -277,6 +298,7 @@ impl StateRuntime {
                     "failed to open memories db at {}: {err}",
                     memories_path.display()
                 );
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
                 return Err(err);
             }
         };
@@ -289,7 +311,16 @@ impl StateRuntime {
             started.elapsed(),
             &backfill_state_result,
         );
-        backfill_state_result?;
+        if let Err(err) = backfill_state_result {
+            close_sqlite_pools(&[
+                pool.as_ref(),
+                logs_pool.as_ref(),
+                goals_pool.as_ref(),
+                memories_pool.as_ref(),
+            ])
+            .await;
+            return Err(err);
+        }
         let started = Instant::now();
         let thread_updated_at_millis_result: anyhow::Result<Option<i64>> =
             sqlx::query_scalar("SELECT MAX(threads.updated_at_ms) FROM threads")
@@ -303,7 +334,19 @@ impl StateRuntime {
             started.elapsed(),
             &thread_updated_at_millis_result,
         );
-        let thread_updated_at_millis = thread_updated_at_millis_result?;
+        let thread_updated_at_millis = match thread_updated_at_millis_result {
+            Ok(value) => value,
+            Err(err) => {
+                close_sqlite_pools(&[
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    memories_pool.as_ref(),
+                ])
+                .await;
+                return Err(err);
+            }
+        };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
@@ -330,12 +373,43 @@ impl StateRuntime {
         Arc::clone(&self.usage_pool)
     }
 
+    pub fn extension_storage_pool(
+        &self,
+        storage_id: ExtensionStorageId,
+    ) -> Option<Arc<SqlitePool>> {
+        if storage_id == extension_storage::USAGE_LEDGER_STORAGE_ID {
+            return Some(Arc::clone(&self.usage_pool));
+        }
+        if storage_id == extension_storage::PHASE2_ATTESTATION_STORAGE_ID {
+            return Some(Arc::clone(&self.pool));
+        }
+        None
+    }
+
+    pub(crate) fn usage_ledger_pool(&self) -> Arc<SqlitePool> {
+        self.extension_storage_pool(extension_storage::USAGE_LEDGER_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.usage_pool))
+    }
+
+    pub(crate) fn phase2_attestation_pool(&self) -> Arc<SqlitePool> {
+        self.extension_storage_pool(extension_storage::PHASE2_ATTESTATION_STORAGE_ID)
+            .unwrap_or_else(|| Arc::clone(&self.pool))
+    }
+
     pub fn thread_goals(&self) -> &GoalStore {
         &self.thread_goals
     }
 
     pub fn memories(&self) -> &MemoryStore {
         &self.memories
+    }
+
+    /// Close all SQLite pools and wait for outstanding pool workers to exit.
+    pub async fn close(&self) {
+        self.memories.close().await;
+        self.thread_goals.close().await;
+        self.logs_pool.close().await;
+        self.pool.close().await;
     }
 
     pub async fn clear_memory_data_in_sqlite_home(sqlite_home: &Path) -> anyhow::Result<bool> {
@@ -354,6 +428,12 @@ impl StateRuntime {
         memories::clear_memory_data_in_pool(&pool).await?;
         pool.close().await;
         Ok(true)
+    }
+}
+
+async fn close_sqlite_pools(pools: &[&SqlitePool]) {
+    for pool in pools {
+        pool.close().await;
     }
 }
 
@@ -430,7 +510,8 @@ async fn open_sqlite(
         started.elapsed(),
         &pool_result,
     );
-    let pool = pool_result?;
+    let pool = pool_result
+        .map_err(|source| recovery::RuntimeDbInitError::new(spec.label, "open", path, source))?;
     if let Some(repair_phase) = spec.repair_phase {
         let started = Instant::now();
         let repair_result = migration_repair::repair_state_migrations(&pool, migrator).await;
@@ -441,7 +522,12 @@ async fn open_sqlite(
             started.elapsed(),
             &repair_result,
         );
-        repair_result?;
+        if let Err(source) = repair_result {
+            pool.close().await;
+            return Err(
+                recovery::RuntimeDbInitError::new(spec.label, "repair", path, source).into(),
+            );
+        }
     }
     let started = Instant::now();
     let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
@@ -452,13 +538,26 @@ async fn open_sqlite(
         started.elapsed(),
         &migrate_result,
     );
-    migrate_result?;
+    if let Err(source) = migrate_result {
+        pool.close().await;
+        return Err(recovery::RuntimeDbInitError::new(spec.label, "migrate", path, source).into());
+    }
     Ok(pool)
 }
 
 pub(super) async fn ensure_backfill_state_row_in_pool(
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<()> {
+    // Eagerly check if the operation would have no effect to avoid blocking waiting for a SQLite
+    // writer for no reason in the hot startup path.
+    if sqlx::query_scalar::<_, i64>("SELECT 1 FROM backfill_state WHERE id = 1")
+        .fetch_optional(pool)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     sqlx::query(
         r#"
 INSERT INTO backfill_state (id, status, last_watermark, last_success_at, updated_at)
@@ -821,6 +920,8 @@ mod tests {
             ignore_missing: STATE_MIGRATOR.ignore_missing,
             locking: STATE_MIGRATOR.locking,
             no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         };
         partial_migrator
             .run(&pool)
@@ -1027,7 +1128,9 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let expected = [
             "open_state",
+            "repair_state_migrations",
             "migrate_state",
+            "migrate_state_extensions",
             "open_logs",
             "migrate_logs",
             "open_goals",

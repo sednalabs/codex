@@ -17,6 +17,7 @@ use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::ev_tool_search_call;
@@ -29,6 +30,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_match;
@@ -36,6 +38,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -57,6 +60,33 @@ const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
 const SUBAGENT_STOP_CONTINUATION: &str = "continue only the child";
 const INTERNAL_SUBAGENT_PROMPT: &str = "internal subagent: review";
+
+fn run_snapshot_test<F>(future: F) -> Result<()>
+where
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("subagent-snapshot-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()?
+                .block_on(future)
+        })?
+        .join()
+        .map_err(|payload| {
+            if let Some(message) = payload.downcast_ref::<&str>() {
+                anyhow::anyhow!("subagent snapshot test panicked: {message}")
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                anyhow::anyhow!("subagent snapshot test panicked: {message}")
+            } else {
+                anyhow::anyhow!("subagent snapshot test panicked")
+            }
+        })?
+}
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     let is_zstd = req
@@ -752,10 +782,10 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
             session_source: Some(SessionSource::SubAgent(SubAgentSource::Review)),
             thread_source: None,
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: None,
             parent_trace: None,
             environments: Vec::new(),
+            thread_extension_init: Default::default(),
         })
         .await?;
 
@@ -768,12 +798,11 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
                 text: INTERNAL_SUBAGENT_PROMPT.to_string(),
                 text_elements: Vec::new(),
             }],
-            environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                cwd: Some(test.config.cwd.to_path_buf()),
+                environments: Some(local_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -928,30 +957,52 @@ async fn spawned_child_receives_forked_parent_context() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role()
--> Result<()> {
-    skip_if_no_network!(Ok(()));
+fn run_spawn_model_snapshot_test<Fut>(test_body: Fut) -> Result<()>
+where
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("spawn-model-snapshot-test".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(test_body)
+        })?;
 
-    let server = start_mock_server().await;
-    let child_snapshot = spawn_child_and_capture_snapshot(
-        &server,
-        json!({
-            "message": CHILD_PROMPT,
-            "model": REQUESTED_MODEL,
-            "reasoning_effort": REQUESTED_REASONING_EFFORT,
-        }),
-        |builder| builder,
-    )
-    .await?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
 
-    assert_eq!(child_snapshot.model, REQUESTED_MODEL);
-    assert_eq!(
-        child_snapshot.reasoning_effort,
-        Some(REQUESTED_REASONING_EFFORT)
-    );
+#[test]
+fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role() -> Result<()>
+{
+    run_spawn_model_snapshot_test(async {
+        skip_if_no_network!(Ok(()));
 
-    Ok(())
+        let server = start_mock_server().await;
+        let child_snapshot = spawn_child_and_capture_snapshot(
+            &server,
+            json!({
+                "message": CHILD_PROMPT,
+                "model": REQUESTED_MODEL,
+                "reasoning_effort": REQUESTED_REASONING_EFFORT,
+            }),
+            |builder| builder,
+        )
+        .await?;
+
+        assert_eq!(child_snapshot.model, REQUESTED_MODEL);
+        assert_eq!(
+            child_snapshot.reasoning_effort,
+            Some(REQUESTED_REASONING_EFFORT)
+        );
+
+        Ok(())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1023,6 +1074,80 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
         .expect("child request log should capture at least one request");
     assert!(child_request.body_contains_text("Parent developer instructions."));
     assert!(child_request.body_contains_text(CHILD_PROMPT));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result<()> {
+    let server = start_mock_server().await;
+    let encrypted_message = "opaque-encrypted-message";
+    let spawn_args = serde_json::to_string(&json!({
+        "message": encrypted_message,
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+    let child_request_log = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, "\"type\":\"agent_message\""),
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID) && !body_contains(req, "\"type\":\"agent_message\"")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-2"),
+            ev_assistant_message("msg-parent-2", "done"),
+            ev_completed("resp-parent-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    let child_request = wait_for_requests(&child_request_log)
+        .await?
+        .pop()
+        .expect("child request");
+    assert_eq!(
+        child_request.inputs_of_type("agent_message"),
+        vec![json!({
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{
+                "type": "encrypted_content",
+                "encrypted_content": encrypted_message,
+            }],
+        })]
+    );
 
     Ok(())
 }
@@ -1109,46 +1234,48 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
-    skip_if_no_network!(Ok(()));
+#[test]
+fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
+    run_spawn_model_snapshot_test(async {
+        skip_if_no_network!(Ok(()));
 
-    let server = start_mock_server().await;
-    let child_snapshot = spawn_child_and_capture_snapshot(
-        &server,
-        json!({
-            "message": CHILD_PROMPT,
-            "agent_type": "custom",
-            "model": REQUESTED_MODEL,
-            "reasoning_effort": REQUESTED_REASONING_EFFORT,
-        }),
-        |builder| {
-            builder.with_config(|config| {
-                let role_path = config.codex_home.join("custom-role.toml");
-                std::fs::write(
-                    &role_path,
-                    format!(
-                        "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
-                    ),
-                )
-                .expect("write role config");
-                config.agent_roles.insert(
-                    "custom".to_string(),
-                    AgentRoleConfig {
-                        description: Some("Custom role".to_string()),
-                        config_file: Some(role_path.to_path_buf()),
-                        nickname_candidates: None,
-                    },
-                );
-            })
-        },
-    )
-    .await?;
+        let server = start_mock_server().await;
+        let child_snapshot = spawn_child_and_capture_snapshot(
+            &server,
+            json!({
+                "message": CHILD_PROMPT,
+                "agent_type": "custom",
+                "model": REQUESTED_MODEL,
+                "reasoning_effort": REQUESTED_REASONING_EFFORT,
+            }),
+            |builder| {
+                builder.with_config(|config| {
+                    let role_path = config.codex_home.join("custom-role.toml");
+                    std::fs::write(
+                        &role_path,
+                        format!(
+                            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+                        ),
+                    )
+                    .expect("write role config");
+                    config.agent_roles.insert(
+                        "custom".to_string(),
+                        AgentRoleConfig {
+                            description: Some("Custom role".to_string()),
+                            config_file: Some(role_path.to_path_buf()),
+                            nickname_candidates: None,
+                        },
+                    );
+                })
+            },
+        )
+        .await?;
 
-    assert_eq!(child_snapshot.model, ROLE_MODEL);
-    assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
+        assert_eq!(child_snapshot.model, ROLE_MODEL);
+        assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1185,6 +1312,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
             .features
             .enable(Feature::Collab)
             .expect("test config should allow feature update");
+        config.multi_agent_v2.hide_spawn_agent_metadata = false;
         let role_path = config.codex_home.join("custom-role.toml");
         std::fs::write(
             &role_path,

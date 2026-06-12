@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--latest-head-sha", default="")
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
     parser.add_argument("--profile-intent", default="")
@@ -41,6 +42,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--run-url", required=True)
+    parser.add_argument("--workflow-file", default="sedna-heavy-tests.yml")
+    parser.add_argument(
+        "--event-policy", default="pull_request_exact_head_lane_fingerprint"
+    )
     parser.add_argument("--run-selected-lanes", required=True)
     parser.add_argument("--run-smoke-gate", required=True)
     parser.add_argument("--smoke-gate-kind", default="")
@@ -121,6 +126,11 @@ def lane_status(lane: dict) -> str:
 
 
 def lane_signal(lane: dict) -> str:
+    schema_drift = lane.get("schema_fixture_drift")
+    if isinstance(schema_drift, dict):
+        summary = str(schema_drift.get("summary") or "").strip()
+        if summary:
+            return summary
     signal = str(lane.get("primary_signal") or "").strip()
     if signal:
         return signal
@@ -368,6 +378,7 @@ def derive_primary_and_secondary(
                 "outcome": chosen["outcome"],
                 "exit_code": chosen.get("exit_code"),
                 "signal": lane_signal(chosen),
+                "schema_fixture_drift": chosen.get("schema_fixture_drift") or {},
             }
         )
 
@@ -389,6 +400,7 @@ def derive_primary_and_secondary(
                 "outcome": lane["outcome"],
                 "exit_code": lane.get("exit_code"),
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
         )
 
@@ -474,6 +486,118 @@ def overall_conclusion(
     if parse_bool(args.run_smoke_gate) and args.smoke_gate_result == "success":
         return "success"
     return "unknown"
+
+
+def normalized_sha(raw: str) -> str:
+    return str(raw or "").strip().lower()
+
+
+def shas_match(left: str, right: str) -> bool:
+    left_normalized = normalized_sha(left)
+    right_normalized = normalized_sha(right)
+    if not left_normalized or not right_normalized:
+        return False
+    return left_normalized.startswith(right_normalized) or right_normalized.startswith(left_normalized)
+
+
+def blocker_result(item: dict) -> str:
+    return str(item.get("outcome") or item.get("job_result") or "").strip()
+
+
+def candidate_rerun_lane_ids(candidate_next_slices: list[dict], *, limit: int = 5) -> list[str]:
+    lane_ids: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidate_next_slices:
+        values: list[object] = []
+        nested_lane_ids = candidate.get("lane_ids")
+        if isinstance(nested_lane_ids, list):
+            values.extend(nested_lane_ids)
+        else:
+            values.append(candidate.get("lane_id"))
+        for value in values:
+            lane_id = str(value or "").strip()
+            if not lane_id or lane_id.startswith("setup-class:") or lane_id in seen:
+                continue
+            seen.add(lane_id)
+            lane_ids.append(lane_id)
+            if len(lane_ids) >= limit:
+                return lane_ids
+    return lane_ids
+
+
+def classify_head_freshness(
+    args: argparse.Namespace,
+    *,
+    queue: list[dict],
+    candidate_next_slices: list[dict],
+    downstream_result: str,
+) -> dict:
+    run_head_sha = normalized_sha(args.head_sha)
+    latest_head_sha = normalized_sha(getattr(args, "latest_head_sha", ""))
+    if run_head_sha and latest_head_sha:
+        run_head_status = "current" if shas_match(run_head_sha, latest_head_sha) else "stale"
+    else:
+        run_head_status = "unknown"
+
+    terminal_results = {
+        str(args.smoke_gate_result or ""),
+        str(downstream_result or ""),
+        str(args.artifact_result or ""),
+    }
+    queue_results = [blocker_result(item) for item in queue]
+    failed_results = [
+        result
+        for result in [*queue_results, *terminal_results]
+        if result in FAILED_OUTCOMES
+    ]
+    non_cancelled_failures = [
+        result for result in failed_results if result and result != "cancelled"
+    ]
+    has_failure = bool(failed_results)
+    has_cancelled = any(result == "cancelled" for result in failed_results)
+    rerun_lane_ids = candidate_rerun_lane_ids(candidate_next_slices)
+
+    if not has_failure:
+        classification = "none"
+    elif has_cancelled and not non_cancelled_failures:
+        classification = "cancelled"
+    elif run_head_status == "current":
+        classification = "active"
+    elif run_head_status == "stale" and rerun_lane_ids:
+        classification = "needs_targeted_latest_head_proof"
+    elif run_head_status == "stale":
+        classification = "stale"
+    else:
+        classification = "active"
+
+    rerun_needed = classification in {
+        "cancelled",
+        "needs_targeted_latest_head_proof",
+        "stale",
+    }
+    if classification == "cancelled":
+        reason = "cancelled lanes need a fresh run before diagnosis"
+    elif classification == "needs_targeted_latest_head_proof":
+        reason = "stale failed lane evidence needs latest-head proof before repair"
+    elif classification == "stale":
+        reason = "failed run is stale and lacks a narrower lane recommendation"
+    elif classification == "active":
+        reason = "failure is on the latest known target head"
+    else:
+        reason = "no failed lane rerun is needed"
+
+    return {
+        "run_head_status": run_head_status,
+        "failed_lane_classification": classification,
+        "latest_head_sha_supplied": bool(latest_head_sha),
+        "recommended_rerun": {
+            "needed": rerun_needed,
+            "profile": "targeted" if rerun_lane_ids else args.profile,
+            "lane_ids": rerun_lane_ids,
+            "lane_count": len(rerun_lane_ids),
+            "reason": reason,
+        },
+    }
 
 
 def main() -> None:
@@ -593,9 +717,16 @@ def main() -> None:
                     "summary_family": item.get("summary_family"),
                     "setup_class": item.get("setup_class"),
                     "signal": item.get("signal", ""),
+                    "schema_fixture_drift": item.get("schema_fixture_drift") or {},
                 }
             )
 
+    head_freshness = classify_head_freshness(
+        args,
+        queue=queue,
+        candidate_next_slices=candidate_next_slices,
+        downstream_result=downstream_result,
+    )
     summary = {
         "lane_count": lane_count,
         "batch_count": batch_count,
@@ -615,6 +746,7 @@ def main() -> None:
                 "lane_id": lane["lane_id"],
                 "outcome": lane["outcome"],
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
             for lane in results
             if lane["outcome"] in BLOCKER_OUTCOMES
@@ -623,6 +755,7 @@ def main() -> None:
         "primary_blockers": primary,
         "secondary_findings": secondary,
         "candidate_next_slices": candidate_next_slices,
+        "head_freshness": head_freshness,
         "overall_conclusion": overall_conclusion(primary, secondary, downstream_result, args),
     }
 
@@ -700,6 +833,28 @@ def main() -> None:
         "lanes": results,
         "cache_occupancy": load_optional_json(args.cache_occupancy_json),
         "summary": summary,
+        "ci_proof_v1": {
+            "schema_version": "ci-proof-v1",
+            "repository": args.repo,
+            "workflow_file": args.workflow_file,
+            "lane": args.lane_set,
+            "planner_fingerprint": args.planner_fingerprint or "",
+            "head_sha": args.head_sha,
+            "event_policy": args.event_policy,
+            "inputs_hash": args.planner_fingerprint or "",
+            "conclusion": summary["overall_conclusion"],
+            "run_id": args.run_id,
+            "run_url": args.run_url,
+            "evidence_key": ":".join(
+                [
+                    args.repo,
+                    args.workflow_file,
+                    args.head_sha,
+                    args.lane_set,
+                    args.planner_fingerprint or "",
+                ]
+            ),
+        },
     }
 
     output_path = Path(args.output)

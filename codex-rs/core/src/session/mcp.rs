@@ -91,8 +91,7 @@ impl Session {
         if self
             .services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .elicitations_auto_deny()
         {
             return McpServerElicitationOutcome {
@@ -226,16 +225,11 @@ impl Session {
 
         self.services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .resolve_elicitation(server_name, id, response)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
     pub async fn list_resources(
         &self,
         server: &str,
@@ -243,16 +237,11 @@ impl Session {
     ) -> anyhow::Result<ListResourcesResult> {
         self.services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .list_resources(server, params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
     pub async fn list_resource_templates(
         &self,
         server: &str,
@@ -260,16 +249,11 @@ impl Session {
     ) -> anyhow::Result<ListResourceTemplatesResult> {
         self.services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .list_resource_templates(server, params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP resource calls are serialized through the session-owned manager guard"
-    )]
     pub async fn read_resource(
         &self,
         server: &str,
@@ -277,16 +261,11 @@ impl Session {
     ) -> anyhow::Result<ReadResourceResult> {
         self.services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .read_resource(server, params)
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP tool calls are serialized through the session-owned manager guard"
-    )]
     pub async fn call_tool(
         &self,
         server: &str,
@@ -296,8 +275,7 @@ impl Session {
     ) -> anyhow::Result<CallToolResult> {
         self.services
             .mcp_connection_manager
-            .read()
-            .await
+            .load_full()
             .call_tool(server, tool, arguments, meta)
             .await
     }
@@ -311,8 +289,10 @@ impl Session {
     ) {
         let auth = self.services.auth_manager.auth().await;
         let config = self.get_config().await;
-        let mcp_config = config
-            .to_mcp_config(self.services.plugins_manager.as_ref())
+        let mcp_config = self
+            .services
+            .mcp_manager
+            .runtime_config(config.as_ref())
             .await;
         let tool_plugin_provenance = self
             .services
@@ -336,18 +316,21 @@ impl Session {
                 turn_context.cwd.to_path_buf(),
             ),
         };
-        {
+        let mcp_startup_cancellation_token = {
             let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
             guard.cancel();
-            *guard = CancellationToken::new();
-        }
-        let (refreshed_manager, cancel_token) = McpConnectionManager::new(
+            let cancellation_token = CancellationToken::new();
+            *guard = cancellation_token.clone();
+            cancellation_token
+        };
+        let refreshed_manager = McpConnectionManager::new(
             &mcp_servers,
             store_mode,
             auth_statuses,
             &turn_context.approval_policy,
             turn_context.sub_id.clone(),
             self.get_tx_event(),
+            mcp_startup_cancellation_token,
             turn_context.permission_profile(),
             mcp_runtime_context,
             config.codex_home.to_path_buf(),
@@ -361,22 +344,12 @@ impl Session {
         )
         .await;
         {
-            let current_manager = self.services.mcp_connection_manager.read().await;
+            let current_manager = self.services.mcp_connection_manager.load_full();
             refreshed_manager.set_elicitations_auto_deny(current_manager.elicitations_auto_deny());
         }
-        {
-            let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
-            if guard.is_cancelled() {
-                cancel_token.cancel();
-            }
-            *guard = cancel_token;
-        }
-
-        let mut old_manager = {
-            let mut manager = self.services.mcp_connection_manager.write().await;
-            std::mem::replace(&mut *manager, refreshed_manager)
-        };
-        old_manager.shutdown().await;
+        self.services
+            .mcp_connection_manager
+            .store(Arc::new(refreshed_manager));
     }
 
     pub(crate) async fn refresh_mcp_servers_if_requested(
@@ -455,7 +428,15 @@ async fn review_guardian_mcp_elicitation(
         return Ok(None);
     };
 
-    if !crate::guardian::routes_approval_to_guardian(turn_context.as_ref()) {
+    let approvals_reviewer = crate::connectors::mcp_approvals_reviewer(
+        turn_context.config.as_ref(),
+        request.server_name.as_str(),
+        elicitation_connector_id(&request.elicitation),
+    );
+    if !crate::guardian::routes_approval_to_guardian_with_reviewer(
+        turn_context.as_ref(),
+        approvals_reviewer,
+    ) {
         return Ok(None);
     }
 
@@ -565,6 +546,15 @@ fn guardian_elicitation_review_request(
             annotations: None,
         },
     ))
+}
+
+fn elicitation_connector_id(elicitation: &CreateElicitationRequestParams) -> Option<&str> {
+    match elicitation {
+        CreateElicitationRequestParams::FormElicitationParams { meta, .. }
+        | CreateElicitationRequestParams::UrlElicitationParams { meta, .. } => meta
+            .as_ref()
+            .and_then(|meta| metadata_str(&meta.0, MCP_ELICITATION_CONNECTOR_ID_KEY)),
+    }
 }
 
 fn meta_requests_approval_request(meta: &Option<Meta>) -> bool {

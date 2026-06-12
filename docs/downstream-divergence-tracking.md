@@ -100,6 +100,10 @@ Keep the schema small:
 - `status`
 - `category`
 - `behavior`
+- `upstreamability_tier`
+- `boundary_type`
+- `hotspot_files`
+- `extraction_target`
 - `surface`
 - `surface_type`
 - `files`
@@ -113,6 +117,15 @@ Keep the schema small:
 Paths can point at directories (terminate with `/` to capture every child) or use glob-friendly tokens (`*`, `?`, `[]`). The audit matches these specs against the live diff so you can cover a directory such as `.github/workflows/` without listing each workflow individually.
 
 The optional `surface_type` string (for example `agent-facing`, `operator-facing`, or `both`) signals how a divergence presents itself. The downstream audit renders that value in the registry reconciliation table and the code-path surface column to show whether a change touches agent-facing or operator-facing surfaces.
+
+Every live divergence also declares an upstreamability boundary:
+
+- `upstreamability_tier` must be one of `upstream-pr`, `neutral-seam`, `downstream-adapter`, or `operator-only`.
+- `boundary_type` names the narrow architecture boundary that should own the divergence, such as `app-server-contributor`, `tui-contributor-slot`, `tool-runtime-capability`, or `operator-workflow`.
+- `hotspot_files` lists high-churn files or directories touched by the divergence. Use an empty list only when the carry does not touch a known hot file or workflow surface.
+- `extraction_target` names the seam, adapter, provider registry, workflow layer, or upstream PR target that should reduce future sync pain.
+
+The audit fails strict registry validation when a live divergence omits these fields, uses an unknown upstreamability tier, or touches known hot paths such as core tool handlers, app-server processors, TUI orchestration files, state runtime files, workflow files, or `justfile` without listing `hotspot_files` and a guardrail lane.
 
 ## Suggested Taxonomy
 

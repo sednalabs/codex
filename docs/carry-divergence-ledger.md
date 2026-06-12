@@ -95,6 +95,27 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/Cargo.toml`
 
+### Side Chat Persistence And Usage Ledger Tracking
+
+- `/side` conversations are persisted as side-tagged fork threads instead of
+  pathless ephemeral forks, so they keep rollout transcripts, remain resumable,
+  and can be forked by thread id or rollout path.
+- Default history/list/search surfaces hide side chats; explicit
+  `threadSources: ["side"]` requests expose the side-chat history class.
+- Usage-ledger lineage records side forks in `usage_threads` and
+  `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
+  writes normal provider-call rows for side turns.
+- `scripts/codex-resume-recent.sh` skips side chats by default, with
+  `--include-side` available when an operator deliberately wants side-chat
+  resume candidates.
+- Primary files:
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
+  - `codex-rs/app-server/src/filters.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
+  - `scripts/codex-resume-recent.sh`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
@@ -257,6 +278,11 @@ docs-only refresh commit that records this snapshot.
   viewport capture, UI digests, input execution, and provider-side build
   installation. Solar Gravity Lab is a proving and consumer app, not the
   generic owner of Codex computer-use tooling.
+- The built-in Playwright browser provider clears Chromium tab-session restore
+  artifacts before opening a persistent browser context, so stale restored tabs
+  cannot hit an old localhost target before an explicit requested navigation.
+  Provider-managed `state.json`, cookies, local storage, and other profile data
+  are preserved.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -266,7 +292,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tools/src/desktop_tool.rs`
   - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
-  - `codex-rs/core/src/tools/tool_search_entry.rs`
+  - `codex-rs/tools/src/tool_search.rs`
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
@@ -318,6 +344,42 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
+### MCP OAuth Device Login For Headless Servers
+
+- `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
+  login from SSH-only or browserless hosts through the OAuth Device
+  Authorization Grant instead of relying on a local browser callback.
+- Streamable HTTP OAuth discovery preserves `token_endpoint`,
+  `device_authorization_endpoint`, `registration_endpoint`, and
+  `grant_types_supported`, so the CLI can fail loudly when a server does not
+  actually advertise device-login support or lacks both configured client id
+  and dynamic registration support.
+- The device-login flow uses a configured public MCP OAuth `client_id` when one
+  is available. Otherwise, it performs standards-based dynamic client
+  registration using the device grant shape, a public-client token endpoint
+  auth method, optional requested scopes, and refresh-token registration only
+  when server grant metadata permits or omits grant support.
+- After client-id resolution, the flow uses PKCE, the identity-provider
+  verification URL/user code, token-endpoint polling, and the existing MCP
+  OAuth token cache.
+- This is an intentional downstream carry for headless MCP server login until
+  upstream ships an equivalent headless MCP OAuth login contract. During
+  upstream syncs, preserve this behavior unless the upstream replacement covers
+  the same discovery, grant-validation, dynamic-registration fallback,
+  configured-client-id fast path, PKCE, polling, and token-cache path.
+- Primary files:
+  - `codex-rs/cli/src/mcp_cmd.rs`
+  - `codex-rs/codex-mcp/src/mcp/auth.rs`
+  - `codex-rs/rmcp-client/src/auth_status.rs`
+  - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
+  - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `justfile`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.
@@ -330,22 +392,86 @@ docs-only refresh commit that records this snapshot.
   totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
+- Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
+  and model service-tier slash commands remain selectable while a task is
+  running so their chosen settings apply to queued follow-up turns.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
   follow-ups and queued model changes coherently.
+- Active-turn status labels preserve downstream operator cues, including
+  showing `Compacting context` while context compaction is running instead of
+  falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- `/quit` and `/exit` inside an active `/side` conversation close only that side
+  conversation and return to the parent session; the same commands in the main
+  conversation remain application exits.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+  - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
   - `docs/tui-weekly-usage-pacing-status-line.md`
   - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
+### TUI Transcript Compact Detail Mode
+
+- The `Ctrl+T` transcript overlay intentionally carries two detail modes:
+  verbose mode for the complete transcript and compact mode for prompt/agent
+  review without terminal/tool noise.
+- Verbose mode remains the default audit surface. Compact mode keeps user
+  prompts, assistant-facing responses, selected reasoning summaries, and
+  important warning/error/stop hook output visible while collapsing injected
+  session context, context-only hook entries, and other detail that belongs in
+  verbose transcript inspection.
+- The overlay footer exposes the active detail mode and the toggle key, and the
+  overlay state preserves scroll, selected prompt, raw/rich render mode, and
+  verbose/compact detail mode across close/reopen.
+- The transcript header now names the active mode (`Transcript: verbose` or
+  `Transcript: compact`), and the footer spells out the switch keys as
+  `raw render` / `rich render` and `compact view` / `verbose view` when there
+  is enough terminal width.
+- `[tui].transcript_default_detail_mode = "verbose" | "compact"` chooses the
+  default detail mode at startup and after active config refreshes; verbose
+  remains the default so the complete audit transcript is preserved unless the
+  user opts into quiet review. An already-open transcript keeps its current
+  mode until it is closed.
+- This is an intentional downstream TUI ergonomics carry. Preserve it during
+  upstream syncs unless upstream lands equivalent transcript detail-mode
+  behavior that keeps the same verbose audit fallback and compact prompt/agent
+  review path.
+- Primary files:
+  - `codex-rs/config/src/profile_toml.rs`
+  - `codex-rs/config/src/types.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/config.schema.json`
+  - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/hook_cell.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
+  - `codex-rs/tui/src/keymap.rs`
+  - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
+  - `codex-rs/config/src/tui_keymap.rs`
   - `docs/downstream-regression-matrix.md`
 
 ### Custom Prompt Discovery And Review Prompt Flow

@@ -118,6 +118,14 @@
       "additionalProperties": false,
       "description": "Config values for a single app/connector.",
       "properties": {
+        "approvals_reviewer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ApprovalsReviewer"
+            }
+          ],
+          "description": "Reviewer for approval prompts from this app, overriding the thread default."
+        },
         "default_tools_approval_mode": {
           "description": "Approval mode for tools in this app unless a tool override exists.",
           "oneOf": [
@@ -254,24 +262,6 @@
       },
       "type": "object"
     },
-    "AppsMcpPathOverrideConfigToml": {
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "path": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
     "AskForApproval": {
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
       "oneOf": [
@@ -372,6 +362,22 @@
       },
       "type": "object"
     },
+    "CodeModeConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "excluded_tool_namespaces": {
+          "description": "Exact tool namespaces to omit from the code-mode nested tool surface.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ConfigProfile": {
       "additionalProperties": false,
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
@@ -443,7 +449,23 @@
               "type": "boolean"
             },
             "apps_mcp_path_override": {
-              "$ref": "#/definitions/FeatureToml3"
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
             },
             "auth_elicitation": {
               "type": "boolean"
@@ -461,7 +483,7 @@
               "type": "boolean"
             },
             "code_mode": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
             },
             "code_mode_only": {
               "type": "boolean"
@@ -532,6 +554,9 @@
             "image_generation": {
               "type": "boolean"
             },
+            "imagegenext": {
+              "type": "boolean"
+            },
             "in_app_browser": {
               "type": "boolean"
             },
@@ -539,6 +564,9 @@
               "type": "boolean"
             },
             "js_repl_tools_only": {
+              "type": "boolean"
+            },
+            "local_thread_store_compression": {
               "type": "boolean"
             },
             "memories": {
@@ -601,7 +629,7 @@
             "request_rule": {
               "type": "boolean"
             },
-            "responses_websocket_response_processed": {
+            "resize_all_images": {
               "type": "boolean"
             },
             "responses_websockets": {
@@ -646,6 +674,12 @@
             "terminal_resize_reflow": {
               "type": "boolean"
             },
+            "terminal_visualization_instructions": {
+              "type": "boolean"
+            },
+            "token_budget": {
+              "type": "boolean"
+            },
             "tool_call_mcp_elicitation": {
               "type": "boolean"
             },
@@ -668,6 +702,9 @@
               "type": "boolean"
             },
             "unified_exec": {
+              "type": "boolean"
+            },
+            "unified_exec_zsh_fork": {
               "type": "boolean"
             },
             "use_legacy_landlock": {
@@ -930,6 +967,16 @@
       },
       "type": "object"
     },
+    "ExperimentalRequestUserInput": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ExternalConfigMigrationPrompts": {
       "additionalProperties": false,
       "description": "Settings for notices we display to users via the tui and app-server clients (primarily the Codex IDE extension). NOTE: these are different from notifications - notices are warnings, NUX screens, acknowledgements, etc.",
@@ -969,7 +1016,27 @@
       },
       "type": "object"
     },
-    "FeatureToml": {
+    "FeatureToml_for_CodeModeConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/CodeModeConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_MultiAgentV2ConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/MultiAgentV2ConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_NetworkProxyConfigToml": {
       "anyOf": [
         {
           "type": "boolean"
@@ -2175,7 +2242,7 @@
     "NetworkProxyUnixSocketPermissionToml": {
       "enum": [
         "allow",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -2282,7 +2349,7 @@
     "NetworkUnixSocketPermissionToml": {
       "enum": [
         "allow",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -2782,6 +2849,18 @@
               "type": "null"
             }
           ]
+        },
+        "transcript_default_detail_mode": {
+          "default": null,
+          "description": "Default detail mode for the `Ctrl+T` transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/TuiTranscriptDetailMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -3139,15 +3218,8 @@
       "type": "string"
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningSummary": {
@@ -3429,6 +3501,9 @@
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
+        "experimental_request_user_input": {
+          "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
         "web_search": {
           "default": null,
           "oneOf": [
@@ -3489,7 +3564,8 @@
             "chat": {
               "decrease_reasoning_effort": null,
               "edit_queued_message": null,
-              "increase_reasoning_effort": null
+              "increase_reasoning_effort": null,
+              "interrupt_turn": null
             },
             "composer": {
               "history_search_next": null,
@@ -3548,10 +3624,13 @@
               "half_page_up": null,
               "jump_bottom": null,
               "jump_top": null,
+              "next_user_prompt": null,
               "page_down": null,
               "page_up": null,
+              "previous_user_prompt": null,
               "scroll_down": null,
-              "scroll_up": null
+              "scroll_up": null,
+              "toggle_transcript_mode": null
             },
             "vim_normal": {
               "append_after_cursor": null,
@@ -3574,8 +3653,10 @@
               "open_line_above": null,
               "open_line_below": null,
               "paste_after": null,
+              "start_change_operator": null,
               "start_delete_operator": null,
               "start_yank_operator": null,
+              "substitute_char": null,
               "yank_line": null
             },
             "vim_operator": {
@@ -3590,7 +3671,20 @@
               "motion_word_backward": null,
               "motion_word_end": null,
               "motion_word_forward": null,
+              "select_around_text_object": null,
+              "select_inner_text_object": null,
               "yank_line": null
+            },
+            "vim_text_object": {
+              "backtick": null,
+              "big_word": null,
+              "braces": null,
+              "brackets": null,
+              "cancel": null,
+              "double_quote": null,
+              "parentheses": null,
+              "single_quote": null,
+              "word": null
             }
           },
           "description": "Keybinding overrides for the TUI. This supports rebinding selected actions globally and by context. Context bindings take precedence over `global` bindings."
@@ -3652,6 +3746,15 @@
           "default": false,
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
+        },
+        "transcript_default_detail_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiTranscriptDetailMode"
+            }
+          ],
+          "default": "verbose",
+          "description": "Default detail mode for the `Ctrl+T` transcript overlay. - `verbose` (default): show the complete audit transcript. - `compact`: focus on user prompts and agent-facing output."
         },
         "session_picker_view": {
           "default": null,
@@ -3722,6 +3825,21 @@
         }
       },
       "type": "object"
+    },
+    "TuiTranscriptDetailMode": {
+      "description": "Default detail mode for the TUI transcript overlay.",
+      "oneOf": [
+        {
+          "const": "verbose",
+          "description": "Show the complete transcript, including terminal/tool details.",
+          "type": "string"
+        },
+        {
+          "const": "compact",
+          "description": "Show a quieter transcript focused on user prompts and agent-facing output.",
+          "type": "string"
+        }
+      ]
     },
     "TuiApprovalKeymap": {
       "additionalProperties": false,
@@ -3846,6 +3964,17 @@
         },
         "increase_reasoning_effort": {
           "description": "Increase the active reasoning effort.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interrupt_turn": {
+          "description": "Interrupt the active turn.",
           "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
@@ -4261,7 +4390,8 @@
           "default": {
             "decrease_reasoning_effort": null,
             "edit_queued_message": null,
-            "increase_reasoning_effort": null
+            "increase_reasoning_effort": null,
+            "interrupt_turn": null
           }
         },
         "composer": {
@@ -4355,10 +4485,13 @@
             "half_page_up": null,
             "jump_bottom": null,
             "jump_top": null,
+            "next_user_prompt": null,
             "page_down": null,
             "page_up": null,
+            "previous_user_prompt": null,
             "scroll_down": null,
-            "scroll_up": null
+            "scroll_up": null,
+            "toggle_transcript_mode": null
           }
         },
         "vim_normal": {
@@ -4388,8 +4521,10 @@
             "open_line_above": null,
             "open_line_below": null,
             "paste_after": null,
+            "start_change_operator": null,
             "start_delete_operator": null,
             "start_yank_operator": null,
+            "substitute_char": null,
             "yank_line": null
           }
         },
@@ -4411,7 +4546,27 @@
             "motion_word_backward": null,
             "motion_word_end": null,
             "motion_word_forward": null,
+            "select_around_text_object": null,
+            "select_inner_text_object": null,
             "yank_line": null
+          }
+        },
+        "vim_text_object": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiVimTextObjectKeymap"
+            }
+          ],
+          "default": {
+            "backtick": null,
+            "big_word": null,
+            "braces": null,
+            "brackets": null,
+            "cancel": null,
+            "double_quote": null,
+            "parentheses": null,
+            "single_quote": null,
+            "word": null
           }
         }
       },
@@ -4604,6 +4759,17 @@
             }
           ]
         },
+        "next_user_prompt": {
+          "description": "Jump to the next user prompt in the transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "page_down": {
           "description": "Scroll down by one page.",
           "oneOf": [
@@ -4626,6 +4792,17 @@
             }
           ]
         },
+        "previous_user_prompt": {
+          "description": "Jump to the previous user prompt in the transcript overlay.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "scroll_down": {
           "description": "Scroll down by one row.",
           "oneOf": [
@@ -4639,6 +4816,17 @@
         },
         "scroll_up": {
           "description": "Scroll up by one row.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toggle_transcript_mode": {
+          "description": "Toggle the transcript overlay between verbose and compact output.",
           "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
@@ -4889,6 +5077,17 @@
             }
           ]
         },
+        "start_change_operator": {
+          "description": "Begin change operator; next keys select a text object.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "start_delete_operator": {
           "description": "Begin delete operator; next key selects motion (`d`).",
           "oneOf": [
@@ -4910,6 +5109,14 @@
               "type": "null"
             }
           ]
+        },
+        "substitute_char": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Delete character under cursor and enter insert mode (`s`)."
         },
         "yank_line": {
           "description": "Yank the entire line (`Y`).",
@@ -5050,8 +5257,136 @@
             }
           ]
         },
+        "select_around_text_object": {
+          "description": "Select an around text object after an operator.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "select_inner_text_object": {
+          "description": "Select an inner text object after an operator.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "yank_line": {
           "description": "Repeat yank operator to yank the whole line (`yy`).",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TuiVimTextObjectKeymap": {
+      "additionalProperties": false,
+      "description": "Vim text-object keybindings for modal editing inside text areas.",
+      "properties": {
+        "backtick": {
+          "description": "Text object: backticks.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "big_word": {
+          "description": "Text object: whitespace-delimited WORD.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "braces": {
+          "description": "Text object: braces.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brackets": {
+          "description": "Text object: brackets.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cancel": {
+          "description": "Cancel the pending text-object command.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "double_quote": {
+          "description": "Text object: double quotes.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentheses": {
+          "description": "Text object: parentheses.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "single_quote": {
+          "description": "Text object: single quotes.",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "word": {
+          "description": "Text object: word.",
           "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
@@ -5484,7 +5819,23 @@
           "type": "boolean"
         },
         "apps_mcp_path_override": {
-          "$ref": "#/definitions/FeatureToml3"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          ]
         },
         "auth_elicitation": {
           "type": "boolean"
@@ -5502,7 +5853,7 @@
           "type": "boolean"
         },
         "code_mode": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
         },
         "code_mode_only": {
           "type": "boolean"
@@ -5573,6 +5924,9 @@
         "image_generation": {
           "type": "boolean"
         },
+        "imagegenext": {
+          "type": "boolean"
+        },
         "in_app_browser": {
           "type": "boolean"
         },
@@ -5580,6 +5934,9 @@
           "type": "boolean"
         },
         "js_repl_tools_only": {
+          "type": "boolean"
+        },
+        "local_thread_store_compression": {
           "type": "boolean"
         },
         "memories": {
@@ -5642,7 +5999,7 @@
         "request_rule": {
           "type": "boolean"
         },
-        "responses_websocket_response_processed": {
+        "resize_all_images": {
           "type": "boolean"
         },
         "responses_websockets": {
@@ -5687,6 +6044,12 @@
         "terminal_resize_reflow": {
           "type": "boolean"
         },
+        "terminal_visualization_instructions": {
+          "type": "boolean"
+        },
+        "token_budget": {
+          "type": "boolean"
+        },
         "tool_call_mcp_elicitation": {
           "type": "boolean"
         },
@@ -5709,6 +6072,9 @@
           "type": "boolean"
         },
         "unified_exec": {
+          "type": "boolean"
+        },
+        "unified_exec_zsh_fork": {
           "type": "boolean"
         },
         "use_legacy_landlock": {

@@ -9,6 +9,47 @@
       ],
       "type": "string"
     },
+    "McpServerInfo": {
+      "description": "Presentation metadata advertised by an initialized MCP server.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icons": {
+          "items": true,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "websiteUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
     "McpServerStatus": {
       "properties": {
         "authStatus": {
@@ -28,6 +69,16 @@
             "$ref": "#/$defs/Resource"
           },
           "type": "array"
+        },
+        "serverInfo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpServerInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "tools": {
           "additionalProperties": {

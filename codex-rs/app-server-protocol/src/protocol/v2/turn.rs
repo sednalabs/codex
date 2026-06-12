@@ -65,6 +65,8 @@ pub struct AdditionalContextEntry {
 #[ts(export_to = "v2/")]
 pub struct TurnStartParams {
     pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub client_user_message_id: Option<String>,
     pub input: Vec<UserInput>,
     /// Optional turn-scoped Responses API client metadata.
     #[experimental("turn/start.responsesapiClientMetadata")]
@@ -74,7 +76,7 @@ pub struct TurnStartParams {
     #[experimental("turn/start.additionalContext")]
     #[ts(optional = nullable)]
     pub additional_context: Option<HashMap<String, AdditionalContextEntry>>,
-    /// Optional turn-scoped environments.
+    /// Optional environments for this turn and subsequent turns.
     ///
     /// Omitted uses the thread sticky environments. Empty disables
     /// environment access for this turn. Non-empty selects the first
@@ -86,11 +88,10 @@ pub struct TurnStartParams {
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
     /// Replace the thread's runtime workspace roots for this turn and
-    /// subsequent turns. Relative paths are resolved against the effective
-    /// cwd for the turn.
+    /// subsequent turns. Paths must be absolute.
     #[experimental("turn/start.runtimeWorkspaceRoots")]
     #[ts(optional = nullable)]
-    pub runtime_workspace_roots: Option<Vec<PathBuf>>,
+    pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     /// Override the approval policy for this turn and subsequent turns.
     #[experimental(nested)]
     #[ts(optional = nullable)]
@@ -157,6 +158,8 @@ pub struct TurnStartResponse {
 #[ts(export_to = "v2/")]
 pub struct TurnSteerParams {
     pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub client_user_message_id: Option<String>,
     pub input: Vec<UserInput>,
     /// Optional turn-scoped Responses API client metadata.
     #[experimental("turn/steer.responsesapiClientMetadata")]

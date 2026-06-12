@@ -22,6 +22,11 @@ permissions:
   checks: read
   pull-requests: read
 
+# Cargo's libgit2 transport has been flaky when fetching git dependencies with
+# nested submodules. Prefer the system git CLI across every Cargo invocation.
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   matrix_plan:
     name: Rust CI lane planner (informational)
@@ -41,7 +46,7 @@ jobs:
               {
                   "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
+                  "timeout_minutes": 240,
               }
           ]
 
@@ -468,13 +473,26 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs:
-      - matrix_plan
-      - changed
-    if: ${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}
+    needs: changed
+    environment:
+      name: bazel
+      deployment: false
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            timeout_minutes: 30
+          - name: macOS
+            runner: macos-15-xlarge
+            timeout_minutes: 30
+          - name: Windows
+            runner: windows-x64
+            timeout_minutes: 30
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     steps:
       - name: Check whether argument comment lint should run
         id: argument_comment_lint_gate
@@ -495,51 +513,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Run argument comment lint on codex-rs via Bazel
+      - name: Run argument comment lint on codex-rs
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         uses: ./.github/actions/run-argument-comment-lint
         with:
           target: ${{ runner.os }}
-      - name: Install Linux sandbox build dependencies
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os != 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          bazel_extra_args=()
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            bazel_extra_args+=(--jobs=8 --loading_phase_threads=8)
-          fi
-          bazel_targets=()
-          while IFS= read -r bazel_target; do
-            bazel_targets+=("${bazel_target}")
-          done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
-          ./.github/scripts/run-bazel-ci.sh \
-            -- \
-            build \
-            --config=argument-comment-lint \
-            "${bazel_extra_args[@]}" \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
-            -- \
-            "${bazel_targets[@]}"
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os == 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          ./.github/scripts/run-argument-comment-lint-bazel.sh \
-            --config=argument-comment-lint \
-            --platforms=//:local_windows \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}"
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:

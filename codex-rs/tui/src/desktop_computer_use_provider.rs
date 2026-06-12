@@ -1,7 +1,14 @@
 use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
+use codex_app_server_protocol::DynamicToolSpec;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
+use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
+use codex_tools::DESKTOP_OBSERVE_TOOL_NAME;
+use codex_tools::DESKTOP_STEP_TOOL_NAME;
+use codex_tools::native_computer_use_provider_for_call;
 use serde::Deserialize;
+use serde_json::json;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt as _;
@@ -14,22 +21,57 @@ const ENV_PROVIDER: &str = "CODEX_DESKTOP_COMPUTER_USE_PROVIDER";
 const ENV_TIMEOUT_SECS: &str = "CODEX_DESKTOP_COMPUTER_USE_TIMEOUT_SECS";
 const PROVIDER_COMMAND: &str = "command";
 const PROVIDER_NONE: &str = "none";
-const TOOL_DESKTOP_OBSERVE: &str = "desktop_observe";
-const TOOL_DESKTOP_STEP: &str = "desktop_step";
 
 pub(crate) enum DesktopComputerUseOutcome {
     Handled(ComputerUseCallResponse),
     Unavailable,
 }
 
+pub(crate) fn configured_desktop_dynamic_tools() -> Vec<DynamicToolSpec> {
+    if DesktopRuntimeConfig::load().is_none() {
+        return Vec::new();
+    }
+
+    vec![
+        desktop_dynamic_tool(
+            DESKTOP_OBSERVE_TOOL_NAME,
+            "Capture the current desktop app state as a model-visible screenshot.",
+            "non_mutating",
+        ),
+        desktop_dynamic_tool(
+            DESKTOP_STEP_TOOL_NAME,
+            "Perform bounded desktop UI actions, then return a fresh desktop screenshot.",
+            "mutating",
+        ),
+    ]
+}
+
+fn desktop_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: None,
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": true
+        }),
+        defer_loading: false,
+        persist_on_resume: false,
+        capability: Some(DynamicToolCapability {
+            family: Some(COMPUTER_USE_ADAPTER_DESKTOP.to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: Some(mutation_class.to_string()),
+            lease_mode: None,
+        }),
+    }
+}
+
 pub(crate) async fn handle_desktop_computer_use(
     params: &ComputerUseCallParams,
 ) -> DesktopComputerUseOutcome {
-    if params.adapter != "desktop"
-        || !matches!(
-            params.tool.as_str(),
-            TOOL_DESKTOP_OBSERVE | TOOL_DESKTOP_STEP
-        )
+    if params.adapter != COMPUTER_USE_ADAPTER_DESKTOP
+        || native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_DESKTOP, &params.tool)
+            .is_none()
     {
         return DesktopComputerUseOutcome::Unavailable;
     }
@@ -364,6 +406,26 @@ mod tests {
     }
 
     #[test]
+    fn configured_desktop_tools_are_session_scoped_native_tools() {
+        let tools = [
+            desktop_dynamic_tool(DESKTOP_OBSERVE_TOOL_NAME, "observe", "non_mutating"),
+            desktop_dynamic_tool(DESKTOP_STEP_TOOL_NAME, "step", "mutating"),
+        ];
+
+        assert_eq!(tools[0].name, DESKTOP_OBSERVE_TOOL_NAME);
+        assert_eq!(tools[1].name, DESKTOP_STEP_TOOL_NAME);
+        assert!(tools.iter().all(|tool| tool.namespace.is_none()));
+        assert!(tools.iter().all(|tool| !tool.defer_loading));
+        assert!(tools.iter().all(|tool| !tool.persist_on_resume));
+        assert!(tools.iter().all(|tool| {
+            tool.capability
+                .as_ref()
+                .and_then(|capability| capability.family.as_deref())
+                == Some(COMPUTER_USE_ADAPTER_DESKTOP)
+        }));
+    }
+
+    #[test]
     fn desktop_config_respects_platform_filters() {
         let config = DesktopRuntimeConfig::from_sources(
             Some(DesktopRuntimeConfigFile {
@@ -466,8 +528,8 @@ JSON
             turn_id: "turn-1".to_string(),
             call_id: "call-1".to_string(),
             environment_id: Some("env-1".to_string()),
-            adapter: "desktop".to_string(),
-            tool: TOOL_DESKTOP_OBSERVE.to_string(),
+            adapter: COMPUTER_USE_ADAPTER_DESKTOP.to_string(),
+            tool: DESKTOP_OBSERVE_TOOL_NAME.to_string(),
             arguments: json!({}),
         };
 

@@ -16,16 +16,18 @@ pub enum UpdateAction {
     BrewUpgrade,
     /// Update via the standalone installer for the compiled release channel.
     StandaloneUnix,
-    /// Update via `irm https://chatgpt.com/codex/install.ps1|iex`.
+    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
 }
 
 impl UpdateAction {
-    const UPSTREAM_STANDALONE_UNIX_ARGS: &'static [&'static str] =
-        &["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"];
+    const UPSTREAM_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
+        "-c",
+        "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+    ];
     const SEDNA_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
         "-c",
-        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | bash -s -- --repository sednalabs/codex --release-tag latest --allow-prerelease",
+        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --allow-prerelease",
     ];
 
     #[cfg(any(not(debug_assertions), test))]
@@ -57,7 +59,7 @@ impl UpdateAction {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "irm https://chatgpt.com/codex/install.ps1 | iex",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
                 ],
             ),
         }
@@ -168,7 +170,7 @@ mod tests {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "irm https://chatgpt.com/codex/install.ps1 | iex"
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
                 ][..],
             )
         );

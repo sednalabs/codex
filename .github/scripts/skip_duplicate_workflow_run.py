@@ -262,20 +262,31 @@ def result_from_match(match: dict[str, Any] | None) -> dict[str, str]:
         return {
             "should_skip": "false",
             "should_run": "true",
+            "proof_found": "false",
             "reason": "no_equivalent_success",
+            "proof_reason": "no_equivalent_success",
             "matched_run_id": "",
             "matched_run_url": "",
             "matched_run_event": "",
             "matched_run_created_at": "",
+            "proof_run_id": "",
+            "proof_run_url": "",
+            "evidence_key": "",
         }
+    evidence_key = f"{match.get('head_branch') or ''}:{match.get('head_sha') or ''}"
     return {
         "should_skip": "true",
         "should_run": "false",
+        "proof_found": "true",
         "reason": "equivalent_success_found",
+        "proof_reason": "equivalent_success_found",
         "matched_run_id": str(match.get("id") or ""),
         "matched_run_url": str(match.get("html_url") or ""),
         "matched_run_event": str(match.get("event") or ""),
         "matched_run_created_at": str(match.get("created_at") or ""),
+        "proof_run_id": str(match.get("id") or ""),
+        "proof_run_url": str(match.get("html_url") or ""),
+        "evidence_key": evidence_key,
     }
 
 
@@ -284,11 +295,16 @@ def fail_open_result(message: str) -> dict[str, str]:
     return {
         "should_skip": "false",
         "should_run": "true",
+        "proof_found": "false",
         "reason": "lookup_failed_run_conservatively",
+        "proof_reason": "lookup_failed_run_conservatively",
         "matched_run_id": "",
         "matched_run_url": "",
         "matched_run_event": "",
         "matched_run_created_at": "",
+        "proof_run_id": "",
+        "proof_run_url": "",
+        "evidence_key": "",
     }
 
 

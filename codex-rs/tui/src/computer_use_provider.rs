@@ -6,17 +6,10 @@ use crate::desktop_computer_use_provider::DesktopComputerUseOutcome;
 use crate::desktop_computer_use_provider::handle_desktop_computer_use;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
-
-const ADAPTER_ANDROID: &str = "android";
-const ADAPTER_BROWSER: &str = "browser";
-const ADAPTER_DESKTOP: &str = "desktop";
-const TOOL_ANDROID_INSTALL_BUILD_FROM_RUN: &str = "android_install_build_from_run";
-const TOOL_ANDROID_OBSERVE: &str = "android_observe";
-const TOOL_ANDROID_STEP: &str = "android_step";
-const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
-const TOOL_BROWSER_STEP: &str = "browser_step";
-const TOOL_DESKTOP_OBSERVE: &str = "desktop_observe";
-const TOOL_DESKTOP_STEP: &str = "desktop_step";
+use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
+use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
+use codex_tools::native_computer_use_provider_for_call;
 
 pub(crate) enum ComputerUseProviderOutcome {
     Handled(ComputerUseCallResponse),
@@ -34,15 +27,33 @@ pub(crate) async fn handle_computer_use(
     ComputerUseProviderOutcome::Unavailable
 }
 
-fn computer_use_providers() -> [RegisteredComputerUseProvider; 3] {
-    [
-        RegisteredComputerUseProvider::Android,
-        RegisteredComputerUseProvider::Browser,
-        RegisteredComputerUseProvider::Desktop,
-    ]
+fn computer_use_providers() -> &'static [RegisteredComputerUseProvider] {
+    static PROVIDERS: [RegisteredComputerUseProvider; 3] = [
+        RegisteredComputerUseProvider {
+            adapter: COMPUTER_USE_ADAPTER_ANDROID,
+            handler: ComputerUseProviderHandler::Android,
+        },
+        RegisteredComputerUseProvider {
+            adapter: COMPUTER_USE_ADAPTER_BROWSER,
+            handler: ComputerUseProviderHandler::Browser,
+        },
+        RegisteredComputerUseProvider {
+            adapter: COMPUTER_USE_ADAPTER_DESKTOP,
+            handler: ComputerUseProviderHandler::Desktop,
+        },
+    ];
+
+    &PROVIDERS
 }
 
-enum RegisteredComputerUseProvider {
+#[derive(Clone, Copy)]
+struct RegisteredComputerUseProvider {
+    adapter: &'static str,
+    handler: ComputerUseProviderHandler,
+}
+
+#[derive(Clone, Copy)]
+enum ComputerUseProviderHandler {
     Android,
     Browser,
     Desktop,
@@ -50,53 +61,42 @@ enum RegisteredComputerUseProvider {
 
 impl RegisteredComputerUseProvider {
     fn supports(&self, params: &ComputerUseCallParams) -> bool {
-        match self {
-            Self::Android => {
-                params.adapter == ADAPTER_ANDROID
-                    && matches!(
-                        params.tool.as_str(),
-                        TOOL_ANDROID_OBSERVE
-                            | TOOL_ANDROID_STEP
-                            | TOOL_ANDROID_INSTALL_BUILD_FROM_RUN
-                    )
-            }
-            Self::Browser => {
-                params.adapter == ADAPTER_BROWSER
-                    && matches!(
-                        params.tool.as_str(),
-                        TOOL_BROWSER_OBSERVE | TOOL_BROWSER_STEP
-                    )
-            }
-            Self::Desktop => {
-                params.adapter == ADAPTER_DESKTOP
-                    && matches!(
-                        params.tool.as_str(),
-                        TOOL_DESKTOP_OBSERVE | TOOL_DESKTOP_STEP
-                    )
-            }
-        }
+        native_computer_use_provider_for_call(&params.adapter, &params.tool)
+            .is_some_and(|(provider, _)| provider.adapter == self.adapter)
     }
 
     async fn handle(&self, params: &ComputerUseCallParams) -> ComputerUseProviderOutcome {
-        match self {
-            Self::Android => match handle_android_computer_use(params).await {
-                AndroidComputerUseOutcome::Handled(response) => {
-                    ComputerUseProviderOutcome::Handled(response)
+        match self.handler {
+            ComputerUseProviderHandler::Android => {
+                match handle_android_computer_use(params).await {
+                    AndroidComputerUseOutcome::Handled(response) => {
+                        ComputerUseProviderOutcome::Handled(response)
+                    }
+                    AndroidComputerUseOutcome::Unavailable => {
+                        ComputerUseProviderOutcome::Unavailable
+                    }
                 }
-                AndroidComputerUseOutcome::Unavailable => ComputerUseProviderOutcome::Unavailable,
-            },
-            Self::Browser => match handle_browser_computer_use(params).await {
-                BrowserComputerUseOutcome::Handled(response) => {
-                    ComputerUseProviderOutcome::Handled(response)
+            }
+            ComputerUseProviderHandler::Browser => {
+                match handle_browser_computer_use(params).await {
+                    BrowserComputerUseOutcome::Handled(response) => {
+                        ComputerUseProviderOutcome::Handled(response)
+                    }
+                    BrowserComputerUseOutcome::Unavailable => {
+                        ComputerUseProviderOutcome::Unavailable
+                    }
                 }
-                BrowserComputerUseOutcome::Unavailable => ComputerUseProviderOutcome::Unavailable,
-            },
-            Self::Desktop => match handle_desktop_computer_use(params).await {
-                DesktopComputerUseOutcome::Handled(response) => {
-                    ComputerUseProviderOutcome::Handled(response)
+            }
+            ComputerUseProviderHandler::Desktop => {
+                match handle_desktop_computer_use(params).await {
+                    DesktopComputerUseOutcome::Handled(response) => {
+                        ComputerUseProviderOutcome::Handled(response)
+                    }
+                    DesktopComputerUseOutcome::Unavailable => {
+                        ComputerUseProviderOutcome::Unavailable
+                    }
                 }
-                DesktopComputerUseOutcome::Unavailable => ComputerUseProviderOutcome::Unavailable,
-            },
+            }
         }
     }
 }

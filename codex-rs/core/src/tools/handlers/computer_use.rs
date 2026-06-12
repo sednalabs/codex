@@ -15,7 +15,6 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
-use crate::tools::tool_search_entry::ToolSearchInfo;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::computer_use::ComputerUseResponse;
@@ -25,6 +24,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::canonical_native_computer_use_dynamic_tool;
@@ -117,7 +117,6 @@ impl ComputerUseHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
     fn tool_name(&self) -> ToolName {
         self.tool_name.clone()
@@ -131,7 +130,26 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
         self.exposure
     }
 
-    async fn handle(
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        ToolSearchInfo::from_spec(
+            self.search_text.clone(),
+            self.spec(),
+            Some(ToolSearchSourceInfo {
+                name: "Native computer-use tools".to_string(),
+                description: Some(
+                    "Client-backed computer-use tools for the current environment.".to_string(),
+                ),
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ComputerUseHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -184,19 +202,6 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
 }
 
 impl CoreToolRuntime for ComputerUseHandler {
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        ToolSearchInfo::from_spec(
-            self.search_text.clone(),
-            self.spec.clone(),
-            Some(ToolSearchSourceInfo {
-                name: "Native computer-use tools".to_string(),
-                description: Some(
-                    "Client-backed computer-use tools for the current environment.".to_string(),
-                ),
-            }),
-        )
-    }
-
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
@@ -451,6 +456,7 @@ mod tests {
     use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::turn_context::TurnEnvironment;
     use crate::state::ActiveTurn;
+    use crate::tools::registry::ToolExecutor;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
     use codex_protocol::computer_use::ComputerUseResponse;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -461,6 +467,7 @@ mod tests {
     use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
     use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
     use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+    use codex_tools::LoadableToolSpec;
     use codex_tools::ToolName;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -522,6 +529,53 @@ mod tests {
         assert_eq!(observe_handler.response_timeout, Duration::from_secs(120));
         assert_eq!(install_handler.adapter, COMPUTER_USE_ADAPTER_ANDROID);
         assert_eq!(install_handler.response_timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn search_info_uses_native_computer_use_metadata() {
+        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+            ANDROID_OBSERVE_TOOL_NAME,
+            /*defer_loading*/ true,
+        ))
+        .expect("android observe should create a native computer-use handler");
+
+        let search_info = observe_handler
+            .search_info()
+            .expect("native computer-use search info");
+        assert!(
+            search_info
+                .entry
+                .search_text
+                .contains(ANDROID_OBSERVE_TOOL_NAME),
+            "search text should include the canonical native tool name: {}",
+            search_info.entry.search_text
+        );
+        assert!(
+            search_info.entry.search_text.contains("android observe"),
+            "search text should include the native display name: {}",
+            search_info.entry.search_text
+        );
+        assert!(
+            search_info
+                .entry
+                .search_text
+                .contains("Capture the current Android screen"),
+            "search text should include the canonical native description: {}",
+            search_info.entry.search_text
+        );
+        let source_info = search_info
+            .source_info
+            .expect("native computer-use source info");
+        assert_eq!(source_info.name, "Native computer-use tools");
+        assert_eq!(
+            source_info.description.as_deref(),
+            Some("Client-backed computer-use tools for the current environment.")
+        );
+        let LoadableToolSpec::Function(tool) = search_info.entry.output else {
+            panic!("native computer-use search info should expose one function");
+        };
+        assert_eq!(tool.name, ANDROID_OBSERVE_TOOL_NAME);
+        assert_eq!(tool.defer_loading, Some(true));
     }
 
     #[test]

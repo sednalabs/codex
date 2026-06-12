@@ -90,7 +90,7 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
     assert_eq!(collected.status, CodexStatus::Running);
     assert_eq!(collected.events.len(), 1);
 
-    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item }) = &collected.events[0] else {
+    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item, .. }) = &collected.events[0] else {
         panic!("expected item.completed event");
     };
     let ThreadItemDetails::McpToolCall(item) = &item.details else {

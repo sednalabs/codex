@@ -112,13 +112,15 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }
 }
 
 pub(super) fn test_session_telemetry(config: &Config, model: &str) -> SessionTelemetry {
-    let model_info = crate::legacy_core::test_support::construct_model_info_offline(model, config);
+    let model_info =
+        construct_model_info_offline_for_tests(model, &config.to_models_manager_config());
     SessionTelemetry::new(
         ThreadId::new(),
         model,
@@ -135,7 +137,7 @@ pub(super) fn test_session_telemetry(config: &Config, model: &str) -> SessionTel
 
 pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
     Arc::new(ModelCatalog::new(
-        crate::legacy_core::test_support::all_model_presets().clone(),
+        crate::test_support::TEST_MODEL_PRESETS.clone(),
     ))
 }
 
@@ -151,9 +153,9 @@ pub(super) async fn make_chatwidget_manual(
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
     let mut cfg = test_config().await;
-    let resolved_model = model_override.map(str::to_owned).unwrap_or_else(|| {
-        crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref())
-    });
+    let resolved_model = model_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| get_model_offline_for_tests(cfg.model.as_deref()));
     if let Some(model) = model_override {
         cfg.model = Some(model.to_string());
     }
@@ -208,7 +210,7 @@ pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op
 pub(super) fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
     loop {
         match op_rx.try_recv() {
-            Ok(Op::Interrupt) => return,
+            Ok(Op::Interrupt { .. }) => return,
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected interrupt op but queue was empty"),
             Err(TryRecvError::Disconnected) => panic!("expected interrupt op but channel closed"),
@@ -722,6 +724,7 @@ pub(super) fn replay_user_message_inputs(
     chat.replay_thread_item(
         AppServerThreadItem::UserMessage {
             id: item_id.to_string(),
+            client_id: None,
             content,
         },
         "turn-1".to_string(),
@@ -816,6 +819,7 @@ pub(super) fn begin_exec_with_source(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: None,
+        terminal_wait: None,
         source,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions,
@@ -839,6 +843,7 @@ pub(super) fn begin_unified_exec_startup(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: Some(process_id.to_string()),
+        terminal_wait: None,
         source: ExecCommandSource::UnifiedExecStartup,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions: Vec::new(),
@@ -884,6 +889,7 @@ pub(super) fn terminal_interaction(
                 item_id: call_id.to_string(),
                 process_id: process_id.to_string(),
                 stdin: stdin.to_string(),
+                terminal_wait: None,
             },
         ),
         /*replay_kind*/ None,
@@ -946,6 +952,7 @@ pub(super) fn complete_user_message_for_inputs(
             completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: item_id.to_string(),
+                client_id: None,
                 content,
             },
         }),
@@ -1050,6 +1057,7 @@ pub(super) fn end_exec(
         command,
         cwd,
         process_id,
+        terminal_wait,
         source,
         command_actions,
         ..
@@ -1064,6 +1072,7 @@ pub(super) fn end_exec(
             command,
             cwd,
             process_id,
+            terminal_wait,
             source,
             status: if exit_code == 0 {
                 AppServerCommandExecutionStatus::Completed
@@ -1334,6 +1343,34 @@ pub(super) fn plugins_test_summary(
     }
 }
 
+pub(super) fn plugins_test_remote_summary(
+    remote_plugin_id: &str,
+    name: &str,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    installed: bool,
+) -> PluginSummary {
+    PluginSummary {
+        id: remote_plugin_id.to_string(),
+        remote_plugin_id: Some(remote_plugin_id.to_string()),
+        local_version: None,
+        name: name.to_string(),
+        share_context: None,
+        source: PluginSource::Remote,
+        installed,
+        enabled: true,
+        install_policy: PluginInstallPolicy::Available,
+        auth_policy: PluginAuthPolicy::OnInstall,
+        availability: PluginAvailability::Available,
+        interface: Some(plugins_test_interface(
+            display_name,
+            description,
+            /*long_description*/ None,
+        )),
+        keywords: Vec::new(),
+    }
+}
+
 pub(super) fn plugins_test_curated_marketplace(
     plugins: Vec<PluginSummary>,
 ) -> PluginMarketplaceEntry {
@@ -1383,7 +1420,7 @@ pub(super) fn plugins_test_detail(
     description: Option<&str>,
     skills: &[&str],
     hooks: &[(codex_app_server_protocol::HookEventName, usize)],
-    apps: &[(&str, bool)],
+    apps: &[&str],
     mcp_servers: &[&str],
 ) -> PluginDetail {
     PluginDetail {
@@ -1418,14 +1455,14 @@ pub(super) fn plugins_test_detail(
             .collect(),
         apps: apps
             .iter()
-            .map(|(name, needs_auth)| AppSummary {
+            .map(|name| AppSummary {
                 id: format!("{name}-id"),
                 name: (*name).to_string(),
                 description: Some(format!("{name} app")),
                 install_url: Some(format!("https://example.test/{name}")),
-                needs_auth: *needs_auth,
             })
             .collect(),
+        app_templates: Vec::new(),
         mcp_servers: mcp_servers.iter().map(|name| (*name).to_string()).collect(),
     }
 }

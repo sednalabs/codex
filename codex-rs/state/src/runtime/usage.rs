@@ -10,6 +10,7 @@ use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
 use log::warn;
 use sqlx::Row;
@@ -46,6 +47,13 @@ struct TokenUsageTotals {
     total_tokens: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageThreadRecord {
+    pub root_thread_id: Option<String>,
+    pub fork_parent_thread_id: Option<String>,
+    pub thread_source: Option<String>,
+}
+
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the
 /// downstream usage ledger.
 ///
@@ -75,7 +83,28 @@ impl UsageLogger {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) -> anyhow::Result<Self> {
-        let pool = state.usage_pool();
+        Self::try_new_with_thread_source(
+            state,
+            thread_id,
+            source,
+            /*thread_source*/ None,
+            forked_from_id,
+            agent_nickname,
+            agent_role,
+        )
+        .await
+    }
+
+    pub async fn try_new_with_thread_source(
+        state: Arc<StateRuntime>,
+        thread_id: ThreadId,
+        source: SessionSource,
+        thread_source: Option<ThreadSource>,
+        forked_from_id: Option<ThreadId>,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let pool = state.usage_ledger_pool();
         let parent_thread_id = Self::parent_thread_from_source(&source);
         // Reuse the first persisted root we can find so spawned and forked descendants
         // share one canonical root thread id in `usage_threads`.
@@ -96,17 +125,19 @@ impl UsageLogger {
             .unwrap_or_else(|| thread_id.to_string());
         let created_at = Utc::now();
         let source_str = source.to_string();
+        let thread_source_str = thread_source.as_ref().map(|source| source.as_str());
         sqlx::query(
             r#"
-INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, thread_source, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     parent_thread_id = COALESCE(excluded.parent_thread_id, usage_threads.parent_thread_id),
     root_thread_id = COALESCE(excluded.root_thread_id, usage_threads.root_thread_id),
     fork_parent_thread_id = COALESCE(excluded.fork_parent_thread_id, usage_threads.fork_parent_thread_id),
     agent_nickname = COALESCE(excluded.agent_nickname, usage_threads.agent_nickname),
     agent_role = COALESCE(excluded.agent_role, usage_threads.agent_role),
-    source = excluded.source
+    source = excluded.source,
+    thread_source = COALESCE(excluded.thread_source, usage_threads.thread_source)
                 "#,
         )
         .bind(thread_id.to_string())
@@ -116,6 +147,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(agent_nickname.as_deref())
         .bind(agent_role.as_deref())
         .bind(source_str)
+        .bind(thread_source_str)
         .bind(created_at.to_rfc3339())
         .execute(pool.as_ref())
         .await
@@ -516,6 +548,120 @@ ON CONFLICT(thread_id) DO UPDATE SET
     }
 }
 
+impl StateRuntime {
+    pub async fn get_usage_thread_record(
+        &self,
+        thread_id: &str,
+    ) -> anyhow::Result<Option<UsageThreadRecord>> {
+        let pool = self.usage_ledger_pool();
+        let row = sqlx::query(
+            r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(pool.as_ref())
+        .await?;
+        Ok(row.map(|row| UsageThreadRecord {
+            root_thread_id: row.get::<Option<String>, _>("root_thread_id"),
+            fork_parent_thread_id: row.get::<Option<String>, _>("fork_parent_thread_id"),
+            thread_source: row.get::<Option<String>, _>("thread_source"),
+        }))
+    }
+
+    pub async fn get_usage_fork_snapshot_parent_thread_id(
+        &self,
+        child_thread_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let pool = self.usage_ledger_pool();
+        let parent_thread_id = sqlx::query_scalar::<_, String>(
+            "SELECT parent_thread_id FROM usage_fork_snapshots WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id)
+        .fetch_optional(pool.as_ref())
+        .await?;
+        Ok(parent_thread_id)
+    }
+
+    pub async fn record_usage_fork_snapshot(
+        &self,
+        child_thread_id: ThreadId,
+        parent_thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        let pool = self.usage_ledger_pool();
+        let usage = sqlx::query(
+            r#"SELECT
+                provider_call_id,
+                input_tokens_uncached,
+                input_tokens_cached,
+                output_tokens,
+                total_tokens
+            FROM usage_provider_calls
+            WHERE thread_id = ?
+            ORDER BY completed_at DESC, started_at DESC
+            LIMIT 1"#,
+        )
+        .bind(parent_thread_id.to_string())
+        .fetch_optional(pool.as_ref())
+        .await?;
+        let parent_call_id = usage
+            .as_ref()
+            .map(|row| row.get::<String, _>("provider_call_id"));
+        let uncached_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("input_tokens_uncached")
+                .unwrap_or_default()
+        });
+        let cached_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("input_tokens_cached")
+                .unwrap_or_default()
+        });
+        let output_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("output_tokens")
+                .unwrap_or_default()
+        });
+        let total_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("total_tokens")
+                .unwrap_or_default()
+        });
+
+        sqlx::query(
+            r#"INSERT INTO usage_fork_snapshots (
+            child_thread_id,
+            parent_thread_id,
+            forked_at,
+            parent_last_provider_call_id,
+            parent_cumulative_uncached_tokens,
+            parent_cumulative_cached_tokens,
+            parent_cumulative_output_tokens,
+            parent_cumulative_total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(child_thread_id) DO UPDATE SET
+            parent_last_provider_call_id = COALESCE(excluded.parent_last_provider_call_id, usage_fork_snapshots.parent_last_provider_call_id),
+            parent_cumulative_uncached_tokens = COALESCE(excluded.parent_cumulative_uncached_tokens, usage_fork_snapshots.parent_cumulative_uncached_tokens),
+            parent_cumulative_cached_tokens = COALESCE(excluded.parent_cumulative_cached_tokens, usage_fork_snapshots.parent_cumulative_cached_tokens),
+            parent_cumulative_output_tokens = COALESCE(excluded.parent_cumulative_output_tokens, usage_fork_snapshots.parent_cumulative_output_tokens),
+            parent_cumulative_total_tokens = COALESCE(excluded.parent_cumulative_total_tokens, usage_fork_snapshots.parent_cumulative_total_tokens)
+        "#,
+        )
+        .bind(child_thread_id.to_string())
+        .bind(parent_thread_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind(parent_call_id)
+        .bind(uncached_tokens)
+        .bind(cached_tokens)
+        .bind(output_tokens)
+        .bind(total_tokens)
+        .execute(pool.as_ref())
+        .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +781,7 @@ mod tests {
             credits: None,
             rate_limit_reached_type: None,
             plan_type: None,
+            individual_limit: None,
         });
         Event {
             id: turn_id.to_string(),
@@ -733,6 +880,49 @@ WHERE thread_id = ?
                 quota_percent_remaining: 87.5,
                 quota_percent_used: 12.5,
             }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_records_thread_source_marker() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let side_thread_id = ThreadId::new();
+        let _logger = UsageLogger::try_new_with_thread_source(
+            runtime.clone(),
+            side_thread_id,
+            SessionSource::Cli,
+            Some(ThreadSource::Side),
+            Some(parent_thread_id),
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            r#"
+SELECT
+  root_thread_id,
+  fork_parent_thread_id,
+  thread_source
+FROM usage_threads
+WHERE thread_id = ?
+"#,
+        )
+        .bind(side_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            row,
+            (
+                Some(parent_thread_id.to_string()),
+                Some(parent_thread_id.to_string()),
+                Some("side".to_string())
+            )
         );
 
         Ok(())
@@ -1028,6 +1218,69 @@ WHERE child_thread_id = ?
             fork_row,
             ForkSnapshotRow {
                 parent_thread_id: thread_id.to_string(),
+                parent_last_provider_call_id: Some("<provider_call_id>".to_string()),
+                parent_cumulative_uncached_tokens: Some(8),
+                parent_cumulative_cached_tokens: Some(2),
+                parent_cumulative_output_tokens: Some(3),
+                parent_cumulative_total_tokens: Some(16),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_runtime_records_direct_fork_snapshot_from_provider_rows() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut parent_logger = UsageLogger::try_new(
+            runtime.clone(),
+            parent_thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        parent_logger
+            .record_event(&token_count_event(
+                "turn-direct-fork",
+                /*include_rate_limit*/ false,
+            ))
+            .await;
+
+        runtime
+            .record_usage_fork_snapshot(child_thread_id, parent_thread_id)
+            .await?;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let mut fork_row: ForkSnapshotRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  parent_last_provider_call_id,
+  parent_cumulative_uncached_tokens,
+  parent_cumulative_cached_tokens,
+  parent_cumulative_output_tokens,
+  parent_cumulative_total_tokens
+FROM usage_fork_snapshots
+WHERE child_thread_id = ?
+"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            fork_row.parent_last_provider_call_id.is_some(),
+            "expected provider call id in direct fork snapshot"
+        );
+        fork_row.parent_last_provider_call_id = Some("<provider_call_id>".to_string());
+        assert_eq!(
+            fork_row,
+            ForkSnapshotRow {
+                parent_thread_id: parent_thread_id.to_string(),
                 parent_last_provider_call_id: Some("<provider_call_id>".to_string()),
                 parent_cumulative_uncached_tokens: Some(8),
                 parent_cumulative_cached_tokens: Some(2),

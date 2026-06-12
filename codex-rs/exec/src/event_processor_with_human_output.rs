@@ -13,9 +13,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_utils_absolute_path::canonicalize_preserving_symlinks;
 use codex_utils_sandbox_summary::summarize_permission_profile;
-use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
@@ -492,7 +490,8 @@ fn config_summary_entries(
             "reasoning effort",
             config
                 .model_reasoning_effort
-                .map(|effort| effort.to_string())
+                .as_ref()
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "none".to_string()),
         ));
         entries.push((
@@ -565,6 +564,10 @@ fn should_print_final_message_to_tty(
 ) -> bool {
     final_message.is_some() && !final_message_rendered && stdout_is_terminal && stderr_is_terminal
 }
+
+#[cfg(test)]
+#[path = "event_processor_with_human_output_tests.rs"]
+mod event_processor_with_human_output_tests;
 
 #[cfg(test)]
 mod tests {

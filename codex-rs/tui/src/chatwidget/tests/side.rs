@@ -59,7 +59,9 @@ fn assert_side_rename_rejected(
         AppEvent::InsertHistoryCell(cell) => {
             let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
             assert!(
-                rendered.contains("Side conversations are ephemeral and cannot be renamed."),
+                rendered.contains(
+                    "Active side conversations cannot be renamed while they are attached to a parent thread."
+                ),
                 "expected side conversation rename error, got {rendered:?}"
             );
         }
@@ -73,7 +75,8 @@ fn assert_side_rename_rejected(
 async fn slash_rename_is_rejected_for_side_threads() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_thread_rename_block_message(
-        "Side conversations are ephemeral and cannot be renamed.".to_string(),
+        "Active side conversations cannot be renamed while they are attached to a parent thread."
+            .to_string(),
     );
 
     chat.dispatch_command(SlashCommand::Rename);
@@ -84,7 +87,8 @@ async fn slash_rename_is_rejected_for_side_threads() {
 async fn slash_rename_with_args_is_rejected_for_side_threads() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_thread_rename_block_message(
-        "Side conversations are ephemeral and cannot be renamed.".to_string(),
+        "Active side conversations cannot be renamed while they are attached to a parent thread."
+            .to_string(),
     );
 
     chat.dispatch_command_with_args(SlashCommand::Rename, "investigate".to_string(), Vec::new());

@@ -7,8 +7,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SearchRequest {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,5 +280,6 @@ pub enum AllowedCaller {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SearchResponse {
-    pub encrypted_output: String,
+    pub encrypted_output: Option<String>,
+    pub output: String,
 }

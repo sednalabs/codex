@@ -8,11 +8,14 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
+use crate::tools::tool_runtime_capabilities::UnifiedExecBlockingWaitCapability;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::resolve_max_tokens;
+use codex_exec_server::Environment;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -21,7 +24,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-const MAX_TERMINAL_WAIT_MS: u64 = 2 * 60 * 60 * 1_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
 #[cfg(test)]
@@ -97,26 +99,32 @@ fn default_tty() -> bool {
     false
 }
 
-fn default_wait_budget_ms() -> u64 {
-    MAX_TERMINAL_WAIT_MS
+fn unified_exec_blocking_wait_capability() -> Option<UnifiedExecBlockingWaitCapability> {
+    registered_tool_runtime_capabilities().unified_exec_blocking_waits
+}
+
+fn default_wait_budget_ms(capability: UnifiedExecBlockingWaitCapability) -> u64 {
+    capability.max_terminal_wait_ms
 }
 
 fn resolve_wait_window_ms(
     max_wait_ms: Option<u64>,
     heartbeat_interval_ms: Option<u64>,
     fallback_ms: u64,
+    capability: UnifiedExecBlockingWaitCapability,
 ) -> u64 {
     heartbeat_interval_ms
         .or(max_wait_ms)
         .unwrap_or(fallback_ms)
         .max(MIN_YIELD_TIME_MS)
-        .min(default_wait_budget_ms())
+        .min(default_wait_budget_ms(capability))
 }
 
 async fn complete_terminal_wait(
     manager: &UnifiedExecProcessManager,
     initial_response: ExecCommandToolOutput,
     terminal_wait: TerminalWaitArgs,
+    capability: UnifiedExecBlockingWaitCapability,
     fallback_yield_time_ms: u64,
     cancellation_token: &CancellationToken,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
@@ -128,6 +136,7 @@ async fn complete_terminal_wait(
         terminal_wait.max_wait_ms,
         terminal_wait.heartbeat_interval_ms,
         fallback_yield_time_ms,
+        capability,
     );
     let max_output_tokens = initial_response.max_output_tokens;
     let mut response = initial_response;
@@ -221,17 +230,36 @@ pub(crate) fn get_command(
             let shell = model_shell.as_ref().unwrap_or(session_shell.as_ref());
             Ok(ResolvedCommand {
                 command: shell.derive_exec_args(&args.cmd, use_login_shell),
-                shell_type: shell.shell_type.clone(),
+                shell_type: shell.shell_type,
             })
         }
-        UnifiedExecShellMode::ZshFork(zsh_fork_config) => Ok(ResolvedCommand {
-            command: vec![
-                zsh_fork_config.shell_zsh_path.to_string_lossy().to_string(),
-                if use_login_shell { "-lc" } else { "-c" }.to_string(),
-                args.cmd.clone(),
-            ],
-            shell_type: ShellType::Zsh,
-        }),
+        UnifiedExecShellMode::ZshFork(zsh_fork_config) => {
+            if args.shell.is_some() {
+                return Err(
+                    "`shell` is not supported for local zsh-fork exec; omit `shell` to use zsh-fork, or target a remote environment where `shell` is supported.".to_string(),
+                );
+            }
+
+            Ok(ResolvedCommand {
+                command: vec![
+                    zsh_fork_config.shell_zsh_path.to_string_lossy().to_string(),
+                    if use_login_shell { "-lc" } else { "-c" }.to_string(),
+                    args.cmd.clone(),
+                ],
+                shell_type: ShellType::Zsh,
+            })
+        }
+    }
+}
+
+pub(crate) fn shell_mode_for_environment(
+    turn_shell_mode: &UnifiedExecShellMode,
+    environment: &Environment,
+) -> UnifiedExecShellMode {
+    if environment.is_remote() {
+        UnifiedExecShellMode::Direct
+    } else {
+        turn_shell_mode.clone()
     }
 }
 
