@@ -1625,7 +1625,7 @@ async fn handle_turn_complete(
 async fn handle_turn_interrupted(
     conversation_id: ThreadId,
     event_turn_id: String,
-    turn_aborted_event: TurnAbortedEvent,
+    _turn_aborted_event: TurnAbortedEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1638,8 +1638,8 @@ async fn handle_turn_interrupted(
             status: TurnStatus::Interrupted,
             error: None,
             started_at: turn_summary.started_at,
-            completed_at: turn_aborted_event.completed_at,
-            duration_ms: turn_aborted_event.duration_ms,
+            completed_at: None,
+            duration_ms: None,
             final_model: None,
             model_snapshot: None,
         },
@@ -3589,8 +3589,8 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Interrupted);
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
                 assert_eq!(n.final_model, None);
                 assert_eq!(n.model_snapshot, None);
             }
