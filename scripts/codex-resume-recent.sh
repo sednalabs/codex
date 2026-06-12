@@ -188,9 +188,14 @@ session_is_side_chat() {
 
 codex_process_rows() {
   ps -u "$current_user" -ww -o pid= -o comm= -o args= | awk '
-    $2 == "codex" {
+    {
       pid = $1
-      sub(/^[[:space:]]*[0-9]+[[:space:]]+codex[[:space:]]*/, "", $0)
+      comm = $2
+      sub(/^.*\//, "", comm)
+      if (comm != "codex") {
+        next
+      }
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]*/, "", $0)
       print pid "\t" $0
     }
   '
