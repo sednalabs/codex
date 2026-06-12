@@ -19,6 +19,7 @@ use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex as StdMutex;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TurnSkillsContext {
@@ -109,7 +110,7 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_skills: TurnSkillsContext,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
-    pub(crate) model_execution_identity: Arc<Mutex<ModelExecutionIdentity>>,
+    pub(crate) model_execution_identity: Arc<StdMutex<ModelExecutionIdentity>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
 }
@@ -584,7 +585,7 @@ impl Session {
             extension_data,
             turn_skills: TurnSkillsContext::new(skills_outcome),
             turn_timing_state: Arc::new(TurnTimingState::default()),
-            model_execution_identity: Arc::new(Mutex::new(ModelExecutionIdentity::default())),
+            model_execution_identity: Arc::new(StdMutex::new(ModelExecutionIdentity::default())),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
         }

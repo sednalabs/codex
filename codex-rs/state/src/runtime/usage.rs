@@ -14,7 +14,9 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use log::warn;
+use sqlx::QueryBuilder;
 use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -629,31 +631,66 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<String>> {
+        let mut models = self
+            .latest_usage_provider_display_models(&[thread_id])
+            .await?;
+        Ok(models.remove(&thread_id))
+    }
+
+    pub async fn latest_usage_provider_display_models(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> anyhow::Result<HashMap<ThreadId, String>> {
+        if thread_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
         let pool = self.usage_ledger_pool();
-        let model = sqlx::query_scalar::<_, String>(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-SELECT COALESCE(
-  NULLIF(final_model, ''),
-  NULLIF(model_snapshot, ''),
-  NULLIF(actual_model_used, ''),
-  NULLIF(requested_model, '')
-)
-FROM usage_provider_calls
-WHERE thread_id = ?
+SELECT thread_id, display_model
+FROM (
+  SELECT
+    thread_id,
+    COALESCE(
+      NULLIF(final_model, ''),
+      NULLIF(model_snapshot, ''),
+      NULLIF(actual_model_used, ''),
+      NULLIF(requested_model, '')
+    ) AS display_model,
+    ROW_NUMBER() OVER (
+      PARTITION BY thread_id
+      ORDER BY completed_at DESC, started_at DESC, provider_call_id DESC
+    ) AS row_num
+  FROM usage_provider_calls
+  WHERE thread_id IN (
+"#,
+        );
+        let mut separated = builder.separated(", ");
+        for thread_id in thread_ids {
+            separated.push_bind(thread_id.to_string());
+        }
+        separated.push_unseparated(
+            r#")
   AND COALESCE(
     NULLIF(final_model, ''),
     NULLIF(model_snapshot, ''),
     NULLIF(actual_model_used, ''),
     NULLIF(requested_model, '')
   ) IS NOT NULL
-ORDER BY completed_at DESC, started_at DESC, provider_call_id DESC
-LIMIT 1
+)
+WHERE row_num = 1
 "#,
-        )
-        .bind(thread_id.to_string())
-        .fetch_optional(pool.as_ref())
-        .await?;
-        Ok(model)
+        );
+        let rows = builder.build().fetch_all(pool.as_ref()).await?;
+        let mut models = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let thread_id = row.get::<String, _>("thread_id");
+            let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
+                continue;
+            };
+            models.insert(thread_id, row.get::<String, _>("display_model"));
+        }
+        Ok(models)
     }
 
     pub async fn record_usage_fork_snapshot(
@@ -962,6 +999,15 @@ WHERE thread_id = ?
                 .await?,
             Some("provider-final-model".to_string())
         );
+        let missing_thread_id = ThreadId::new();
+        let display_models = runtime
+            .latest_usage_provider_display_models(&[thread_id, missing_thread_id])
+            .await?;
+        assert_eq!(
+            display_models.get(&thread_id),
+            Some(&"provider-final-model".to_string())
+        );
+        assert!(!display_models.contains_key(&missing_thread_id));
 
         Ok(())
     }
