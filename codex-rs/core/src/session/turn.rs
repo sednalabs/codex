@@ -142,7 +142,10 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
-    *turn_context.model_execution_identity.lock().await = ModelExecutionIdentity::default();
+    *turn_context
+        .model_execution_identity
+        .lock()
+        .expect("model execution identity mutex poisoned") = ModelExecutionIdentity::default();
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -358,7 +361,10 @@ pub(crate) async fn run_turn(
                             .await;
                         }
                     }
-                    *turn_context.model_execution_identity.lock().await =
+                    *turn_context
+                        .model_execution_identity
+                        .lock()
+                        .expect("model execution identity mutex poisoned") =
                         sampling_request_model_execution_identity;
                     if stop_outcome.should_stop {
                         break;
