@@ -28,6 +28,8 @@ use crate::unified_exec::generate_chunk_id;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
+use codex_protocol::protocol::TerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
@@ -40,6 +42,7 @@ use super::complete_terminal_wait;
 use super::effective_max_output_tokens;
 use super::get_command;
 use super::post_unified_exec_tool_use_payload;
+use super::shell_mode_for_environment;
 use super::unified_exec_blocking_wait_capability;
 
 #[derive(Clone, Copy)]
@@ -47,6 +50,7 @@ pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
+    pub(crate) include_shell_parameter: bool,
 }
 
 pub struct ExecCommandHandler {
@@ -60,6 +64,7 @@ impl Default for ExecCommandHandler {
                 allow_login_shell: false,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
+                include_shell_parameter: true,
             },
         }
     }
@@ -71,7 +76,6 @@ impl ExecCommandHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("exec_command")
@@ -84,6 +88,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
             },
             self.options.include_environment_id,
+            self.options.include_shell_parameter,
         )
     }
 
@@ -91,7 +96,13 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         true
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ExecCommandHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -144,10 +155,12 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         )
         .await;
         let process_id = manager.allocate_process_id().await;
+        let shell_mode =
+            shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
         let resolved_command = get_command(
             &args,
             session.user_shell(),
-            &turn.unified_exec_shell_mode,
+            &shell_mode,
             turn.config.permissions.allow_login_shell,
         )
         .map_err(FunctionCallError::RespondToModel)?;
@@ -172,12 +185,18 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             max_output_tokens,
             turn.truncation_policy,
         ));
+        let terminal_wait = wait_until_terminal.then_some(TerminalWaitInfo {
+            primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+            max_wait_ms,
+            heartbeat_interval_ms,
+        });
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
         let requested_additional_permissions = additional_permissions.clone();
         let effective_additional_permissions = apply_granted_turn_permissions(
             context.session.as_ref(),
+            &turn_environment.environment_id,
             cwd.as_path(),
             sandbox_permissions,
             additional_permissions,
@@ -271,6 +290,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     cwd,
                     sandbox_cwd: turn_environment.cwd.clone(),
                     environment,
+                    shell_mode,
                     network: context.turn.network.clone(),
                     tty,
                     sandbox_permissions: effective_additional_permissions.sandbox_permissions,
@@ -279,6 +299,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    terminal_wait: terminal_wait.clone(),
                 },
                 &context,
             )

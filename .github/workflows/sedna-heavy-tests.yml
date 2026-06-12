@@ -51,6 +51,7 @@ on:
           - codex.blocking-waits-mcp-targeted
           - codex.custom-prompts-targeted
           - codex.mcp-safety-targeted
+          - codex.mcp-device-login-targeted
           - codex.core-subagent-model-pinning-targeted
           - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
@@ -1149,6 +1150,7 @@ jobs:
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
+            --latest-head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
             --profile "heavy" \
             --lane-set "${lane_set}" \
             --profile-intent "heavy downstream validation" \
@@ -1219,6 +1221,13 @@ jobs:
           print(f"- Rust batching: `{payload['selection'].get('rust_batching_mode') or 'off'}`")
           print(f"- Primary blocker families: `{len(primary_blockers)}`")
           print(f"- Additional failing lanes: `{len(secondary_findings)}`")
+          head_freshness = summary.get("head_freshness") or {}
+          if head_freshness:
+              print(f"- Failed-lane freshness: `{head_freshness.get('failed_lane_classification', 'unknown')}`")
+              rerun = head_freshness.get("recommended_rerun") or {}
+              if rerun.get("needed"):
+                  lanes = ", ".join(rerun.get("lane_ids") or []) or "selected lane"
+                  print(f"- Latest-head proof: `{rerun.get('profile', 'targeted')}` lanes `{lanes}`")
           if setup_rows:
               print(f"- Setup classes exercised: `{len(setup_rows)}`")
           if first_failure:

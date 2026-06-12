@@ -699,6 +699,13 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/app-server-protocol/schema/json/ServerNotification.json"],
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.app-server-protocol-test"])
+
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/tui/src/app/app_server_adapter.rs"],
@@ -976,6 +983,139 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("missing selection metadata env: SELECTION_META", proc.stderr)
+
+    def recommend_lab_for_files(self, files: list[str]) -> dict:
+        return run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "recommend-lab",
+            "--changed-files-json",
+            json.dumps(files),
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+
+    def test_recommend_lab_workflow_only_uses_workflow_route(self) -> None:
+        payload = self.recommend_lab_for_files([".github/workflows/validation-lab.yml"])
+
+        self.assertTrue(payload["advisory"])
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "docs")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+        self.assertEqual(
+            payload["dispatch_inputs"]["lanes"],
+            "codex.workflow-ci-sanity,codex.downstream-docs-check",
+        )
+
+    def test_recommend_lab_rust_core_path_keeps_core_lane_set(self) -> None:
+        payload = self.recommend_lab_for_files(["codex-rs/core/src/lib.rs"])
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "core-carry")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.blocking-waits-core-targeted",
+                "codex.blocking-waits-unified-exec-targeted",
+                "codex.blocking-waits-app-server-targeted",
+                "codex.blocking-waits-mcp-targeted",
+            ],
+        )
+
+    def test_recommend_lab_ui_protocol_path_uses_exact_route(self) -> None:
+        payload = self.recommend_lab_for_files(
+            ["codex-rs/app-server-protocol/src/protocol/v2/thread.rs"]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "ui-protocol")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-thread-cwd-targeted",
+                "codex.blocking-waits-app-server-targeted",
+            ],
+        )
+
+    def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "docs")
+        self.assertEqual(payload["source"], "domain_rules")
+        self.assertEqual(payload["lane_ids"], ["codex.downstream-docs-check"])
+
+    def test_recommend_lab_release_path_uses_release_domain_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [".github/workflows/sedna-branch-build.yml"]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "release")
+        self.assertEqual(payload["source"], "domain_rules")
+        self.assertEqual(payload["lane_ids"], [])
+
+    def test_recommend_lab_unknown_path_uses_frontier_fallback(self) -> None:
+        payload = self.recommend_lab_for_files(["unknown/place/example.txt"])
+
+        self.assertEqual(payload["profile"], "frontier")
+        self.assertEqual(payload["lane_set"], "all")
+        self.assertEqual(payload["source"], "conservative_fallback")
+        self.assertEqual(payload["lane_ids"], [])
+        self.assertEqual(payload["domains"], ["unknown"])
+
+    def test_recommend_lab_missing_metadata_uses_frontier_fallback(self) -> None:
+        payload = self.recommend_lab_for_files([])
+
+        self.assertEqual(payload["profile"], "frontier")
+        self.assertEqual(payload["lane_set"], "all")
+        self.assertEqual(payload["source"], "conservative_fallback")
+        self.assertIn("metadata was empty", payload["reason"])
+
+    def test_recommend_lab_rejects_route_with_unknown_lane(self) -> None:
+        catalog = json.loads((REPO_ROOT / ".github/validation-lanes.json").read_text())
+        catalog["followup_routes"].append(
+            {
+                "route_id": "synthetic-missing-lane",
+                "lane_ids": ["codex.synthetic-missing-lane"],
+                "allowed_paths": ["synthetic/missing-lane.txt"],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(catalog, handle)
+            handle.flush()
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "resolve_validation_plan.py"),
+                    "recommend-lab",
+                    "--changed-files-json",
+                    json.dumps(["synthetic/missing-lane.txt"]),
+                    "--catalog-path",
+                    handle.name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(
+            "matched follow-up route contains unknown lane IDs: "
+            "codex.synthetic-missing-lane",
+            proc.stderr,
+        )
 
     def test_lab_targeted_ui_protocol_lane_set_returns_selected_matrix(self) -> None:
         payload = run_script(
@@ -1292,7 +1432,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 11)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["smoke_release_lane_count"], 1)
@@ -1747,6 +1887,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '--dedupe-matched-run-url "${{ needs.metadata.outputs.dedupe_matched_run_url }}"',
             run_script,
         )
+        self.assertIn(
+            '--latest-head-sha "${{ needs.metadata.outputs.head_sha }}"',
+            run_script,
+        )
 
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
@@ -2087,7 +2231,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     for step in run_job.get("steps") or []
                     if step.get("name") == "Configure sccache backend"
                 )
-                self.assertIn("configure_sccache_backend.sh", configure_step.get("run") or "")
+                workflow_src_prefix = (
+                    "../.workflow-src"
+                    if workflow_name == "_sedna-linux-rust.yml"
+                    else ".workflow-src"
+                )
+                self.assertEqual(
+                    configure_step.get("run"),
+                    f"bash {workflow_src_prefix}/.github/scripts/configure_sccache_backend.sh '${{{{ inputs.cache_policy }}}}'",
+                )
 
                 save_step = next(
                     step
@@ -2460,6 +2612,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     {"uses": "security-and-quality"},
                     {"uses": "./.github/codeql/rust-computer-use-contract"},
                 ],
+                "paths": ["codex-rs", "tools"],
+                "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
                 "threat-models": "local",
             },
         )
@@ -2729,6 +2883,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn("scheduled_duplicate_skip", results_run)
         self.assertIn("Equivalent rust-ci run already passed", results_run)
+
+    def test_rust_ci_argument_comment_lint_timeout_matches_lane_contract(self) -> None:
+        rust_ci = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        rust_ci_full = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+
+        plan_run = (
+            (((rust_ci.get("jobs") or {}).get("matrix_plan") or {}).get("steps") or [])[0].get(
+                "run"
+            )
+            or ""
+        )
+        self.assertIn('"timeout_minutes": 240', plan_run)
+
+        rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
+            "argument_comment_lint_prebuilt"
+        ) or {}
+        self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "240")
 
     def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -3043,6 +3214,118 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
         self.assertNotIn("run_command", summary)
 
+    def test_lane_summary_detects_server_notification_schema_fixture_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log = root / "lane.log"
+            output = root / "summary.json"
+            log.write_text(
+                "\n".join(
+                    [
+                        "thread 'json_schema_fixtures_match_generated' panicked at tests/schema_fixtures.rs:98:9:",
+                        "Vendored json app-server schema fixture ServerNotification.json differs from generated output. Run `just write-app-server-schema` to overwrite with your changes.",
+                        "--- fixture",
+                        "+++ generated",
+                        '-        "threadGoalUpdated": {',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.app-server-protocol-test",
+                    "--summary-title",
+                    "app-server protocol",
+                    "--script-path",
+                    ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+                    "--outcome",
+                    "failure",
+                    "--log-file",
+                    str(log),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        drift = summary["schema_fixture_drift"]
+        self.assertEqual(drift["kind"], "app_server_schema_fixture_drift")
+        self.assertEqual(drift["fixture_family"], "json")
+        self.assertEqual(drift["fixture_path"], "ServerNotification.json")
+        self.assertEqual(drift["direction"], "vendored_differs_from_generated")
+        self.assertEqual(drift["recommended_fix"], "just write-app-server-schema")
+        self.assertEqual(
+            drift["recommended_proof"],
+            {"profile": "targeted", "lane_ids": ["codex.app-server-protocol-test"]},
+        )
+        self.assertEqual(
+            summary["primary_signal"],
+            "json app-server schema fixture ServerNotification.json differs from generated output",
+        )
+
+    def test_aggregate_summary_surfaces_schema_fixture_drift_in_candidates(self) -> None:
+        drift = {
+            "kind": "app_server_schema_fixture_drift",
+            "fixture_family": "json",
+            "fixture_path": "ServerNotification.json",
+            "direction": "vendored_differs_from_generated",
+            "recommended_proof": {
+                "profile": "targeted",
+                "lane_ids": ["codex.app-server-protocol-test"],
+            },
+            "summary": "json app-server schema fixture ServerNotification.json differs from generated output",
+        }
+        results = AGGREGATE_VALIDATION_SUMMARY.build_results(
+            planned_matrix=[
+                {
+                    "lane_id": "codex.app-server-protocol-test",
+                    "setup_class": "rust_minimal",
+                    "summary_family": "app-server-protocol",
+                    "frontier_role": "sentinel",
+                    "status_class": "active",
+                }
+            ],
+            selected_lane_ids=["codex.app-server-protocol-test"],
+            actual_by_lane={
+                "codex.app-server-protocol-test": {
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                    "exit_code": 101,
+                    "schema_fixture_drift": drift,
+                }
+            },
+            smoke_gate_result="skipped",
+            setup_class_results={"rust_minimal": "failure"},
+            matrix_fail_fast=False,
+        )
+        setup_rows = AGGREGATE_VALIDATION_SUMMARY.setup_class_rows(
+            results, {"rust_minimal": "failure"}
+        )
+        primary, secondary = AGGREGATE_VALIDATION_SUMMARY.derive_primary_and_secondary(
+            results, setup_rows
+        )
+        queue = [*primary, *secondary]
+        candidates = []
+        for item in queue:
+            candidates.append(
+                {
+                    "kind": "lane",
+                    "lane_id": item["lane_id"],
+                    "signal": item.get("signal", ""),
+                    "schema_fixture_drift": item.get("schema_fixture_drift") or {},
+                }
+            )
+
+        self.assertEqual(primary[0]["signal"], drift["summary"])
+        self.assertEqual(primary[0]["schema_fixture_drift"], drift)
+        self.assertEqual(candidates[0]["schema_fixture_drift"], drift)
+
     def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -3064,18 +3347,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 36)
+        self.assertEqual(payload["planned_job_count"], 37)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 11)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "21")
-        self.assertEqual(payload["rust_integration_max_parallel"], "22")
+        self.assertEqual(payload["rust_integration_max_parallel"], "23")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -3098,16 +3381,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 39)
+        self.assertEqual(payload["planned_job_count"], 40)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 11)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "23")
-        self.assertEqual(payload["rust_integration_max_parallel"], "23")
+        self.assertEqual(payload["rust_integration_max_parallel"], "24")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -3447,6 +3730,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
+            '--latest-head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
             report_step.get("run") or "",
         )
         self.assertIn(
@@ -5027,6 +5314,138 @@ jobs:
             ),
             "success",
         )
+
+    def test_aggregate_summary_marks_stale_frontier_failures_for_targeted_latest_head_proof(self) -> None:
+        args = mock.Mock(
+            head_sha="1111111111111111111111111111111111111111",
+            latest_head_sha="2222222222222222222222222222222222222222",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="frontier",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {"kind": "lane", "lane_id": "codex.api-client-targeted", "outcome": "failure"},
+                {"kind": "lane", "lane_id": "codex.api-types-targeted", "outcome": "failure"},
+            ],
+            candidate_next_slices=[
+                {"kind": "lane", "lane_id": "codex.api-client-targeted", "signal": "API fixture failed"},
+                {"kind": "lane", "lane_id": "codex.api-types-targeted", "signal": "API type drift"},
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "stale")
+        self.assertEqual(
+            freshness["failed_lane_classification"],
+            "needs_targeted_latest_head_proof",
+        )
+        self.assertEqual(
+            freshness["recommended_rerun"]["lane_ids"],
+            ["codex.api-client-targeted", "codex.api-types-targeted"],
+        )
+        self.assertEqual(freshness["recommended_rerun"]["profile"], "targeted")
+
+    def test_aggregate_summary_marks_schema_fixture_failure_for_latest_head_proof(self) -> None:
+        args = mock.Mock(
+            head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+            latest_head_sha="ffffffffeeeeeeeeddddddddccccccccbbbbbbbb",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="targeted",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "signal": "schema fixture drift",
+                }
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "stale")
+        self.assertEqual(
+            freshness["failed_lane_classification"],
+            "needs_targeted_latest_head_proof",
+        )
+        self.assertEqual(
+            freshness["recommended_rerun"]["lane_ids"],
+            ["codex.app-server-protocol-test"],
+        )
+
+    def test_aggregate_summary_keeps_unknown_head_failure_active(self) -> None:
+        args = mock.Mock(
+            head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
+            latest_head_sha="",
+            smoke_gate_result="success",
+            artifact_result="skipped",
+            profile="targeted",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "outcome": "failure",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.app-server-protocol-test",
+                    "signal": "schema fixture drift",
+                }
+            ],
+            downstream_result="failure",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "unknown")
+        self.assertEqual(freshness["failed_lane_classification"], "active")
+        self.assertFalse(freshness["recommended_rerun"]["needed"])
+
+    def test_aggregate_summary_marks_cancelled_release_smoke_as_cancelled(self) -> None:
+        args = mock.Mock(
+            head_sha="1234567890abcdef1234567890abcdef12345678",
+            latest_head_sha="1234567890abcdef1234567890abcdef12345678",
+            smoke_gate_result="cancelled",
+            artifact_result="skipped",
+            profile="checkpoint",
+        )
+        freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
+            args,
+            queue=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.release-smoke",
+                    "outcome": "cancelled",
+                }
+            ],
+            candidate_next_slices=[
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.release-smoke",
+                    "signal": "release smoke cancelled",
+                }
+            ],
+            downstream_result="cancelled",
+        )
+
+        self.assertEqual(freshness["run_head_status"], "current")
+        self.assertEqual(freshness["failed_lane_classification"], "cancelled")
+        self.assertTrue(freshness["recommended_rerun"]["needed"])
+        self.assertEqual(freshness["recommended_rerun"]["lane_ids"], ["codex.release-smoke"])
 
     def test_markdown_link_regex_excludes_optional_title(self) -> None:
         match = CHECK_MARKDOWN_LINKS.INLINE_LINK_RE.search(

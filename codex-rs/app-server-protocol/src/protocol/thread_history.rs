@@ -213,6 +213,7 @@ impl ThreadHistoryBuilder {
             EventMsg::CollabAgentInteractionEnd(payload) => {
                 self.handle_collab_agent_interaction_end(payload)
             }
+            EventMsg::SubAgentActivity(payload) => self.handle_sub_agent_activity(payload),
             EventMsg::CollabWaitingBegin(payload) => self.handle_collab_waiting_begin(payload),
             EventMsg::CollabWaitingEnd(payload) => self.handle_collab_waiting_end(payload),
             EventMsg::CollabCloseBegin(payload) => self.handle_collab_close_begin(payload),
@@ -680,7 +681,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states: HashMap::new(),
         };
@@ -716,7 +717,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states,
         });
@@ -762,6 +763,18 @@ impl ThreadHistoryBuilder {
             reasoning_effort: None,
             timed_out: false,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
+        });
+    }
+
+    fn handle_sub_agent_activity(
+        &mut self,
+        payload: &codex_protocol::protocol::SubAgentActivityEvent,
+    ) {
+        self.upsert_item_in_current_turn(ThreadItem::SubAgentActivity {
+            id: payload.event_id.clone(),
+            kind: payload.kind.into(),
+            agent_thread_id: payload.agent_thread_id.to_string(),
+            agent_path: String::from(payload.agent_path.clone()),
         });
     }
 
@@ -2069,6 +2082,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: String::new(),
                 aggregated_output: "hello world\n".into(),
@@ -2116,6 +2130,7 @@ mod tests {
                 command: "echo 'hello world'".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-1".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -2369,6 +2384,7 @@ mod tests {
                 parsed_cmd: vec![ParsedCommand::Unknown { cmd: "ls".into() }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: "exec command rejected by user".into(),
                 aggregated_output: "exec command rejected by user".into(),
@@ -2409,6 +2425,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-2".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2507,6 +2524,7 @@ mod tests {
                 command: "rm -rf /tmp/guardian".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2573,6 +2591,7 @@ mod tests {
                 command: "/bin/rm -f /tmp/file.sqlite".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
                 command_actions: vec![CommandAction::Unknown {
@@ -2638,6 +2657,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -2673,6 +2693,7 @@ mod tests {
                 command: "echo done".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-42".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -2738,6 +2759,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -3069,6 +3091,7 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                window_id: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

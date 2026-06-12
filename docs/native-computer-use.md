@@ -78,6 +78,19 @@ browser backend registry: Android is a peer native adapter, while the browser
 registry is the routing layer for browser-specific backends such as
 Playwright, in-app browser, and Chrome extension.
 
+Local Android bridge configuration lives in
+`~/.codex/android-computer-use.json`; the legacy
+`~/.codex/android-dynamic-tools.json` and
+`~/.codex/solarlab-android-dynamic-tools.json` names are still accepted while
+older provider configs converge. The bridge requires `mcp_url`, and may also read
+`default_serial`, `default_package_name`, and `default_activity`. Explicit tool
+arguments always win. When a serial is not supplied, the bridge applies
+`default_serial` to observe, step, screenshot fallback, and build-install
+provider calls. When `launch_app` omits a package, the bridge uses
+`default_package_name`; `default_activity` is applied only for the configured
+default package so an explicit package does not accidentally inherit the wrong
+activity.
+
 When an Android action fails, the native bridge should return the action error
 with a fresh post-failure observation when the provider can still capture one:
 current screenshot, compact UI digest or selector candidates, and any completed
@@ -86,6 +99,13 @@ from blindly replaying mutating input after a partially completed flow. If
 post-failure screenshot capture is unavailable, the response must say that the
 current state is unproven and instruct the agent to recover with
 `android_observe` before making visual claims.
+
+When the Android provider itself is temporarily unreachable, including hosted
+provider tunnel failures surfaced as HTTP 530, Codex returns a failed
+computer-use response labeled `Android provider unavailable` with
+`retryability: retry_same_request`. That classification is an operator hint:
+the tool call did not prove anything about the Android screen, and retrying the
+same non-mutating observe call is reasonable after the provider is restored.
 
 Performance, memory, and jank analysis belong in a companion Android
 performance workflow rather than the hot `android_step` path. Use adb-backed
@@ -549,6 +569,12 @@ browser-provider, or Solar Gravity Lab validation only when the question is the
 runtime provider or a consumer app, not the generic Codex computer-use
 contract.
 
+The built-in Playwright browser provider owns browser profile launch hygiene:
+before opening a persistent context, it clears Chromium tab-session restore
+artifacts so stale restored tabs cannot navigate to old localhost targets ahead
+of an explicit `browser_observe` or `browser_step` URL. Provider-managed
+`state.json`, cookies, local storage, and other profile data remain intact.
+
 ## Primary Files
 
 - `codex-rs/protocol/src/computer_use.rs`
@@ -559,7 +585,7 @@ contract.
 - `codex-rs/tools/src/computer_use_tool.rs`
 - `codex-rs/tools/src/desktop_tool.rs`
 - `codex-rs/core/src/tools/handlers/computer_use.rs`
-- `codex-rs/core/src/tools/tool_search_entry.rs`
+- `codex-rs/tools/src/tool_search.rs`
 - `codex-rs/core-plugins/src/lib.rs`
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`

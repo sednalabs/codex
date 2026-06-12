@@ -6,16 +6,17 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::tool_search_entry::ToolSearchEntry;
-use crate::tools::tool_search_entry::ToolSearchInfo;
 use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_tools::LoadableToolSpec;
+use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchEntry;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
@@ -53,7 +54,6 @@ impl ToolSearchHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(TOOL_SEARCH_TOOL_NAME)
@@ -67,7 +67,13 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
         true
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ToolSearchHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -114,13 +120,55 @@ impl ToolSearchHandler {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
-        let results = self
-            .search_engine
-            .search(query, limit)
-            .into_iter()
-            .map(|result| result.document.id)
-            .filter_map(|id| self.entries.get(id));
-        self.search_output_tools(results)
+        let exact_result_ids = self.exact_identifier_match_ids(query, limit);
+        if exact_result_ids.len() >= limit {
+            let results = exact_result_ids
+                .iter()
+                .filter_map(|id| self.entries.get(*id));
+            return self.search_output_tools(results);
+        }
+
+        if exact_result_ids.is_empty() {
+            let results = self
+                .search_engine
+                .search(query, limit)
+                .into_iter()
+                .map(|result| result.document.id)
+                .filter_map(|id| self.entries.get(id));
+            return self.search_output_tools(results);
+        }
+
+        let exact_result_id_set = exact_result_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let results = exact_result_ids
+            .iter()
+            .filter_map(|id| self.entries.get(*id))
+            .chain(
+                self.search_engine
+                    .search(query, limit)
+                    .into_iter()
+                    .map(|result| result.document.id)
+                    .filter(|id| !exact_result_id_set.contains(id))
+                    .filter_map(|id| self.entries.get(id)),
+            );
+        self.search_output_tools(results.take(limit))
+    }
+
+    fn exact_identifier_match_ids(&self, query: &str, limit: usize) -> Vec<usize> {
+        let terms = exact_identifier_terms(query);
+        if terms.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry_matches_exact_identifier(entry, &terms))
+            .map(|(idx, _)| idx)
+            .take(limit)
+            .collect()
     }
 
     fn search_output_tools<'a>(
@@ -131,6 +179,71 @@ impl ToolSearchHandler {
             results.into_iter().map(|entry| entry.output.clone()),
         ))
     }
+}
+
+fn exact_identifier_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| {
+            term.trim_matches(|ch: char| {
+                !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == ':' || ch == '/')
+            })
+        })
+        .filter(|term| is_exact_identifier_term(term))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn is_exact_identifier_term(term: &str) -> bool {
+    term.len() >= 3
+        && (term.chars().any(|ch| matches!(ch, '_' | ':' | '/')) || term.matches('-').count() >= 2)
+}
+
+fn entry_matches_exact_identifier(entry: &ToolSearchEntry, terms: &[String]) -> bool {
+    match &entry.output {
+        LoadableToolSpec::Function(tool) => terms
+            .iter()
+            .any(|term| tool.name.eq_ignore_ascii_case(term)),
+        LoadableToolSpec::Namespace(namespace) => namespace.tools.iter().any(|tool| {
+            let ResponsesApiNamespaceTool::Function(tool) = tool;
+            terms
+                .iter()
+                .any(|term| matches_namespaced_tool_identifier(term, &namespace.name, &tool.name))
+        }),
+    }
+}
+
+fn matches_namespaced_tool_identifier(term: &str, namespace: &str, tool_name: &str) -> bool {
+    if tool_name.eq_ignore_ascii_case(term) {
+        return true;
+    }
+
+    let namespace_prefix = namespace.trim_end_matches('_');
+    if namespace_prefix.is_empty() {
+        return false;
+    }
+
+    let namespace_len = namespace_prefix.len();
+    let delimiter_len = "__".len();
+    if term.len() <= namespace_len + delimiter_len {
+        return false;
+    }
+
+    if !term.is_char_boundary(namespace_len)
+        || !term.is_char_boundary(namespace_len + delimiter_len)
+    {
+        return false;
+    }
+
+    if !term[..namespace_len].eq_ignore_ascii_case(namespace_prefix) {
+        return false;
+    }
+
+    if !term[namespace_len..].starts_with("__") {
+        return false;
+    }
+
+    term[namespace_len + delimiter_len..].eq_ignore_ascii_case(tool_name.trim_start_matches('_'))
 }
 
 #[cfg(test)]
@@ -269,9 +382,170 @@ mod tests {
             "cloudflare d1 execute query",
             "Cloudflare D1 read only query execute SQL database",
         ] {
-            let tools = handler.search(query, 1).expect("search should succeed");
+            let tools = handler
+                .search(query, /*limit*/ 1)
+                .expect("search should succeed");
             assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
         }
+    }
+
+    #[test]
+    fn mcp_search_surfaces_ops_queue_tools_for_exact_identifier_query() {
+        let search_infos = [
+            tool_info(
+                "ops",
+                "work_item_queue_add",
+                "Add a work item to an Ops runner queue",
+            ),
+            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
+            tool_info(
+                "ops",
+                "work_item_queue_remove",
+                "Remove a work item from an Ops runner queue",
+            ),
+            tool_info(
+                "ops",
+                "work_item_queue_upsert",
+                "Upsert an Ops runner queue",
+            ),
+            tool_info(
+                "ops",
+                "runner_checkpoint_append",
+                "Append a runner checkpoint",
+            ),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search(
+                concat!(
+                    "work_item_queue_add ",
+                    "work_item_queue_read ",
+                    "work_item_queue_upsert ",
+                    "work_item_queue_remove",
+                ),
+                /*limit*/ 8,
+            )
+            .expect("search should succeed");
+
+        assert_eq!(
+            namespace_tool_names(&tools),
+            vec![
+                "work_item_queue_add",
+                "work_item_queue_read",
+                "work_item_queue_remove",
+                "work_item_queue_upsert",
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_search_surfaces_flattened_namespace_identifier_query() {
+        let search_infos = [
+            tool_info(
+                "ops",
+                "work_item_queue_add",
+                "Add a work item to an Ops runner queue",
+            ),
+            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search("mcp__ops__work_item_queue_read", /*limit*/ 1)
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_read"]);
+    }
+
+    #[test]
+    fn exact_identifier_match_requires_callable_identifier_equality() {
+        let search_infos = [
+            tool_info(
+                "ops",
+                "work_item_queue_remove_all",
+                "Remove all items from an Ops runner queue",
+            ),
+            tool_info(
+                "ops",
+                "work_item_queue_remove",
+                "Remove one item from an Ops runner queue",
+            ),
+        ]
+        .into_iter()
+        .map(|tool| {
+            McpHandler::new(tool)
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info")
+        })
+        .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        let tools = handler
+            .search("work_item_queue_remove", /*limit*/ 1)
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_remove"]);
+    }
+
+    #[test]
+    fn exact_identifier_match_does_not_promote_schema_identifiers() {
+        let search_infos = cloudflare_like_tools()
+            .into_iter()
+            .map(|tool| {
+                McpHandler::new(tool)
+                    .expect("MCP tool should convert")
+                    .search_info()
+                    .expect("MCP handler should return search info")
+            })
+            .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(search_infos);
+
+        assert!(
+            handler
+                .exact_identifier_match_ids("database_id", /*limit*/ 8)
+                .is_empty()
+        );
+
+        let tools = handler
+            .search(
+                "Cloudflare database_id read only query execute SQL database",
+                /*limit*/ 1,
+            )
+            .expect("search should succeed");
+
+        assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
+    }
+
+    #[test]
+    fn exact_identifier_terms_ignores_natural_language_words() {
+        assert_eq!(
+            exact_identifier_terms(concat!(
+                "Find `work_item_queue_add`, ",
+                "mcp__ops__work_item_queue_read and queue tools",
+            )),
+            vec![
+                "work_item_queue_add".to_string(),
+                "mcp__ops__work_item_queue_read".to_string(),
+            ]
+        );
     }
 
     fn namespace_tool_names(tools: &[LoadableToolSpec]) -> Vec<&str> {
@@ -296,31 +570,31 @@ mod tests {
                 "api_read",
                 "Execute a read-only Cloudflare REST API GET operation.",
                 &["operation_id", "query"],
-                true,
+                /*read_only*/ true,
             ),
             cloudflare_tool_info(
                 "api_mutate",
                 "Execute a mutating Cloudflare REST API operation.",
                 &["operation_id", "body"],
-                false,
+                /*read_only*/ false,
             ),
             cloudflare_tool_info(
                 "d1_validate_query",
                 "Validate one read-only D1 SQL statement without executing it.",
                 &["database_id", "sql"],
-                true,
+                /*read_only*/ true,
             ),
             cloudflare_tool_info(
                 "d1_execute_write",
                 "Execute one audited D1 row-write SQL statement.",
                 &["database_id", "sql"],
-                false,
+                /*read_only*/ false,
             ),
             cloudflare_tool_info(
                 "d1_query_read_only",
                 "Run or execute one read-only D1 SQL SELECT query against a database and return rows.",
                 &["database_id", "sql", "max_rows"],
-                true,
+                /*read_only*/ true,
             ),
         ]
     }

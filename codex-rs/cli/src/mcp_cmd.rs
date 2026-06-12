@@ -26,7 +26,9 @@ use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_scopes;
 use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_rmcp_client::DeviceAuthorizationPrompt;
 use codex_rmcp_client::delete_oauth_tokens;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::perform_oauth_login;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
@@ -159,6 +161,10 @@ pub struct LoginArgs {
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
     pub scopes: Vec<String>,
+
+    /// Use OAuth device authorization for headless login.
+    #[arg(long = "device-auth")]
+    pub device_auth: bool,
 }
 
 #[derive(Debug, clap::Parser)]
@@ -247,6 +253,60 @@ async fn perform_oauth_login_retry_without_scopes(
                 oauth_resource,
                 callback_port,
                 callback_url,
+            )
+            .await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Preserve compatibility with device authorization providers that reject
+/// discovered scopes. If a discovered-scope request is rejected by the
+/// provider, retry the device flow once without scopes.
+#[allow(clippy::too_many_arguments)]
+async fn perform_oauth_device_login_retry_without_scopes(
+    name: &str,
+    url: &str,
+    store_mode: codex_config::types::OAuthCredentialsStoreMode,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    resolved_scopes: &ResolvedMcpOAuthScopes,
+    oauth_client_id: Option<&str>,
+    oauth_resource: Option<&str>,
+    device_authorization_endpoint: &str,
+    token_endpoint: &str,
+    prompt_handler: fn(DeviceAuthorizationPrompt),
+) -> Result<()> {
+    match perform_oauth_device_login(
+        name,
+        url,
+        store_mode,
+        http_headers.clone(),
+        env_http_headers.clone(),
+        &resolved_scopes.scopes,
+        oauth_client_id,
+        oauth_resource,
+        device_authorization_endpoint,
+        token_endpoint,
+        prompt_handler,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(err) if should_retry_without_scopes(resolved_scopes, &err) => {
+            println!("OAuth provider rejected discovered scopes. Retrying without scopes…");
+            perform_oauth_device_login(
+                name,
+                url,
+                store_mode,
+                http_headers,
+                env_http_headers,
+                &[],
+                oauth_client_id,
+                oauth_resource,
+                device_authorization_endpoint,
+                token_endpoint,
+                prompt_handler,
             )
             .await
         }
@@ -378,6 +438,15 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     match oauth_login_support(&transport).await {
         McpOAuthLoginSupport::Supported(oauth_config) => {
+            if oauth_config.authorization_endpoint.is_none()
+                && oauth_config.device_authorization_endpoint.is_some()
+            {
+                println!(
+                    "Detected OAuth device authorization support. Run `codex mcp login --device-auth {name}` to login."
+                );
+                return Ok(());
+            }
+
             println!("Detected OAuth support. Starting OAuth flow…");
             let resolved_scopes = resolve_oauth_scopes(
                 /*explicit_scopes*/ None,
@@ -453,7 +522,11 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     )));
     let mcp_servers = mcp_manager.configured_servers(&config).await;
 
-    let LoginArgs { name, scopes } = login_args;
+    let LoginArgs {
+        name,
+        scopes,
+        device_auth,
+    } = login_args;
 
     let Some(server) = mcp_servers.get(&name) else {
         bail!("No MCP server named '{name}' found.");
@@ -478,6 +551,55 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
 
+    if device_auth {
+        let oauth_config = match oauth_login_support(&server.transport).await {
+            McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
+            McpOAuthLoginSupport::Unsupported => {
+                bail!("No authorization support detected for MCP server '{name}'.")
+            }
+            McpOAuthLoginSupport::Unknown(err) => {
+                return Err(err).context(format!(
+                    "failed to discover OAuth support for MCP server '{name}'"
+                ));
+            }
+        };
+        let Some(device_authorization_endpoint) = oauth_config
+            .device_authorization_endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+        else {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing device_authorization_endpoint."
+            );
+        };
+        if let Some(grant_types) = &oauth_config.grant_types_supported
+            && !grant_types
+                .iter()
+                .any(|grant| grant == "urn:ietf:params:oauth:grant-type:device_code")
+        {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing device_code grant type."
+            );
+        }
+
+        perform_oauth_device_login_retry_without_scopes(
+            &name,
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            http_headers,
+            env_http_headers,
+            &resolved_scopes,
+            server.oauth_client_id(),
+            server.oauth_resource.as_deref(),
+            device_authorization_endpoint,
+            &oauth_config.token_endpoint,
+            print_device_authorization_prompt,
+        )
+        .await?;
+        println!("Successfully logged in to MCP server '{name}'.");
+        return Ok(());
+    }
+
     perform_oauth_login_retry_without_scopes(
         &name,
         &url,
@@ -493,6 +615,15 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
+}
+
+fn print_device_authorization_prompt(prompt: DeviceAuthorizationPrompt) {
+    println!(
+        "Authorize `{}` by opening this URL in your browser:\n{}\n\nEnter code: {}\n",
+        prompt.server_name(),
+        prompt.verification_uri(),
+        prompt.user_code()
+    );
 }
 
 async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutArgs) -> Result<()> {
@@ -989,5 +1120,24 @@ fn format_mcp_status(config: &McpServerConfig) -> String {
         format!("disabled: {reason}")
     } else {
         "disabled".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn mcp_login_parses_device_auth_flag() {
+        let cli = McpCli::try_parse_from(["mcp", "login", "--device-auth", "ops"])
+            .expect("parse mcp login");
+        let McpSubcommand::Login(args) = cli.subcommand else {
+            panic!("expected login subcommand");
+        };
+
+        assert_eq!(args.name, "ops");
+        assert_eq!(args.scopes, Vec::<String>::new());
+        assert!(args.device_auth);
     }
 }

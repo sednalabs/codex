@@ -896,6 +896,70 @@ async fn replayed_compaction_item_start_restores_compaction_status() {
 }
 
 #[tokio::test]
+async fn replayed_compaction_item_completion_restores_finished_status() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Context compacted");
+    assert_eq!(status.details(), None);
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Context compacted"),
+        "expected replayed completed compaction notice, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn replayed_thread_closed_notification_does_not_exit_tui() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

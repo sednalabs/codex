@@ -235,6 +235,7 @@ pub enum McpServerStartupState {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct McpServerStatusUpdatedNotification {
+    pub thread_id: Option<String>,
     pub name: String,
     pub status: McpServerStartupState,
     pub error: Option<String>,
@@ -692,9 +693,7 @@ impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitatio
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: value
-                .meta
-                .and_then(|meta| serde_json::from_value(meta).ok()),
+            meta: value.meta.and_then(json_value_to_rmcp_meta),
         }
     }
 }
@@ -704,7 +703,18 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: value.meta.and_then(|meta| serde_json::to_value(meta).ok()),
+            meta: value.meta.map(rmcp_meta_to_json_value),
         }
     }
+}
+
+fn json_value_to_rmcp_meta(value: JsonValue) -> Option<rmcp::model::Meta> {
+    match value {
+        JsonValue::Object(object) => Some(rmcp::model::Meta(object)),
+        _ => None,
+    }
+}
+
+fn rmcp_meta_to_json_value(meta: rmcp::model::Meta) -> JsonValue {
+    JsonValue::Object(meta.0)
 }

@@ -11,7 +11,7 @@
 //!
 //! The transcript overlay is kept in sync by `App::overlay_forward_event`, which syncs a live tail
 //! during draws using `active_cell_transcript_key()` and
-//! `active_cell_transcript_hyperlink_lines()`. The
+//! `active_cell_transcript_hyperlink_lines_for_detail_mode()`. The
 //! cache key is designed to change when the active cell mutates in place or when its transcript
 //! output is time-dependent so the overlay can refresh its cached tail without rebuilding it on
 //! every draw.
@@ -58,12 +58,9 @@ use crate::bottom_pane::TerminalTitleItem;
 use crate::bottom_pane::TerminalTitleSetupView;
 use crate::diff_model::FileChange;
 use crate::git_action_directives::parse_assistant_markdown;
-use crate::legacy_core::DEFAULT_AGENTS_MD_FILENAME;
 use crate::legacy_core::config::Config;
-use crate::legacy_core::config::Constrained;
-use crate::legacy_core::config::ConstraintResult;
 use crate::legacy_core::config::PermissionProfileSnapshot;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::mention_codec::LinkedMention;
 use crate::mention_codec::encode_history_mentions;
@@ -114,6 +111,8 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::TerminalWaitInfo;
+use codex_app_server_protocol::TerminalWaitPrimitive;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -127,6 +126,8 @@ use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_config::ConfigLayerStackOrdering;
+use codex_config::Constrained;
+use codex_config::ConstraintResult;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::Notifications;
 use codex_config::types::WindowsSandboxModeToml;
@@ -153,7 +154,7 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::Settings;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -193,6 +194,24 @@ use tracing::debug;
 use tracing::warn;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CopyStatus {
+    Success(String),
+    Error(String),
+}
+
+impl CopyStatus {
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Success(message) | Self::Error(message) => message,
+        }
+    }
+
+    pub(crate) fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+}
 const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
@@ -257,11 +276,16 @@ fn queued_message_edit_hint_binding(
         .or_else(|| bindings.first().copied())
 }
 
+fn normalize_thread_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
 use crate::auto_review_denials;
@@ -470,7 +494,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
 const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
-const AUTO_REVIEW_DESCRIPTION: &str = "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the auto-reviewer subagent.";
+const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
+const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
+const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe.";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 2] = ["model-with-reasoning", "current-dir"];
 const MAX_AGENT_COPY_HISTORY: usize = 32;
@@ -645,6 +671,7 @@ pub(crate) struct ChatWidget {
     // order.
     suppress_initial_user_message_submit: bool,
     input_queue: InputQueueState,
+    cancel_edit: CancelEditState,
     /// Main chat-surface bindings resolved from `tui.keymap.chat`.
     chat_keymap: ChatKeymap,
     /// Keybinding to show for popping the most-recently queued message back
@@ -758,6 +785,13 @@ pub(crate) enum InterruptedTurnNoticeMode {
     Suppress,
 }
 
+#[derive(Debug, Default)]
+struct CancelEditState {
+    prompt: Option<UserMessage>,
+    eligible: bool,
+    armed: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayKind {
     ResumeInitialMessages,
@@ -857,6 +891,7 @@ fn request_permissions_from_params(
     RequestPermissionsEvent {
         turn_id: params.turn_id,
         call_id: params.item_id,
+        environment_id: params.environment_id,
         started_at_ms: params.started_at_ms,
         reason: params.reason,
         permissions: params.permissions.into(),
@@ -1183,6 +1218,9 @@ impl ChatWidget {
 
     fn add_boxed_history(&mut self, cell: Box<dyn HistoryCell>) {
         let cell = crate::contributor_slots::contribute_history_cell(cell);
+        if self.turn_lifecycle.agent_turn_running && !cell.display_lines(u16::MAX).is_empty() {
+            self.record_visible_turn_activity();
+        }
         // Keep the placeholder session header as the active cell until real session info arrives,
         // so we can merge headers instead of committing a duplicate box to history.
         let keep_placeholder_header_active = !self.is_session_configured()
@@ -1529,11 +1567,11 @@ impl ChatWidget {
     fn rename_confirmation_cell(name: &str, thread_id: Option<ThreadId>) -> PlainHistoryCell {
         let mut line = vec![
             "• ".into(),
-            "Thread renamed to ".into(),
+            "Session renamed to ".into(),
             name.to_string().cyan(),
         ];
         if let Some(hint) = resume_hint(Some(name), thread_id) {
-            line.extend([". To resume this thread run ".into(), hint.cyan()]);
+            line.extend([". To resume this session run ".into(), hint.cyan()]);
         }
         PlainHistoryCell::new(vec![line.into()])
     }
@@ -1801,7 +1839,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {
-        if matches!(op, AppCommand::Interrupt) && self.turn_lifecycle.agent_turn_running {
+        if let AppCommand::Interrupt { behavior } = op
+            && self.turn_lifecycle.agent_turn_running
+        {
+            if *behavior == crate::app_command::InterruptBehavior::RestorePromptIfNoOutput {
+                self.arm_cancel_edit();
+            }
             if let Some(controller) = self.stream_controller.as_mut() {
                 controller.clear_queue();
             }
@@ -1905,17 +1948,27 @@ impl ChatWidget {
     /// filters out empty results so the overlay can treat "nothing to render" as "no tail". Callers
     /// should pass the same width the overlay uses; using a different width will cause wrapping
     /// mismatches between the main viewport and the transcript overlay.
-    pub(crate) fn active_cell_transcript_hyperlink_lines(
+    pub(crate) fn active_cell_transcript_hyperlink_lines_for_detail_mode(
         &self,
         width: u16,
+        render_mode: super::history_cell::HistoryRenderMode,
+        detail_mode: super::history_cell::TranscriptDetailMode,
     ) -> Option<Vec<HyperlinkLine>> {
         let mut lines = Vec::new();
         if let Some(cell) = self.transcript.active_cell.as_ref() {
-            lines.extend(cell.transcript_hyperlink_lines(width));
+            lines.extend(cell.transcript_hyperlink_lines_for_detail_mode(
+                width,
+                render_mode,
+                detail_mode,
+            ));
         }
         if let Some(hook_cell) = self.active_hook_cell.as_ref() {
             // Compute hook lines first so hidden hooks do not add a separator.
-            let hook_lines = hook_cell.transcript_hyperlink_lines(width);
+            let hook_lines = hook_cell.transcript_hyperlink_lines_for_detail_mode(
+                width,
+                render_mode,
+                detail_mode,
+            );
             if !hook_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }
@@ -1926,8 +1979,12 @@ impl ChatWidget {
 
     #[cfg(test)]
     pub(crate) fn active_cell_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
-        self.active_cell_transcript_hyperlink_lines(width)
-            .map(crate::terminal_hyperlinks::visible_lines)
+        self.active_cell_transcript_hyperlink_lines_for_detail_mode(
+            width,
+            super::history_cell::HistoryRenderMode::Rich,
+            super::history_cell::TranscriptDetailMode::Verbose,
+        )
+        .map(crate::terminal_hyperlinks::visible_lines)
     }
 
     /// Return a reference to the widget's current config (includes any

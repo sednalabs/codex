@@ -31,6 +31,7 @@ use serde::Serialize;
 
 pub use crate::tui_keymap::KeybindingSpec;
 pub use crate::tui_keymap::KeybindingsSpec;
+pub use crate::tui_keymap::MAX_FUNCTION_KEY;
 pub use crate::tui_keymap::TuiApprovalKeymap;
 pub use crate::tui_keymap::TuiChatKeymap;
 pub use crate::tui_keymap::TuiComposerKeymap;
@@ -65,6 +66,17 @@ pub enum SessionPickerViewMode {
     Comfortable,
     #[default]
     Dense,
+}
+
+/// Default detail mode for the TUI transcript overlay.
+#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TuiTranscriptDetailMode {
+    /// Show the complete transcript, including terminal/tool details.
+    #[default]
+    Verbose,
+    /// Show a quieter transcript focused on user prompts and agent-facing output.
+    Compact,
 }
 
 impl SessionPickerViewMode {
@@ -424,6 +436,10 @@ pub struct AppConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
+    /// Reviewer for approval prompts from this app, overriding the thread default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
+
     /// Whether tools with `destructive_hint = true` are allowed for this app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destructive_enabled: Option<bool>,
@@ -671,6 +687,13 @@ pub struct Tui {
     /// Defaults to `false`.
     #[serde(default)]
     pub raw_output_mode: bool,
+
+    /// Default detail mode for the `Ctrl+T` transcript overlay.
+    ///
+    /// - `verbose` (default): show the complete audit transcript.
+    /// - `compact`: focus on user prompts and agent-facing output.
+    #[serde(default)]
+    pub transcript_default_detail_mode: TuiTranscriptDetailMode,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///

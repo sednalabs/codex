@@ -9,9 +9,9 @@ pub(crate) fn line_width(line: &Line<'_>) -> usize {
         .sum()
 }
 
-pub(crate) fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static> {
+pub(crate) fn truncate_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Line<'a> {
     if max_width == 0 {
-        return Line::from(Vec::<Span<'static>>::new());
+        return Line::from(Vec::<Span<'a>>::new());
     }
 
     let Line {
@@ -20,7 +20,7 @@ pub(crate) fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> L
         spans,
     } = line;
     let mut used = 0usize;
-    let mut spans_out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    let mut spans_out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
 
     for span in spans {
         let span_width = UnicodeWidthStr::width(span.content.as_ref());
@@ -72,12 +72,12 @@ pub(crate) fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> L
 /// pre-scan + return original line unchanged) and uses `truncate_line_to_width`
 /// for the overflow case.
 /// Performance should be reevaluated if using this method in loops/over larger content in the future.
-pub(crate) fn truncate_line_with_ellipsis_if_overflow(
-    line: Line<'static>,
+pub(crate) fn truncate_line_with_ellipsis_if_overflow<'a>(
+    line: Line<'a>,
     max_width: usize,
-) -> Line<'static> {
+) -> Line<'a> {
     if max_width == 0 {
-        return Line::from(Vec::<Span<'static>>::new());
+        return Line::from(Vec::<Span<'a>>::new());
     }
 
     if line_width(&line) <= max_width {

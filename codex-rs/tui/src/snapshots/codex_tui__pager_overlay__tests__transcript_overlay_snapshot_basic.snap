@@ -2,13 +2,13 @@
 source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
-"/ T R A N S C R I P T / / / / / / / / / "
+" Transcript: verbose ───────────────────"
 "alpha                                   "
 "                                        "
 "beta                                    "
 "                                        "
 "gamma                                   "
-"───────────────────────────────── 100% ─"
-" ↑/↓ to scroll   pgup/pgdn to page   hom"
-" q to quit   esc to edit prev           "
+"───────────────────────── 0 / 0 · 100% ─"
+" ↑/↓   ←/→   pgup/pgdn   home/end       "
+" q   ctrl + o   ⌥ + r   v   esc/←       "
 "                                        "

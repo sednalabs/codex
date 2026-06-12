@@ -851,6 +851,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.mcp-device-login-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-device-login-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-subagent-model-pinning-targeted",
       "groups": [
         "core"
@@ -1915,6 +1941,34 @@
       ]
     },
     {
+      "route_id": "mcp-device-login",
+      "lane_ids": [
+        "codex.mcp-device-login-targeted"
+      ],
+      "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs"
+      ]
+    },
+    {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
         "codex.spawn-agent-tool-model-surface-targeted",
@@ -1962,6 +2016,22 @@
       ]
     },
     {
+      "route_id": "app-server-protocol-schema-fixtures",
+      "lane_ids": [
+        "codex.app-server-protocol-test"
+      ],
+      "allowed_paths": [
+        "codex-rs/app-server-protocol/schema/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md"
+      ],
+      "required_any_paths": [
+        "codex-rs/app-server-protocol/schema/**"
+      ]
+    },
+    {
       "route_id": "app-server-computer-use",
       "lane_ids": [
         "codex.app-server-protocol-test",
@@ -1982,7 +2052,7 @@
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/handlers/tool_search.rs",
-        "codex-rs/core/src/tools/tool_search_entry.rs",
+        "codex-rs/tools/src/tool_search.rs",
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
         "codex-rs/tools/src/browser_tool.rs",

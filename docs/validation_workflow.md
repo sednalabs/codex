@@ -146,6 +146,27 @@ This is an intentional `validation-lab` use case, not a workaround. It reduces
 runner-minutes, wait time, and unnecessary compute while preserving hosted,
 attributable proof.
 
+## Advisory route recommendations
+
+Use the lab recommendation helper when changed-file metadata is available but
+the final dispatch should remain an explicit operator choice:
+
+```bash
+python3 .github/scripts/resolve_validation_plan.py recommend-lab \
+  --changed-files-json '[".github/workflows/validation-lab.yml"]'
+```
+
+The helper returns an advisory `profile`, `lane_set`, and optional comma
+separated `lanes` input. It prefers exact catalog follow-up routes when one
+route covers the changed files. If no exact route is available, it falls back to
+single-domain rules for workflow, docs, release, UI protocol, or Rust core
+changes. Empty, incomplete, cross-domain, or unknown metadata recommends
+`profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+
+The recommendation output is planner guidance only. It does not change default
+or required gates, does not make checkout-trust decisions, and does not dispatch
+GitHub Actions by itself.
+
 ## Lane catalog contract
 
 The validation planners now consume an explicit lane catalog rather than
@@ -221,6 +242,9 @@ That summary should identify:
 - one primary blocker per exercised summary family, rather than a raw duplicate
   list of every failing sentinel and depth lane
 - secondary findings for remaining cancelled or missing depth lanes
+- whether failed lane evidence is active, stale, cancelled, or needs a targeted
+  latest-head proof rerun
+- the smallest lane set to rerun when stale failure evidence is still plausible
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
 - enough structured failure context to route debugging without embedding raw
@@ -281,6 +305,13 @@ ownership boundary:
   schema, event path, and command-provider seam.
 - Solar Gravity Lab validation is appropriate when proving a consumer workflow,
   not when the question is the generic Codex computer-use contract.
+
+App-server protocol schema fixture drift should stay on the narrow
+`codex.app-server-protocol-test` proof lane. When that lane reports vendored
+schema fixtures diverging from freshly generated output, the lane summary
+artifact records the fixture family, fixture path when available, the
+vendored-versus-generated direction, and the targeted proof lane to rerun after
+regenerating fixtures.
 
 ## Documentation boundaries
 

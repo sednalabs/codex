@@ -38,7 +38,8 @@ impl ChatWidget {
             // Consolidate the run of streaming AgentMessageCells into a single AgentMarkdownCell
             // that can re-render from source on resize.
             if let Some(source) = source {
-                let source = parse_assistant_markdown(&source).visible_markdown;
+                let source =
+                    parse_assistant_markdown(&source, self.config.cwd.as_path()).visible_markdown;
                 self.app_event_tx.send(AppEvent::ConsolidateAgentMessage {
                     source,
                     cwd: self.config.cwd.to_path_buf(),
@@ -110,6 +111,9 @@ impl ChatWidget {
     pub(super) fn on_plan_delta(&mut self, delta: String) {
         if self.active_mode_kind() != ModeKind::Plan {
             return;
+        }
+        if !delta.is_empty() {
+            self.record_visible_turn_activity();
         }
         if !self.transcript.plan_item_active {
             self.transcript.plan_item_active = true;
@@ -258,7 +262,7 @@ impl ChatWidget {
                 AgentMessageContent::Text { text } => message.push_str(text),
             }
         }
-        let parsed = parse_assistant_markdown(&message);
+        let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
         self.finalize_completed_assistant_message(
             (!parsed.visible_markdown.is_empty()).then_some(parsed.visible_markdown.as_str()),
         );
@@ -370,6 +374,9 @@ impl ChatWidget {
 
     #[inline]
     pub(super) fn handle_streaming_delta(&mut self, delta: String) {
+        if !delta.is_empty() {
+            self.record_visible_turn_activity();
+        }
         if self.stream_controller.is_none() {
             // Before starting an agent stream, flush any active exec cell group.
             self.flush_unified_exec_wait_streak();

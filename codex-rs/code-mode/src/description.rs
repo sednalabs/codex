@@ -7,8 +7,13 @@ use std::collections::BTreeMap;
 use crate::PUBLIC_TOOL_NAME;
 
 const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+const MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS: usize = 16 * 1024;
+const MAX_SCHEMA_RENDER_DEPTH: usize = 16;
+const TRUNCATED_TOOL_DESCRIPTION_NOTICE: &str =
+    "\n\n(Type declaration truncated because the schema is too large.)";
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
+const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
 const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/compose tool calls
 - Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
@@ -17,14 +22,15 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - Runs raw JavaScript -- no Node, no file system, no network access, no console.
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
-- `yield_time_ms` asks `exec` to yield early after that many milliseconds if the script is still running.
-- `max_output_tokens` sets the token budget for direct `exec` results. By default the result is truncated to 10000 tokens.
+- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.
+- `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
 - When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
 - `text(value: string | number | boolean | undefined | null)`: Appends a text item. Non-string values are stringified with `JSON.stringify(...)` when possible.
 - `image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null } | ImageContent, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item. `image_url` can be an HTTPS URL or a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`. MCP image blocks may request detail with `_meta: { "codex/imageDetail": "original" }`. When provided, the second `detail` argument overrides any detail embedded in the first argument.
+- `generatedImage(result: { image_url: string; output_hint?: string })`: Appends an image-generation result and its optional output hint.
 - `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
 - `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.
 - `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.
@@ -34,9 +40,9 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` only after `exec` returns `Script running with cell ID ...`.
 - `cell_id` identifies the running `exec` cell to resume.
-- `yield_time_ms` controls how long to wait for more output before yielding again. If omitted, `wait` uses its default wait timeout.
-- `max_tokens` limits how much new output this wait call returns.
-- `terminate: true` stops the running cell instead of waiting for more output.
+- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.
+- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.
+- `terminate: true` stops the running cell; false or omitted waits for output.
 - `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.
 - If the cell is still running, `wait` may yield again with the same `cell_id`.
 - If the cell has already finished, `wait` returns the completed result and closes the cell."#;
@@ -273,7 +279,7 @@ pub fn build_exec_tool_description(
 
         for tool in enabled_tools {
             let name = tool.name.as_str();
-            let nested_description = render_code_mode_sample_for_definition(tool);
+            let nested_description = code_mode_sample_for_definition(tool);
             let namespace_description = tool
                 .tool_name
                 .namespace
@@ -348,7 +354,7 @@ pub fn normalize_code_mode_identifier(tool_key: &str) -> String {
 
 pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition {
     if definition.name != PUBLIC_TOOL_NAME {
-        definition.description = render_code_mode_sample_for_definition(&definition);
+        definition.description = code_mode_sample_for_definition(&definition);
     }
     definition
 }
@@ -385,7 +391,33 @@ pub fn render_code_mode_sample(
         "declare const tools: {{ {} }};",
         render_code_mode_tool_declaration(tool_name, input_name, input_type, output_type)
     );
-    format!("{description}\n\nexec tool declaration:\n```ts\n{declaration}\n```")
+    format!("{description}\n\n{EXEC_TOOL_DECLARATION_LABEL}\n```ts\n{declaration}\n```")
+}
+
+fn code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
+    // Tool definitions may flow through both model prompt planning and
+    // ALL_TOOLS metadata collection. Keep this augmentation idempotent so those
+    // phases can be composed without recursively embedding declarations.
+    let description = if definition.description.contains(EXEC_TOOL_DECLARATION_LABEL) {
+        definition.description.clone()
+    } else {
+        render_code_mode_sample_for_definition(definition)
+    };
+    truncate_code_mode_tool_description(description)
+}
+
+fn truncate_code_mode_tool_description(mut description: String) -> String {
+    if description.len() <= MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS {
+        return description;
+    }
+
+    let mut truncate_at = MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS;
+    while !description.is_char_boundary(truncate_at) {
+        truncate_at = truncate_at.saturating_sub(1);
+    }
+    description.truncate(truncate_at);
+    description.push_str(TRUNCATED_TOOL_DESCRIPTION_NOTICE);
+    description
 }
 
 fn render_code_mode_sample_for_definition(definition: &ToolDefinition) -> String {
@@ -445,7 +477,7 @@ fn render_tool_heading(global_name: &str, raw_name: &str) -> String {
 }
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
-    render_json_schema_to_typescript_inner(schema)
+    render_json_schema_to_typescript_inner(schema, /*depth*/ 0)
 }
 
 fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&JsonValue> {
@@ -489,7 +521,11 @@ fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&J
     )
 }
 
-fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
+fn render_json_schema_to_typescript_inner(schema: &JsonValue, depth: usize) -> String {
+    if depth > MAX_SCHEMA_RENDER_DEPTH {
+        return "unknown".to_string();
+    }
+
     match schema {
         JsonValue::Bool(true) => "unknown".to_string(),
         JsonValue::Bool(false) => "never".to_string(),
@@ -512,7 +548,9 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 if let Some(variants) = map.get(key).and_then(JsonValue::as_array) {
                     let rendered = variants
                         .iter()
-                        .map(render_json_schema_to_typescript_inner)
+                        .map(|variant| {
+                            render_json_schema_to_typescript_inner(variant, depth.saturating_add(1))
+                        })
                         .collect::<Vec<_>>();
                     if !rendered.is_empty() {
                         return rendered.join(" | ");
@@ -523,7 +561,9 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
             if let Some(variants) = map.get("allOf").and_then(JsonValue::as_array) {
                 let rendered = variants
                     .iter()
-                    .map(render_json_schema_to_typescript_inner)
+                    .map(|variant| {
+                        render_json_schema_to_typescript_inner(variant, depth.saturating_add(1))
+                    })
                     .collect::<Vec<_>>();
                 if !rendered.is_empty() {
                     return rendered.join(" & ");
@@ -535,7 +575,7 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                     let rendered = types
                         .iter()
                         .filter_map(JsonValue::as_str)
-                        .map(|schema_type| render_json_schema_type_keyword(map, schema_type))
+                        .map(|schema_type| render_json_schema_type_keyword(map, schema_type, depth))
                         .collect::<Vec<_>>();
                     if !rendered.is_empty() {
                         return rendered.join(" | ");
@@ -543,7 +583,7 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 }
 
                 if let Some(schema_type) = schema_type.as_str() {
-                    return render_json_schema_type_keyword(map, schema_type);
+                    return render_json_schema_type_keyword(map, schema_type, depth);
                 }
             }
 
@@ -551,11 +591,11 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
                 || map.contains_key("additionalProperties")
                 || map.contains_key("required")
             {
-                return render_json_schema_object(map);
+                return render_json_schema_object(map, depth);
             }
 
             if map.contains_key("items") || map.contains_key("prefixItems") {
-                return render_json_schema_array(map);
+                return render_json_schema_array(map, depth);
             }
 
             "unknown".to_string()
@@ -567,28 +607,29 @@ fn render_json_schema_to_typescript_inner(schema: &JsonValue) -> String {
 fn render_json_schema_type_keyword(
     map: &serde_json::Map<String, JsonValue>,
     schema_type: &str,
+    depth: usize,
 ) -> String {
     match schema_type {
         "string" => "string".to_string(),
         "number" | "integer" => "number".to_string(),
         "boolean" => "boolean".to_string(),
         "null" => "null".to_string(),
-        "array" => render_json_schema_array(map),
-        "object" => render_json_schema_object(map),
+        "array" => render_json_schema_array(map, depth),
+        "object" => render_json_schema_object(map, depth),
         _ => "unknown".to_string(),
     }
 }
 
-fn render_json_schema_array(map: &serde_json::Map<String, JsonValue>) -> String {
+fn render_json_schema_array(map: &serde_json::Map<String, JsonValue>, depth: usize) -> String {
     if let Some(items) = map.get("items") {
-        let item_type = render_json_schema_to_typescript_inner(items);
+        let item_type = render_json_schema_to_typescript_inner(items, depth.saturating_add(1));
         return format!("Array<{item_type}>");
     }
 
     if let Some(items) = map.get("prefixItems").and_then(JsonValue::as_array) {
         let item_types = items
             .iter()
-            .map(render_json_schema_to_typescript_inner)
+            .map(|item| render_json_schema_to_typescript_inner(item, depth.saturating_add(1)))
             .collect::<Vec<_>>();
         if !item_types.is_empty() {
             return format!("[{}]", item_types.join(", "));
@@ -603,12 +644,16 @@ fn append_additional_properties_line(
     map: &serde_json::Map<String, JsonValue>,
     properties: &serde_json::Map<String, JsonValue>,
     line_prefix: &str,
+    depth: usize,
 ) {
     if let Some(additional_properties) = map.get("additionalProperties") {
         let property_type = match additional_properties {
             JsonValue::Bool(true) => Some("unknown".to_string()),
             JsonValue::Bool(false) => None,
-            value => Some(render_json_schema_to_typescript_inner(value)),
+            value => Some(render_json_schema_to_typescript_inner(
+                value,
+                depth.saturating_add(1),
+            )),
         };
 
         if let Some(property_type) = property_type {
@@ -626,18 +671,23 @@ fn has_property_description(value: &JsonValue) -> bool {
         .is_some_and(|description| !description.is_empty())
 }
 
-fn render_json_schema_object_property(name: &str, value: &JsonValue, required: &[&str]) -> String {
+fn render_json_schema_object_property(
+    name: &str,
+    value: &JsonValue,
+    required: &[&str],
+    depth: usize,
+) -> String {
     let optional = if required.iter().any(|required_name| required_name == &name) {
         ""
     } else {
         "?"
     };
     let property_name = render_json_schema_property_name(name);
-    let property_type = render_json_schema_to_typescript_inner(value);
+    let property_type = render_json_schema_to_typescript_inner(value, depth.saturating_add(1));
     format!("{property_name}{optional}: {property_type};")
 }
 
-fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String {
+fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>, depth: usize) -> String {
     let required = map
         .get("required")
         .and_then(JsonValue::as_array)
@@ -674,21 +724,21 @@ fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>) -> String
 
             lines.push(format!(
                 "  {}",
-                render_json_schema_object_property(name, value, &required)
+                render_json_schema_object_property(name, value, &required, depth)
             ));
         }
 
-        append_additional_properties_line(&mut lines, map, &properties, "  ");
+        append_additional_properties_line(&mut lines, map, &properties, "  ", depth);
         lines.push("}".to_string());
         return lines.join("\n");
     }
 
     let mut lines = sorted_properties
         .into_iter()
-        .map(|(name, value)| render_json_schema_object_property(name, value, &required))
+        .map(|(name, value)| render_json_schema_object_property(name, value, &required, depth))
         .collect::<Vec<_>>();
 
-    append_additional_properties_line(&mut lines, map, &properties, "");
+    append_additional_properties_line(&mut lines, map, &properties, "", depth);
 
     if lines.is_empty() {
         return "{}".to_string();
@@ -712,13 +762,16 @@ fn render_json_schema_literal(value: &JsonValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::CodeModeToolKind;
+    use super::MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS;
     use super::ParsedExecSource;
+    use super::TRUNCATED_TOOL_DESCRIPTION_NOTICE;
     use super::ToolDefinition;
     use super::ToolNamespaceDescription;
     use super::augment_tool_definition;
     use super::build_exec_tool_description;
     use super::normalize_code_mode_identifier;
     use super::parse_exec_source;
+    use super::render_json_schema_to_typescript;
     use codex_protocol::ToolName;
     use pretty_assertions::assert_eq;
     use serde_json::Value as JsonValue;
@@ -781,6 +834,26 @@ mod tests {
     }
 
     #[test]
+    fn render_json_schema_to_typescript_caps_deep_schema_recursion() {
+        let mut schema = json!({ "type": "string" });
+        for _ in 0..128 {
+            schema = json!({
+                "type": "object",
+                "properties": {
+                    "next": schema
+                },
+                "required": ["next"],
+                "additionalProperties": false
+            });
+        }
+
+        let rendered = render_json_schema_to_typescript(&schema);
+
+        assert!(rendered.contains("next:"));
+        assert!(rendered.contains("unknown"));
+    }
+
+    #[test]
     fn augment_tool_definition_appends_typed_declaration() {
         let definition = ToolDefinition {
             name: "hidden_dynamic_tool".to_string(),
@@ -809,6 +882,92 @@ mod tests {
                 "hidden_dynamic_tool(args: { city: string; }): Promise<{ ok: boolean; }>;"
             )
         );
+    }
+
+    #[test]
+    fn augment_tool_definition_is_idempotent() {
+        let definition = ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Test tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "ok": { "type": "boolean" } },
+                "required": ["ok"]
+            })),
+        };
+
+        let once = augment_tool_definition(definition);
+        let twice = augment_tool_definition(once.clone());
+
+        assert_eq!(twice.description, once.description);
+        assert_eq!(
+            once.description.matches("exec tool declaration:").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn augment_tool_definition_truncates_oversized_descriptions() {
+        let definition = ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "x".repeat(MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS + 1024),
+            kind: CodeModeToolKind::Freeform,
+            input_schema: None,
+            output_schema: None,
+        };
+
+        let description = augment_tool_definition(definition).description;
+
+        assert!(description.contains(TRUNCATED_TOOL_DESCRIPTION_NOTICE.trim()));
+        assert!(
+            description.len()
+                <= MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS + TRUNCATED_TOOL_DESCRIPTION_NOTICE.len()
+        );
+    }
+
+    #[test]
+    fn code_mode_only_description_does_not_double_augment_tool_descriptions() {
+        let tool = augment_tool_definition(ToolDefinition {
+            name: "hidden_dynamic_tool".to_string(),
+            tool_name: ToolName::plain("hidden_dynamic_tool"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Test tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"],
+                "additionalProperties": false
+            })),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "ok": { "type": "boolean" } },
+                "required": ["ok"]
+            })),
+        });
+
+        let description = build_exec_tool_description(
+            &[tool],
+            &BTreeMap::new(),
+            /*code_mode_only*/ true,
+            /*deferred_tools_available*/ false,
+        );
+
+        assert_eq!(description.matches("exec tool declaration:").count(), 1);
     }
 
     #[test]
@@ -1117,7 +1276,7 @@ bar"
             /*deferred_tools_available*/ true,
         );
 
-        assert!(description.contains("Some nested MCP/app tools may be omitted"));
+        assert!(description.contains("Some deferred nested tools may be omitted"));
         assert!(description.contains("filter `ALL_TOOLS` by `name` and `description`"));
         assert!(!description.contains("do not print the full `ALL_TOOLS` array"));
     }

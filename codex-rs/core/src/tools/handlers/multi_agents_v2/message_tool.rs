@@ -49,30 +49,6 @@ pub(crate) struct AssignTaskArgs {
     pub(crate) message: String,
 }
 
-#[derive(Debug, Serialize)]
-/// Tool result shared by the MultiAgentV2 message-delivery tools.
-pub(crate) struct MessageToolResult {
-    submission_id: String,
-}
-
-impl ToolOutput for MessageToolResult {
-    fn log_preview(&self) -> String {
-        tool_output_json_text(self, "multi_agent_message")
-    }
-
-    fn success_for_logging(&self) -> bool {
-        true
-    }
-
-    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, Some(true), "multi_agent_message")
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "multi_agent_message")
-    }
-}
-
 fn message_content(message: String) -> Result<String, FunctionCallError> {
     if message.trim().is_empty() {
         return Err(FunctionCallError::RespondToModel(
@@ -82,13 +58,13 @@ fn message_content(message: String) -> Result<String, FunctionCallError> {
     Ok(message)
 }
 
-/// Handles the shared MultiAgentV2 plain-text message flow for `followup_task`.
+/// Handles the shared MultiAgentV2 message flow for both `send_message` and `followup_task`.
 pub(crate) async fn handle_message_string_tool(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,
     target: String,
     message: String,
-) -> Result<MessageToolResult, FunctionCallError> {
+) -> Result<FunctionToolOutput, FunctionCallError> {
     handle_message_submission(
         invocation,
         mode,
@@ -132,9 +108,9 @@ async fn handle_message_submission(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,
     target: String,
-    prompt: String,
+    message: String,
     interrupt: bool,
-) -> Result<MessageToolResult, FunctionCallError> {
+) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
         turn,
@@ -147,8 +123,8 @@ async fn handle_message_submission(
     let receiver_agent = session
         .services
         .agent_control
-        .get_agent_metadata(receiver_thread_id)
-        .unwrap_or_default();
+        .ensure_agent_known(receiver_thread_id)
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     if mode == MessageDeliveryMode::TriggerTurn
         && receiver_agent
             .agent_path
@@ -156,7 +132,7 @@ async fn handle_message_submission(
             .is_some_and(AgentPath::is_root)
     {
         return Err(FunctionCallError::RespondToModel(
-            "Tasks can't be assigned to the root agent".to_string(),
+            "Follow-up tasks can't target the root agent".to_string(),
         ));
     }
     if interrupt {
@@ -167,87 +143,44 @@ async fn handle_message_submission(
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     }
+    let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
+        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
+    })?;
+    let resume_config = build_agent_resume_config(turn.as_ref())?;
     session
-        .send_event(
-            &turn,
-            CollabAgentInteractionBeginEvent {
-                call_id: call_id.clone(),
-                started_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.conversation_id,
-                receiver_thread_id,
-                prompt: prompt.clone(),
-            }
-            .into(),
-        )
-        .await;
-    let receiver_agent_path = match receiver_agent.agent_path.clone() {
-        Some(path) => path,
-        None => {
-            let status = session
-                .services
-                .agent_control
-                .get_status(receiver_thread_id)
-                .await;
-            session
-                .send_event(
-                    &turn,
-                    CollabAgentInteractionEndEvent {
-                        call_id: call_id.clone(),
-                        sender_thread_id: session.conversation_id,
-                        receiver_thread_id,
-                        receiver_agent_nickname: receiver_agent.agent_nickname,
-                        receiver_agent_role: receiver_agent.agent_role,
-                        prompt: prompt.clone(),
-                        status,
-                        completed_at_ms: now_unix_timestamp_ms(),
-                    }
-                    .into(),
-                )
-                .await;
-            return Err(FunctionCallError::RespondToModel(
-                "target agent is missing an agent_path".to_string(),
-            ));
-        }
-    };
-    let communication = InterAgentCommunication::new(
-        turn.session_source
-            .get_agent_path()
-            .unwrap_or_else(AgentPath::root),
-        receiver_agent_path,
-        Vec::new(),
-        prompt.clone(),
-        /*trigger_turn*/ true,
-    );
+        .services
+        .agent_control
+        .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let author = turn
+        .session_source
+        .get_agent_path()
+        .unwrap_or_else(AgentPath::root);
+    let communication =
+        communication_from_tool_message(author, receiver_agent_path.clone(), message);
     let result = session
         .services
         .agent_control
         .send_inter_agent_communication(receiver_thread_id, mode.apply(communication))
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
-    let status = session
-        .services
-        .agent_control
-        .get_status(receiver_thread_id)
-        .await;
+    result?;
     session
         .send_event(
             &turn,
-            CollabAgentInteractionEndEvent {
-                call_id,
-                completed_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.conversation_id,
-                receiver_thread_id,
-                receiver_agent_nickname: receiver_agent.agent_nickname,
-                receiver_agent_role: receiver_agent.agent_role,
-                prompt,
-                status,
+            SubAgentActivityEvent {
+                event_id: call_id,
+                occurred_at_ms: now_unix_timestamp_ms(),
+                agent_thread_id: receiver_thread_id,
+                agent_path: receiver_agent_path,
+                kind: SubAgentActivityKind::Interacted,
             }
             .into(),
         )
         .await;
-    let submission_id = result?;
 
-    Ok(MessageToolResult { submission_id })
+    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
 }
 
 pub(crate) async fn handle_message_items_tool(
@@ -256,7 +189,7 @@ pub(crate) async fn handle_message_items_tool(
     target: String,
     items: Vec<UserInput>,
     interrupt: bool,
-) -> Result<MessageToolResult, FunctionCallError> {
+) -> Result<FunctionToolOutput, FunctionCallError> {
     let tool_name = invocation.tool_name.clone();
     let prompt = message_content_from_items(tool_name.name.as_str(), items)?;
     handle_message_submission(invocation, mode, target, prompt, interrupt).await

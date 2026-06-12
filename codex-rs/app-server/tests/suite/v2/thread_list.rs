@@ -1,5 +1,6 @@
 use anyhow::Result;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
+use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
 use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_final_assistant_message_sse_response;
@@ -19,6 +20,7 @@ use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadSearchResponse;
 use codex_app_server_protocol::ThreadSortKey;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -34,6 +36,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSource as CoreThreadSource;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::cmp::Reverse;
@@ -47,14 +50,14 @@ use uuid::Uuid;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-async fn init_mcp(codex_home: &Path) -> Result<McpProcess> {
-    let mut mcp = McpProcess::new(codex_home).await?;
+async fn init_mcp(codex_home: &Path) -> Result<TestAppServer> {
+    let mut mcp = TestAppServer::new(codex_home).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
     Ok(mcp)
 }
 
 async fn list_threads(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     cursor: Option<String>,
     limit: Option<u32>,
     providers: Option<Vec<String>>,
@@ -74,7 +77,7 @@ async fn list_threads(
 }
 
 async fn list_threads_with_sort(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     cursor: Option<String>,
     limit: Option<u32>,
     providers: Option<Vec<String>>,
@@ -90,6 +93,7 @@ async fn list_threads_with_sort(
             sort_direction: None,
             model_providers: providers,
             source_kinds,
+            thread_sources: None,
             archived,
             cwd: None,
             use_state_db_only: false,
@@ -169,6 +173,26 @@ fn set_rollout_cwd(path: &Path, cwd: &Path) -> Result<()> {
         ));
     };
     session_meta_line.meta.cwd = cwd.to_path_buf();
+    rollout_line.item = RolloutItem::SessionMeta(session_meta_line);
+    *first_line = serde_json::to_string(&rollout_line)?;
+    fs::write(path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
+fn set_rollout_thread_source(path: &Path, thread_source: CoreThreadSource) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let first_line = lines
+        .first_mut()
+        .ok_or_else(|| anyhow::anyhow!("rollout at {} is empty", path.display()))?;
+    let mut rollout_line: RolloutLine = serde_json::from_str(first_line)?;
+    let RolloutItem::SessionMeta(mut session_meta_line) = rollout_line.item else {
+        return Err(anyhow::anyhow!(
+            "rollout at {} does not start with session metadata",
+            path.display()
+        ));
+    };
+    session_meta_line.meta.thread_source = Some(thread_source);
     rollout_line.item = RolloutItem::SessionMeta(session_meta_line);
     *first_line = serde_json::to_string(&rollout_line)?;
     fs::write(path, lines.join("\n") + "\n")?;
@@ -535,6 +559,7 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::Many(vec![
                 first_target_cwd.to_string_lossy().into_owned(),
@@ -647,6 +672,7 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
@@ -707,6 +733,7 @@ async fn thread_search_returns_content_matches() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             search_term: "needle".to_string(),
         })
@@ -754,6 +781,7 @@ async fn thread_search_matches_json_escaped_content() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             search_term: search_term.to_string(),
         })
@@ -803,6 +831,7 @@ async fn thread_search_filters_by_source_kind() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: Some(vec![ThreadSourceKind::Exec]),
+            thread_sources: None,
             archived: None,
             search_term: "needle".to_string(),
         })
@@ -863,6 +892,7 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
@@ -899,6 +929,7 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
@@ -928,6 +959,7 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
@@ -994,6 +1026,79 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
 }
 
 #[tokio::test]
+async fn thread_list_hides_side_threads_until_side_filter_requested() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+    let normal_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-02-01T10-00-00",
+        "2025-02-01T10:00:00Z",
+        "normal chat",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let side_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-02-01T11-00-00",
+        "2025-02-01T11:00:00Z",
+        "side chat",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    set_rollout_thread_source(
+        rollout_path(codex_home.path(), "2025-02-01T11-00-00", &side_id).as_path(),
+        CoreThreadSource::Side,
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let default_response = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+    let default_ids: Vec<_> = default_response
+        .data
+        .iter()
+        .map(|thread| thread.id.as_str())
+        .collect();
+    assert_eq!(default_ids, vec![normal_id.as_str()]);
+
+    let request_id = mcp
+        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: Some(vec!["mock_provider".to_string()]),
+            source_kinds: None,
+            thread_sources: Some(vec![ThreadSource::Side]),
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let side_response = to_response::<ThreadListResponse>(resp)?;
+    let side_ids: Vec<_> = side_response
+        .data
+        .iter()
+        .map(|thread| thread.id.as_str())
+        .collect();
+    assert_eq!(side_ids, vec![side_id.as_str()]);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;
@@ -1055,7 +1160,7 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
 
     let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
 
-    let review_id = create_fake_rollout_with_source(
+    let review_id = create_fake_parented_rollout_with_source(
         codex_home.path(),
         "2025-02-02T09-00-00",
         "2025-02-02T09:00:00Z",
@@ -1063,6 +1168,7 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         Some("mock_provider"),
         /*git_info*/ None,
         CoreSessionSource::SubAgent(SubAgentSource::Review),
+        parent_thread_id,
     )?;
     let compact_id = create_fake_rollout_with_source(
         codex_home.path(),
@@ -1115,6 +1221,10 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         .map(|thread| thread.id.as_str())
         .collect();
     assert_eq!(review_ids, vec![review_id.as_str()]);
+    assert_eq!(
+        review.data[0].parent_thread_id,
+        Some(parent_thread_id.to_string())
+    );
 
     let compact = list_threads(
         &mut mcp,
@@ -1629,6 +1739,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 sort_direction: Some(SortDirection::Desc),
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
+                thread_sources: None,
                 archived: None,
                 cwd: None,
                 use_state_db_only: false,
@@ -1671,6 +1782,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 sort_direction: Some(SortDirection::Asc),
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
+                thread_sources: None,
                 archived: None,
                 cwd: None,
                 use_state_db_only: false,
@@ -1909,6 +2021,7 @@ async fn thread_list_invalid_cursor_returns_error() -> Result<()> {
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
