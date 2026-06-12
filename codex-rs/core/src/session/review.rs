@@ -1,8 +1,8 @@
 use super::*;
 use codex_core_skills::HostLoadedSkills;
 use codex_protocol::openai_models::ToolMode;
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
 
 use crate::session::turn_context::ModelExecutionIdentity;
 
