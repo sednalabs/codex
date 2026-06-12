@@ -108,6 +108,7 @@ impl ChatWidget {
             raw_output_mode: config.tui_raw_output_mode,
             config,
             effective_service_tier,
+            observed_model_display_name: None,
             skills_all: Vec::new(),
             skills_initial_state: None,
             current_collaboration_mode,

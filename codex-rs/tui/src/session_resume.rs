@@ -88,6 +88,14 @@ pub(crate) async fn read_session_model_settings(
         settings.reasoning_effort = metadata.reasoning_effort;
     }
 
+    if let Some(state_db_ctx) = state_db_ctx
+        && let Ok(Some(model)) = state_db_ctx
+            .latest_usage_provider_display_model(thread_id)
+            .await
+    {
+        settings.model = Some(model);
+    }
+
     if settings.model.is_some() && settings.reasoning_effort.is_some() {
         return settings;
     }
