@@ -12,6 +12,7 @@ use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
+use codex_protocol::protocol::TurnCompleteEvent;
 use log::warn;
 use sqlx::Row;
 use sqlx::SqlitePool;
@@ -253,7 +254,13 @@ ON CONFLICT(thread_id) DO UPDATE SET
                     warn!("usage spawn end: {err}");
                 }
             }
-            EventMsg::TurnComplete(_turn_complete) => {
+            EventMsg::TurnComplete(turn_complete) => {
+                if let Err(err) = self
+                    .handle_turn_complete(turn_complete, turn_id.as_deref())
+                    .await
+                {
+                    warn!("usage turn complete: {err}");
+                }
                 if let Some(turn_id) = &turn_id {
                     self.turn_snapshots.remove(turn_id);
                 }
@@ -333,6 +340,36 @@ ON CONFLICT(thread_id) DO UPDATE SET
         if let Some(rate_limits) = &token_count.rate_limits {
             self.insert_quota_snapshot(turn_id, rate_limits).await?;
         }
+        Ok(())
+    }
+
+    async fn handle_turn_complete(
+        &self,
+        turn_complete: &TurnCompleteEvent,
+        turn_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if turn_complete.final_model.is_none() && turn_complete.model_snapshot.is_none() {
+            return Ok(());
+        }
+        let Some(provider_call_id) = self.last_provider_call_id.as_ref() else {
+            return Ok(());
+        };
+        let event_turn_id = turn_id.unwrap_or(turn_complete.turn_id.as_str());
+        sqlx::query(
+            r#"UPDATE usage_provider_calls
+SET final_model = ?,
+    model_snapshot = ?
+WHERE provider_call_id = ?
+  AND thread_id = ?
+  AND (turn_id = ? OR turn_id IS NULL)"#,
+        )
+        .bind(turn_complete.final_model.as_deref())
+        .bind(turn_complete.model_snapshot.as_deref())
+        .bind(provider_call_id)
+        .bind(self.thread_id.to_string())
+        .bind(event_turn_id)
+        .execute(self.pool.as_ref())
+        .await?;
         Ok(())
     }
 
@@ -697,6 +734,8 @@ mod tests {
         provider: Option<String>,
         requested_model: Option<String>,
         actual_model_used: Option<String>,
+        final_model: Option<String>,
+        model_snapshot: Option<String>,
         input_tokens_uncached: i64,
         input_tokens_cached: i64,
         output_tokens: i64,
@@ -834,6 +873,8 @@ SELECT
   provider,
   requested_model,
   actual_model_used,
+  final_model,
+  model_snapshot,
   input_tokens_uncached,
   input_tokens_cached,
   output_tokens,
@@ -852,6 +893,8 @@ WHERE thread_id = ?
                 provider: Some("test-provider".to_string()),
                 requested_model: Some("requested-model".to_string()),
                 actual_model_used: Some("actual-model".to_string()),
+                final_model: None,
+                model_snapshot: None,
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
                 output_tokens: 3,
@@ -879,6 +922,88 @@ WHERE thread_id = ?
                 quota_source: Some("primary".to_string()),
                 quota_percent_remaining: 87.5,
                 quota_percent_used: 12.5,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_records_provider_final_model_identity() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let turn_id = "turn-identity";
+        logger.update_turn_snapshot(
+            turn_id,
+            Some("requested-model".to_string()),
+            Some("requested-provider".to_string()),
+        );
+        logger
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ false,
+            ))
+            .await;
+        logger
+            .record_event(&Event {
+                id: turn_id.to_string(),
+                msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: turn_id.to_string(),
+                    last_agent_message: None,
+                    compaction_events_in_turn: 0,
+                    final_model: Some("provider-final-model".to_string()),
+                    model_snapshot: Some("provider-model-snapshot".to_string()),
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            })
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let provider_row: ProviderCallRow = sqlx::query_as(
+            r#"
+SELECT
+  provider,
+  requested_model,
+  actual_model_used,
+  final_model,
+  model_snapshot,
+  input_tokens_uncached,
+  input_tokens_cached,
+  output_tokens,
+  total_tokens,
+  status
+FROM usage_provider_calls
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            provider_row,
+            ProviderCallRow {
+                provider: Some("test-provider".to_string()),
+                requested_model: Some("requested-model".to_string()),
+                actual_model_used: Some("actual-model".to_string()),
+                final_model: Some("provider-final-model".to_string()),
+                model_snapshot: Some("provider-model-snapshot".to_string()),
+                input_tokens_uncached: 8,
+                input_tokens_cached: 2,
+                output_tokens: 3,
+                total_tokens: 16,
+                status: Some("ok".to_string()),
             }
         );
 
@@ -960,6 +1085,8 @@ WHERE thread_id = ?
                     turn_id: turn_id.to_string(),
                     last_agent_message: None,
                     compaction_events_in_turn: 0,
+                    final_model: None,
+                    model_snapshot: None,
                     completed_at: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
@@ -980,6 +1107,8 @@ SELECT
   provider,
   requested_model,
   actual_model_used,
+  final_model,
+  model_snapshot,
   input_tokens_uncached,
   input_tokens_cached,
   output_tokens,
@@ -1000,6 +1129,8 @@ ORDER BY rowid
                     provider: Some("test-provider".to_string()),
                     requested_model: Some("requested-model".to_string()),
                     actual_model_used: Some("actual-model".to_string()),
+                    final_model: None,
+                    model_snapshot: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
                     output_tokens: 3,
@@ -1010,6 +1141,8 @@ ORDER BY rowid
                     provider: Some("test-provider".to_string()),
                     requested_model: Some("actual-model".to_string()),
                     actual_model_used: Some("actual-model".to_string()),
+                    final_model: None,
+                    model_snapshot: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
                     output_tokens: 3,
