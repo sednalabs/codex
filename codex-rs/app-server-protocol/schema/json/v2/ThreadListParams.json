@@ -1,10 +1,33 @@
 {
   "$defs": {
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "ThreadListCwdFilter": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
     "ThreadSortKey": {
       "enum": [
         "created_at",
         "updated_at"
       ],
+      "type": "string"
+    },
+    "ThreadSource": {
       "type": "string"
     },
     "ThreadSourceKind": {
@@ -40,11 +63,15 @@
       ]
     },
     "cwd": {
-      "description": "Optional cwd filter; when set, only threads whose session cwd exactly\nmatches this path are returned.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadListCwdFilter"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional cwd filter or filters; when set, only threads whose session cwd\nexactly matches one of these paths are returned."
     },
     "limit": {
       "description": "Optional page size; defaults to a reasonable server-side value.",
@@ -72,6 +99,17 @@
         "null"
       ]
     },
+    "sortDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SortDirection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional sort direction; defaults to descending (newest first)."
+    },
     "sortKey": {
       "anyOf": [
         {
@@ -92,6 +130,20 @@
         "array",
         "null"
       ]
+    },
+    "threadSources": {
+      "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+      "items": {
+        "$ref": "#/$defs/ThreadSource"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "useStateDbOnly": {
+      "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
+      "type": "boolean"
     }
   },
   "title": "ThreadListParams",

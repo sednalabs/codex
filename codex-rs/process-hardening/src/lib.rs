@@ -57,12 +57,17 @@ pub(crate) fn pre_main_hardening_linux() {
 
     // Official Codex releases are MUSL-linked, which means that variables such
     // as LD_PRELOAD are ignored anyway, but just to be sure, clear them here.
-    let ld_keys = env_keys_with_prefix(std::env::vars_os(), b"LD_");
+    remove_env_vars_with_prefix(b"LD_");
+}
 
-    for key in ld_keys {
-        unsafe {
-            std::env::remove_var(key);
-        }
+/// Mark the current Linux process non-dumpable so same-user processes cannot attach with ptrace.
+#[cfg(target_os = "linux")]
+pub fn disable_process_dumping() -> std::io::Result<()> {
+    let ret_code = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if ret_code == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -71,12 +76,7 @@ pub(crate) fn pre_main_hardening_bsd() {
     // FreeBSD/OpenBSD: set RLIMIT_CORE to 0 and clear LD_* env vars
     set_core_file_size_limit_to_zero();
 
-    let ld_keys = env_keys_with_prefix(std::env::vars_os(), b"LD_");
-    for key in ld_keys {
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
+    remove_env_vars_with_prefix(b"LD_");
 }
 
 #[cfg(target_os = "macos")]
@@ -96,13 +96,7 @@ pub(crate) fn pre_main_hardening_macos() {
 
     // Remove all DYLD_ environment variables, which can be used to subvert
     // library loading.
-    let dyld_keys = env_keys_with_prefix(std::env::vars_os(), b"DYLD_");
-
-    for key in dyld_keys {
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
+    remove_env_vars_with_prefix(b"DYLD_");
 }
 
 #[cfg(unix)]
@@ -125,6 +119,15 @@ fn set_core_file_size_limit_to_zero() {
 #[cfg(windows)]
 pub(crate) fn pre_main_hardening_windows() {
     // TODO(mbolin): Perform the appropriate configuration for Windows.
+}
+
+#[cfg(unix)]
+fn remove_env_vars_with_prefix(prefix: &[u8]) {
+    for key in env_keys_with_prefix(std::env::vars_os(), prefix) {
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
 }
 
 #[cfg(unix)]

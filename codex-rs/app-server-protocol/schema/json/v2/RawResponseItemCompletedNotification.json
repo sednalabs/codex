@@ -1,5 +1,27 @@
 {
   "$defs": {
+    "AgentMessageInputContent": {
+      "oneOf": [
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "encrypted_content",
+              "title": "EncryptedContentAgentMessageInputContentType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "encrypted_content"
+          ],
+          "title": "EncryptedContentAgentMessageInputContent",
+          "type": "object"
+        }
+      ]
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -22,6 +44,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "image_url": {
               "type": "string"
             },
@@ -119,40 +151,26 @@
           ],
           "title": "InputImageFunctionCallOutputContentItem",
           "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "encrypted_content",
+              "title": "EncryptedContentFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "encrypted_content"
+          ],
+          "title": "EncryptedContentFunctionCallOutputContentItem",
+          "type": "object"
         }
       ]
-    },
-    "GhostCommit": {
-      "description": "Details of a ghost commit created from a repository state.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "preexisting_untracked_dirs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "preexisting_untracked_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "preexisting_untracked_files",
-        "preexisting_untracked_dirs"
-      ],
-      "type": "object"
     },
     "ImageDetail": {
       "enum": [
@@ -320,12 +338,6 @@
               },
               "type": "array"
             },
-            "end_turn": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "id": {
               "type": [
                 "string",
@@ -358,6 +370,35 @@
             "content"
           ],
           "title": "MessageResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "author": {
+              "type": "string"
+            },
+            "content": {
+              "items": {
+                "$ref": "#/$defs/AgentMessageInputContent"
+              },
+              "type": "array"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_message",
+              "title": "AgentMessageResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "author",
+            "recipient",
+            "content"
+          ],
+          "title": "AgentMessageResponseItem",
           "type": "object"
         },
         {
@@ -705,24 +746,6 @@
         },
         {
           "properties": {
-            "ghost_commit": {
-              "$ref": "#/$defs/GhostCommit"
-            },
-            "type": {
-              "const": "ghost_snapshot",
-              "title": "GhostSnapshotResponseItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "ghost_commit"
-          ],
-          "title": "GhostSnapshotResponseItem",
-          "type": "object"
-        },
-        {
-          "properties": {
             "encrypted_content": {
               "type": "string"
             },
@@ -737,6 +760,40 @@
             "encrypted_content"
           ],
           "title": "CompactionResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "compaction_trigger",
+              "title": "CompactionTriggerResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "CompactionTriggerResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "context_compaction",
+              "title": "ContextCompactionResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ContextCompactionResponseItem",
           "type": "object"
         },
         {

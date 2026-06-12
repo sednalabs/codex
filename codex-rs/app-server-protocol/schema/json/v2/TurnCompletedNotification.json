@@ -1,5 +1,9 @@
 {
   "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -27,6 +31,7 @@
             "contextWindowExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
+            "cyberPolicy",
             "internalServerError",
             "unauthorized",
             "badRequest",
@@ -217,7 +222,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -326,6 +331,60 @@
       ],
       "type": "string"
     },
+    "ComputerUseCallOutputContentItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputText",
+              "title": "InputTextComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "title": "InputTextComputerUseCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "imageUrl": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputImage",
+              "title": "InputImageComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "imageUrl"
+          ],
+          "title": "InputImageComputerUseCallOutputContentItem",
+          "type": "object"
+        }
+      ]
+    },
+    "ComputerUseCallStatus": {
+      "enum": [
+        "inProgress",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
     "DynamicToolCallOutputContentItem": {
       "oneOf": [
         {
@@ -348,6 +407,12 @@
         },
         {
           "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -408,6 +473,15 @@
       ],
       "type": "object"
     },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
     "McpToolCallError": {
       "properties": {
         "message": {
@@ -421,6 +495,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -572,14 +647,50 @@
       ]
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "SubAgentActivityKind": {
       "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
+        "started",
+        "interacted",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
       ],
       "type": "string"
     },
@@ -606,6 +717,12 @@
       "oneOf": [
         {
           "properties": {
+            "clientId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "content": {
               "items": {
                 "$ref": "#/$defs/UserInput"
@@ -774,8 +891,8 @@
               "type": "array"
             },
             "cwd": {
-              "description": "The command's working directory.",
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf",
+              "description": "The command's working directory."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -809,6 +926,17 @@
             },
             "status": {
               "$ref": "#/$defs/CommandExecutionStatus"
+            },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
             },
             "type": {
               "const": "commandExecution",
@@ -880,6 +1008,18 @@
             "id": {
               "type": "string"
             },
+            "mcpAppResourceUri": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pluginId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "result": {
               "anyOf": [
                 {
@@ -939,6 +1079,12 @@
             "id": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "$ref": "#/$defs/DynamicToolCallStatus"
             },
@@ -965,6 +1111,73 @@
             "status"
           ],
           "title": "DynamicToolCallThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "adapter": {
+              "type": "string"
+            },
+            "arguments": true,
+            "contentItems": {
+              "items": {
+                "$ref": "#/$defs/ComputerUseCallOutputContentItem"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "durationMs": {
+              "description": "The duration of the computer-use call in milliseconds.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "environmentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ComputerUseCallStatus"
+            },
+            "success": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "const": "computerUseCall",
+              "title": "ComputerUseCallThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "adapter",
+            "tool",
+            "arguments",
+            "status"
+          ],
+          "title": "ComputerUseCallThreadItem",
           "type": "object"
         },
         {
@@ -1049,6 +1262,36 @@
         },
         {
           "properties": {
+            "agentPath": {
+              "type": "string"
+            },
+            "agentThreadId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SubAgentActivityKind"
+            },
+            "type": {
+              "const": "subAgentActivity",
+              "title": "SubAgentActivityThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "agentThreadId",
+            "agentPath"
+          ],
+          "title": "SubAgentActivityThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -1085,7 +1328,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "imageView",
@@ -1116,9 +1359,13 @@
               ]
             },
             "savedPath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "status": {
@@ -1236,11 +1483,16 @@
           "type": "string"
         },
         "items": {
-          "description": "Only populated on a `thread/resume` or `thread/fork` response.\nFor all other responses and notifications returning a Turn,\nthe items field will be an empty list.",
+          "description": "Thread items currently included in this turn payload.",
           "items": {
             "$ref": "#/$defs/ThreadItem"
           },
           "type": "array"
+        },
+        "itemsView": {
+          "$ref": "#/$defs/TurnItemsView",
+          "default": "full",
+          "description": "Describes how much of `items` has been loaded for this turn."
         },
         "startedAt": {
           "description": "Unix timestamp (in seconds) when the turn started.",
@@ -1289,6 +1541,25 @@
       ],
       "type": "object"
     },
+    "TurnItemsView": {
+      "oneOf": [
+        {
+          "const": "notLoaded",
+          "description": "`items` was not loaded for this turn. The field is intentionally empty.",
+          "type": "string"
+        },
+        {
+          "const": "summary",
+          "description": "`items` contains only a display summary for this turn.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+          "type": "string"
+        }
+      ]
+    },
     "TurnStatus": {
       "enum": [
         "completed",
@@ -1328,6 +1599,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "type": {
               "const": "image",
               "title": "ImageUserInputType",
@@ -1346,6 +1628,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "path": {
               "type": "string"
             },

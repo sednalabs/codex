@@ -1,0 +1,23 @@
+{
+  "$defs": {
+    "WindowsSandboxReadiness": {
+      "enum": [
+        "ready",
+        "notConfigured",
+        "updateRequired"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "status": {
+      "$ref": "#/$defs/WindowsSandboxReadiness"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "WindowsSandboxReadinessResponse",
+  "type": "object"
+}

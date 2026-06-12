@@ -16,12 +16,13 @@ use codex_protocol::models::is_local_image_close_tag_text;
 use codex_protocol::models::is_local_image_open_tag_text;
 use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
 use codex_protocol::protocol::REALTIME_CONVERSATION_OPEN_TAG;
+use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::user_input::UserInput;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::contextual_user_message::is_contextual_user_fragment;
-use crate::contextual_user_message::parse_visible_hook_prompt_message;
+use crate::context::is_contextual_user_fragment;
+use crate::context::parse_visible_hook_prompt_message;
 use crate::web_search::web_search_action_detail;
 
 const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
@@ -29,7 +30,9 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     "<model_switch>",
     COLLABORATION_MODE_OPEN_TAG,
     REALTIME_CONVERSATION_OPEN_TAG,
+    SKILLS_INSTRUCTIONS_OPEN_TAG,
     "<personality_spec>",
+    "<token_budget>",
 ];
 
 pub(crate) fn is_contextual_user_message_content(message: &[ContentItem]) -> bool {
@@ -90,9 +93,10 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
                     text_elements: Vec::new(),
                 });
             }
-            ContentItem::InputImage { image_url } => {
+            ContentItem::InputImage { image_url, detail } => {
                 content.push(UserInput::Image {
                     image_url: image_url.clone(),
+                    detail: *detail,
                 });
             }
             ContentItem::OutputText { text } => {

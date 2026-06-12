@@ -23,6 +23,12 @@
     },
     "status": {
       "$ref": "#/$defs/McpServerStartupState"
+    },
+    "threadId": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

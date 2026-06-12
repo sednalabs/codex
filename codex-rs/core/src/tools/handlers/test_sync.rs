@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::Barrier;
 use tokio::time::sleep;
@@ -13,9 +12,13 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
+use crate::tools::handlers::test_sync_spec::create_test_sync_tool;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 
 pub struct TestSyncHandler;
 
@@ -54,15 +57,29 @@ fn barrier_map() -> &'static tokio::sync::Mutex<HashMap<String, BarrierState>> {
     BARRIERS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
 }
 
-#[async_trait]
-impl ToolHandler for TestSyncHandler {
-    type Output = FunctionToolOutput;
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+impl ToolExecutor<ToolInvocation> for TestSyncHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("test_sync_tool")
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn spec(&self) -> ToolSpec {
+        create_test_sync_tool()
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl TestSyncHandler {
+    async fn handle_call(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation { payload, .. } = invocation;
 
         let arguments = match payload {
@@ -92,9 +109,14 @@ impl ToolHandler for TestSyncHandler {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        Ok(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            "ok".to_string(),
+            Some(true),
+        )))
     }
 }
+
+impl CoreToolRuntime for TestSyncHandler {}
 
 async fn wait_on_barrier(args: BarrierArgs) -> Result<(), FunctionCallError> {
     if args.participants == 0 {

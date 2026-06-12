@@ -1,9 +1,9 @@
 //! Command parsing and safety utilities shared across Codex crates.
 
-mod shell_detect;
+pub mod shell_detect;
 
 pub mod bash;
-pub mod command_safety;
+pub(crate) mod command_safety;
 pub mod parse_command;
 pub mod powershell;
 

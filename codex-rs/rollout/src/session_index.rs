@@ -1,20 +1,25 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionMetaLine;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncWriteExt;
 
 const SESSION_INDEX_FILE: &str = "session_index.jsonl";
 const READ_CHUNK_SIZE: usize = 8192;
+static SESSION_INDEX_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionIndexEntry {
@@ -24,7 +29,7 @@ pub struct SessionIndexEntry {
 }
 
 /// Append a thread name update to the session index.
-/// The index is append-only; the most recent entry wins when resolving names or ids.
+/// Name updates are append-only; the most recent entry wins when resolving names or ids.
 pub async fn append_thread_name(
     codex_home: &Path,
     thread_id: ThreadId,
@@ -45,22 +50,58 @@ pub async fn append_thread_name(
 }
 
 /// Append a raw session index entry to `session_index.jsonl`.
-/// The file is append-only; consumers scan from the end to find the newest match.
+/// Consumers scan from the end to find the newest match.
 pub async fn append_session_index_entry(
     codex_home: &Path,
     entry: &SessionIndexEntry,
 ) -> std::io::Result<()> {
+    let _guard = SESSION_INDEX_LOCK
+        .lock()
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     let path = session_index_path(codex_home);
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
-        .await?;
+        .open(&path)?;
     let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
     line.push('\n');
-    file.write_all(line.as_bytes()).await?;
-    file.flush().await?;
+    file.write_all(line.as_bytes())?;
+    file.flush()?;
     Ok(())
+}
+
+/// Remove all recorded names for a thread from the session index.
+pub async fn remove_thread_name_entries(
+    codex_home: &Path,
+    thread_id: ThreadId,
+) -> std::io::Result<()> {
+    let _guard = SESSION_INDEX_LOCK
+        .lock()
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    let path = session_index_path(codex_home);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let mut removed = false;
+    let mut remaining = String::with_capacity(contents.len());
+    for line in contents.lines() {
+        let should_remove = serde_json::from_str::<SessionIndexEntry>(line.trim())
+            .is_ok_and(|entry| entry.id == thread_id);
+        if should_remove {
+            removed = true;
+        } else {
+            remaining.push_str(line);
+            remaining.push('\n');
+        }
+    }
+    if !removed {
+        return Ok(());
+    }
+    let temp_path = path.with_extension("jsonl.tmp");
+    std::fs::write(&temp_path, remaining)?;
+    std::fs::rename(temp_path, path)
 }
 
 /// Find the latest thread name for a thread id, if any.
@@ -111,11 +152,13 @@ pub async fn find_thread_names_by_ids(
     Ok(names)
 }
 
-/// Find the most recently updated thread id for a thread name, if any.
-pub async fn find_thread_id_by_name(
+/// Locate a recorded thread rollout and read its session metadata by thread name.
+/// Returns the newest indexed name that still has a readable rollout header.
+pub async fn find_thread_meta_by_name_str(
     codex_home: &Path,
     name: &str,
-) -> std::io::Result<Option<ThreadId>> {
+    state_db_ctx: Option<&codex_state::StateRuntime>,
+) -> std::io::Result<Option<(PathBuf, SessionMetaLine)>> {
     if name.trim().is_empty() {
         return Ok(None);
     }
@@ -123,23 +166,32 @@ pub async fn find_thread_id_by_name(
     if !path.exists() {
         return Ok(None);
     }
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let name = name.to_string();
-    let entry = tokio::task::spawn_blocking(move || scan_index_from_end_by_name(&path, &name))
-        .await
-        .map_err(std::io::Error::other)??;
-    Ok(entry.map(|entry| entry.id))
-}
+    // Stream matching ids newest-first instead of stopping at the first name hit: the newest entry
+    // may point at a thread whose rollout was never materialized.
+    let scan =
+        tokio::task::spawn_blocking(move || stream_thread_ids_from_end_by_name(&path, &name, tx));
 
-/// Locate a recorded thread rollout file by thread name using newest-first ordering.
-/// Returns `Ok(Some(path))` if found, `Ok(None)` if not present.
-pub async fn find_thread_path_by_name_str(
-    codex_home: &Path,
-    name: &str,
-) -> std::io::Result<Option<PathBuf>> {
-    let Some(thread_id) = find_thread_id_by_name(codex_home, name).await? else {
-        return Ok(None);
-    };
-    super::list::find_thread_path_by_id_str(codex_home, &thread_id.to_string()).await
+    while let Some(thread_id) = rx.recv().await {
+        // Keep walking until a matching id resolves to a loadable rollout so an unsaved or partial
+        // rename cannot shadow an older persisted session with the same name.
+        if let Some(path) = super::list::find_thread_path_by_id_str(
+            codex_home,
+            &thread_id.to_string(),
+            state_db_ctx,
+        )
+        .await?
+            && let Ok(session_meta) = super::list::read_session_meta_line(&path).await
+        {
+            drop(rx);
+            scan.await.map_err(std::io::Error::other)??;
+            return Ok(Some((path, session_meta)));
+        }
+    }
+    scan.await.map_err(std::io::Error::other)??;
+
+    Ok(None)
 }
 
 fn session_index_path(codex_home: &Path) -> PathBuf {
@@ -153,11 +205,22 @@ fn scan_index_from_end_by_id(
     scan_index_from_end(path, |entry| entry.id == *thread_id)
 }
 
-fn scan_index_from_end_by_name(
+fn stream_thread_ids_from_end_by_name(
     path: &Path,
     name: &str,
-) -> std::io::Result<Option<SessionIndexEntry>> {
-    scan_index_from_end(path, |entry| entry.thread_name == name)
+    tx: tokio::sync::mpsc::Sender<ThreadId>,
+) -> std::io::Result<()> {
+    let mut seen = HashSet::new();
+    scan_index_from_end_for_each(path, |entry| {
+        // The first row seen for an id is its latest name. Ignore older rows for that id so a
+        // historical name cannot be treated as the current one after the thread is renamed.
+        if seen.insert(entry.id) && entry.thread_name == name && tx.blocking_send(entry.id).is_err()
+        {
+            return Ok(Some(entry.clone()));
+        }
+        Ok(None)
+    })?;
+    Ok(())
 }
 
 fn scan_index_from_end<F>(
@@ -166,6 +229,21 @@ fn scan_index_from_end<F>(
 ) -> std::io::Result<Option<SessionIndexEntry>>
 where
     F: FnMut(&SessionIndexEntry) -> bool,
+{
+    scan_index_from_end_for_each(path, |entry| {
+        if predicate(entry) {
+            return Ok(Some(entry.clone()));
+        }
+        Ok(None)
+    })
+}
+
+fn scan_index_from_end_for_each<F>(
+    path: &Path,
+    mut visit_entry: F,
+) -> std::io::Result<Option<SessionIndexEntry>>
+where
+    F: FnMut(&SessionIndexEntry) -> std::io::Result<Option<SessionIndexEntry>>,
 {
     let mut file = File::open(path)?;
     let mut remaining = file.metadata()?.len();
@@ -181,7 +259,7 @@ where
 
         for &byte in buf[..read_size].iter().rev() {
             if byte == b'\n' {
-                if let Some(entry) = parse_line_from_rev(&mut line_rev, &mut predicate)? {
+                if let Some(entry) = parse_line_from_rev(&mut line_rev, &mut visit_entry)? {
                     return Ok(Some(entry));
                 }
                 continue;
@@ -190,7 +268,7 @@ where
         }
     }
 
-    if let Some(entry) = parse_line_from_rev(&mut line_rev, &mut predicate)? {
+    if let Some(entry) = parse_line_from_rev(&mut line_rev, &mut visit_entry)? {
         return Ok(Some(entry));
     }
 
@@ -199,10 +277,10 @@ where
 
 fn parse_line_from_rev<F>(
     line_rev: &mut Vec<u8>,
-    predicate: &mut F,
+    visit_entry: &mut F,
 ) -> std::io::Result<Option<SessionIndexEntry>>
 where
-    F: FnMut(&SessionIndexEntry) -> bool,
+    F: FnMut(&SessionIndexEntry) -> std::io::Result<Option<SessionIndexEntry>>,
 {
     if line_rev.is_empty() {
         return Ok(None);
@@ -222,10 +300,7 @@ where
     let Ok(entry) = serde_json::from_str::<SessionIndexEntry>(trimmed) else {
         return Ok(None);
     };
-    if predicate(&entry) {
-        return Ok(Some(entry));
-    }
-    Ok(None)
+    visit_entry(&entry)
 }
 
 #[cfg(test)]

@@ -14,9 +14,41 @@ from typing import Any
 
 EXIT_OK = 0
 EXIT_UNSTABLE_SNAPSHOT = 2
+EXIT_INVALID_REGISTRY = 6
 EXIT_INVALID_MIRROR = 3
 EXIT_UNCOVERED_LIVE_CODE = 4
 EXIT_STALE_REGISTRY = 5
+
+ALLOWED_UPSTREAMABILITY_TIERS = {
+    "upstream-pr",
+    "neutral-seam",
+    "downstream-adapter",
+    "operator-only",
+}
+REQUIRED_LIVE_REGISTRY_FIELDS = (
+    "upstreamability_tier",
+    "boundary_type",
+    "hotspot_files",
+    "extraction_target",
+    "owner",
+    "guardrail_lane",
+)
+HOT_FILE_PATTERNS = (
+    ".github/validation-lanes.json",
+    ".github/workflows/*",
+    "justfile",
+    "codex-rs/app-server/src/*.rs",
+    "codex-rs/app-server-protocol/src/protocol/*.rs",
+    "codex-rs/core/src/codex.rs",
+    "codex-rs/core/src/tools/handlers/*",
+    "codex-rs/core/src/tools/spec.rs",
+    "codex-rs/protocol/src/protocol.rs",
+    "codex-rs/state/src/migrations.rs",
+    "codex-rs/state/src/runtime.rs",
+    "codex-rs/tui/src/app.rs",
+    "codex-rs/tui/src/bottom_pane/mod.rs",
+    "codex-rs/tui/src/chatwidget.rs",
+)
 
 NON_CODE_PREFIXES = ("docs/",)
 NON_CODE_SUFFIXES = (".md",)
@@ -34,9 +66,12 @@ class RemoteTip:
     remote: str
     branch: str
     sha: str
+    local_ref: str | None = None
 
     @property
     def local_tracking_ref(self) -> str:
+        if self.local_ref is not None:
+            return self.local_ref
         return f"refs/remotes/{self.remote}/{self.branch}"
 
 
@@ -81,6 +116,8 @@ def main() -> int:
         args.mirror_branch,
         args.upstream_remote,
         args.upstream_branch,
+        args.downstream_ref,
+        args.mirror_ref,
     )
     mirror_mismatch = bool(
         args.expected_mirror_sha and snapshot_1["mirror"].sha != args.expected_mirror_sha
@@ -102,12 +139,16 @@ def main() -> int:
     downstream_counts = rev_list_counts(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
     cherry_counts = cherry_counts_between(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
     merge_base = merge_base_sha(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
+    downstream_carry_items = diff_items_between(repo, merge_base, snapshot_1["downstream"].sha)
+    downstream_carry_code_items = [item for item in downstream_carry_items if item.is_code]
 
-    registry_state = reconcile_registry(registry, code_items)
+    registry_state = reconcile_registry(registry, downstream_carry_code_items)
     annotated_all_items = annotate_diff_items(
         diff_items,
         registry_state["path_registry_ids"],
         registry_state["path_registry_surface_types"],
+        registry_state["path_registry_upstreamability_tiers"],
+        registry_state["path_registry_boundary_types"],
     )
     annotated_code_items = [item for item in annotated_all_items if item["is_code"]]
     annotated_non_code_items = [item for item in annotated_all_items if not item["is_code"]]
@@ -120,6 +161,8 @@ def main() -> int:
         args.mirror_branch,
         args.upstream_remote,
         args.upstream_branch,
+        args.downstream_ref,
+        args.mirror_ref,
     )
 
     unstable = snapshot_changed(snapshot_1, snapshot_2)
@@ -173,6 +216,10 @@ def main() -> int:
             "merge_base": merge_base,
             "patch_equivalent_downstream_commits": cherry_counts["patch_equivalent_downstream_commits"],
             "unique_downstream_commits": cherry_counts["unique_downstream_commits"],
+            "registry_enforcement_basis": "merge-base...downstream",
+            "downstream_carry_code_path_count": len(
+                {path for item in downstream_carry_code_items for path in item.paths}
+            ),
             "all_paths": annotated_all_items,
             "code_paths": annotated_code_items,
             "non_code_paths": annotated_non_code_items,
@@ -198,8 +245,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", default=".", help="Path to the repository root.")
     parser.add_argument("--downstream-remote", default="origin", help="Remote that hosts the downstream branch.")
     parser.add_argument("--downstream-branch", default="main", help="Downstream branch name.")
+    parser.add_argument(
+        "--downstream-ref",
+        help=(
+            "Local commit/ref to audit as downstream instead of resolving "
+            "--downstream-remote/--downstream-branch. Useful for PR-head CI."
+        ),
+    )
     parser.add_argument("--mirror-remote", default="origin", help="Remote that hosts the upstream mirror branch.")
     parser.add_argument("--mirror-branch", default="upstream-main", help="Mirror branch name.")
+    parser.add_argument(
+        "--mirror-ref",
+        help=(
+            "Local commit/ref to use as the mirror snapshot instead of resolving "
+            "--mirror-remote/--mirror-branch. Useful for read-only PR validation "
+            "when the live mirror can be refreshed only by a separate privileged job."
+        ),
+    )
     parser.add_argument("--upstream-remote", default="upstream", help="Remote that hosts live upstream.")
     parser.add_argument("--upstream-branch", default="main", help="Upstream branch name.")
     parser.add_argument("--expected-mirror-sha", help="Exact upstream SHA that the mirror should match after sync.")
@@ -259,9 +321,19 @@ def resolve_snapshot(
     mirror_branch: str,
     upstream_remote: str,
     upstream_branch: str,
+    downstream_ref: str | None = None,
+    mirror_ref: str | None = None,
 ) -> dict[str, RemoteTip]:
-    downstream = live_tip(repo, downstream_remote, downstream_branch)
-    mirror = live_tip(repo, mirror_remote, mirror_branch)
+    downstream = (
+        local_tip(repo, "downstream-ref", downstream_ref)
+        if downstream_ref
+        else live_tip(repo, downstream_remote, downstream_branch)
+    )
+    mirror = (
+        local_tip(repo, "mirror-ref", mirror_ref)
+        if mirror_ref
+        else live_tip(repo, mirror_remote, mirror_branch)
+    )
     upstream = live_tip(repo, upstream_remote, upstream_branch)
     return {"downstream": downstream, "mirror": mirror, "upstream": upstream}
 
@@ -276,6 +348,12 @@ def live_tip(repo: Path, remote: str, branch: str) -> RemoteTip:
     )
     sha = parse_single_sha(result.stdout, remote, ref)
     return RemoteTip(remote=remote, branch=branch, sha=sha)
+
+
+def local_tip(repo: Path, remote_label: str, ref: str) -> RemoteTip:
+    result = run_git(repo, ["rev-parse", f"{ref}^{{commit}}"], capture_stdout=True)
+    sha = result.stdout.strip()
+    return RemoteTip(remote=remote_label, branch=ref, sha=sha, local_ref=sha)
 
 
 def normalize_branch_ref(branch: str) -> str:
@@ -297,6 +375,8 @@ def parse_single_sha(stdout: str, remote: str, ref: str) -> str:
 def fetch_live_refs(repo: Path, snapshot: dict[str, RemoteTip]) -> None:
     grouped: dict[str, list[RemoteTip]] = {}
     for tip in snapshot.values():
+        if tip.local_ref is not None:
+            continue
         grouped.setdefault(tip.remote, []).append(tip)
 
     for remote, tips in grouped.items():
@@ -447,7 +527,82 @@ def load_registry(path: Path, enforce_registry: bool) -> dict[str, Any]:
     if not isinstance(divergences, list):
         raise ValueError("registry file must contain a divergences array")
     data["_path"] = str(path)
+    if enforce_registry:
+        validate_registry(data)
     return data
+
+
+def validate_registry(registry: dict[str, Any]) -> None:
+    errors: list[str] = []
+    for index, entry in enumerate(registry.get("divergences", []), start=1):
+        entry_id = str(entry.get("id") or f"entry-{index}")
+        if str(entry.get("status", "live")) != "live":
+            continue
+
+        missing = [field for field in REQUIRED_LIVE_REGISTRY_FIELDS if field not in entry]
+        for field in missing:
+            errors.append(f"{entry_id}: missing required live field {field}")
+
+        tier = entry.get("upstreamability_tier")
+        if tier not in ALLOWED_UPSTREAMABILITY_TIERS:
+            allowed = ", ".join(sorted(ALLOWED_UPSTREAMABILITY_TIERS))
+            errors.append(f"{entry_id}: upstreamability_tier must be one of {allowed}")
+
+        for field in ("boundary_type", "extraction_target", "owner", "guardrail_lane"):
+            if field in entry and not non_empty_string(entry.get(field)):
+                errors.append(f"{entry_id}: {field} must be a non-empty string")
+
+        files = entry.get("files")
+        if not isinstance(files, list) or not files:
+            errors.append(f"{entry_id}: files must be a non-empty list")
+            files = []
+
+        hotspot_files = entry.get("hotspot_files")
+        if "hotspot_files" in entry and not isinstance(hotspot_files, list):
+            errors.append(f"{entry_id}: hotspot_files must be a list")
+            hotspot_files = []
+        if isinstance(hotspot_files, list):
+            for hotspot in hotspot_files:
+                if not non_empty_string(hotspot):
+                    errors.append(f"{entry_id}: hotspot_files entries must be non-empty strings")
+                    break
+
+        matched_hot_patterns = matched_hotspots(files)
+        if matched_hot_patterns and not hotspot_files:
+            errors.append(
+                f"{entry_id}: touches hot paths but does not list hotspot_files "
+                f"({', '.join(matched_hot_patterns)})"
+            )
+
+    if errors:
+        raise ValueError("invalid divergence registry:\n- " + "\n- ".join(errors))
+
+
+def non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def matched_hotspots(files: list[Any]) -> list[str]:
+    matched: set[str] = set()
+    for spec in files:
+        if not isinstance(spec, str):
+            continue
+        for hot_pattern in HOT_FILE_PATTERNS:
+            if specs_overlap(spec, hot_pattern):
+                matched.add(hot_pattern)
+    return sorted(matched)
+
+
+def specs_overlap(spec: str, pattern: str) -> bool:
+    if spec.endswith("/"):
+        return pattern.startswith(spec) or fnmatch.fnmatch(pattern, f"{spec}*")
+    if pattern.endswith("/"):
+        return spec.startswith(pattern) or fnmatch.fnmatch(spec, f"{pattern}*")
+    return (
+        spec == pattern
+        or fnmatch.fnmatch(spec, pattern)
+        or fnmatch.fnmatch(pattern, spec)
+    )
 
 
 def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]) -> dict[str, Any]:
@@ -456,6 +611,8 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
     stale_entry_ids: list[str] = []
     path_registry_ids: dict[str, list[str]] = {}
     path_registry_surface_types: dict[str, list[str]] = {}
+    path_registry_upstreamability_tiers: dict[str, list[str]] = {}
+    path_registry_boundary_types: dict[str, list[str]] = {}
     live_code_paths = sorted({path for item in live_code_items for path in item.paths})
     uncovered_code_paths = sorted(live_code_paths)
 
@@ -467,6 +624,8 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
         )
         status = str(entry.get("status", "live"))
         surface_type = entry.get("surface_type")
+        upstreamability_tier = entry.get("upstreamability_tier")
+        boundary_type = entry.get("boundary_type")
         if matched_paths:
             live_entries.append(
                 {
@@ -476,6 +635,10 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                     "matched_paths": matched_paths,
                     "surface": entry.get("surface", []),
                     "surface_type": surface_type,
+                    "upstreamability_tier": upstreamability_tier,
+                    "boundary_type": boundary_type,
+                    "hotspot_files": entry.get("hotspot_files", []),
+                    "extraction_target": entry.get("extraction_target", ""),
                     "category": entry.get("category", ""),
                 }
             )
@@ -484,6 +647,10 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                 path_registry_ids.setdefault(path, []).append(entry_id)
                 if surface_type:
                     path_registry_surface_types.setdefault(path, []).append(surface_type)
+                if upstreamability_tier:
+                    path_registry_upstreamability_tiers.setdefault(path, []).append(upstreamability_tier)
+                if boundary_type:
+                    path_registry_boundary_types.setdefault(path, []).append(boundary_type)
         else:
             derived_status = "upstream-equivalent" if status == "upstream-equivalent" else "stale"
             live_entries.append(
@@ -494,6 +661,10 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                     "matched_paths": [],
                     "surface": entry.get("surface", []),
                     "surface_type": surface_type,
+                    "upstreamability_tier": upstreamability_tier,
+                    "boundary_type": boundary_type,
+                    "hotspot_files": entry.get("hotspot_files", []),
+                    "extraction_target": entry.get("extraction_target", ""),
                     "category": entry.get("category", ""),
                 }
             )
@@ -509,6 +680,13 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
         "path_registry_ids": {path: sorted(set(ids)) for path, ids in path_registry_ids.items()},
         "path_registry_surface_types": {
             path: sorted(set(surface_types)) for path, surface_types in path_registry_surface_types.items()
+        },
+        "path_registry_upstreamability_tiers": {
+            path: sorted(set(tiers)) for path, tiers in path_registry_upstreamability_tiers.items()
+        },
+        "path_registry_boundary_types": {
+            path: sorted(set(boundary_types))
+            for path, boundary_types in path_registry_boundary_types.items()
         },
     }
 
@@ -541,6 +719,8 @@ def diff_item_to_json(
     item: DiffItem,
     registry_ids: list[str] | tuple[str, ...] | None = None,
     surface_types: list[str] | tuple[str, ...] | None = None,
+    upstreamability_tiers: list[str] | tuple[str, ...] | None = None,
+    boundary_types: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     return {
         "status": item.status,
@@ -553,6 +733,8 @@ def diff_item_to_json(
         "is_code": item.is_code,
         "registry_ids": list(registry_ids or item.registry_ids),
         "surface_types": list(surface_types or []),
+        "upstreamability_tiers": list(upstreamability_tiers or []),
+        "boundary_types": list(boundary_types or []),
     }
 
 
@@ -560,9 +742,20 @@ def annotate_diff_items(
     items: list[DiffItem],
     id_coverage: dict[str, list[str]],
     surface_coverage: dict[str, list[str]],
+    upstreamability_coverage: dict[str, list[str]],
+    boundary_coverage: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     return [
-        diff_item_to_json(item, *coverage_for_item(item, id_coverage, surface_coverage))
+        diff_item_to_json(
+            item,
+            *coverage_for_item(
+                item,
+                id_coverage,
+                surface_coverage,
+                upstreamability_coverage,
+                boundary_coverage,
+            ),
+        )
         for item in items
     ]
 
@@ -571,13 +764,24 @@ def coverage_for_item(
     item: DiffItem,
     id_coverage: dict[str, list[str]],
     surface_coverage: dict[str, list[str]],
-) -> tuple[list[str], list[str]]:
+    upstreamability_coverage: dict[str, list[str]],
+    boundary_coverage: dict[str, list[str]],
+) -> tuple[list[str], list[str], list[str], list[str]]:
     ids: list[str] = []
     surface_types: list[str] = []
+    upstreamability_tiers: list[str] = []
+    boundary_types: list[str] = []
     for path in item.paths:
         ids.extend(id_coverage.get(path, []))
         surface_types.extend(surface_coverage.get(path, []))
-    return sorted(set(ids)), sorted(set(surface_types))
+        upstreamability_tiers.extend(upstreamability_coverage.get(path, []))
+        boundary_types.extend(boundary_coverage.get(path, []))
+    return (
+        sorted(set(ids)),
+        sorted(set(surface_types)),
+        sorted(set(upstreamability_tiers)),
+        sorted(set(boundary_types)),
+    )
 
 
 def write_outputs(output_dir: Path, format_name: str, audit: dict[str, Any]) -> None:
@@ -620,6 +824,10 @@ def render_markdown(audit: dict[str, Any]) -> str:
         f"- Patch-equivalent downstream commits: `{audit['tree_diff']['patch_equivalent_downstream_commits']}`"
         f" | Unique downstream commits: `{audit['tree_diff']['unique_downstream_commits']}`"
     )
+    lines.append(
+        f"- Registry enforcement basis: `{audit['tree_diff']['registry_enforcement_basis']}`"
+        f" | Downstream carry code paths: `{audit['tree_diff']['downstream_carry_code_path_count']}`"
+    )
     lines.append("")
     lines.append("### Code paths")
     lines.extend(render_diff_table(audit["tree_diff"]["code_paths"]))
@@ -637,15 +845,17 @@ def render_diff_table(items: list[dict[str, Any]]) -> list[str]:
     if not items:
         return ["- None"]
     rows = [
-        "| Status | Mode | Rename | Paths | Registry | Surface |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Status | Mode | Rename | Paths | Registry | Surface | Tier | Boundary |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in items:
         registry_ids = ", ".join(item.get("registry_ids", [])) or "-"
         rename_score = f"`{item['rename_score']}`" if item.get("rename_score") else "-"
         surface_types = ", ".join(item.get("surface_types", [])) or "-"
+        upstreamability_tiers = ", ".join(item.get("upstreamability_tiers", [])) or "-"
+        boundary_types = ", ".join(item.get("boundary_types", [])) or "-"
         rows.append(
-            f"| `{item['status']}` | `{item['mode_change']}` | {rename_score} | `{item['display_path']}` | `{registry_ids}` | `{surface_types}` |"
+            f"| `{item['status']}` | `{item['mode_change']}` | {rename_score} | `{item['display_path']}` | `{registry_ids}` | `{surface_types}` | `{upstreamability_tiers}` | `{boundary_types}` |"
         )
     return rows
 
@@ -653,11 +863,20 @@ def render_diff_table(items: list[dict[str, Any]]) -> list[str]:
 def render_registry_table(entries: list[dict[str, Any]]) -> list[str]:
     if not entries:
         return ["- None"]
-    rows = ["| ID | Status | Surface type | Matched paths |", "| --- | --- | --- | --- |"]
+    rows = [
+        "| ID | Status | Surface type | Tier | Boundary | Extraction target | Hotspots | Matched paths |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
     for entry in entries:
         matched = ", ".join(entry.get("matched_paths", [])) or "-"
         surface_type = entry.get("surface_type") or "-"
-        rows.append(f"| `{entry['id']}` | `{entry['status']}` | `{surface_type}` | `{matched}` |")
+        tier = entry.get("upstreamability_tier") or "-"
+        boundary_type = entry.get("boundary_type") or "-"
+        extraction_target = entry.get("extraction_target") or "-"
+        hotspots = ", ".join(entry.get("hotspot_files", [])) or "-"
+        rows.append(
+            f"| `{entry['id']}` | `{entry['status']}` | `{surface_type}` | `{tier}` | `{boundary_type}` | `{extraction_target}` | `{hotspots}` | `{matched}` |"
+        )
     return rows
 
 
@@ -708,9 +927,12 @@ if __name__ == "__main__":
     except SnapshotChanged as exc:
         print(f"snapshot changed: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_UNSTABLE_SNAPSHOT)
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"registry error: {exc}", file=sys.stderr)
-        raise SystemExit(EXIT_STALE_REGISTRY)
+    except FileNotFoundError as exc:
+        print(f"registry file not found: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_INVALID_REGISTRY)
+    except ValueError as exc:
+        print(f"registry parse/validation error: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_INVALID_REGISTRY)
     except RuntimeError as exc:
         print(f"audit command error: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_INVALID_MIRROR)

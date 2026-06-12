@@ -21,7 +21,6 @@ Options:
   --profile <name>             validation-lab profile (default: targeted)
   --lane-set <name>            validation-lab lane set (default: all except targeted)
   --lanes <csv>                Optional explicit lane IDs
-  --notes <text>               Optional validation-lab notes
   --supersession-mode <mode>   auto|compare|milestone|retain (default: auto)
   --supersession-key <key>     Optional supersession key
   --artifact-build             Request artifact_build=true
@@ -38,8 +37,7 @@ Examples:
 
   scripts/dispatch-validation-lab-snapshot.sh \
     --profile frontier \
-    --lane-set ui-protocol \
-    --notes "bundle salvage frontier harvest"
+    --lane-set ui-protocol
 EOF
 }
 
@@ -49,7 +47,6 @@ dispatch_ref="main"
 profile="targeted"
 lane_set=""
 lanes=""
-notes=""
 supersession_mode="auto"
 supersession_key=""
 artifact_build="false"
@@ -85,7 +82,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --notes)
-      notes="$2"
       shift 2
       ;;
     --supersession-mode)
@@ -192,9 +188,6 @@ dispatch_cmd=(
 
 if [[ -n "$lanes" ]]; then
   dispatch_cmd+=(-f "lanes=${lanes}")
-fi
-if [[ -n "$notes" ]]; then
-  dispatch_cmd+=(-f "notes=${notes}")
 fi
 if [[ -n "$supersession_key" ]]; then
   dispatch_cmd+=(-f "supersession_key=${supersession_key}")

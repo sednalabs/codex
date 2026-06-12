@@ -4,10 +4,31 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
+    "ActivePermissionProfile": {
+      "properties": {
+        "extends": {
+          "default": null,
+          "description": "Parent profile identifier from the selected permissions profile's\n`extends` setting, when present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Identifier from `default_permissions` or the implicit built-in default,\nsuch as `:workspace` or a user-defined `[permissions.<id>]` profile.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
         "user",
+        "auto_review",
         "guardian_subagent"
       ],
       "type": "string"
@@ -89,6 +110,7 @@
             "contextWindowExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
+            "cyberPolicy",
             "internalServerError",
             "unauthorized",
             "badRequest",
@@ -279,7 +301,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "read",
@@ -388,6 +410,60 @@
       ],
       "type": "string"
     },
+    "ComputerUseCallOutputContentItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputText",
+              "title": "InputTextComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "title": "InputTextComputerUseCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "imageUrl": {
+              "type": "string"
+            },
+            "type": {
+              "const": "inputImage",
+              "title": "InputImageComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "imageUrl"
+          ],
+          "title": "InputImageComputerUseCallOutputContentItem",
+          "type": "object"
+        }
+      ]
+    },
+    "ComputerUseCallStatus": {
+      "enum": [
+        "inProgress",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
     "DynamicToolCallOutputContentItem": {
       "oneOf": [
         {
@@ -410,6 +486,12 @@
         },
         {
           "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "imageUrl": {
               "type": "string"
             },
@@ -493,6 +575,15 @@
       ],
       "type": "object"
     },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
     "McpToolCallError": {
       "properties": {
         "message": {
@@ -506,6 +597,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -663,59 +755,9 @@
         }
       ]
     },
-    "ReadOnlyAccess": {
-      "oneOf": [
-        {
-          "properties": {
-            "includePlatformDefaults": {
-              "default": true,
-              "type": "boolean"
-            },
-            "readableRoots": {
-              "default": [],
-              "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "RestrictedReadOnlyAccess",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "fullAccess",
-              "title": "FullAccessReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FullAccessReadOnlyAccess",
-          "type": "object"
-        }
-      ]
-    },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "SandboxPolicy": {
@@ -736,12 +778,6 @@
         },
         {
           "properties": {
-            "access": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "networkAccess": {
               "default": false,
               "type": "boolean"
@@ -790,12 +826,6 @@
               "default": false,
               "type": "boolean"
             },
-            "readOnlyAccess": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "type": {
               "const": "workspaceWrite",
               "title": "WorkspaceWriteSandboxPolicyType",
@@ -816,13 +846,6 @@
           "type": "object"
         }
       ]
-    },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
-      "type": "string"
     },
     "SessionSource": {
       "oneOf": [
@@ -863,6 +886,14 @@
           "type": "object"
         }
       ]
+    },
+    "SubAgentActivityKind": {
+      "enum": [
+        "started",
+        "interacted",
+        "interrupted"
+      ],
+      "type": "string"
     },
     "SubAgentSource": {
       "oneOf": [
@@ -936,6 +967,41 @@
         }
       ]
     },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
+      ],
+      "type": "string"
+    },
     "TextElement": {
       "properties": {
         "byteRange": {
@@ -981,8 +1047,8 @@
           "type": "integer"
         },
         "cwd": {
-          "description": "Working directory captured for the thread.",
-          "type": "string"
+          "$ref": "#/$defs/AbsolutePathBuf",
+          "description": "Working directory captured for the thread."
         },
         "ephemeral": {
           "description": "Whether the thread is ephemeral and should not be materialized on disk.",
@@ -1009,12 +1075,26 @@
         "id": {
           "type": "string"
         },
+        "model": {
+          "description": "Latest observed model for this thread, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "modelProvider": {
           "description": "Model provider used for this thread (for example, 'openai').",
           "type": "string"
         },
         "name": {
           "description": "Optional user-facing thread title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
           "type": [
             "string",
             "null"
@@ -1031,6 +1111,21 @@
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
         },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest observed reasoning effort for this thread, if known."
+        },
+        "sessionId": {
+          "description": "Session id shared by threads that belong to the same session tree.",
+          "type": "string"
+        },
         "source": {
           "$ref": "#/$defs/SessionSource",
           "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
@@ -1038,6 +1133,17 @@
         "status": {
           "$ref": "#/$defs/ThreadStatus",
           "description": "Current runtime status for the thread."
+        },
+        "threadSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional analytics source classification for this thread."
         },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`\n(when `includeTurns` is true) responses.\nFor all other responses and notifications returning a Thread,\nthe turns field will be an empty list.",
@@ -1054,6 +1160,7 @@
       },
       "required": [
         "id",
+        "sessionId",
         "preview",
         "ephemeral",
         "modelProvider",
@@ -1081,6 +1188,12 @@
       "oneOf": [
         {
           "properties": {
+            "clientId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "content": {
               "items": {
                 "$ref": "#/$defs/UserInput"
@@ -1249,8 +1362,8 @@
               "type": "array"
             },
             "cwd": {
-              "description": "The command's working directory.",
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf",
+              "description": "The command's working directory."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -1284,6 +1397,17 @@
             },
             "status": {
               "$ref": "#/$defs/CommandExecutionStatus"
+            },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
             },
             "type": {
               "const": "commandExecution",
@@ -1355,6 +1479,18 @@
             "id": {
               "type": "string"
             },
+            "mcpAppResourceUri": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pluginId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "result": {
               "anyOf": [
                 {
@@ -1414,6 +1550,12 @@
             "id": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "$ref": "#/$defs/DynamicToolCallStatus"
             },
@@ -1440,6 +1582,73 @@
             "status"
           ],
           "title": "DynamicToolCallThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "adapter": {
+              "type": "string"
+            },
+            "arguments": true,
+            "contentItems": {
+              "items": {
+                "$ref": "#/$defs/ComputerUseCallOutputContentItem"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "durationMs": {
+              "description": "The duration of the computer-use call in milliseconds.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "environmentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ComputerUseCallStatus"
+            },
+            "success": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "const": "computerUseCall",
+              "title": "ComputerUseCallThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "adapter",
+            "tool",
+            "arguments",
+            "status"
+          ],
+          "title": "ComputerUseCallThreadItem",
           "type": "object"
         },
         {
@@ -1524,6 +1733,36 @@
         },
         {
           "properties": {
+            "agentPath": {
+              "type": "string"
+            },
+            "agentThreadId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SubAgentActivityKind"
+            },
+            "type": {
+              "const": "subAgentActivity",
+              "title": "SubAgentActivityThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "agentThreadId",
+            "agentPath"
+          ],
+          "title": "SubAgentActivityThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -1560,7 +1799,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
               "const": "imageView",
@@ -1591,9 +1830,13 @@
               ]
             },
             "savedPath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "status": {
@@ -1677,6 +1920,9 @@
           "type": "object"
         }
       ]
+    },
+    "ThreadSource": {
+      "type": "string"
     },
     "ThreadStatus": {
       "oneOf": [
@@ -1778,11 +2024,16 @@
           "type": "string"
         },
         "items": {
-          "description": "Only populated on a `thread/resume` or `thread/fork` response.\nFor all other responses and notifications returning a Turn,\nthe items field will be an empty list.",
+          "description": "Thread items currently included in this turn payload.",
           "items": {
             "$ref": "#/$defs/ThreadItem"
           },
           "type": "array"
+        },
+        "itemsView": {
+          "$ref": "#/$defs/TurnItemsView",
+          "default": "full",
+          "description": "Describes how much of `items` has been loaded for this turn."
         },
         "startedAt": {
           "description": "Unix timestamp (in seconds) when the turn started.",
@@ -1831,6 +2082,25 @@
       ],
       "type": "object"
     },
+    "TurnItemsView": {
+      "oneOf": [
+        {
+          "const": "notLoaded",
+          "description": "`items` was not loaded for this turn. The field is intentionally empty.",
+          "type": "string"
+        },
+        {
+          "const": "summary",
+          "description": "`items` contains only a display summary for this turn.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+          "type": "string"
+        }
+      ]
+    },
     "TurnStatus": {
       "enum": [
         "completed",
@@ -1870,6 +2140,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "type": {
               "const": "image",
               "title": "ImageUserInputType",
@@ -1888,6 +2169,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "path": {
               "type": "string"
             },
@@ -2054,7 +2346,15 @@
       "description": "Reviewer currently used for approval requests on this thread."
     },
     "cwd": {
-      "type": "string"
+      "$ref": "#/$defs/AbsolutePathBuf"
+    },
+    "instructionSources": {
+      "default": [],
+      "description": "Instruction source files currently loaded for this thread.",
+      "items": {
+        "$ref": "#/$defs/AbsolutePathBuf"
+      },
+      "type": "array"
     },
     "model": {
       "type": "string"
@@ -2073,16 +2373,13 @@
       ]
     },
     "sandbox": {
-      "$ref": "#/$defs/SandboxPolicy"
+      "$ref": "#/$defs/SandboxPolicy",
+      "description": "Legacy sandbox policy retained for compatibility. Experimental clients\nshould prefer `activePermissionProfile` for profile provenance."
     },
     "serviceTier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ServiceTier"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "thread": {

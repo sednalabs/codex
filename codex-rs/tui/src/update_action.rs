@@ -1,30 +1,62 @@
-use crate::version::CODEX_UPDATE_BREW_CASK;
-use crate::version::CODEX_UPDATE_NPM_PACKAGE;
+#[cfg(any(not(debug_assertions), test))]
+use codex_install_context::InstallContext;
+#[cfg(any(not(debug_assertions), test))]
+use codex_install_context::InstallMethod;
+#[cfg(any(not(debug_assertions), test))]
+use codex_install_context::StandalonePlatform;
 
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via the configured npm package.
+    /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
-    /// Update via the configured Bun package.
+    /// Update via `bun install -g @openai/codex@latest`.
     BunGlobalLatest,
-    /// Update via the configured Homebrew cask.
+    /// Update via `brew upgrade codex`.
     BrewUpgrade,
+    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    StandaloneUnix,
+    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    StandaloneWindows,
 }
 
 impl UpdateAction {
+    #[cfg(any(not(debug_assertions), test))]
+    pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
+        match &context.method {
+            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
+            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
+            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
+            InstallMethod::Standalone { platform, .. } => Some(match platform {
+                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
+                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
+            }),
+            InstallMethod::Other => None,
+        }
+    }
+
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, Vec<&'static str>) {
+    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => {
-                ("npm", vec!["install", "-g", CODEX_UPDATE_NPM_PACKAGE])
-            }
-            UpdateAction::BunGlobalLatest => {
-                ("bun", vec!["install", "-g", CODEX_UPDATE_NPM_PACKAGE])
-            }
-            UpdateAction::BrewUpgrade => {
-                ("brew", vec!["upgrade", "--cask", CODEX_UPDATE_BREW_CASK])
-            }
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::StandaloneUnix => (
+                "sh",
+                &[
+                    "-c",
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+                ],
+            ),
+            UpdateAction::StandaloneWindows => (
+                "powershell",
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                ],
+            ),
         }
     }
 
@@ -37,89 +69,97 @@ impl UpdateAction {
 }
 
 #[cfg(not(debug_assertions))]
-pub(crate) fn get_update_action() -> Option<UpdateAction> {
-    let exe = std::env::current_exe().unwrap_or_default();
-    let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
-    let managed_by_bun = std::env::var_os("CODEX_MANAGED_BY_BUN").is_some();
-
-    detect_update_action(
-        cfg!(target_os = "macos"),
-        &exe,
-        managed_by_npm,
-        managed_by_bun,
-    )
-}
-
-#[cfg(any(not(debug_assertions), test))]
-fn detect_update_action(
-    is_macos: bool,
-    current_exe: &std::path::Path,
-    managed_by_npm: bool,
-    managed_by_bun: bool,
-) -> Option<UpdateAction> {
-    if managed_by_npm {
-        Some(UpdateAction::NpmGlobalLatest)
-    } else if managed_by_bun {
-        Some(UpdateAction::BunGlobalLatest)
-    } else if is_macos
-        && (current_exe.starts_with("/opt/homebrew") || current_exe.starts_with("/usr/local"))
-    {
-        Some(UpdateAction::BrewUpgrade)
-    } else {
-        None
-    }
+pub fn get_update_action() -> Option<UpdateAction> {
+    UpdateAction::from_install_context(InstallContext::current())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use pretty_assertions::assert_eq;
 
     #[test]
-    fn detects_update_action_without_env_mutation() {
+    fn maps_install_context_to_update_action() {
+        let native_release_dir =
+            AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
+                .expect("temp dir path should be absolute");
+
         assert_eq!(
-            detect_update_action(
-                /*is_macos*/ false,
-                std::path::Path::new("/any/path"),
-                /*managed_by_npm*/ false,
-                /*managed_by_bun*/ false
-            ),
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Other,
+                package_layout: None,
+            }),
             None
         );
         assert_eq!(
-            detect_update_action(
-                /*is_macos*/ false,
-                std::path::Path::new("/any/path"),
-                /*managed_by_npm*/ true,
-                /*managed_by_bun*/ false
-            ),
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Npm,
+                package_layout: None,
+            }),
             Some(UpdateAction::NpmGlobalLatest)
         );
         assert_eq!(
-            detect_update_action(
-                /*is_macos*/ false,
-                std::path::Path::new("/any/path"),
-                /*managed_by_npm*/ false,
-                /*managed_by_bun*/ true
-            ),
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Bun,
+                package_layout: None,
+            }),
             Some(UpdateAction::BunGlobalLatest)
         );
         assert_eq!(
-            detect_update_action(
-                /*is_macos*/ true,
-                std::path::Path::new("/opt/homebrew/bin/codex"),
-                /*managed_by_npm*/ false,
-                /*managed_by_bun*/ false
-            ),
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Brew,
+                package_layout: None,
+            }),
             Some(UpdateAction::BrewUpgrade)
         );
         assert_eq!(
-            detect_update_action(
-                /*is_macos*/ true,
-                std::path::Path::new("/usr/local/bin/codex"),
-                /*managed_by_npm*/ false,
-                /*managed_by_bun*/ false
-            ),
-            Some(UpdateAction::BrewUpgrade)
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Standalone {
+                    platform: StandalonePlatform::Unix,
+                    release_dir: native_release_dir.clone(),
+                    resources_dir: Some(native_release_dir.join("codex-resources")),
+                },
+                package_layout: None,
+            }),
+            Some(UpdateAction::StandaloneUnix)
+        );
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Standalone {
+                    platform: StandalonePlatform::Windows,
+                    release_dir: native_release_dir.clone(),
+                    resources_dir: Some(native_release_dir.join("codex-resources")),
+                },
+                package_layout: None,
+            }),
+            Some(UpdateAction::StandaloneWindows)
+        );
+    }
+
+    #[test]
+    fn standalone_update_commands_rerun_latest_installer() {
+        assert_eq!(
+            UpdateAction::StandaloneUnix.command_args(),
+            (
+                "sh",
+                &[
+                    "-c",
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
+                ][..],
+            )
+        );
+        assert_eq!(
+            UpdateAction::StandaloneWindows.command_args(),
+            (
+                "powershell",
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                ][..],
+            )
         );
     }
 }

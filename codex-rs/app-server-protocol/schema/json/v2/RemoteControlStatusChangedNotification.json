@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "RemoteControlConnectionStatus": {
+      "enum": [
+        "disabled",
+        "connecting",
+        "connected",
+        "errored"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Current remote-control connection status and remote identity exposed to clients.",
+  "properties": {
+    "environmentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "installationId": {
+      "type": "string"
+    },
+    "serverName": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/RemoteControlConnectionStatus"
+    }
+  },
+  "required": [
+    "status",
+    "serverName",
+    "installationId"
+  ],
+  "title": "RemoteControlStatusChangedNotification",
+  "type": "object"
+}

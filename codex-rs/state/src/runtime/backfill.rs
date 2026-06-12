@@ -103,106 +103,18 @@ WHERE id = 1
     }
 
     async fn ensure_backfill_state_row(&self) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-INSERT INTO backfill_state (id, status, last_watermark, last_success_at, updated_at)
-VALUES (?, ?, NULL, NULL, ?)
-ON CONFLICT(id) DO NOTHING
-            "#,
-        )
-        .bind(1_i64)
-        .bind(crate::BackfillStatus::Pending.as_str())
-        .bind(Utc::now().timestamp())
-        .execute(self.pool.as_ref())
-        .await?;
-        Ok(())
+        ensure_backfill_state_row_in_pool(self.pool.as_ref()).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::StateRuntime;
-    use super::state_db_filename;
+    use super::base_sqlite_options;
     use super::test_support::unique_temp_dir;
-    use crate::STATE_DB_FILENAME;
-    use crate::STATE_DB_VERSION;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
-
-    #[tokio::test]
-    async fn init_removes_legacy_state_db_files() {
-        let codex_home = unique_temp_dir();
-        tokio::fs::create_dir_all(&codex_home)
-            .await
-            .expect("create codex_home");
-
-        let current_name = state_db_filename();
-        let previous_version = STATE_DB_VERSION.saturating_sub(1);
-        let unversioned_name = format!("{STATE_DB_FILENAME}.sqlite");
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let path = codex_home.join(format!("{unversioned_name}{suffix}"));
-            tokio::fs::write(path, b"legacy")
-                .await
-                .expect("write legacy");
-            let old_version_path = codex_home.join(format!(
-                "{STATE_DB_FILENAME}_{previous_version}.sqlite{suffix}"
-            ));
-            tokio::fs::write(old_version_path, b"old_version")
-                .await
-                .expect("write old version");
-        }
-        let unrelated_path = codex_home.join("state.sqlite_backup");
-        tokio::fs::write(&unrelated_path, b"keep")
-            .await
-            .expect("write unrelated");
-        let numeric_path = codex_home.join("123");
-        tokio::fs::write(&numeric_path, b"keep")
-            .await
-            .expect("write numeric");
-
-        let _runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize runtime");
-
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let legacy_path = codex_home.join(format!("{unversioned_name}{suffix}"));
-            assert_eq!(
-                tokio::fs::try_exists(&legacy_path)
-                    .await
-                    .expect("check legacy path"),
-                false
-            );
-            let old_version_path = codex_home.join(format!(
-                "{STATE_DB_FILENAME}_{previous_version}.sqlite{suffix}"
-            ));
-            assert_eq!(
-                tokio::fs::try_exists(&old_version_path)
-                    .await
-                    .expect("check old version path"),
-                false
-            );
-        }
-        assert_eq!(
-            tokio::fs::try_exists(codex_home.join(current_name))
-                .await
-                .expect("check new db path"),
-            true
-        );
-        assert_eq!(
-            tokio::fs::try_exists(&unrelated_path)
-                .await
-                .expect("check unrelated path"),
-            true
-        );
-        assert_eq!(
-            tokio::fs::try_exists(&numeric_path)
-                .await
-                .expect("check numeric path"),
-            true
-        );
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
+    use sqlx::Connection;
 
     #[tokio::test]
     async fn backfill_state_persists_progress_and_completion() {
@@ -253,6 +165,61 @@ mod tests {
             Some("sessions/2026/01/28/rollout-b.jsonl".to_string())
         );
         assert!(completed.last_success_at.is_some());
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn get_backfill_state_succeeds_while_another_connection_holds_writer_slot() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+        let mut write_connection = sqlx::SqliteConnection::connect_with(&base_sqlite_options(
+            &crate::state_db_path(codex_home.as_path()),
+        ))
+        .await
+        .expect("open write connection");
+        let write_transaction = write_connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("acquire write lock");
+
+        let state = runtime
+            .get_backfill_state()
+            .await
+            .expect("get backfill state");
+        assert_eq!(state, crate::BackfillState::default());
+
+        write_transaction
+            .rollback()
+            .await
+            .expect("release write lock");
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn get_backfill_state_repairs_a_missing_singleton_row() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+        sqlx::query("DELETE FROM backfill_state WHERE id = 1")
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("delete backfill state row");
+
+        let state = runtime
+            .get_backfill_state()
+            .await
+            .expect("get repaired backfill state");
+        assert_eq!(state, crate::BackfillState::default());
+        let row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backfill_state WHERE id = 1")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("count repaired backfill state rows");
+        assert_eq!(row_count, 1);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

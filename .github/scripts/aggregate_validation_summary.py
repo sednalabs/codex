@@ -22,30 +22,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--latest-head-sha", default="")
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
     parser.add_argument("--profile-intent", default="")
     parser.add_argument("--profile-notes", default="")
     parser.add_argument("--lane-summary", default="")
+    parser.add_argument("--planner-fingerprint", default="")
     parser.add_argument("--planned-matrix-json", default="")
     parser.add_argument("--selected-lane-ids-json", default="")
     parser.add_argument("--explicit-lanes", default="")
     parser.add_argument("--supersession-mode", default="auto")
     parser.add_argument("--supersession-key", default="")
+    parser.add_argument("--dedupe-should-skip", default="false")
+    parser.add_argument("--dedupe-reason", default="")
+    parser.add_argument("--dedupe-matched-run-id", default="")
+    parser.add_argument("--dedupe-matched-run-url", default="")
     parser.add_argument("--notes-supplied", default="false")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--run-url", required=True)
+    parser.add_argument("--workflow-file", default="sedna-heavy-tests.yml")
+    parser.add_argument(
+        "--event-policy", default="pull_request_exact_head_lane_fingerprint"
+    )
     parser.add_argument("--run-selected-lanes", required=True)
     parser.add_argument("--run-smoke-gate", required=True)
     parser.add_argument("--smoke-gate-kind", default="")
     parser.add_argument("--smoke-gate-result", default="skipped")
-    parser.add_argument("--light-result", default="skipped")
-    parser.add_argument("--rust-result", default="skipped")
-    parser.add_argument("--heavy-result", default="skipped")
+    parser.add_argument("--workflow-result", default="skipped")
+    parser.add_argument("--node-result", default="skipped")
+    parser.add_argument("--rust-minimal-result", default="skipped")
+    parser.add_argument("--rust-integration-result", default="skipped")
+    parser.add_argument("--release-result", default="skipped")
     parser.add_argument("--run-artifact", required=True)
     parser.add_argument("--artifact-result", default="skipped")
     parser.add_argument("--matrix-fail-fast", default="false")
+    parser.add_argument("--rust-batching-mode", default="")
+    parser.add_argument("--rust-batching-reason", default="")
+    parser.add_argument("--cache-occupancy-json", default="")
     parser.add_argument("--lane-summary-dir", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -82,6 +97,19 @@ def load_lane_summaries(directory: Path) -> dict[str, dict]:
     return summaries
 
 
+def load_optional_json(path: str) -> dict:
+    if not path.strip():
+        return {}
+    payload_path = Path(path)
+    if not payload_path.exists():
+        return {}
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    except JSONDecodeError:
+        return {"available": False, "error": "cache occupancy JSON was malformed"}
+    return payload if isinstance(payload, dict) else {}
+
+
 def lane_status(lane: dict) -> str:
     outcome = lane["outcome"]
     if outcome == "success":
@@ -98,6 +126,11 @@ def lane_status(lane: dict) -> str:
 
 
 def lane_signal(lane: dict) -> str:
+    schema_drift = lane.get("schema_fixture_drift")
+    if isinstance(schema_drift, dict):
+        summary = str(schema_drift.get("summary") or "").strip()
+        if summary:
+            return summary
     signal = str(lane.get("primary_signal") or "").strip()
     if signal:
         return signal
@@ -187,7 +220,9 @@ def build_results(
         lane_id = lane["lane_id"]
         payload = actual_by_lane.get(lane_id)
         if payload and payload.get("outcome") == "failure":
-            setup_class = str(lane.get("setup_class") or payload.get("setup_class") or "rust")
+            setup_class = str(
+                lane.get("setup_class") or payload.get("setup_class") or "rust_minimal"
+            )
             setup_class_has_failure_artifact[setup_class] = True
 
     results: list[dict] = []
@@ -202,7 +237,7 @@ def build_results(
                     else "missing"
                 )
             else:
-                setup_class = str(lane.get("setup_class") or "rust")
+                setup_class = str(lane.get("setup_class") or "rust_minimal")
                 job_result = setup_class_results.get(setup_class, "skipped")
                 cancelled_by_fail_fast = (
                     matrix_fail_fast
@@ -226,7 +261,7 @@ def build_results(
                     "log_available": False,
                     "lane_phase": lane.get("lane_phase", "downstream_lanes"),
                     "frontier_default": bool(lane.get("frontier_default", False)),
-                    "setup_class": lane.get("setup_class", "rust"),
+                    "setup_class": lane.get("setup_class", "rust_minimal"),
                     "frontier_role": lane.get("frontier_role", "sentinel"),
                     "summary_family": lane.get("summary_family", lane_id),
                     "cost_class": lane.get("cost_class", "medium"),
@@ -240,7 +275,7 @@ def build_results(
             lane.update(payload)
             lane.setdefault("status_class", lane.get("status_class", "active"))
             lane.setdefault("frontier_default", bool(lane.get("frontier_default", False)))
-            lane.setdefault("setup_class", lane.get("setup_class", "rust"))
+            lane.setdefault("setup_class", lane.get("setup_class", "rust_minimal"))
             lane.setdefault("frontier_role", lane.get("frontier_role", "sentinel"))
             lane.setdefault("summary_family", lane.get("summary_family", lane_id))
             lane.setdefault("cost_class", lane.get("cost_class", "medium"))
@@ -343,6 +378,7 @@ def derive_primary_and_secondary(
                 "outcome": chosen["outcome"],
                 "exit_code": chosen.get("exit_code"),
                 "signal": lane_signal(chosen),
+                "schema_fixture_drift": chosen.get("schema_fixture_drift") or {},
             }
         )
 
@@ -364,21 +400,32 @@ def derive_primary_and_secondary(
                 "outcome": lane["outcome"],
                 "exit_code": lane.get("exit_code"),
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
         )
 
     return primary, secondary
 
 
-def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[dict]]:
+def summarize_runtime(
+    results: list[dict],
+) -> tuple[int, dict[str, int], dict[str, int], list[dict], list[dict]]:
     total_duration_ms = 0
     phase_runtime_ms: dict[str, int] = {}
+    timing_breakdown_ms: dict[str, int] = {"setup": 0, "command": 0}
     lanes_with_runtime: list[dict] = []
+    batches: dict[str, dict] = {}
     for lane in results:
         duration_ms = lane.get("duration_ms")
         if not isinstance(duration_ms, int) or duration_ms < 0:
             continue
         total_duration_ms += duration_ms
+        setup_duration_ms = lane.get("setup_duration_ms")
+        if isinstance(setup_duration_ms, int) and setup_duration_ms >= 0:
+            timing_breakdown_ms["setup"] += setup_duration_ms
+        command_duration_ms = lane.get("command_duration_ms")
+        if isinstance(command_duration_ms, int) and command_duration_ms >= 0:
+            timing_breakdown_ms["command"] += command_duration_ms
         lane_phase = str(lane.get("lane_phase") or "downstream_lanes")
         phase_runtime_ms[lane_phase] = phase_runtime_ms.get(lane_phase, 0) + duration_ms
         lanes_with_runtime.append(
@@ -386,20 +433,45 @@ def summarize_runtime(results: list[dict]) -> tuple[int, dict[str, int], list[di
                 "lane_id": lane.get("lane_id"),
                 "lane_phase": lane_phase,
                 "duration_ms": duration_ms,
+                "setup_duration_ms": setup_duration_ms,
+                "command_duration_ms": command_duration_ms,
                 "outcome": lane.get("outcome"),
                 "setup_class": lane.get("setup_class"),
             }
         )
+        batch_id = str(lane.get("batch_id") or "")
+        if batch_id:
+            batch = batches.setdefault(
+                batch_id,
+                {
+                    "batch_id": batch_id,
+                    "setup_class": lane.get("setup_class"),
+                    "lane_ids": [],
+                    "duration_ms": 0,
+                    "command_duration_ms": 0,
+                    "setup_duration_ms": lane.get("batch_setup_duration_ms"),
+                    "outcomes": [],
+                },
+            )
+            batch["lane_ids"].append(lane.get("lane_id"))
+            batch["duration_ms"] += duration_ms
+            if isinstance(command_duration_ms, int) and command_duration_ms >= 0:
+                batch["command_duration_ms"] += command_duration_ms
+            batch["outcomes"].append(lane.get("outcome"))
     return (
         total_duration_ms,
         dict(sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)),
+        timing_breakdown_ms,
         sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:10],
+        sorted(batches.values(), key=lambda batch: batch["duration_ms"], reverse=True)[:10],
     )
 
 
 def overall_conclusion(
     primary: list[dict], secondary: list[dict], downstream_result: str, args: argparse.Namespace
 ) -> str:
+    if parse_bool(args.dedupe_should_skip):
+        return "success" if args.dedupe_matched_run_url else "unknown"
     terminal_results = {
         args.smoke_gate_result,
         downstream_result,
@@ -414,6 +486,118 @@ def overall_conclusion(
     if parse_bool(args.run_smoke_gate) and args.smoke_gate_result == "success":
         return "success"
     return "unknown"
+
+
+def normalized_sha(raw: str) -> str:
+    return str(raw or "").strip().lower()
+
+
+def shas_match(left: str, right: str) -> bool:
+    left_normalized = normalized_sha(left)
+    right_normalized = normalized_sha(right)
+    if not left_normalized or not right_normalized:
+        return False
+    return left_normalized.startswith(right_normalized) or right_normalized.startswith(left_normalized)
+
+
+def blocker_result(item: dict) -> str:
+    return str(item.get("outcome") or item.get("job_result") or "").strip()
+
+
+def candidate_rerun_lane_ids(candidate_next_slices: list[dict], *, limit: int = 5) -> list[str]:
+    lane_ids: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidate_next_slices:
+        values: list[object] = []
+        nested_lane_ids = candidate.get("lane_ids")
+        if isinstance(nested_lane_ids, list):
+            values.extend(nested_lane_ids)
+        else:
+            values.append(candidate.get("lane_id"))
+        for value in values:
+            lane_id = str(value or "").strip()
+            if not lane_id or lane_id.startswith("setup-class:") or lane_id in seen:
+                continue
+            seen.add(lane_id)
+            lane_ids.append(lane_id)
+            if len(lane_ids) >= limit:
+                return lane_ids
+    return lane_ids
+
+
+def classify_head_freshness(
+    args: argparse.Namespace,
+    *,
+    queue: list[dict],
+    candidate_next_slices: list[dict],
+    downstream_result: str,
+) -> dict:
+    run_head_sha = normalized_sha(args.head_sha)
+    latest_head_sha = normalized_sha(getattr(args, "latest_head_sha", ""))
+    if run_head_sha and latest_head_sha:
+        run_head_status = "current" if shas_match(run_head_sha, latest_head_sha) else "stale"
+    else:
+        run_head_status = "unknown"
+
+    terminal_results = {
+        str(args.smoke_gate_result or ""),
+        str(downstream_result or ""),
+        str(args.artifact_result or ""),
+    }
+    queue_results = [blocker_result(item) for item in queue]
+    failed_results = [
+        result
+        for result in [*queue_results, *terminal_results]
+        if result in FAILED_OUTCOMES
+    ]
+    non_cancelled_failures = [
+        result for result in failed_results if result and result != "cancelled"
+    ]
+    has_failure = bool(failed_results)
+    has_cancelled = any(result == "cancelled" for result in failed_results)
+    rerun_lane_ids = candidate_rerun_lane_ids(candidate_next_slices)
+
+    if not has_failure:
+        classification = "none"
+    elif has_cancelled and not non_cancelled_failures:
+        classification = "cancelled"
+    elif run_head_status == "current":
+        classification = "active"
+    elif run_head_status == "stale" and rerun_lane_ids:
+        classification = "needs_targeted_latest_head_proof"
+    elif run_head_status == "stale":
+        classification = "stale"
+    else:
+        classification = "active"
+
+    rerun_needed = classification in {
+        "cancelled",
+        "needs_targeted_latest_head_proof",
+        "stale",
+    }
+    if classification == "cancelled":
+        reason = "cancelled lanes need a fresh run before diagnosis"
+    elif classification == "needs_targeted_latest_head_proof":
+        reason = "stale failed lane evidence needs latest-head proof before repair"
+    elif classification == "stale":
+        reason = "failed run is stale and lacks a narrower lane recommendation"
+    elif classification == "active":
+        reason = "failure is on the latest known target head"
+    else:
+        reason = "no failed lane rerun is needed"
+
+    return {
+        "run_head_status": run_head_status,
+        "failed_lane_classification": classification,
+        "latest_head_sha_supplied": bool(latest_head_sha),
+        "recommended_rerun": {
+            "needed": rerun_needed,
+            "profile": "targeted" if rerun_lane_ids else args.profile,
+            "lane_ids": rerun_lane_ids,
+            "lane_count": len(rerun_lane_ids),
+            "reason": reason,
+        },
+    }
 
 
 def main() -> None:
@@ -442,23 +626,32 @@ def main() -> None:
 
     actual_by_lane = load_lane_summaries(Path(args.lane_summary_dir))
     setup_class_results = {
-        "light": args.light_result,
-        "rust": args.rust_result,
-        "heavy": args.heavy_result,
+        "workflow": args.workflow_result,
+        "node": args.node_result,
+        "rust_minimal": args.rust_minimal_result,
+        "rust_integration": args.rust_integration_result,
+        "release": args.release_result,
     }
     matrix_fail_fast = parse_bool(args.matrix_fail_fast)
+    dedupe_should_skip = parse_bool(args.dedupe_should_skip)
 
-    results = build_results(
-        planned_matrix,
-        selected_lane_ids,
-        actual_by_lane,
-        args.smoke_gate_result,
-        setup_class_results,
-        matrix_fail_fast=matrix_fail_fast,
-    )
+    if dedupe_should_skip:
+        results = []
+    else:
+        results = build_results(
+            planned_matrix,
+            selected_lane_ids,
+            actual_by_lane,
+            args.smoke_gate_result,
+            setup_class_results,
+            matrix_fail_fast=matrix_fail_fast,
+        )
     setup_rows = setup_class_rows(results, setup_class_results)
 
-    if summary_input_signals:
+    if dedupe_should_skip:
+        primary = []
+        secondary = []
+    elif summary_input_signals:
         primary = [
             {
                 "kind": "planner",
@@ -474,13 +667,27 @@ def main() -> None:
     primary = sorted(primary, key=blocker_sort_key)
     secondary = sorted(secondary, key=blocker_sort_key)
     queue = [*primary, *secondary]
-    total_duration_ms, phase_runtime_ms, top_slowest_lanes = summarize_runtime(results)
-    downstream_result = combined_result(args.light_result, args.rust_result, args.heavy_result)
+    (
+        total_duration_ms,
+        phase_runtime_ms,
+        timing_breakdown_ms,
+        top_slowest_lanes,
+        top_slowest_batches,
+    ) = summarize_runtime(results)
+    downstream_result = combined_result(
+        args.workflow_result,
+        args.node_result,
+        args.rust_minimal_result,
+        args.rust_integration_result,
+        args.release_result,
+    )
 
     lane_count = len(results)
     successful_lane_count = sum(1 for lane in results if lane["outcome"] in SUCCESS_OUTCOMES)
     raw_failed_lane_count = sum(1 for lane in results if lane["outcome"] in BLOCKER_OUTCOMES)
     other_lane_count = lane_count - successful_lane_count - raw_failed_lane_count
+    batched_lane_count = sum(1 for lane in results if lane.get("batch_id"))
+    batch_count = len({lane.get("batch_id") for lane in results if lane.get("batch_id")})
 
     candidate_next_slices: list[dict] = []
     for item in queue[:20]:
@@ -510,24 +717,36 @@ def main() -> None:
                     "summary_family": item.get("summary_family"),
                     "setup_class": item.get("setup_class"),
                     "signal": item.get("signal", ""),
+                    "schema_fixture_drift": item.get("schema_fixture_drift") or {},
                 }
             )
 
+    head_freshness = classify_head_freshness(
+        args,
+        queue=queue,
+        candidate_next_slices=candidate_next_slices,
+        downstream_result=downstream_result,
+    )
     summary = {
         "lane_count": lane_count,
+        "batch_count": batch_count,
+        "batched_lane_count": batched_lane_count,
         "successful_lane_count": successful_lane_count,
         "failed_lane_count": blocked_finding_count(primary, secondary),
         "raw_failed_lane_count": raw_failed_lane_count,
         "other_lane_count": other_lane_count,
         "total_duration_ms": total_duration_ms,
         "phase_runtime_ms": phase_runtime_ms,
+        "timing_breakdown_ms": timing_breakdown_ms,
         "top_slowest_lanes": top_slowest_lanes,
+        "top_slowest_batches": top_slowest_batches,
         "first_failure": queue[0] if queue else None,
         "failed_lanes": [
             {
                 "lane_id": lane["lane_id"],
                 "outcome": lane["outcome"],
                 "signal": lane_signal(lane),
+                "schema_fixture_drift": lane.get("schema_fixture_drift") or {},
             }
             for lane in results
             if lane["outcome"] in BLOCKER_OUTCOMES
@@ -536,25 +755,24 @@ def main() -> None:
         "primary_blockers": primary,
         "secondary_findings": secondary,
         "candidate_next_slices": candidate_next_slices,
+        "head_freshness": head_freshness,
         "overall_conclusion": overall_conclusion(primary, secondary, downstream_result, args),
     }
 
     payload = {
         "repo": args.repo,
-        "ref": {
-            "host_ref": args.host_ref,
-            "display_ref": args.display_ref,
-            "checkout_ref": args.checkout_ref,
-            "head_sha": args.head_sha,
-        },
         "selection": {
             "profile": args.profile,
             "profile_intent": args.profile_intent or "",
             "profile_notes": args.profile_notes or "",
             "lane_set": args.lane_set,
             "lane_summary": args.lane_summary or "",
-            "explicit_lanes": explicit_lanes,
+            "planner_fingerprint": args.planner_fingerprint or "",
+            "explicit_lanes_supplied": bool(explicit_lanes),
+            "explicit_lane_count": len(explicit_lanes),
             "notes_supplied": parse_bool(args.notes_supplied),
+            "rust_batching_mode": args.rust_batching_mode or "",
+            "rust_batching_reason": args.rust_batching_reason or "",
             "baseline_required": args.profile == "frontier",
             "supersession": {
                 "mode": args.supersession_mode or "auto",
@@ -573,17 +791,29 @@ def main() -> None:
                 "kind": args.smoke_gate_kind,
                 "result": args.smoke_gate_result,
             },
-            "light_lanes": {
-                "planned": any(lane.get("setup_class") == "light" for lane in planned_matrix),
-                "result": args.light_result,
+            "workflow_lanes": {
+                "planned": any(lane.get("setup_class") == "workflow" for lane in planned_matrix),
+                "result": args.workflow_result,
             },
-            "rust_lanes": {
-                "planned": any(lane.get("setup_class") == "rust" for lane in planned_matrix),
-                "result": args.rust_result,
+            "node_lanes": {
+                "planned": any(lane.get("setup_class") == "node" for lane in planned_matrix),
+                "result": args.node_result,
             },
-            "heavy_lanes": {
-                "planned": any(lane.get("setup_class") == "heavy" for lane in planned_matrix),
-                "result": args.heavy_result,
+            "rust_minimal_lanes": {
+                "planned": any(
+                    lane.get("setup_class") == "rust_minimal" for lane in planned_matrix
+                ),
+                "result": args.rust_minimal_result,
+            },
+            "rust_integration_lanes": {
+                "planned": any(
+                    lane.get("setup_class") == "rust_integration" for lane in planned_matrix
+                ),
+                "result": args.rust_integration_result,
+            },
+            "release_lanes": {
+                "planned": any(lane.get("setup_class") == "release" for lane in planned_matrix),
+                "result": args.release_result,
             },
             "downstream_lanes": {
                 "planned": parse_bool(args.run_selected_lanes),
@@ -594,8 +824,37 @@ def main() -> None:
                 "result": args.artifact_result,
             },
         },
+        "dedupe": {
+            "should_skip": dedupe_should_skip,
+            "reason": args.dedupe_reason or "",
+            "matched_run_id": args.dedupe_matched_run_id or "",
+            "matched_run_url": args.dedupe_matched_run_url or "",
+        },
         "lanes": results,
+        "cache_occupancy": load_optional_json(args.cache_occupancy_json),
         "summary": summary,
+        "ci_proof_v1": {
+            "schema_version": "ci-proof-v1",
+            "repository": args.repo,
+            "workflow_file": args.workflow_file,
+            "lane": args.lane_set,
+            "planner_fingerprint": args.planner_fingerprint or "",
+            "head_sha": args.head_sha,
+            "event_policy": args.event_policy,
+            "inputs_hash": args.planner_fingerprint or "",
+            "conclusion": summary["overall_conclusion"],
+            "run_id": args.run_id,
+            "run_url": args.run_url,
+            "evidence_key": ":".join(
+                [
+                    args.repo,
+                    args.workflow_file,
+                    args.head_sha,
+                    args.lane_set,
+                    args.planner_fingerprint or "",
+                ]
+            ),
+        },
     }
 
     output_path = Path(args.output)

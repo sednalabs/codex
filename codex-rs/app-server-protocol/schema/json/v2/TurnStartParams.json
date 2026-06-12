@@ -4,10 +4,33 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
+    "AdditionalContextEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AdditionalContextKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AdditionalContextKind": {
+      "enum": [
+        "untrusted",
+        "application"
+      ],
+      "type": "string"
+    },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples\ninclude sandbox escapes, blocked network access, MCP approval prompts, and\nARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully\nprompted subagent to gather relevant context and apply a risk-based\ndecision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
         "user",
+        "auto_review",
         "guardian_subagent"
       ],
       "type": "string"
@@ -97,6 +120,15 @@
       ],
       "type": "object"
     },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
@@ -120,59 +152,9 @@
       ],
       "type": "string"
     },
-    "ReadOnlyAccess": {
-      "oneOf": [
-        {
-          "properties": {
-            "includePlatformDefaults": {
-              "default": true,
-              "type": "boolean"
-            },
-            "readableRoots": {
-              "default": [],
-              "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "RestrictedReadOnlyAccess",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "fullAccess",
-              "title": "FullAccessReadOnlyAccessType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FullAccessReadOnlyAccess",
-          "type": "object"
-        }
-      ]
-    },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningSummary": {
@@ -211,12 +193,6 @@
         },
         {
           "properties": {
-            "access": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "networkAccess": {
               "default": false,
               "type": "boolean"
@@ -265,12 +241,6 @@
               "default": false,
               "type": "boolean"
             },
-            "readOnlyAccess": {
-              "$ref": "#/$defs/ReadOnlyAccess",
-              "default": {
-                "type": "fullAccess"
-              }
-            },
             "type": {
               "const": "workspaceWrite",
               "title": "WorkspaceWriteSandboxPolicyType",
@@ -291,13 +261,6 @@
           "type": "object"
         }
       ]
-    },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
-      "type": "string"
     },
     "Settings": {
       "description": "Settings for a collaboration mode.",
@@ -346,6 +309,21 @@
       ],
       "type": "object"
     },
+    "TurnEnvironmentParams": {
+      "properties": {
+        "cwd": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "cwd"
+      ],
+      "type": "object"
+    },
     "UserInput": {
       "oneOf": [
         {
@@ -376,6 +354,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "type": {
               "const": "image",
               "title": "ImageUserInputType",
@@ -394,6 +383,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "path": {
               "type": "string"
             },
@@ -481,6 +481,12 @@
       ],
       "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
     },
+    "clientUserMessageId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "cwd": {
       "description": "Override the working directory for this turn and subsequent turns.",
       "type": [
@@ -538,15 +544,11 @@
       "description": "Override the sandbox policy for this turn and subsequent turns."
     },
     "serviceTier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ServiceTier"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Override the service tier for this turn and subsequent turns."
+      "description": "Override the service tier for this turn and subsequent turns.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "summary": {
       "anyOf": [

@@ -1,3 +1,4 @@
+use crate::error_code::invalid_request;
 use crate::extensions::NotificationDispatchKind;
 use crate::extensions::app_server_hooks;
 use crate::extensions::dispatch_notification_to_connection;
@@ -10,74 +11,24 @@ use codex_app_server_protocol::FsWatchParams;
 use codex_app_server_protocol::FsWatchResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
-use codex_core::file_watcher::FileWatcher;
-use codex_core::file_watcher::FileWatcherEvent;
-use codex_core::file_watcher::FileWatcherSubscriber;
-use codex_core::file_watcher::Receiver;
-#[cfg(test)]
-use codex_core::file_watcher::WatchPath;
-use codex_core::file_watcher::WatchRegistration;
-use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_file_watcher::DebouncedWatchReceiver;
+use codex_file_watcher::FileWatcher;
+use codex_file_watcher::FileWatcherSubscriber;
+use codex_file_watcher::WatchRegistration;
 use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::time::Instant;
 use tracing::warn;
-use uuid::Uuid;
 
 const FS_CHANGED_NOTIFICATION_DEBOUNCE: Duration = Duration::from_millis(200);
-
-struct DebouncedReceiver {
-    rx: Receiver,
-    interval: Duration,
-    changed_paths: HashSet<PathBuf>,
-    next_allowance: Option<Instant>,
-}
-
-impl DebouncedReceiver {
-    fn new(rx: Receiver, interval: Duration) -> Self {
-        Self {
-            rx,
-            interval,
-            changed_paths: HashSet::new(),
-            next_allowance: None,
-        }
-    }
-
-    async fn recv(&mut self) -> Option<FileWatcherEvent> {
-        while self.changed_paths.is_empty() {
-            self.changed_paths.extend(self.rx.recv().await?.paths);
-        }
-        let next_allowance = *self
-            .next_allowance
-            .get_or_insert_with(|| Instant::now() + self.interval);
-        self.next_allowance = None;
-
-        loop {
-            tokio::select! {
-                event = self.rx.recv() => match event {
-                    Some(event) => self.changed_paths.extend(event.paths),
-                    None => break,
-                },
-                _ = tokio::time::sleep_until(next_allowance) => break,
-            }
-        }
-
-        if self.changed_paths.is_empty() {
-            return None;
-        }
-        Some(FileWatcherEvent {
-            paths: self.changed_paths.drain().collect(),
-        })
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct FsWatchManager {
@@ -131,7 +82,7 @@ impl FsWatchManager {
         connection_id: ConnectionId,
         params: FsWatchParams,
     ) -> Result<FsWatchResponse, JSONRPCErrorError> {
-        let watch_id = Uuid::now_v7().to_string();
+        let watch_id = params.watch_id;
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
         let watch_root = params.path.clone();
@@ -139,21 +90,28 @@ impl FsWatchManager {
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&params.path));
         let (terminate_tx, terminate_rx) = oneshot::channel();
 
-        self.state.lock().await.entries.insert(
-            WatchKey {
-                connection_id,
-                watch_id: watch_id.clone(),
-            },
-            WatchEntry {
-                terminate_tx,
-                _subscriber: subscriber,
-                _registration: registration,
-            },
-        );
+        let watch_key = WatchKey {
+            connection_id,
+            watch_id: watch_id.clone(),
+        };
+        match self.state.lock().await.entries.entry(watch_key) {
+            Entry::Occupied(_) => {
+                return Err(invalid_request(format!(
+                    "watchId already exists: {watch_id}"
+                )));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(WatchEntry {
+                    terminate_tx,
+                    _subscriber: subscriber,
+                    _registration: registration,
+                });
+            }
+        }
 
         let task_watch_id = watch_id.clone();
         tokio::spawn(async move {
-            let mut rx = DebouncedReceiver::new(rx, FS_CHANGED_NOTIFICATION_DEBOUNCE);
+            let mut rx = DebouncedWatchReceiver::new(rx, FS_CHANGED_NOTIFICATION_DEBOUNCE);
             tokio::pin!(terminate_rx);
             loop {
                 let event = tokio::select! {
@@ -168,18 +126,8 @@ impl FsWatchManager {
                     .paths
                     .into_iter()
                     .filter_map(|path| {
-                        match AbsolutePathBuf::resolve_path_against_base(&path, &watch_root) {
-                            Ok(path) => app_server_hooks()
-                                .fs_changed_path_for_watch_target(&watch_root, path),
-                            Err(err) => {
-                                warn!(
-                                    "failed to normalize watch event path ({}) for {}: {err}",
-                                    path.display(),
-                                    watch_root.display()
-                                );
-                                None
-                            }
-                        }
+                        let path = watch_root.join(path);
+                        app_server_hooks().fs_changed_path_for_watch_target(&watch_root, path)
                     })
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
@@ -206,10 +154,7 @@ impl FsWatchManager {
             }
         });
 
-        Ok(FsWatchResponse {
-            watch_id,
-            path: params.path,
-        })
+        Ok(FsWatchResponse { path: params.path })
     }
 
     pub(crate) async fn unwatch(
@@ -245,11 +190,13 @@ mod tests {
     use super::*;
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
+    use codex_file_watcher::WatchPath;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::time::timeout;
-    use uuid::Version;
 
     fn absolute_path(path: PathBuf) -> AbsolutePathBuf {
         assert!(
@@ -264,13 +211,23 @@ mod tests {
         const OUTGOING_BUFFER: usize = 1;
         let (tx, _rx) = mpsc::channel(OUTGOING_BUFFER);
         FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             Arc::new(FileWatcher::noop()),
         )
     }
 
+    fn watch_params(watch_id: &str, path: AbsolutePathBuf) -> FsWatchParams {
+        FsWatchParams {
+            watch_id: watch_id.to_string(),
+            path,
+        }
+    }
+
     #[tokio::test]
-    async fn watch_returns_a_v7_id_and_tracks_the_owner_scoped_entry() {
+    async fn watch_uses_client_id_and_tracks_the_owner_scoped_entry() {
         let temp_dir = TempDir::new().expect("temp dir");
         let head_path = temp_dir.path().join("HEAD");
         std::fs::write(&head_path, "ref: refs/heads/main\n").expect("write HEAD");
@@ -278,20 +235,18 @@ mod tests {
         let manager = manager_with_noop_watcher();
         let path = absolute_path(head_path);
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: path.clone() })
+            .watch(ConnectionId(1), watch_params("watch-1", path.clone()))
             .await
             .expect("watch should succeed");
 
         assert_eq!(response.path, path);
-        let watch_id = Uuid::parse_str(&response.watch_id).expect("watch id should be a UUID");
-        assert_eq!(watch_id.get_version(), Some(Version::SortRand));
 
         let state = manager.state.lock().await;
         assert_eq!(
             state.entries.keys().cloned().collect::<HashSet<_>>(),
             HashSet::from([WatchKey {
                 connection_id: ConnectionId(1),
-                watch_id: response.watch_id,
+                watch_id: "watch-1".to_string(),
             }])
         );
     }
@@ -306,22 +261,21 @@ mod tests {
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("watch should succeed");
+        assert!(response.path.as_path().ends_with("HEAD"));
         let watch_key = WatchKey {
             connection_id: ConnectionId(1),
-            watch_id: response.watch_id.clone(),
+            watch_id: "watch-1".to_string(),
         };
 
         manager
             .unwatch(
                 ConnectionId(2),
                 FsUnwatchParams {
-                    watch_id: response.watch_id.clone(),
+                    watch_id: "watch-1".to_string(),
                 },
             )
             .await
@@ -332,7 +286,7 @@ mod tests {
             .unwatch(
                 ConnectionId(1),
                 FsUnwatchParams {
-                    watch_id: response.watch_id,
+                    watch_id: "watch-1".to_string(),
                 },
             )
             .await
@@ -354,27 +308,21 @@ mod tests {
         let response_1 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(head_path),
-                },
+                watch_params("watch-1", absolute_path(head_path)),
             )
             .await
             .expect("first watch should succeed");
         let response_2 = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: absolute_path(fetch_head_path),
-                },
+                watch_params("watch-2", absolute_path(fetch_head_path)),
             )
             .await
             .expect("second watch should succeed");
-        let response_3 = manager
+        let _response_3 = manager
             .watch(
                 ConnectionId(2),
-                FsWatchParams {
-                    path: absolute_path(packed_refs_path),
-                },
+                watch_params("watch-3", absolute_path(packed_refs_path)),
             )
             .await
             .expect("third watch should succeed");
@@ -392,10 +340,10 @@ mod tests {
                 .collect::<HashSet<_>>(),
             HashSet::from([WatchKey {
                 connection_id: ConnectionId(2),
-                watch_id: response_3.watch_id,
+                watch_id: "watch-3".to_string(),
             }])
         );
-        assert_ne!(response_1.watch_id, response_2.watch_id);
+        assert_ne!(response_1.path, response_2.path);
     }
 
     async fn collect_next_fs_changed(
@@ -442,22 +390,26 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
         let file_b = absolute_path(file_b);
         let file_c = absolute_path(file_c);
 
         let response = manager
-            .watch(ConnectionId(1), FsWatchParams { path: watch_root })
+            .watch(ConnectionId(1), watch_params("watch-1", watch_root.clone()))
             .await
             .expect("watch should succeed");
+        assert_eq!(response.path, watch_root);
 
         file_watcher
             .send_paths_for_test(vec![file_b.to_path_buf()])
             .await;
         let first_notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(first_notification.watch_id, response.watch_id);
+        assert_eq!(first_notification.watch_id, "watch-1");
         assert!(first_notification.changed_paths.contains(&file_b));
 
         tokio::time::sleep(FS_CHANGED_NOTIFICATION_DEBOUNCE * 2).await;
@@ -480,7 +432,7 @@ mod tests {
             second_batch_elapsed >= FS_CHANGED_NOTIFICATION_DEBOUNCE - Duration::from_millis(75),
             "expected a fresh debounce delay before the second batch is emitted"
         );
-        assert_eq!(second_notification.watch_id, response.watch_id);
+        assert_eq!(second_notification.watch_id, "watch-1");
         let second_batch_paths = second_notification
             .changed_paths
             .into_iter()
@@ -504,7 +456,7 @@ mod tests {
         let (subscriber, raw_rx) = file_watcher.add_subscriber();
         let _subscription =
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&watched_file));
-        let mut rx = DebouncedReceiver::new(raw_rx, Duration::from_millis(20));
+        let mut rx = DebouncedWatchReceiver::new(raw_rx, Duration::from_millis(20));
 
         file_watcher
             .send_paths_for_test(vec![watched_file.to_path_buf()])
@@ -624,19 +576,21 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
+        assert_eq!(response.path, missing_path);
 
         std::fs::create_dir_all(
             missing_path
@@ -652,7 +606,7 @@ mod tests {
             .await;
 
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1");
         assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
@@ -665,19 +619,21 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_dir.clone(),
-                },
+                watch_params("watch-1", missing_dir.clone()),
             )
             .await
             .expect("watch should succeed");
+        assert_eq!(response.path, missing_dir);
 
         std::fs::create_dir_all(&missing_dir).expect("create watched directory");
         std::fs::write(&nested_file, "hello\n").expect("create nested file");
@@ -687,7 +643,7 @@ mod tests {
             .await;
 
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1");
         assert_eq!(notification.changed_paths, vec![nested_file]);
     }
 
@@ -701,19 +657,21 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: missing_path.clone(),
-                },
+                watch_params("watch-1", missing_path.clone()),
             )
             .await
             .expect("watch should succeed");
+        assert_eq!(response.path, missing_path);
 
         file_watcher
             .send_paths_for_test(vec![sibling_path.to_path_buf()])
@@ -729,7 +687,7 @@ mod tests {
             .send_paths_for_test(vec![parent_path.to_path_buf()])
             .await;
         let notification = collect_next_fs_changed(&mut rx).await;
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1");
         assert_eq!(notification.changed_paths, vec![missing_path]);
     }
 
@@ -759,19 +717,21 @@ mod tests {
         let file_watcher = Arc::new(FileWatcher::noop());
         let (tx, mut rx) = mpsc::channel(16);
         let manager = FsWatchManager::new_with_file_watcher(
-            Arc::new(OutgoingMessageSender::new(tx)),
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             file_watcher.clone(),
         );
 
         let response = manager
             .watch(
                 ConnectionId(1),
-                FsWatchParams {
-                    path: watched_path.clone(),
-                },
+                watch_params("watch-1", watched_path.clone()),
             )
             .await
             .expect("watch should succeed");
+        assert_eq!(response.path, watched_path);
 
         file_watcher
             .send_paths_for_test(vec![watched_path.to_path_buf()])
@@ -790,7 +750,7 @@ mod tests {
         else {
             panic!("expected fs-changed notification envelope");
         };
-        assert_eq!(notification.watch_id, response.watch_id);
+        assert_eq!(notification.watch_id, "watch-1");
         assert_eq!(notification.changed_paths, vec![watched_path]);
         assert!(
             write_complete_tx.is_none(),
@@ -802,7 +762,7 @@ mod tests {
             manager.unwatch(
                 ConnectionId(1),
                 FsUnwatchParams {
-                    watch_id: response.watch_id,
+                    watch_id: "watch-1".to_string(),
                 },
             ),
         )

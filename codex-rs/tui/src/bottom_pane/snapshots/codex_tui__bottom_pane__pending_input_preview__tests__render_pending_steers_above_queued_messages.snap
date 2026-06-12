@@ -13,9 +13,9 @@ Buffer {
         "• Messages to be submitted at end of turn           ",
         "  ↳ Rejected steer that will be retried.            ",
         "                                                    ",
-        "• Queued follow-up messages                         ",
+        "• Queued follow-up entries                         ",
         "  ↳ Queued follow-up question                       ",
-        "    ⌥ + ↑ edit last queued message                  ",
+        "    ⌥ + ↑ dequeue last queued entry                  ",
     ],
     styles: [
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,

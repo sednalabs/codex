@@ -1,10 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "forceRemoteSync": {
-      "description": "When true, apply the remote plugin change before the local uninstall flow.",
-      "type": "boolean"
-    },
     "pluginId": {
       "type": "string"
     }

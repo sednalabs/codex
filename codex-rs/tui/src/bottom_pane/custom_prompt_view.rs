@@ -11,13 +11,17 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::Widget;
 use std::cell::RefCell;
+use std::time::Instant;
 
+use crate::key_hint::has_ctrl_or_alt;
 use crate::render::renderable::Renderable;
 
 use super::popup_consts::standard_popup_hint_line;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
+use super::bottom_pane_view::ViewCompletion;
+use super::paste_burst::PasteBurst;
 use super::textarea::TextArea;
 use super::textarea::TextAreaState;
 
@@ -34,30 +38,37 @@ pub(crate) struct CustomPromptView {
     // UI state
     textarea: TextArea,
     textarea_state: RefCell<TextAreaState>,
-    complete: bool,
+    paste_burst: PasteBurst,
+    completion: Option<ViewCompletion>,
 }
 
 impl CustomPromptView {
     pub(crate) fn new(
         title: String,
         placeholder: String,
+        initial_text: String,
         context_label: Option<String>,
         on_submit: PromptSubmitted,
     ) -> Self {
+        let mut textarea = TextArea::new();
+        if !initial_text.is_empty() {
+            textarea.set_text_clearing_elements(&initial_text);
+            textarea.set_cursor(initial_text.len());
+        }
+
         Self {
             title,
             placeholder,
             context_label,
             on_submit,
-            textarea: TextArea::new(),
+            textarea,
             textarea_state: RefCell::new(TextAreaState::default()),
-            complete: false,
+            paste_burst: PasteBurst::default(),
+            completion: None,
         }
     }
-}
 
-impl BottomPaneView for CustomPromptView {
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
+    fn handle_key_event_at(&mut self, key_event: KeyEvent, now: Instant) {
         match key_event {
             KeyEvent {
                 code: KeyCode::Esc, ..
@@ -66,34 +77,70 @@ impl BottomPaneView for CustomPromptView {
             }
             KeyEvent {
                 code: KeyCode::Enter,
-                modifiers: KeyModifiers::NONE,
+                modifiers,
                 ..
             } => {
-                let text = self.textarea.text().trim().to_string();
-                if !text.is_empty() {
-                    (self.on_submit)(text);
-                    self.complete = true;
+                if self.paste_burst.direct_insert_newline_should_insert(now) {
+                    self.paste_burst.extend_window(now);
+                    self.textarea.insert_str("\n");
+                    return;
+                }
+                if modifiers == KeyModifiers::NONE {
+                    let text = self.textarea.text().trim().to_string();
+                    if !text.is_empty() {
+                        (self.on_submit)(text);
+                        self.completion = Some(ViewCompletion::Accepted);
+                    }
+                } else {
+                    self.textarea.input(key_event);
                 }
             }
             KeyEvent {
-                code: KeyCode::Enter,
+                code: KeyCode::Char(_),
+                modifiers,
                 ..
-            } => {
+            } if !has_ctrl_or_alt(modifiers) && self.textarea.allows_paste_burst() => {
+                let paste_like_burst = self.paste_burst.on_plain_char_no_hold(now).is_some();
                 self.textarea.input(key_event);
+                if paste_like_burst {
+                    self.paste_burst.extend_window(now);
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers,
+                ..
+            } if !has_ctrl_or_alt(modifiers) && self.textarea.allows_paste_burst() => {
+                let in_paste_burst = self.paste_burst.direct_insert_newline_should_insert(now);
+                self.textarea.input(key_event);
+                if in_paste_burst {
+                    self.paste_burst.extend_window(now);
+                }
             }
             other => {
                 self.textarea.input(other);
+                self.paste_burst.clear_after_explicit_paste();
             }
         }
     }
+}
+
+impl BottomPaneView for CustomPromptView {
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        self.handle_key_event_at(key_event, Instant::now());
+    }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
-        self.complete = true;
+        self.completion = Some(ViewCompletion::Cancelled);
         CancellationEvent::Handled
     }
 
     fn is_complete(&self) -> bool {
-        self.complete
+        self.completion.is_some()
+    }
+
+    fn completion(&self) -> Option<ViewCompletion> {
+        self.completion
     }
 
     fn handle_paste(&mut self, pasted: String) -> bool {
@@ -101,9 +148,14 @@ impl BottomPaneView for CustomPromptView {
             return false;
         }
         self.textarea.insert_str(&pasted);
+        self.paste_burst.clear_after_explicit_paste();
         true
     }
 }
+
+#[cfg(test)]
+#[path = "custom_prompt_view_tests.rs"]
+mod tests;
 
 impl Renderable for CustomPromptView {
     fn desired_height(&self, width: u16) -> u16 {

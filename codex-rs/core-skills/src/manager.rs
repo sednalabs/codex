@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_exec_server::ExecutorFileSystem;
 use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_plugins::PluginSkillRoot;
 use tracing::info;
 use tracing::warn;
 
@@ -25,16 +27,16 @@ use codex_config::SkillsConfig;
 
 #[derive(Debug, Clone)]
 pub struct SkillsLoadInput {
-    pub cwd: PathBuf,
-    pub effective_skill_roots: Vec<PathBuf>,
+    pub cwd: AbsolutePathBuf,
+    pub effective_skill_roots: Vec<PluginSkillRoot>,
     pub config_layer_stack: ConfigLayerStack,
     pub bundled_skills_enabled: bool,
 }
 
 impl SkillsLoadInput {
     pub fn new(
-        cwd: PathBuf,
-        effective_skill_roots: Vec<PathBuf>,
+        cwd: AbsolutePathBuf,
+        effective_skill_roots: Vec<PluginSkillRoot>,
         config_layer_stack: ConfigLayerStack,
         bundled_skills_enabled: bool,
     ) -> Self {
@@ -48,25 +50,27 @@ impl SkillsLoadInput {
 }
 
 pub struct SkillsManager {
-    codex_home: PathBuf,
+    codex_home: AbsolutePathBuf,
     restriction_product: Option<Product>,
-    cache_by_cwd: RwLock<HashMap<PathBuf, SkillLoadOutcome>>,
+    extra_roots: RwLock<Vec<AbsolutePathBuf>>,
+    cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, SkillLoadOutcome>>,
     cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, SkillLoadOutcome>>,
 }
 
 impl SkillsManager {
-    pub fn new(codex_home: PathBuf, bundled_skills_enabled: bool) -> Self {
+    pub fn new(codex_home: AbsolutePathBuf, bundled_skills_enabled: bool) -> Self {
         Self::new_with_restriction_product(codex_home, bundled_skills_enabled, Some(Product::Codex))
     }
 
     pub fn new_with_restriction_product(
-        codex_home: PathBuf,
+        codex_home: AbsolutePathBuf,
         bundled_skills_enabled: bool,
         restriction_product: Option<Product>,
     ) -> Self {
         let manager = Self {
             codex_home,
             restriction_product,
+            extra_roots: RwLock::new(Vec::new()),
             cache_by_cwd: RwLock::new(HashMap::new()),
             cache_by_config: RwLock::new(HashMap::new()),
         };
@@ -80,21 +84,39 @@ impl SkillsManager {
         manager
     }
 
+    pub fn set_extra_roots(&self, extra_roots: Vec<AbsolutePathBuf>) {
+        {
+            let mut roots = self
+                .extra_roots
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *roots = extra_roots;
+        }
+        self.clear_cache();
+    }
+
     /// Load skills for an already-constructed [`Config`], avoiding any additional config-layer
     /// loading.
     ///
     /// This path uses a cache keyed by the effective skill-relevant config state rather than just
     /// cwd so role-local and session-local skill overrides cannot bleed across sessions that happen
     /// to share a directory.
-    pub fn skills_for_config(&self, input: &SkillsLoadInput) -> SkillLoadOutcome {
-        let roots = self.skill_roots_for_config(input);
+    pub async fn skills_for_config(
+        &self,
+        input: &SkillsLoadInput,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
+    ) -> SkillLoadOutcome {
+        let roots = self.skill_roots_for_config(input, fs).await;
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let cache_key = config_skills_cache_key(&roots, &skill_config_rules);
+        let cache_key =
+            config_skills_cache_key(&roots, &skill_config_rules, &input.config_layer_stack);
         if let Some(outcome) = self.cached_outcome_for_config(&cache_key) {
             return outcome;
         }
 
-        let outcome = self.build_skill_outcome(roots, &skill_config_rules);
+        let outcome = self
+            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .await;
         let mut cache = self
             .cache_by_config
             .write()
@@ -103,12 +125,19 @@ impl SkillsManager {
         outcome
     }
 
-    pub fn skill_roots_for_config(&self, input: &SkillsLoadInput) -> Vec<SkillRoot> {
+    pub async fn skill_roots_for_config(
+        &self,
+        input: &SkillsLoadInput,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
+    ) -> Vec<SkillRoot> {
         let mut roots = skill_roots(
+            fs,
             &input.config_layer_stack,
-            input.cwd.as_path(),
+            &input.cwd,
             input.effective_skill_roots.clone(),
-        );
+            self.extra_roots(),
+        )
+        .await;
         if !input.bundled_skills_enabled {
             roots.retain(|root| root.scope != SkillScope::System);
         }
@@ -119,64 +148,53 @@ impl SkillsManager {
         &self,
         input: &SkillsLoadInput,
         force_reload: bool,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> SkillLoadOutcome {
-        if !force_reload && let Some(outcome) = self.cached_outcome_for_cwd(input.cwd.as_path()) {
+        let use_cwd_cache = fs.is_some();
+        if use_cwd_cache
+            && !force_reload
+            && let Some(outcome) = self.cached_outcome_for_cwd(&input.cwd)
+        {
             return outcome;
         }
-
-        self.skills_for_cwd_with_extra_user_roots(input, force_reload, &[])
-            .await
-    }
-
-    pub async fn skills_for_cwd_with_extra_user_roots(
-        &self,
-        input: &SkillsLoadInput,
-        force_reload: bool,
-        extra_user_roots: &[PathBuf],
-    ) -> SkillLoadOutcome {
-        if !force_reload && let Some(outcome) = self.cached_outcome_for_cwd(input.cwd.as_path()) {
-            return outcome;
-        }
-        let normalized_extra_user_roots = normalize_extra_user_roots(extra_user_roots);
 
         let mut roots = skill_roots(
+            fs.clone(),
             &input.config_layer_stack,
-            input.cwd.as_path(),
+            &input.cwd,
             input.effective_skill_roots.clone(),
-        );
+            self.extra_roots(),
+        )
+        .await;
         if !bundled_skills_enabled_from_stack(&input.config_layer_stack) {
             roots.retain(|root| root.scope != SkillScope::System);
         }
-        roots.extend(
-            normalized_extra_user_roots
-                .iter()
-                .cloned()
-                .map(|path| SkillRoot {
-                    path,
-                    scope: SkillScope::User,
-                }),
-        );
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let outcome = self.build_skill_outcome(roots, &skill_config_rules);
-        let mut cache = self
-            .cache_by_cwd
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.insert(input.cwd.clone(), outcome.clone());
+        let outcome = self
+            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .await;
+        if use_cwd_cache {
+            let mut cache = self
+                .cache_by_cwd
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.insert(input.cwd.clone(), outcome.clone());
+        }
         outcome
     }
 
-    fn build_skill_outcome(
+    async fn build_skill_outcome(
         &self,
         roots: Vec<SkillRoot>,
         skill_config_rules: &SkillConfigRules,
+        config_layer_stack: &ConfigLayerStack,
     ) -> SkillLoadOutcome {
         let outcome = crate::filter_skill_load_outcome_for_product(
-            load_skills_from_roots(roots),
+            load_skills_from_roots(roots).await,
             self.restriction_product,
         );
         let disabled_paths = resolve_disabled_skill_paths(&outcome.skills, skill_config_rules);
-        finalize_skill_outcome(outcome, disabled_paths)
+        finalize_skill_outcome(outcome, disabled_paths, config_layer_stack)
     }
 
     pub fn clear_cache(&self) {
@@ -202,7 +220,7 @@ impl SkillsManager {
         info!("skills cache cleared ({cleared} entries)");
     }
 
-    fn cached_outcome_for_cwd(&self, cwd: &Path) -> Option<SkillLoadOutcome> {
+    fn cached_outcome_for_cwd(&self, cwd: &AbsolutePathBuf) -> Option<SkillLoadOutcome> {
         match self.cache_by_cwd.read() {
             Ok(cache) => cache.get(cwd).cloned(),
             Err(err) => err.into_inner().get(cwd).cloned(),
@@ -218,12 +236,20 @@ impl SkillsManager {
             Err(err) => err.into_inner().get(cache_key).cloned(),
         }
     }
+
+    fn extra_roots(&self) -> Vec<AbsolutePathBuf> {
+        match self.extra_roots.read() {
+            Ok(roots) => roots.clone(),
+            Err(err) => err.into_inner().clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ConfigSkillsCacheKey {
-    roots: Vec<(PathBuf, u8)>,
+    roots: Vec<(AbsolutePathBuf, u8, Option<String>)>,
     skill_config_rules: SkillConfigRules,
+    preferred_user_skill_names: Vec<String>,
 }
 
 pub fn bundled_skills_enabled_from_stack(
@@ -251,7 +277,14 @@ pub fn bundled_skills_enabled_from_stack(
 fn config_skills_cache_key(
     roots: &[SkillRoot],
     skill_config_rules: &SkillConfigRules,
+    config_layer_stack: &ConfigLayerStack,
 ) -> ConfigSkillsCacheKey {
+    let mut preferred_user_skill_names: Vec<String> =
+        preferred_user_skill_names_from_stack(config_layer_stack)
+            .into_iter()
+            .collect();
+    preferred_user_skill_names.sort_unstable();
+
     ConfigSkillsCacheKey {
         roots: roots
             .iter()
@@ -262,33 +295,100 @@ fn config_skills_cache_key(
                     SkillScope::System => 2,
                     SkillScope::Admin => 3,
                 };
-                (root.path.clone(), scope_rank)
+                (root.path.clone(), scope_rank, root.plugin_id.clone())
             })
             .collect(),
         skill_config_rules: skill_config_rules.clone(),
+        preferred_user_skill_names,
     }
+}
+
+fn preferred_user_skill_names_from_stack(config_layer_stack: &ConfigLayerStack) -> HashSet<String> {
+    let mut preferred_names = HashSet::new();
+    for layer in config_layer_stack.get_layers(
+        codex_config::ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ false,
+    ) {
+        if !matches!(
+            layer.name,
+            ConfigLayerSource::User { .. } | ConfigLayerSource::SessionFlags
+        ) {
+            continue;
+        }
+
+        let Some(skills_value) = layer
+            .config
+            .as_table()
+            .and_then(|table| table.get("skills"))
+        else {
+            continue;
+        };
+
+        let preferred_names_value = skills_value
+            .get("prefer_user_skill_names")
+            .and_then(|v| v.as_array());
+
+        if let Some(names) = preferred_names_value {
+            preferred_names.extend(
+                names
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .filter(|name| !name.is_empty()),
+            );
+        }
+    }
+
+    preferred_names
+}
+
+fn repo_disabled_paths_for_preferred_user_skill_names(
+    skills: &[crate::SkillMetadata],
+    disabled_paths: &HashSet<AbsolutePathBuf>,
+    preferred_user_skill_names: &HashSet<String>,
+) -> HashSet<AbsolutePathBuf> {
+    if preferred_user_skill_names.is_empty() {
+        return HashSet::new();
+    }
+
+    let available_user_names: HashSet<String> = skills
+        .iter()
+        .filter(|skill| {
+            skill.scope == SkillScope::User && !disabled_paths.contains(&skill.path_to_skills_md)
+        })
+        .map(|skill| skill.name.to_ascii_lowercase())
+        .collect();
+
+    skills
+        .iter()
+        .filter(|skill| {
+            skill.scope == SkillScope::Repo
+                && !disabled_paths.contains(&skill.path_to_skills_md)
+                && preferred_user_skill_names.contains(&skill.name.to_ascii_lowercase())
+                && available_user_names.contains(&skill.name.to_ascii_lowercase())
+        })
+        .map(|skill| skill.path_to_skills_md.clone())
+        .collect()
 }
 
 fn finalize_skill_outcome(
     mut outcome: SkillLoadOutcome,
-    disabled_paths: HashSet<PathBuf>,
+    disabled_paths: HashSet<AbsolutePathBuf>,
+    config_layer_stack: &ConfigLayerStack,
 ) -> SkillLoadOutcome {
+    let preferred_user_skill_names = preferred_user_skill_names_from_stack(config_layer_stack);
+    let mut disabled_paths = disabled_paths;
+    disabled_paths.extend(repo_disabled_paths_for_preferred_user_skill_names(
+        &outcome.skills,
+        &disabled_paths,
+        &preferred_user_skill_names,
+    ));
     outcome.disabled_paths = disabled_paths;
     let (by_scripts_dir, by_doc_path) =
         build_implicit_skill_path_indexes(outcome.allowed_skills_for_implicit_invocation());
     outcome.implicit_skills_by_scripts_dir = Arc::new(by_scripts_dir);
     outcome.implicit_skills_by_doc_path = Arc::new(by_doc_path);
     outcome
-}
-
-fn normalize_extra_user_roots(extra_user_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut normalized: Vec<PathBuf> = extra_user_roots
-        .iter()
-        .map(|path| dunce::canonicalize(path).unwrap_or_else(|_| path.clone()))
-        .collect();
-    normalized.sort_unstable();
-    normalized.dedup();
-    normalized
 }
 
 #[cfg(test)]
