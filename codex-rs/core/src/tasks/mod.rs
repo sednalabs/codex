@@ -730,7 +730,11 @@ impl Session {
             });
         self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
             .await;
-        let model_execution_identity = turn_context.model_execution_identity.lock().await.clone();
+        let model_execution_identity = turn_context
+            .model_execution_identity
+            .lock()
+            .expect("model execution identity mutex poisoned")
+            .clone();
         let event = EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn_context.sub_id.clone(),
             last_agent_message,
