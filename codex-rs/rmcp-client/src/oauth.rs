@@ -631,7 +631,7 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
         std::process::id()
     ));
 
-    {
+    let write_result = {
         let mut tmp_file = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -643,75 +643,52 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
                 )
             })?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            tmp_file.set_permissions(perms).with_context(|| {
+        let result = (|| -> Result<()> {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = fs::Permissions::from_mode(0o600);
+                tmp_file.set_permissions(perms).with_context(|| {
+                    format!(
+                        "failed to set permissions on temp credentials file at {}",
+                        tmp_path.display()
+                    )
+                })?;
+            }
+
+            tmp_file.write_all(serialized.as_bytes()).with_context(|| {
                 format!(
-                    "failed to set permissions on temp credentials file at {}",
+                    "failed to write temp credentials file at {}",
                     tmp_path.display()
                 )
             })?;
-        }
+            tmp_file.sync_all().with_context(|| {
+                format!(
+                    "failed to sync temp credentials file at {}",
+                    tmp_path.display()
+                )
+            })?;
+            Ok(())
+        })();
 
-        tmp_file.write_all(serialized.as_bytes()).with_context(|| {
-            format!(
-                "failed to write temp credentials file at {}",
-                tmp_path.display()
-            )
-        })?;
-        tmp_file.sync_all().with_context(|| {
-            format!(
-                "failed to sync temp credentials file at {}",
-                tmp_path.display()
-            )
-        })?;
+        drop(tmp_file);
+        result
+    };
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error);
     }
 
-    match fs::rename(&tmp_path, &path) {
-        Ok(()) => {}
-        Err(initial_error) => {
-            #[cfg(target_os = "windows")]
-            {
-                if path.exists() {
-                    fs::remove_file(&path).with_context(|| {
-                        format!(
-                            "failed to remove existing credentials file at {} before replace",
-                            path.display()
-                        )
-                    })?;
-                    fs::rename(&tmp_path, &path).with_context(|| {
-                        format!(
-                            "failed to replace credentials file at {} with {}",
-                            path.display(),
-                            tmp_path.display()
-                        )
-                    })?;
-                } else {
-                    let _ = fs::remove_file(&tmp_path);
-                    return Err(initial_error).with_context(|| {
-                        format!(
-                            "failed to atomically replace credentials file at {} with {}",
-                            path.display(),
-                            tmp_path.display()
-                        )
-                    });
-                }
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(initial_error).with_context(|| {
-                    format!(
-                        "failed to atomically replace credentials file at {} with {}",
-                        path.display(),
-                        tmp_path.display()
-                    )
-                });
-            }
-        }
+    if let Err(error) = fs::rename(&tmp_path, &path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to atomically replace credentials file at {} with {}",
+                path.display(),
+                tmp_path.display()
+            )
+        });
     }
 
     #[cfg(unix)]
