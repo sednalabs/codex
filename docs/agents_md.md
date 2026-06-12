@@ -24,3 +24,14 @@ root marker is found, only the current working directory is considered.
 This override only affects project-doc instructions. It does not control
 realtime startup context, which is configured separately in
 [`experimental_realtime_ws_startup_context`](config.md#realtime-startup-context).
+
+## Position in the prompt stack
+
+Project-doc instructions discovered from `AGENTS.md` / `AGENTS.override.md` are
+merged into `user_instructions`; they do not replace the base instruction layer.
+
+For the broader assembled prompt stack, review-mode override path, and sub-agent
+inheritance model, see
+[Codex CLI — Prompt Stack & Sub-Agent Executive Reference](prompt-stack.md).
+For the ownership view of which layer should hold which kind of instruction,
+see [Prompt Stack Ownership Matrix](prompt-stack-ownership-matrix.md).
