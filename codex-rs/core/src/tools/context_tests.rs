@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
+use codex_protocol::models::SearchToolCallParams;
 use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -66,11 +67,9 @@ fn aborted_tool_output_serializes_detailed_shell_abort_message() {
 }
 
 #[test]
-fn aborted_tool_output_serializes_mcp_error_result() {
-    let payload = ToolPayload::Mcp {
-        server: "server".to_string(),
-        tool: "tool".to_string(),
-        raw_arguments: "{}".to_string(),
+fn aborted_tool_output_serializes_function_error_result() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
     };
     let message = "aborted by user after 1.2s".to_string();
     let response = AbortedToolOutput {
@@ -79,12 +78,12 @@ fn aborted_tool_output_serializes_mcp_error_result() {
     .to_response_item("call-1", &payload);
 
     match response {
-        ResponseInputItem::McpToolCallOutput { call_id, output } => {
+        ResponseInputItem::FunctionCallOutput { call_id, output } => {
             assert_eq!(call_id, "call-1");
-            assert_eq!(output, CallToolResult::from_error_text(message));
-            assert!(!output.success());
+            assert_eq!(output.body, FunctionCallOutputBody::Text(message));
+            assert_eq!(output.success, None);
         }
-        other => panic!("expected McpToolCallOutput, got {other:?}"),
+        other => panic!("expected FunctionCallOutput, got {other:?}"),
     }
 }
 
@@ -131,10 +130,8 @@ fn mcp_code_mode_result_serializes_full_call_tool_result() {
         })),
     };
 
-    let result = output.code_mode_result(&ToolPayload::Mcp {
-        server: "server".to_string(),
-        tool: "tool".to_string(),
-        raw_arguments: "{}".to_string(),
+    let result = output.code_mode_result(&ToolPayload::Function {
+        arguments: "{}".to_string(),
     });
 
     assert_eq!(
@@ -176,10 +173,8 @@ fn mcp_tool_output_response_item_includes_wall_time() {
 
     let response = output.to_response_item(
         "mcp-call-1",
-        &ToolPayload::Mcp {
-            server: "server".to_string(),
-            tool: "tool".to_string(),
-            raw_arguments: "{}".to_string(),
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
         },
     );
 
@@ -230,10 +225,8 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
 
     let response = output.to_response_item(
         "mcp-call-large",
-        &ToolPayload::Mcp {
-            server: "server".to_string(),
-            tool: "tool".to_string(),
-            raw_arguments: "{}".to_string(),
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
         },
     );
 
@@ -275,10 +268,8 @@ fn mcp_tool_output_response_item_preserves_content_items() {
 
     let response = output.to_response_item(
         "mcp-call-2",
-        &ToolPayload::Mcp {
-            server: "server".to_string(),
-            tool: "tool".to_string(),
-            raw_arguments: "{}".to_string(),
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
         },
     );
 
@@ -329,10 +320,8 @@ fn mcp_tool_output_code_mode_result_stays_raw_call_tool_result() {
         truncation_policy: TruncationPolicy::Bytes(64),
     };
 
-    let result = output.code_mode_result(&ToolPayload::Mcp {
-        server: "server".to_string(),
-        tool: "tool".to_string(),
-        raw_arguments: "{}".to_string(),
+    let result = output.code_mode_result(&ToolPayload::Function {
+        arguments: "{}".to_string(),
     });
 
     assert_eq!(
@@ -508,6 +497,7 @@ fn exec_command_tool_output_formats_truncated_response() {
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(1250),
         raw_output: b"token one token two token three token four token five".to_vec(),
+        truncation_policy: TruncationPolicy::Tokens(10_000),
         max_output_tokens: Some(4),
         process_id: None,
         exit_code: Some(0),

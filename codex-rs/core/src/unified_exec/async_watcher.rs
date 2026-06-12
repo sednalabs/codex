@@ -224,9 +224,16 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        /*terminal_wait*/ None,
     );
     emitter
-        .emit(event_ctx, ToolEventStage::Success(output))
+        .emit(
+            event_ctx,
+            ToolEventStage::Success {
+                output,
+                applied_patch_delta: None,
+            },
+        )
         .await;
 }
 
@@ -272,6 +279,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        /*terminal_wait*/ None,
     );
     emitter
         .emit(

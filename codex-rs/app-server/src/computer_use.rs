@@ -2,7 +2,6 @@ use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_core::CodexThread;
 use codex_protocol::computer_use::ComputerUseResponse as CoreComputerUseResponse;
-use codex_protocol::protocol::Op;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::error;
@@ -42,15 +41,9 @@ pub(crate) async fn on_call_response(
         success,
         error,
     };
-    if let Err(err) = conversation
-        .submit(Op::ComputerUseResponse {
-            id: call_id.clone(),
-            response: core_response,
-        })
-        .await
-    {
-        error!("failed to submit ComputerUseResponse: {err}");
-    }
+    conversation
+        .notify_computer_use_response(&call_id, core_response)
+        .await;
 }
 
 fn decode_response(value: serde_json::Value) -> ComputerUseCallResponse {

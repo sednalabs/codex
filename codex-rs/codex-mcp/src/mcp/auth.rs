@@ -12,6 +12,8 @@ use codex_rmcp_client::discover_streamable_http_oauth;
 use futures::future::join_all;
 use tracing::warn;
 
+use crate::server::EffectiveMcpServer;
+
 use super::CODEX_APPS_MCP_SERVER_NAME;
 
 #[derive(Debug, Clone)]
@@ -19,7 +21,11 @@ pub struct McpOAuthLoginConfig {
     pub url: String,
     pub http_headers: Option<HashMap<String, String>>,
     pub env_http_headers: Option<HashMap<String, String>>,
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: String,
     pub discovered_scopes: Option<Vec<String>>,
+    pub device_authorization_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -45,7 +51,7 @@ pub struct ResolvedMcpOAuthScopes {
 
 #[derive(Debug, Clone)]
 pub struct McpAuthStatusEntry {
-    pub config: McpServerConfig,
+    pub config: Option<McpServerConfig>,
     pub auth_status: McpAuthStatus,
 }
 
@@ -70,7 +76,11 @@ pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAu
             url: url.clone(),
             http_headers: http_headers.clone(),
             env_http_headers: env_http_headers.clone(),
+            authorization_endpoint: discovery.authorization_endpoint,
+            token_endpoint: discovery.token_endpoint,
             discovered_scopes: discovery.scopes_supported,
+            device_authorization_endpoint: discovery.device_authorization_endpoint,
+            grant_types_supported: discovery.grant_types_supported,
         }),
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
@@ -131,29 +141,37 @@ pub async fn compute_auth_statuses<'a, I>(
     auth: Option<&CodexAuth>,
 ) -> HashMap<String, McpAuthStatusEntry>
 where
-    I: IntoIterator<Item = (&'a String, &'a McpServerConfig)>,
+    I: IntoIterator<Item = (&'a String, &'a EffectiveMcpServer)>,
 {
-    let futures = servers.into_iter().map(|(name, config)| {
+    let futures = servers.into_iter().map(|(name, server)| {
         let name = name.clone();
-        let config = config.clone();
+        let config = server.configured_config().cloned();
         let has_runtime_auth = name == CODEX_APPS_MCP_SERVER_NAME
             && auth.is_some_and(CodexAuth::uses_codex_backend)
-            && matches!(
-                &config.transport,
-                McpServerTransportConfig::StreamableHttp {
-                    bearer_token_env_var: None,
-                    ..
-                }
-            );
-        async move {
-            let auth_status =
-                match compute_auth_status(&name, &config, store_mode, has_runtime_auth).await {
-                    Ok(status) => status,
-                    Err(error) => {
-                        warn!("failed to determine auth status for MCP server `{name}`: {error:?}");
-                        McpAuthStatus::Unsupported
+            && config.as_ref().is_some_and(|config| {
+                matches!(
+                    &config.transport,
+                    McpServerTransportConfig::StreamableHttp {
+                        bearer_token_env_var: None,
+                        ..
                     }
-                };
+                )
+            });
+        async move {
+            let auth_status = match config.as_ref() {
+                Some(config) => {
+                    match compute_auth_status(&name, config, store_mode, has_runtime_auth).await {
+                        Ok(status) => status,
+                        Err(error) => {
+                            warn!(
+                                "failed to determine auth status for MCP server `{name}`: {error:?}"
+                            );
+                            McpAuthStatus::Unsupported
+                        }
+                    }
+                }
+                None => McpAuthStatus::Unsupported,
+            };
             let entry = McpAuthStatusEntry {
                 config,
                 auth_status,

@@ -54,6 +54,7 @@ fn app_server_exec_approval_request_splits_shell_wrapped_command() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
+            started_at_ms: 0,
             approval_id: Some("approval-1".to_string()),
             reason: None,
             network_approval_context: None,
@@ -359,6 +360,7 @@ async fn exec_end_without_begin_uses_event_command() {
             command: codex_shell_command::parse_command::shlex_join(&command),
             cwd,
             process_id: None,
+            terminal_wait: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions,
@@ -458,7 +460,7 @@ async fn exec_end_without_begin_flushes_completed_unrelated_exploring_cell() {
         "expected orphan end entry after flush: {second:?}"
     );
     assert!(
-        chat.active_cell.is_none(),
+        chat.transcript.active_cell.is_none(),
         "both entries should be finalized"
     );
 }
@@ -705,17 +707,42 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
 
     terminal_interaction(&mut chat, "call-1", "proc-1", "");
 
-    assert!(chat.active_cell.is_none());
+    let active_lines = chat
+        .active_cell_transcript_lines(/*width*/ 80)
+        .expect("wait primitive cell should be active");
     assert_eq!(
-        chat.current_status.header,
-        "Waiting for background terminal"
+        lines_to_single_string(&active_lines),
+        "• Waiting via background terminal · sleep 5\n"
+    );
+    assert_eq!(
+        chat.status_state.current_status.header,
+        "Waiting · primitive: write_stdin(empty stdin poll)"
     );
     let status = chat
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Waiting for background terminal");
+    assert_eq!(
+        status.header(),
+        "Waiting · primitive: write_stdin(empty stdin poll)"
+    );
     assert_eq!(status.details(), Some("sleep 5"));
+}
+
+#[tokio::test]
+async fn unified_exec_empty_poll_for_finished_process_does_not_show_waiting_status() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+
+    terminal_interaction(&mut chat, "call-finished", "proc-finished", "");
+
+    assert_eq!(chat.status_state.current_status.header, "Working");
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("task status indicator should remain visible");
+    assert_eq!(status.header(), "Working");
+    assert!(chat.unified_exec_wait_streak.is_none());
 }
 
 #[tokio::test]
@@ -727,14 +754,17 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
     terminal_interaction(&mut chat, "call-wait-1a", "proc-1", "");
     terminal_interaction(&mut chat, "call-wait-1b", "proc-1", "");
     assert_eq!(
-        chat.current_status.header,
-        "Waiting for background terminal"
+        chat.status_state.current_status.header,
+        "Waiting · primitive: write_stdin(empty stdin poll)"
     );
     let status = chat
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Waiting for background terminal");
+    assert_eq!(
+        status.header(),
+        "Waiting · primitive: write_stdin(empty stdin poll)"
+    );
     assert_eq!(status.details(), Some("just fix"));
 
     handle_turn_completed(&mut chat, "turn-wait-3", /*duration_ms*/ None);
@@ -793,7 +823,7 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
     terminal_interaction(&mut chat, "call-wait-3a", "proc-3", "pwd\n");
     terminal_interaction(&mut chat, "call-wait-3b", "proc-3", "");
     assert_eq!(
-        chat.current_status.header,
+        chat.status_state.current_status.header,
         "Waiting for background terminal"
     );
     let status = chat
@@ -941,10 +971,10 @@ async fn user_shell_command_renders_output_not_exploring() {
 #[tokio::test]
 async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -956,10 +986,12 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
         cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        collaboration_mode: None,
+        personality: None,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -977,8 +1009,8 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
         other => panic!("expected RunUserShellCommand op, got {other:?}"),
     }
     assert_matches!(
-        op_rx.try_recv(),
-        Ok(Op::AddToHistory { text }) if text == "!echo hi"
+        rx.try_recv(),
+        Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) if text == "!echo hi"
     );
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }
@@ -1022,7 +1054,7 @@ async fn user_message_during_user_shell_command_is_queued_not_steered() {
         ),
         other => panic!("expected queued user message after shell completion, got {other:?}"),
     }
-    assert!(chat.queued_user_messages.is_empty());
+    assert!(chat.input_queue.queued_user_messages.is_empty());
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ pub use crate::mcp_types::AppToolApproval;
 pub use crate::mcp_types::McpServerConfig;
 pub use crate::mcp_types::McpServerDisabledReason;
 pub use crate::mcp_types::McpServerEnvVar;
+pub use crate::mcp_types::McpServerOAuthConfig;
 pub use crate::mcp_types::McpServerToolConfig;
 pub use crate::mcp_types::McpServerTransportConfig;
 pub use crate::mcp_types::RawMcpServerConfig;
@@ -30,6 +31,7 @@ use serde::Serialize;
 
 pub use crate::tui_keymap::KeybindingSpec;
 pub use crate::tui_keymap::KeybindingsSpec;
+pub use crate::tui_keymap::MAX_FUNCTION_KEY;
 pub use crate::tui_keymap::TuiApprovalKeymap;
 pub use crate::tui_keymap::TuiChatKeymap;
 pub use crate::tui_keymap::TuiComposerKeymap;
@@ -55,6 +57,41 @@ const MAX_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 128;
 
 const fn default_enabled() -> bool {
     true
+}
+
+/// Preferred layout for the resume/fork session picker.
+#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionPickerViewMode {
+    Comfortable,
+    #[default]
+    Dense,
+}
+
+/// Default detail mode for the TUI transcript overlay.
+#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TuiTranscriptDetailMode {
+    /// Show the complete transcript, including terminal/tool details.
+    #[default]
+    Verbose,
+    /// Show a quieter transcript focused on user prompts and agent-facing output.
+    Compact,
+}
+
+impl SessionPickerViewMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Comfortable => "comfortable",
+            Self::Dense => "dense",
+        }
+    }
+}
+
+impl fmt::Display for SessionPickerViewMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Determine where Codex should store CLI auth credentials.
@@ -241,6 +278,8 @@ pub struct MemoriesToml {
     pub generate_memories: Option<bool>,
     /// When `false`, skip injecting memory usage instructions into developer prompts.
     pub use_memories: Option<bool>,
+    /// When `true`, expose dedicated memory tools through the extension tool surface.
+    pub dedicated_tools: Option<bool>,
     /// Maximum number of recent raw memories retained for global consolidation.
     #[schemars(range(min = 1, max = 4096))]
     pub max_raw_memories_for_consolidation: Option<usize>,
@@ -268,6 +307,7 @@ pub struct MemoriesConfig {
     pub disable_on_external_context: bool,
     pub generate_memories: bool,
     pub use_memories: bool,
+    pub dedicated_tools: bool,
     pub max_raw_memories_for_consolidation: usize,
     pub max_unused_days: i64,
     pub max_rollout_age_days: i64,
@@ -284,6 +324,7 @@ impl Default for MemoriesConfig {
             disable_on_external_context: false,
             generate_memories: true,
             use_memories: true,
+            dedicated_tools: false,
             max_raw_memories_for_consolidation: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION,
             max_unused_days: DEFAULT_MEMORIES_MAX_UNUSED_DAYS,
             max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
@@ -305,6 +346,7 @@ impl From<MemoriesToml> for MemoriesConfig {
                 .unwrap_or(defaults.disable_on_external_context),
             generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
             use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
+            dedicated_tools: toml.dedicated_tools.unwrap_or(defaults.dedicated_tools),
             max_raw_memories_for_consolidation: toml
                 .max_raw_memories_for_consolidation
                 .unwrap_or(defaults.max_raw_memories_for_consolidation)
@@ -393,6 +435,10 @@ pub struct AppConfig {
     /// When `false`, Codex does not surface this app.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// Reviewer for approval prompts from this app, overriding the thread default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
 
     /// Whether tools with `destructive_hint = true` are allowed for this app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -490,6 +536,12 @@ pub struct OtelConfigToml {
 
     /// Optional metrics exporter
     pub metrics_exporter: Option<OtelExporterKind>,
+
+    /// Attributes to add to every exported trace span.
+    pub span_attributes: Option<BTreeMap<String, String>>,
+
+    /// Semicolon-separated `key:value` fields to upsert into W3C tracestate members.
+    pub tracestate: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
 
 /// Effective OTEL settings after defaults are applied.
@@ -500,6 +552,8 @@ pub struct OtelConfig {
     pub exporter: OtelExporterKind,
     pub trace_exporter: OtelExporterKind,
     pub metrics_exporter: OtelExporterKind,
+    pub span_attributes: BTreeMap<String, String>,
+    pub tracestate: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for OtelConfig {
@@ -510,6 +564,8 @@ impl Default for OtelConfig {
             exporter: OtelExporterKind::None,
             trace_exporter: OtelExporterKind::None,
             metrics_exporter: OtelExporterKind::Statsig,
+            span_attributes: BTreeMap::new(),
+            tracestate: BTreeMap::new(),
         }
     }
 }
@@ -565,6 +621,16 @@ impl fmt::Display for NotificationCondition {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TuiPetAnchor {
+    /// Anchor the pet to the bottom of the current TUI composer viewport.
+    #[default]
+    Composer,
+    /// Anchor the pet to the physical bottom of the terminal screen.
+    ScreenBottom,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiNotificationSettings {
@@ -617,14 +683,23 @@ pub struct Tui {
     #[serde(default)]
     pub vim_mode_default: bool,
 
+    /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub raw_output_mode: bool,
+
+    /// Default detail mode for the `Ctrl+T` transcript overlay.
+    ///
+    /// - `verbose` (default): show the complete audit transcript.
+    /// - `compact`: focus on user prompts and agent-facing output.
+    #[serde(default)]
+    pub transcript_default_detail_mode: TuiTranscriptDetailMode,
+
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
-    /// - `auto` (default): Disable alternate screen in Zellij, enable elsewhere.
-    /// - `always`: Always use alternate screen (original behavior).
+    /// - `auto` (default): Use alternate screen.
+    /// - `always`: Always use alternate screen.
     /// - `never`: Never use alternate screen (inline mode only, preserves scrollback).
-    ///
-    /// Using alternate screen provides a cleaner fullscreen experience but prevents
-    /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
 
@@ -655,6 +730,22 @@ pub struct Tui {
     /// Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Pet id to preselect in the terminal pet picker.
+    ///
+    /// Custom pet ids resolve against CODEX_HOME/pets/<pet-id>/pet.json.
+    #[serde(default)]
+    pub pet: Option<String>,
+
+    /// Where the terminal pet should anchor vertically.
+    ///
+    /// Defaults to `composer`, which follows the current TUI composer viewport.
+    #[serde(default)]
+    pub pet_anchor: TuiPetAnchor,
+
+    /// Preferred layout for resume/fork session picker results.
+    #[serde(default)]
+    pub session_picker_view: Option<SessionPickerViewMode>,
 
     /// Keybinding overrides for the TUI.
     ///
@@ -830,8 +921,7 @@ impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings 
     }
 }
 
-/// Policy for building the `env` when spawning a process via either the
-/// `shell` or `local_shell` tool.
+/// Policy for building the `env` when spawning a process via shell-like tools.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ShellEnvironmentPolicyToml {

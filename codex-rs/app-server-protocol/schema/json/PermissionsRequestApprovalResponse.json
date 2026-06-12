@@ -61,7 +61,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -173,7 +173,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"

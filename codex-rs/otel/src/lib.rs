@@ -16,6 +16,7 @@ pub use crate::config::OtelHttpProtocol;
 pub use crate::config::OtelSettings;
 pub use crate::config::OtelTlsConfig;
 pub use crate::config::StatsigMetricsSettings;
+pub use crate::config::validate_span_attributes;
 pub use crate::events::session_telemetry::AuthEnvTelemetryMetadata;
 pub use crate::events::session_telemetry::SessionTelemetry;
 pub use crate::events::session_telemetry::SessionTelemetryMetadata;
@@ -31,6 +32,8 @@ pub use crate::trace_context::set_parent_from_context;
 pub use crate::trace_context::set_parent_from_w3c_trace_context;
 pub use crate::trace_context::span_w3c_trace_context;
 pub use crate::trace_context::traceparent_context_from_env;
+pub use crate::trace_context::validate_tracestate_entries;
+pub use crate::trace_context::validate_tracestate_member;
 pub use codex_utils_string::sanitize_metric_tag_value;
 
 #[derive(Debug, Clone, Serialize, Display)]
@@ -51,10 +54,12 @@ pub enum TelemetryAuthMode {
 impl From<codex_app_server_protocol::AuthMode> for TelemetryAuthMode {
     fn from(mode: codex_app_server_protocol::AuthMode) -> Self {
         match mode {
-            codex_app_server_protocol::AuthMode::ApiKey => Self::ApiKey,
+            codex_app_server_protocol::AuthMode::ApiKey
+            | codex_app_server_protocol::AuthMode::BedrockApiKey => Self::ApiKey,
             codex_app_server_protocol::AuthMode::Chatgpt
             | codex_app_server_protocol::AuthMode::ChatgptAuthTokens
-            | codex_app_server_protocol::AuthMode::AgentIdentity => Self::Chatgpt,
+            | codex_app_server_protocol::AuthMode::AgentIdentity
+            | codex_app_server_protocol::AuthMode::PersonalAccessToken => Self::Chatgpt,
         }
     }
 }

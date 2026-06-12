@@ -17,9 +17,15 @@ on:
     - cron: "15 18 * * *"
 
 permissions:
+  actions: read
   contents: read
   checks: read
   pull-requests: read
+
+# Cargo's libgit2 transport has been flaky when fetching git dependencies with
+# nested submodules. Prefer the system git CLI across every Cargo invocation.
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   matrix_plan:
@@ -40,7 +46,7 @@ jobs:
               {
                   "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
+                  "timeout_minutes": 240,
               }
           ]
 
@@ -71,9 +77,32 @@ jobs:
       incremental_lane_set: ${{ steps.detect.outputs.incremental_lane_set || steps.scheduled_skip_plan.outputs.incremental_lane_set }}
       incremental_lanes: ${{ steps.detect.outputs.incremental_lanes || steps.scheduled_skip_plan.outputs.incremental_lanes }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
+          persist-credentials: false
+      - name: Resolve comparison SHAs
+        id: shas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_sha=""
+          head_sha='${{ github.sha }}'
+          before_sha=""
+
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            base_sha='${{ github.event.pull_request.base.sha }}'
+            head_sha='${{ github.event.pull_request.head.sha }}'
+          fi
+
+          {
+            echo "base_sha=${base_sha}"
+            echo "head_sha=${head_sha}"
+            echo "before_sha=${before_sha}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Check duplicate scheduled rust-ci success
         id: schedule_duplicate
         if: ${{ github.event_name == 'schedule' }}
@@ -88,35 +117,70 @@ jobs:
             --head-sha "${{ github.sha }}" \
             --current-run-id "${{ github.run_id }}" \
             --github-output "${GITHUB_OUTPUT}"
-      - name: Resolve comparison SHAs
-        id: shas
-        if: ${{ steps.schedule_duplicate.outputs.should_skip != 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          base_sha=""
-          head_sha='${{ github.sha }}'
-          before_sha=""
+      - name: Check previous required result on follow-up head
+        id: previous_required
+        if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pullRequest = context.payload.pull_request;
+            const currentHead = pullRequest?.head?.sha || "";
+            const pullNumber = pullRequest?.number;
+            const eventBefore = context.payload.before || pullRequest?.before || "";
+            if (!currentHead || !pullNumber) {
+              core.setOutput("previous_green_required", "false");
+              core.setOutput("previous_green_sha", "");
+              return;
+            }
 
-          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
-            base_sha='${{ github.event.pull_request.base.sha }}'
-            head_sha='${{ github.event.pull_request.head.sha }}'
-            before_sha="$(jq -r '.before // ""' "${GITHUB_EVENT_PATH}")"
-          fi
+            try {
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              const shas = commits.map((commit) => commit.sha).filter(Boolean);
+              const currentIndex = shas.lastIndexOf(currentHead);
+              const candidateShas = (
+                currentIndex >= 0 ? shas.slice(0, currentIndex) : shas.slice(0, -1)
+              ).reverse();
+              if (eventBefore && eventBefore !== currentHead && !candidateShas.includes(eventBefore)) {
+                candidateShas.push(eventBefore);
+              }
 
-          {
-            echo "base_sha=${base_sha}"
-            echo "head_sha=${head_sha}"
-            echo "before_sha=${before_sha}"
-          } >> "$GITHUB_OUTPUT"
+              for (const ref of candidateShas) {
+                const { data } = await github.rest.checks.listForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref,
+                  per_page: 100,
+                });
+                const ok = data.check_runs.some(
+                  (run) =>
+                    run.name === "Rust CI required gate" &&
+                    run.conclusion === "success",
+                );
+                if (ok) {
+                  core.setOutput("previous_green_required", "true");
+                  core.setOutput("previous_green_sha", ref);
+                  return;
+                }
+              }
+            } catch (error) {
+              core.warning(`failed to inspect prior required result: ${error.message}`);
+            }
+
+            core.setOutput("previous_green_required", "false");
+            core.setOutput("previous_green_sha", "");
 
       - name: Resolve PR changed files via API
         id: pr_diff
         if: ${{ github.event_name == 'pull_request' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
         uses: actions/github-script@v9
         env:
-          BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
+          BEFORE_SHA: ${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}
         with:
           script: |
             const beforeSha = process.env.BEFORE_SHA || "";
@@ -212,46 +276,19 @@ jobs:
           set -euo pipefail
           base_sha='${{ steps.shas.outputs.base_sha }}'
           head_sha='${{ steps.shas.outputs.head_sha }}'
+          before_sha='${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}'
           head_repo='${{ github.event.pull_request.head.repo.clone_url }}'
 
           git fetch --no-tags --depth=1 origin "${base_sha}" || true
           git fetch --no-tags --depth=1 "${head_repo}" "${head_sha}" || true
+          if [[ -n "${before_sha}" ]]; then
+            git fetch --no-tags --depth=1 "${head_repo}" "${before_sha}" || true
+          fi
           if ! git rev-parse --verify "${base_sha}^{commit}" >/dev/null 2>&1 ||
-             ! git rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1; then
+             ! git rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1 ||
+             { [[ -n "${before_sha}" ]] && ! git rev-parse --verify "${before_sha}^{commit}" >/dev/null 2>&1; }; then
             git fetch --no-tags --prune --unshallow origin || git fetch --no-tags --prune origin
           fi
-
-      - name: Check previous required result on follow-up head
-        id: previous_required
-        if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
-        uses: actions/github-script@v9
-        env:
-          BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
-        with:
-          script: |
-            const ref = process.env.BEFORE_SHA;
-            if (!ref) {
-              core.setOutput("previous_green_required", "false");
-              return;
-            }
-
-            try {
-              const { data } = await github.rest.checks.listForRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref,
-                per_page: 100,
-              });
-              const ok = data.check_runs.some(
-                (run) =>
-                  run.name === "Rust CI required gate" &&
-                  run.conclusion === "success",
-              );
-              core.setOutput("previous_green_required", ok ? "true" : "false");
-            } catch (error) {
-              core.warning(`failed to inspect prior required result: ${error.message}`);
-              core.setOutput("previous_green_required", "false");
-            }
 
       - name: Detect changed paths and rust-ci mode
         id: detect
@@ -260,6 +297,7 @@ jobs:
         env:
           EVENT_ACTION: ${{ github.event.action || '' }}
           PREVIOUS_GREEN_REQUIRED: ${{ steps.previous_required.outputs.previous_green_required || 'false' }}
+          COMPARISON_BEFORE_SHA: ${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}
           PRIMARY_FILES_JSON: ${{ steps.pr_diff.outputs.primary_files_json || '' }}
           PRIMARY_LINE_COUNT: ${{ steps.pr_diff.outputs.primary_line_count || '' }}
           LATEST_DELTA_FILES_JSON: ${{ steps.pr_diff.outputs.latest_delta_files_json || '' }}
@@ -273,7 +311,7 @@ jobs:
             --event-action "${EVENT_ACTION}" \
             --base-sha '${{ steps.shas.outputs.base_sha }}' \
             --head-sha '${{ steps.shas.outputs.head_sha }}' \
-            --before-sha '${{ steps.shas.outputs.before_sha }}' \
+            --before-sha "${COMPARISON_BEFORE_SHA}" \
             --previous-green-required "${PREVIOUS_GREEN_REQUIRED}" \
             --primary-files-json "${PRIMARY_FILES_JSON}" \
             --primary-line-count "${PRIMARY_LINE_COUNT}" \
@@ -346,13 +384,21 @@ jobs:
       run:
         working-directory: codex-rs
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: nightly-2025-09-18
           components: rustfmt
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: just
       - name: cargo fmt
         run: cargo fmt -- --config imports_granularity=Item --check
+      - name: Rust benchmark smoke test
+        run: just bench-smoke
 
   cargo_shear:
     name: cargo shear
@@ -363,25 +409,31 @@ jobs:
       run:
         working-directory: codex-rs
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
-      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          tool: cargo-shear@1.5.1
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: cargo-shear@1.11.2
       - name: cargo shear
-        run: cargo shear
+        run: cargo shear --deny-warnings
 
   argument_comment_lint_package:
     name: Argument comment lint package
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.argument_comment_lint_package == 'true' }}
+    if: ${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}
     env:
       CARGO_DYLINT_VERSION: 5.0.0
       DYLINT_LINK_VERSION: 5.0.0
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - name: Install nightly argument-comment-lint toolchain
         shell: bash
         run: |
@@ -394,7 +446,7 @@ jobs:
           rustup default nightly-2025-09-18
       - name: Cache cargo-dylint tooling
         id: cargo_dylint_cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ~/.cargo/bin/cargo-dylint
@@ -421,59 +473,51 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs:
-      - matrix_plan
-      - changed
-    if: ${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}
+    needs: changed
+    environment:
+      name: bazel
+      deployment: false
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            timeout_minutes: 30
+          - name: macOS
+            runner: macos-15-xlarge
+            timeout_minutes: 30
+          - name: Windows
+            runner: windows-x64
+            timeout_minutes: 30
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: ./.github/actions/setup-bazel-ci
+      - name: Check whether argument comment lint should run
+        id: argument_comment_lint_gate
+        shell: bash
+        env:
+          ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
+          WORKFLOWS: ${{ needs.changed.outputs.workflows }}
+        run: |
+          if [[ "$ARGUMENT_COMMENT_LINT" == "true" || "$WORKFLOWS" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No argument-comment-lint relevant changes."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Run argument comment lint on codex-rs
+        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
+        uses: ./.github/actions/run-argument-comment-lint
         with:
           target: ${{ runner.os }}
-          install-test-prereqs: true
-      - name: Install Linux sandbox build dependencies
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os != 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          bazel_extra_args=()
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            bazel_extra_args+=(--jobs=8 --loading_phase_threads=8)
-          fi
-          bazel_targets=()
-          while IFS= read -r bazel_target; do
-            bazel_targets+=("${bazel_target}")
-          done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
-          ./.github/scripts/run-bazel-ci.sh \
-            -- \
-            build \
-            --config=argument-comment-lint \
-            "${bazel_extra_args[@]}" \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
-            -- \
-            "${bazel_targets[@]}"
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os == 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          ./.github/scripts/run-argument-comment-lint-bazel.sh \
-            --config=argument-comment-lint \
-            --platforms=//:local_windows \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}"
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
@@ -506,6 +550,12 @@ jobs:
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "incr   : ${{ needs.incremental_validation.result }}"
 
+          [[ '${{ needs.changed.result }}' == 'success' ]] || { echo 'changed planner failed'; exit 1; }
+          [[ '${{ needs.matrix_plan.result }}' == 'success' ]] || { echo 'matrix_plan failed'; exit 1; }
+          if [[ "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
+            [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
+          fi
+
           if [[ '${{ needs.changed.outputs.scheduled_duplicate_skip }}' == 'true' ]]; then
             echo 'Equivalent rust-ci run already passed for this branch and commit.'
             echo 'Reused run: ${{ needs.changed.outputs.scheduled_duplicate_run_url }}'
@@ -513,8 +563,8 @@ jobs:
           fi
 
           # If nothing relevant changed (PR touching only root README, etc.),
-          # declare success regardless of other jobs.
-          if [[ '${{ needs.changed.outputs.has_relevant_changes }}' != 'true' ]]; then
+          # declare success after confirming no incremental validation was selected.
+          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' && '${{ needs.changed.outputs.run_incremental_validation }}' != 'true' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
@@ -525,10 +575,6 @@ jobs:
 
           if [[ '${{ needs.changed.outputs.run_argument_comment_lint_prebuilt }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
-          fi
-
-          if [[ '${{ needs.changed.outputs.workflows }}' == 'true' ]]; then
-            [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
           fi
 
           if [[ '${{ needs.changed.outputs.run_general }}' == 'true' ]]; then
@@ -542,3 +588,7 @@ jobs:
           if [[ '${{ needs.changed.outputs.run_incremental_validation }}' == 'true' ]]; then
             [[ '${{ needs.incremental_validation.result }}' == 'success' ]] || { echo 'incremental_validation failed'; exit 1; }
           fi
+        env:
+          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
+          NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
+          NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}

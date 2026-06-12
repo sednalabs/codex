@@ -31,6 +31,12 @@ pub(super) struct FeedbackThreadEvent {
     pub(super) result: Result<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ThreadEventAttachment {
+    Live,
+    ReplayOnly,
+}
+
 #[derive(Debug)]
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
@@ -50,6 +56,7 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -104,10 +111,10 @@ impl ThreadEventStore {
             ServerNotification::TurnStarted(turn) => {
                 self.active_turn_id = Some(turn.turn.id.clone());
             }
-            ServerNotification::TurnCompleted(turn) => {
-                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
-                    self.active_turn_id = None;
-                }
+            ServerNotification::TurnCompleted(turn)
+                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) =>
+            {
+                self.active_turn_id = None;
             }
             ServerNotification::ThreadClosed(_) => {
                 self.active_turn_id = None;
@@ -284,6 +291,7 @@ pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
     pub(super) receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     pub(super) store: Arc<Mutex<ThreadEventStore>>,
+    attachment: ThreadEventAttachment,
 }
 
 impl ThreadEventChannel {
@@ -293,7 +301,16 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
+            attachment: ThreadEventAttachment::Live,
         }
+    }
+
+    pub(super) fn mark_replay_only(&mut self) {
+        self.attachment = ThreadEventAttachment::ReplayOnly;
+    }
+
+    pub(super) fn attachment(&self) -> ThreadEventAttachment {
+        self.attachment
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -309,6 +326,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
+            attachment: ThreadEventAttachment::Live,
         }
     }
 }
@@ -352,10 +370,12 @@ mod tests {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: cwd.abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            collaboration_mode: None,
+            personality: None,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         }
@@ -364,6 +384,7 @@ mod tests {
     fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
             items,
             status,
             error: None,
@@ -465,6 +486,7 @@ mod tests {
                 thread_id: thread_id.to_string(),
                 turn_id: turn_id.to_string(),
                 item_id: item_id.to_string(),
+                started_at_ms: 0,
                 approval_id: approval_id.map(str::to_string),
                 reason: Some("needs approval".to_string()),
                 network_approval_context: None,
@@ -584,6 +606,33 @@ mod tests {
                 serde_json::to_value(hook_completed_notification(thread_id, "turn-hook"))
                     .expect("hook notification should serialize"),
             ]
+        );
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_mcp_startup_notifications() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::McpServerStatusUpdated(
+            codex_app_server_protocol::McpServerStatusUpdatedNotification {
+                thread_id: Some(thread_id.to_string()),
+                name: "sentry".to_string(),
+                status: codex_app_server_protocol::McpServerStartupState::Failed,
+                error: Some("sentry is not logged in".to_string()),
+            },
+        );
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(notification.clone());
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let actual = match snapshot.events.as_slice() {
+            [ThreadBufferedEvent::Notification(actual)] => actual,
+            other => panic!("expected one buffered MCP notification, saw: {other:?}"),
+        };
+        assert_eq!(
+            serde_json::to_value(actual).expect("MCP notification should serialize"),
+            serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
     }
 }
