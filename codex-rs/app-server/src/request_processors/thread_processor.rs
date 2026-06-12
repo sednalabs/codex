@@ -2375,7 +2375,10 @@ impl ThreadRequestProcessor {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             return;
         };
-        match state_db.latest_usage_provider_display_model(thread_id).await {
+        match state_db
+            .latest_usage_provider_display_model(thread_id)
+            .await
+        {
             Ok(Some(model)) => thread.model = Some(model),
             Ok(None) => {}
             Err(err) => {
