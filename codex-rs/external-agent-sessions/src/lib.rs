@@ -20,6 +20,17 @@ pub use records::summarize_session;
 
 const SESSION_TITLE_MAX_LEN: usize = 120;
 
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    let digest = digest.as_ref();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut hex, "{:02x}", *byte).expect("writing to a String cannot fail");
+    }
+    hex
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalAgentSessionMigration {
     pub path: PathBuf,
@@ -169,7 +180,7 @@ mod tests {
 
         assert_eq!(
             pending.source_content_sha256,
-            format!("{:x}", Sha256::digest(contents))
+            digest_hex(Sha256::digest(contents))
         );
     }
 

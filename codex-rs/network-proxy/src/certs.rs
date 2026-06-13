@@ -223,8 +223,13 @@ fn persist_managed_ca_trust_bundle(
     fs::create_dir_all(proxy_dir)
         .with_context(|| format!("failed to create {}", proxy_dir.display()))?;
     let hash = Sha256::digest(trust_bundle.as_bytes());
+    let mut hash_hex = String::with_capacity(hash.len() * 2);
+    for byte in hash {
+        use std::fmt::Write as _;
+        write!(&mut hash_hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
     let trust_bundle_path = proxy_dir.join(format!(
-        "{MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX}-{hash:x}.pem"
+        "{MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX}-{hash_hex}.pem"
     ));
     write_atomic_create_new_or_reuse(
         &trust_bundle_path,
