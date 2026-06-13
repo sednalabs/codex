@@ -46,7 +46,7 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
                         format!("failed to canonicalize CODEX_HOME {val:?}: {err}"),
                     )
                 })?;
-                AbsolutePathBuf::from_absolute_path(canonical)
+                AbsolutePathBuf::from_absolute_path_checked(canonical)
             }
         }
         None => {
@@ -57,7 +57,7 @@ fn find_codex_home_from_env(codex_home_env: Option<&str>) -> std::io::Result<Abs
                 )
             })?;
             p.push(".codex");
-            AbsolutePathBuf::from_absolute_path(p)
+            AbsolutePathBuf::from_absolute_path_checked(p)
         }
     }
 }
