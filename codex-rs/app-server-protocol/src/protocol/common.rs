@@ -405,8 +405,9 @@ macro_rules! client_request_definitions {
         pub fn export_client_responses(
             out_dir: &::std::path::Path,
         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
+            let ts_config = ::ts_rs::Config::new().with_out_dir(out_dir);
             $(
-                <$response as ::ts_rs::TS>::export_all_to(out_dir)?;
+                <$response as ::ts_rs::TS>::export_all(&ts_config)?;
             )*
             Ok(())
         }
@@ -1255,8 +1256,9 @@ macro_rules! server_request_definitions {
         pub fn export_server_responses(
             out_dir: &::std::path::Path,
         ) -> ::std::result::Result<(), ::ts_rs::ExportError> {
+            let ts_config = ::ts_rs::Config::new().with_out_dir(out_dir);
             $(
-                <$response as ::ts_rs::TS>::export_all_to(out_dir)?;
+                <$response as ::ts_rs::TS>::export_all(&ts_config)?;
             )*
             Ok(())
         }

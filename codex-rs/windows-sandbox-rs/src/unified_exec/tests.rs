@@ -169,9 +169,9 @@ fn legacy_non_tty_cmd_emits_output() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(5_000),
-            &[],
-            &[],
+            /*timeout_ms*/ Some(5_000),
+            /*additional_deny_read_paths*/ &[],
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ false,
             /*stdin_open*/ false,
             /*use_private_desktop*/ true,
@@ -210,9 +210,9 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(5_000),
-            std::slice::from_ref(&secret_path),
-            &[],
+            /*timeout_ms*/ Some(5_000),
+            /*additional_deny_read_paths*/ std::slice::from_ref(&secret_path),
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ false,
             /*stdin_open*/ false,
             /*use_private_desktop*/ true,
@@ -251,9 +251,9 @@ fn legacy_non_tty_powershell_emits_output() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(5_000),
-            &[],
-            &[],
+            /*timeout_ms*/ Some(5_000),
+            /*additional_deny_read_paths*/ &[],
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ false,
             /*stdin_open*/ false,
             /*use_private_desktop*/ true,
@@ -365,7 +365,7 @@ fn runner_stdin_writer_sends_close_stdin_after_input_eof() {
         drop(writer_tx);
         writer_handle.await.expect("join stdin writer");
 
-        let frames = wait_for_frame_count(&frames_path, 2);
+        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 2);
 
         match &frames[0] {
             Message::Stdin { payload } => {
@@ -404,7 +404,7 @@ fn runner_resizer_sends_resize_frame() {
         })
         .expect("send resize frame");
 
-        let frames = wait_for_frame_count(&frames_path, 1);
+        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 1);
         match &frames[0] {
             Message::Resize { payload } => {
                 assert_eq!(payload.rows, 45);
@@ -531,9 +531,9 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(10_000),
-            &[],
-            &[],
+            /*timeout_ms*/ Some(10_000),
+            /*additional_deny_read_paths*/ &[],
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ true,
             /*stdin_open*/ true,
             /*use_private_desktop*/ true,
@@ -582,9 +582,9 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(10_000),
-            &[],
-            &[],
+            /*timeout_ms*/ Some(10_000),
+            /*additional_deny_read_paths*/ &[],
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ true,
             /*stdin_open*/ true,
             /*use_private_desktop*/ true,
@@ -636,9 +636,9 @@ fn legacy_tty_cmd_default_desktop_emits_output_and_accepts_input() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            Some(10_000),
-            &[],
-            &[],
+            /*timeout_ms*/ Some(10_000),
+            /*additional_deny_read_paths*/ &[],
+            /*additional_deny_write_paths*/ &[],
             /*tty*/ true,
             /*stdin_open*/ true,
             /*use_private_desktop*/ false,

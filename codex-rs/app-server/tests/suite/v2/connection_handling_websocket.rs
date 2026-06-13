@@ -21,6 +21,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use futures::SinkExt;
 use futures::StreamExt;
 use hmac::Hmac;
+use hmac::KeyInit;
 use hmac::Mac;
 use reqwest::StatusCode;
 use serde_json::json;
