@@ -60,7 +60,6 @@ use ratatui::text::Text;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 
 const NO_HIGHLIGHT_CELL: usize = usize::MAX;
