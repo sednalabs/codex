@@ -54,6 +54,23 @@ are:
 For the full inventory, read [Downstream / fork notes](./docs/downstream.md)
 and the [Downstream regression matrix](./docs/downstream-regression-matrix.md).
 
+## Headless MCP Device Login
+
+Codex Sedna supports OAuth device authorization for configured HTTP MCP servers
+that advertise a device authorization endpoint in their OAuth metadata. This is
+useful on SSH sessions, remote shells, CI runners, and other headless
+environments where a localhost browser callback is inconvenient.
+
+```bash
+codex mcp login <server-name> --device-auth
+```
+
+Codex performs dynamic client registration when the server supports it, prints
+the verification URL and user code from the authorization server, and stores
+the resulting MCP credentials for the configured server. MCP servers built with
+the `mcp-toolkit-rs` hosted HTTP auth surface can expose the metadata needed
+for this flow.
+
 ## Native Computer Use
 
 Codex Sedna treats native computer use as a Codex-owned contract backed by
