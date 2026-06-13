@@ -2455,7 +2455,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-version",
  "codex-windows-sandbox",
- "crossterm 0.28.1",
+ "crossterm",
  "http 1.4.1",
  "insta",
  "libc",
@@ -2553,7 +2553,7 @@ dependencies = [
  "codex-model-provider",
  "codex-tui",
  "codex-utils-cli",
- "crossterm 0.28.1",
+ "crossterm",
  "owo-colors",
  "pretty_assertions",
  "ratatui",
@@ -4127,7 +4127,7 @@ dependencies = [
  "color-eyre",
  "core_test_support",
  "cpal",
- "crossterm 0.28.1",
+ "crossterm",
  "derive_more 2.1.1",
  "diffy",
  "dirs",
@@ -4890,22 +4890,6 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crossterm"
-version = "0.28.1"
-source = "git+https://github.com/nornagon/crossterm?rev=87db8bfa6dc99427fd3b071681b07fc31c6ce995#87db8bfa6dc99427fd3b071681b07fc31c6ce995"
-dependencies = [
- "bitflags 2.13.0",
- "crossterm_winapi",
- "futures-core",
- "mio",
- "parking_lot",
- "rustix 0.38.44",
- "signal-hook",
- "signal-hook-mio",
- "winapi",
-]
-
-[[package]]
-name = "crossterm"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
@@ -4914,6 +4898,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more 2.1.1",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 1.1.4",
@@ -11575,7 +11560,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b2867bedcbd6a690ca4f8672a687b730ec07660c79844517b084311b529980c"
 dependencies = [
  "cfg-if",
- "crossterm 0.29.0",
+ "crossterm",
  "instability",
  "ratatui-core",
 ]

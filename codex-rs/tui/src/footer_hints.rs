@@ -82,7 +82,7 @@ pub(crate) fn render_footer_separator(area: Rect, buf: &mut Buffer, label: &str)
         return;
     }
 
-    Line::from("─".repeat(area.width as usize).dim()).render_ref(area, buf);
+    Line::from("─".repeat(area.width as usize).dim()).render(area, buf);
     if label.is_empty() {
         return;
     }
@@ -96,7 +96,7 @@ pub(crate) fn render_footer_separator(area: Rect, buf: &mut Buffer, label: &str)
             label_width,
             1,
         );
-        Line::from(label.dim()).render_ref(label_area, buf);
+        Line::from(label.dim()).render(label_area, buf);
     }
 }
 
