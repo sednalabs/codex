@@ -2041,7 +2041,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         tool_values: list[str] = []
         for job in (payload.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
-                if step.get("uses") != "taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532":
+                if step.get("uses") != "taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46":
                     continue
                 with_section = step.get("with") or {}
                 self.assertNotIn("version", with_section)
@@ -2774,7 +2774,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         cancel_step = next(
             step for step in steps if step.get("name") == "Cancel stale runs for the closed PR"
         )
-        self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9")
+        self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9.0.0")
         script = (cancel_step.get("with") or {}).get("script") or ""
 
         self.assertIn("github.rest.actions.listWorkflowRunsForRepo", script)
@@ -4015,7 +4015,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         previous_required_step = next(
             step for step in steps if step.get("name") == "Check previous required result on follow-up head"
         )
-        self.assertEqual(previous_required_step.get("uses"), "actions/github-script@v9")
+        self.assertEqual(previous_required_step.get("uses"), "actions/github-script@v9.0.0")
         self.assertIn("github.event.action == 'synchronize'", previous_required_step.get("if") or "")
         previous_required_script = (
             (previous_required_step.get("with") or {}).get("script") or ""
@@ -4031,7 +4031,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         metadata_step = next(
             step for step in steps if step.get("name") == "Resolve PR changed files via API"
         )
-        self.assertEqual(metadata_step.get("uses"), "actions/github-script@v9")
+        self.assertEqual(metadata_step.get("uses"), "actions/github-script@v9.0.0")
         metadata_script = ((metadata_step.get("with") or {}).get("script") or "")
         self.assertIn("github.paginate(github.rest.pulls.listFiles", metadata_script)
         self.assertIn("github.rest.repos.compareCommitsWithBasehead", metadata_script)
@@ -5080,7 +5080,7 @@ class HelperScriptTests(unittest.TestCase):
             },
             {
                 "cargo_home_restore": "actions/cache/restore@v5",
-                "sccache_install": "taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1",
+                "sccache_install": "taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46",
                 "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
                 "sccache_restore": "actions/cache/restore@v5",
                 "cargo_home_save": "actions/cache/save@v5",
