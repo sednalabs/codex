@@ -365,7 +365,7 @@ fn runner_stdin_writer_sends_close_stdin_after_input_eof() {
         drop(writer_tx);
         writer_handle.await.expect("join stdin writer");
 
-        let frames = wait_for_frame_count(&frames_path, 2);
+        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 2);
 
         match &frames[0] {
             Message::Stdin { payload } => {
@@ -404,7 +404,7 @@ fn runner_resizer_sends_resize_frame() {
         })
         .expect("send resize frame");
 
-        let frames = wait_for_frame_count(&frames_path, 1);
+        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 1);
         match &frames[0] {
             Message::Resize { payload } => {
                 assert_eq!(payload.rows, 45);
