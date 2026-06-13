@@ -68,8 +68,8 @@ codex mcp login <server-name> --device-auth
 Codex performs dynamic client registration when the server supports it, prints
 the verification URL and user code from the authorization server, and stores
 the resulting MCP credentials for the configured server. MCP servers built with
-the `mcp-toolkit-rs` hosted HTTP auth surface can expose the metadata needed
-for this flow.
+the [`mcp-toolkit-rs`](https://github.com/sednalabs/mcp-toolkit-rs) hosted HTTP
+auth surface can expose the metadata needed for this flow.
 
 ## Native Computer Use
 
