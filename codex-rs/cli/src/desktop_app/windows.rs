@@ -35,7 +35,8 @@ async fn codex_app_is_installed() -> anyhow::Result<bool> {
     let output = Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-Command")
-        .arg(script)
+        .arg("& { param($packageName) Get-AppxPackage -Name $packageName }")
+        .arg(CODEX_WINDOWS_PACKAGE_NAME)
         .output()
         .await
         .context("failed to invoke `powershell.exe`")?;
