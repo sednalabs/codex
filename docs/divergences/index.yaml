@@ -315,7 +315,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.blocking-waits-targeted",
+      "guardrail_lane": "codex.blocking-waits-core-targeted",
       "tests": [
         "exec_command_wait_until_terminal_defers_provider_resume_until_exit",
         "exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum",
@@ -336,7 +336,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
