@@ -124,6 +124,10 @@ impl ChatWidget {
         self.request_side_conversation(parent_thread_id, /*user_message*/ None);
     }
 
+    fn request_exit_side_conversation(&self) {
+        self.app_event_tx.send(AppEvent::ExitSideConversation);
+    }
+
     fn emit_raw_output_mode_changed(&self, enabled: bool) {
         self.app_event_tx
             .send(AppEvent::RawOutputModeChanged { enabled });
@@ -383,7 +387,11 @@ impl ChatWidget {
                 self.open_memories_popup();
             }
             SlashCommand::Quit | SlashCommand::Exit => {
-                self.request_quit_without_confirmation();
+                if self.active_side_conversation {
+                    self.request_exit_side_conversation();
+                } else {
+                    self.request_quit_without_confirmation();
+                }
             }
             SlashCommand::Logout => {
                 self.app_event_tx.send(AppEvent::Logout);
