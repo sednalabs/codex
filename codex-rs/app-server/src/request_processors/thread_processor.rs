@@ -1972,16 +1972,20 @@ impl ThreadRequestProcessor {
             .thread_watch_manager
             .loaded_statuses_for_threads(status_ids)
             .await;
+        let usage_provider_display_models =
+            self.usage_provider_display_models(threads.iter()).await;
 
-        let data: Vec<_> = threads
-            .into_iter()
-            .map(|mut thread| {
-                if let Some(status) = statuses.get(&thread.id) {
-                    thread.status = status.clone();
-                }
-                thread
-            })
-            .collect();
+        let mut data = Vec::with_capacity(threads.len());
+        for mut thread in threads {
+            if let Some(status) = statuses.get(&thread.id) {
+                thread.status = status.clone();
+            }
+            Self::apply_usage_provider_display_model_from_map(
+                &mut thread,
+                &usage_provider_display_models,
+            );
+            data.push(thread);
+        }
         Ok(ThreadListResponse {
             data,
             next_cursor,
@@ -2103,15 +2107,20 @@ impl ThreadRequestProcessor {
             .thread_watch_manager
             .loaded_statuses_for_threads(status_ids)
             .await;
-        let data = results
-            .into_iter()
-            .map(|(mut thread, snippet)| {
-                if let Some(status) = statuses.get(&thread.id) {
-                    thread.status = status.clone();
-                }
-                ThreadSearchResult { thread, snippet }
-            })
-            .collect();
+        let usage_provider_display_models = self
+            .usage_provider_display_models(results.iter().map(|(thread, _)| thread))
+            .await;
+        let mut data = Vec::with_capacity(results.len());
+        for (mut thread, snippet) in results {
+            if let Some(status) = statuses.get(&thread.id) {
+                thread.status = status.clone();
+            }
+            Self::apply_usage_provider_display_model_from_map(
+                &mut thread,
+                &usage_provider_display_models,
+            );
+            data.push(ThreadSearchResult { thread, snippet });
+        }
 
         Ok(ThreadSearchResponse {
             data,
@@ -2267,6 +2276,7 @@ impl ThreadRequestProcessor {
             thread_status,
             has_live_in_progress_turn,
         );
+        self.apply_usage_provider_display_model(&mut thread).await;
         app_server_hooks().augment_thread_read(
             &mut thread,
             active_turn.as_ref(),
@@ -2364,6 +2374,70 @@ impl ThreadRequestProcessor {
         }
 
         Ok(())
+    }
+
+    async fn usage_provider_display_models<'a>(
+        &self,
+        threads: impl IntoIterator<Item = &'a Thread>,
+    ) -> HashMap<String, String> {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return HashMap::new();
+        };
+        let thread_ids: Vec<_> = threads
+            .into_iter()
+            .filter_map(|thread| ThreadId::from_string(&thread.id).ok())
+            .collect();
+        match state_db
+            .latest_usage_provider_display_models(&thread_ids)
+            .await
+        {
+            Ok(models) => models
+                .into_iter()
+                .map(|(thread_id, model)| (thread_id.to_string(), model))
+                .collect(),
+            Err(err) => {
+                warn!(%err, "failed to hydrate thread models from usage ledger");
+                HashMap::new()
+            }
+        }
+    }
+
+    fn apply_usage_provider_display_model_from_map(
+        thread: &mut Thread,
+        display_models: &HashMap<String, String>,
+    ) {
+        if matches!(thread.status, ThreadStatus::Active { .. }) {
+            return;
+        }
+        if let Some(model) = display_models.get(&thread.id) {
+            thread.model = Some(model.clone());
+        }
+    }
+
+    async fn apply_usage_provider_display_model(&self, thread: &mut Thread) {
+        if matches!(thread.status, ThreadStatus::Active { .. }) {
+            return;
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+            return;
+        };
+        match state_db
+            .latest_usage_provider_display_model(thread_id)
+            .await
+        {
+            Ok(Some(model)) => thread.model = Some(model),
+            Ok(None) => {}
+            Err(err) => {
+                warn!(
+                    %err,
+                    thread_id = thread.id.as_str(),
+                    "failed to hydrate thread model from usage ledger"
+                );
+            }
+        }
     }
 
     async fn thread_turns_list_response_inner(
