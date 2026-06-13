@@ -461,12 +461,25 @@ fn maybe_build_stdio_server_for_tests() {
             .arg("--bin")
             .arg("test_stdio_server");
 
+        if let Some(target_dir) = current_test_target_dir() {
+            command.arg("--target-dir").arg(target_dir);
+        }
+
         if let Ok(repo_root) = codex_utils_cargo_bin::repo_root() {
             command.current_dir(repo_root.join("codex-rs"));
         }
 
         let _ = command.status();
     });
+}
+
+fn current_test_target_dir() -> Option<PathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    let mut profile_dir = current_exe.parent()?.to_path_buf();
+    if profile_dir.ends_with("deps") {
+        profile_dir.pop();
+    }
+    profile_dir.parent().map(|path| path.to_path_buf())
 }
 
 pub mod fs_wait {

@@ -48,6 +48,11 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+#[cfg(unix)]
+const UPSTREAM_STANDALONE_INSTALLER_URL: &str = "https://chatgpt.com/codex/install.sh";
+#[cfg(unix)]
+const SEDNA_STANDALONE_INSTALLER_URL: &str =
+    "https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset";
 
 #[cfg(unix)]
 pub(crate) async fn run() -> Result<()> {
@@ -155,7 +160,24 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 
 #[cfg(unix)]
 async fn install_latest_standalone() -> Result<()> {
-    let script = reqwest::get("https://chatgpt.com/codex/install.sh")
+    if release_repository().eq_ignore_ascii_case("sednalabs/codex") {
+        install_latest_sedna_standalone().await
+    } else {
+        install_latest_upstream_standalone().await
+    }
+}
+
+#[cfg(unix)]
+fn release_repository() -> &'static str {
+    match option_env!("CODEX_RELEASE_REPOSITORY") {
+        Some(repository) => repository,
+        None => "sednalabs/codex",
+    }
+}
+
+#[cfg(unix)]
+async fn install_latest_upstream_standalone() -> Result<()> {
+    let script = reqwest::get(UPSTREAM_STANDALONE_INSTALLER_URL)
         .await
         .context("failed to fetch standalone Codex updater")?
         .error_for_status()
@@ -189,6 +211,53 @@ async fn install_latest_standalone() -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!("standalone Codex updater exited with status {status}")
+    }
+}
+
+#[cfg(unix)]
+async fn install_latest_sedna_standalone() -> Result<()> {
+    let script = reqwest::get(SEDNA_STANDALONE_INSTALLER_URL)
+        .await
+        .context("failed to fetch Sedna standalone Codex updater")?
+        .error_for_status()
+        .context("Sedna standalone Codex updater request failed")?
+        .bytes()
+        .await
+        .context("failed to read Sedna standalone Codex updater")?;
+
+    let mut child = Command::new("bash")
+        .args([
+            "-s",
+            "--",
+            "--repository",
+            "sednalabs/codex",
+            "--release-tag",
+            "latest",
+            "--allow-prerelease",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to invoke Sedna standalone Codex updater")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Sedna standalone Codex updater stdin was unavailable")?;
+    stdin
+        .write_all(&script)
+        .await
+        .context("failed to pass Sedna standalone Codex updater to shell")?;
+    drop(stdin);
+    let status = child
+        .wait()
+        .await
+        .context("failed to wait for Sedna standalone Codex updater")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("Sedna standalone Codex updater exited with status {status}")
     }
 }
 
