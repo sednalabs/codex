@@ -1206,6 +1206,8 @@ mod tests {
 
     fn turn_completed_notification() -> ServerNotification {
         ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn".to_string(),
@@ -2106,6 +2108,8 @@ mod tests {
             &InProcessServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::TurnCompleted(
                     codex_app_server_protocol::TurnCompletedNotification {
+                        final_model: None,
+                        model_snapshot: None,
                         thread_id: "thread".to_string(),
                         turn: codex_app_server_protocol::Turn {
                             id: "turn".to_string(),

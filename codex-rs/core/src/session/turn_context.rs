@@ -17,6 +17,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
@@ -41,6 +42,12 @@ pub(crate) struct TurnEnvironment {
     pub(crate) environment: Arc<Environment>,
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) shell: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModelExecutionIdentity {
+    pub(crate) final_model: Option<String>,
+    pub(crate) model_snapshot: Option<String>,
 }
 
 impl TurnEnvironment {
@@ -103,6 +110,7 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_skills: TurnSkillsContext,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
+    pub(crate) model_execution_identity: Arc<StdMutex<ModelExecutionIdentity>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
 }
@@ -272,6 +280,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_skills: self.turn_skills.clone(),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
+            model_execution_identity: Arc::clone(&self.model_execution_identity),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
             ),
@@ -576,6 +585,7 @@ impl Session {
             extension_data,
             turn_skills: TurnSkillsContext::new(skills_outcome),
             turn_timing_state: Arc::new(TurnTimingState::default()),
+            model_execution_identity: Arc::new(StdMutex::new(ModelExecutionIdentity::default())),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
         }

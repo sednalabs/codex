@@ -84,8 +84,18 @@ docs-only refresh commit that records this snapshot.
   `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
   tool invocation lifecycles, rate-limit snapshots, and parent/child thread
   relationships for spawn requests.
+- `usage_provider_calls` also stores provider-confirmed `final_model` and
+  `model_snapshot` values when turn completion reports them, preserving the
+  downstream distinction between requested/configured model, historical
+  `actual_model_used`, and final provider identity.
+- Completed thread/list/read and TUI status surfaces prefer thread-local
+  provider identity evidence from turn completion or the usage ledger before
+  falling back to configured session metadata; active/running threads keep the
+  live effective model first so sub-agent status does not regress to the
+  parent/session model.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/state/src/lib.rs`
@@ -93,6 +103,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
+  - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
 
 ### Side Chat Persistence And Usage Ledger Tracking
