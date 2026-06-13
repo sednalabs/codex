@@ -18399,6 +18399,20 @@
       "TurnCompletedNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "finalModel": {
+            "description": "Final model used after server-side routing or fallback.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelSnapshot": {
+            "description": "Concrete resolved model snapshot used to execute the turn.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "threadId": {
             "type": "string"
           },

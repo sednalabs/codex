@@ -83,11 +83,13 @@
       "category": "usage-ledger",
       "surface": [
         "usage event log",
-        "spawn and quota metadata"
+        "spawn and quota metadata",
+        "provider model identity display evidence"
       ],
       "files": [
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/state/service.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/state/src/lib.rs",
@@ -95,9 +97,12 @@
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
-        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql",
+        "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata through the usage-ledger extension storage namespace for downstream audit workflows.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -106,10 +111,12 @@
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
-        "usage_logger_* focused table-contract tests"
+        "usage_logger_* focused table-contract tests",
+        "usage_logger_records_provider_final_model_identity",
+        "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
