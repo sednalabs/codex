@@ -1,8 +1,8 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "command": {
-      "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
+      "description": "Shell command string evaluated by the thread's configured shell.\nUnlike `command/exec`, this intentionally preserves shell syntax\nsuch as pipes, redirects, and quoting. This runs unsandboxed with full\naccess rather than inheriting the thread sandbox policy.",
       "type": "string"
     },
     "threadId": {
@@ -10,8 +10,8 @@
     }
   },
   "required": [
-    "command",
-    "threadId"
+    "threadId",
+    "command"
   ],
   "title": "ThreadShellCommandParams",
   "type": "object"

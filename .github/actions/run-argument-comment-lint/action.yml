@@ -1,0 +1,28 @@
+name: Run argument comment lint
+description: Run the prebuilt argument-comment-lint package on codex-rs.
+
+inputs:
+  target:
+    description: Runner target retained for workflow compatibility.
+    required: true
+  buildbuddy-api-key:
+    description: Unused compatibility input for older workflow call sites.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v0.5.9
+
+    - name: Install Linux build dependencies
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+    - name: Run prebuilt argument comment lint on codex-rs
+      shell: bash
+      run: |
+        ./tools/argument-comment-lint/run-prebuilt-linter.py -- --all-targets --ignore-rust-version

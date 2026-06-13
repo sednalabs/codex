@@ -43,29 +43,28 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
             return resolve_bin_from_env(key, value);
         }
     }
-    match assert_cmd::Command::cargo_bin(name) {
-        Ok(cmd) => {
-            let mut path = PathBuf::from(cmd.get_program());
-            if !path.is_absolute() {
-                path = std::env::current_dir()
-                    .map_err(|source| CargoBinError::CurrentDir { source })?
-                    .join(path);
-            }
-            if path.exists() {
-                Ok(path)
-            } else {
-                Err(CargoBinError::ResolvedPathDoesNotExist {
-                    key: "assert_cmd::Command::cargo_bin".to_owned(),
-                    path,
-                })
-            }
-        }
-        Err(err) => Err(CargoBinError::NotFound {
+
+    let current_exe =
+        std::env::current_exe().map_err(|source| CargoBinError::CurrentExe { source })?;
+    let path = cargo_bin_path_from_current_exe(name, &current_exe);
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(CargoBinError::NotFound {
             name: name.to_owned(),
             env_keys,
-            fallback: format!("assert_cmd fallback failed: {err}"),
-        }),
+            fallback: format!("target-dir fallback path {} did not exist", path.display()),
+        })
     }
+}
+
+fn cargo_bin_path_from_current_exe(name: &str, current_exe: &Path) -> PathBuf {
+    let mut path = current_exe.to_path_buf();
+    let _current_test_binary = path.pop();
+    if path.ends_with("deps") {
+        let _deps = path.pop();
+    }
+    path.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn cargo_bin_env_keys(name: &str) -> Vec<String> {
@@ -91,10 +90,15 @@ fn resolve_bin_from_env(key: &str, value: OsString) -> Result<PathBuf, CargoBinE
         let runfiles = runfiles::Runfiles::create().map_err(|err| CargoBinError::CurrentExe {
             source: std::io::Error::other(err),
         })?;
-        if let Some(resolved) = runfiles::rlocation!(runfiles, &raw)
-            && resolved.exists()
-        {
-            return Ok(resolved);
+        if let Some(mut resolved) = runfiles::rlocation!(runfiles, &raw) {
+            if !resolved.is_absolute() {
+                resolved = std::env::current_dir()
+                    .map_err(|source| CargoBinError::CurrentDir { source })?
+                    .join(resolved);
+            }
+            if resolved.exists() {
+                return Ok(resolved);
+            }
         }
     } else if raw.is_absolute() && raw.exists() {
         return Ok(raw);
@@ -223,4 +227,41 @@ fn normalize_runfile_path(path: &Path) -> PathBuf {
             acc.push(component.as_os_str());
             acc
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cargo_bin_path_from_current_exe;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cargo_bin_path_from_current_exe_strips_deps_component() {
+        let current_exe = Path::new("/tmp/target/debug/deps/codex_protocol-tests");
+
+        let path = cargo_bin_path_from_current_exe("codex", current_exe);
+
+        assert_eq!(
+            path,
+            PathBuf::from(format!(
+                "/tmp/target/debug/codex{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
+    }
+
+    #[test]
+    fn cargo_bin_path_from_current_exe_keeps_non_deps_parent() {
+        let current_exe = Path::new("/tmp/target/debug/codex_protocol-tests");
+
+        let path = cargo_bin_path_from_current_exe("codex", current_exe);
+
+        assert_eq!(
+            path,
+            PathBuf::from(format!(
+                "/tmp/target/debug/codex{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
+    }
 }

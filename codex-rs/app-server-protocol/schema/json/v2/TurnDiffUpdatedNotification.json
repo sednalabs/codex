@@ -1,6 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "Notification that the turn-level unified diff has changed. Contains the latest aggregated diff across all file changes in the turn.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Notification that the turn-level unified diff has changed.\nContains the latest aggregated diff across all file changes in the turn.",
   "properties": {
     "diff": {
       "type": "string"
@@ -13,9 +13,9 @@
     }
   },
   "required": [
-    "diff",
     "threadId",
-    "turnId"
+    "turnId",
+    "diff"
   ],
   "title": "TurnDiffUpdatedNotification",
   "type": "object"

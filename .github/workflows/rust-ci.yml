@@ -7,66 +7,50 @@ on:
   workflow_dispatch:
     inputs:
       platform_scope:
-        description: Platform coverage to run
+        description: Downstream platform coverage to run
         required: false
         type: choice
         options:
-          - linux-x86-only
-          - full-cross-platform
-        default: linux-x86-only
+          - linux-x86_64-only
+        default: linux-x86_64-only
   schedule:
     - cron: "15 18 * * *"
 
 permissions:
+  actions: read
   contents: read
   checks: read
+  pull-requests: read
+
+# Cargo's libgit2 transport has been flaky when fetching git dependencies with
+# nested submodules. Prefer the system git CLI across every Cargo invocation.
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   matrix_plan:
-    name: Resolve platform scope
+    name: Rust CI lane planner (informational)
     runs-on: ubuntu-24.04
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
     steps:
       - name: Compute platform matrices
         id: plan
-        env:
-          FULL_PLATFORM_RUN: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.platform_scope == 'full-cross-platform') }}
         shell: bash
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import os
 
-          full_platform_run = os.environ["FULL_PLATFORM_RUN"] == "true"
-
-          linux_only = [
+          # Downstream heavy validation is intentionally Linux x86_64 only for now.
+          linux_x86_64_only = [
               {
-                  "name": "Linux",
+                  "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
+                  "timeout_minutes": 240,
               }
           ]
-          full_cross_platform = [
-              {
-                  "name": "Linux",
-                  "runner": "ubuntu-24.04",
-                  "timeout_minutes": 30,
-              },
-              {
-                  "name": "macOS",
-                  "runner": "macos-15",
-                  "timeout_minutes": 30,
-              },
-              {
-                  "name": "Windows",
-                  "runner": "windows-2025",
-                  "timeout_minutes": 30,
-              },
-          ]
 
-          selected = full_cross_platform if full_platform_run else linux_only
-          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          payload = json.dumps({"include": linux_x86_64_only}, separators=(",", ":"))
           print(f"argument_comment_lint_matrix={payload}")
           PY
 
@@ -75,24 +59,29 @@ jobs:
     name: Detect changed areas
     runs-on: ubuntu-24.04
     outputs:
-      argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint }}
-      argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package }}
-      codex: ${{ steps.detect.outputs.codex }}
-      workflows: ${{ steps.detect.outputs.workflows }}
-      has_relevant_changes: ${{ steps.detect.outputs.has_relevant_changes }}
-      validation_mode: ${{ steps.detect.outputs.validation_mode }}
-      run_general: ${{ steps.detect.outputs.run_general }}
-      run_cargo_shear: ${{ steps.detect.outputs.run_cargo_shear }}
-      run_argument_comment_lint_package: ${{ steps.detect.outputs.run_argument_comment_lint_package }}
-      run_argument_comment_lint_prebuilt: ${{ steps.detect.outputs.run_argument_comment_lint_prebuilt }}
-      run_incremental_validation: ${{ steps.detect.outputs.run_incremental_validation }}
-      incremental_profile: ${{ steps.detect.outputs.incremental_profile }}
-      incremental_lane_set: ${{ steps.detect.outputs.incremental_lane_set }}
-      incremental_lanes: ${{ steps.detect.outputs.incremental_lanes }}
+      scheduled_duplicate_skip: ${{ steps.schedule_duplicate.outputs.should_skip || 'false' }}
+      scheduled_duplicate_reason: ${{ steps.schedule_duplicate.outputs.reason || '' }}
+      scheduled_duplicate_run_url: ${{ steps.schedule_duplicate.outputs.matched_run_url || '' }}
+      argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint || steps.scheduled_skip_plan.outputs.argument_comment_lint }}
+      argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package || steps.scheduled_skip_plan.outputs.argument_comment_lint_package }}
+      codex: ${{ steps.detect.outputs.codex || steps.scheduled_skip_plan.outputs.codex }}
+      workflows: ${{ steps.detect.outputs.workflows || steps.scheduled_skip_plan.outputs.workflows }}
+      has_relevant_changes: ${{ steps.detect.outputs.has_relevant_changes || steps.scheduled_skip_plan.outputs.has_relevant_changes }}
+      validation_mode: ${{ steps.detect.outputs.validation_mode || steps.scheduled_skip_plan.outputs.validation_mode }}
+      run_general: ${{ steps.detect.outputs.run_general || steps.scheduled_skip_plan.outputs.run_general }}
+      run_cargo_shear: ${{ steps.detect.outputs.run_cargo_shear || steps.scheduled_skip_plan.outputs.run_cargo_shear }}
+      run_argument_comment_lint_package: ${{ steps.detect.outputs.run_argument_comment_lint_package || steps.scheduled_skip_plan.outputs.run_argument_comment_lint_package }}
+      run_argument_comment_lint_prebuilt: ${{ steps.detect.outputs.run_argument_comment_lint_prebuilt || steps.scheduled_skip_plan.outputs.run_argument_comment_lint_prebuilt }}
+      run_incremental_validation: ${{ steps.detect.outputs.run_incremental_validation || steps.scheduled_skip_plan.outputs.run_incremental_validation }}
+      incremental_profile: ${{ steps.detect.outputs.incremental_profile || steps.scheduled_skip_plan.outputs.incremental_profile }}
+      incremental_lane_set: ${{ steps.detect.outputs.incremental_lane_set || steps.scheduled_skip_plan.outputs.incremental_lane_set }}
+      incremental_lanes: ${{ steps.detect.outputs.incremental_lanes || steps.scheduled_skip_plan.outputs.incremental_lanes }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Resolve comparison SHAs
         id: shas
         shell: bash
@@ -106,7 +95,6 @@ jobs:
           if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             base_sha='${{ github.event.pull_request.base.sha }}'
             head_sha='${{ github.event.pull_request.head.sha }}'
-            before_sha="$(jq -r '.before // ""' "${GITHUB_EVENT_PATH}")"
           fi
 
           {
@@ -115,44 +103,205 @@ jobs:
             echo "before_sha=${before_sha}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check duplicate scheduled rust-ci success
+        id: schedule_duplicate
+        if: ${{ github.event_name == 'schedule' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/skip_duplicate_workflow_run.py \
+            --repo "${{ github.repository }}" \
+            --workflow rust-ci.yml \
+            --branch "${{ github.ref_name }}" \
+            --head-sha "${{ github.sha }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --github-output "${GITHUB_OUTPUT}"
+
       - name: Check previous required result on follow-up head
         id: previous_required
-        if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
-        uses: actions/github-script@v8
-        env:
-          BEFORE_SHA: ${{ steps.shas.outputs.before_sha }}
+        if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
+        uses: actions/github-script@v9
         with:
           script: |
-            const ref = process.env.BEFORE_SHA;
-            if (!ref) {
+            const pullRequest = context.payload.pull_request;
+            const currentHead = pullRequest?.head?.sha || "";
+            const pullNumber = pullRequest?.number;
+            const eventBefore = context.payload.before || pullRequest?.before || "";
+            if (!currentHead || !pullNumber) {
               core.setOutput("previous_green_required", "false");
+              core.setOutput("previous_green_sha", "");
               return;
             }
 
             try {
-              const { data } = await github.rest.checks.listForRef({
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref,
+                pull_number: pullNumber,
                 per_page: 100,
               });
-              const ok = data.check_runs.some(
-                (run) =>
-                  run.name === "CI results (required)" &&
-                  run.conclusion === "success",
-              );
-              core.setOutput("previous_green_required", ok ? "true" : "false");
+              const shas = commits.map((commit) => commit.sha).filter(Boolean);
+              const currentIndex = shas.lastIndexOf(currentHead);
+              const candidateShas = (
+                currentIndex >= 0 ? shas.slice(0, currentIndex) : shas.slice(0, -1)
+              ).reverse();
+              if (eventBefore && eventBefore !== currentHead && !candidateShas.includes(eventBefore)) {
+                candidateShas.push(eventBefore);
+              }
+
+              for (const ref of candidateShas) {
+                const { data } = await github.rest.checks.listForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref,
+                  per_page: 100,
+                });
+                const ok = data.check_runs.some(
+                  (run) =>
+                    run.name === "Rust CI required gate" &&
+                    run.conclusion === "success",
+                );
+                if (ok) {
+                  core.setOutput("previous_green_required", "true");
+                  core.setOutput("previous_green_sha", ref);
+                  return;
+                }
+              }
             } catch (error) {
               core.warning(`failed to inspect prior required result: ${error.message}`);
-              core.setOutput("previous_green_required", "false");
             }
+
+            core.setOutput("previous_green_required", "false");
+            core.setOutput("previous_green_sha", "");
+
+      - name: Resolve PR changed files via API
+        id: pr_diff
+        if: ${{ github.event_name == 'pull_request' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
+        uses: actions/github-script@v9
+        env:
+          BEFORE_SHA: ${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}
+        with:
+          script: |
+            const beforeSha = process.env.BEFORE_SHA || "";
+            const pullNumber = context.payload.pull_request.number;
+
+            function normalizePathList(files) {
+              const paths = [];
+              for (const file of files) {
+                if (file.previous_filename) {
+                  paths.push(file.previous_filename);
+                }
+                if (file.filename) {
+                  paths.push(file.filename);
+                }
+              }
+              return [...new Set(paths)];
+            }
+
+            function lineCount(files) {
+              return files.reduce((total, file) => {
+                const additions = Number(file.additions);
+                const deletions = Number(file.deletions);
+                if (!Number.isFinite(additions) || !Number.isFinite(deletions)) {
+                  return 10000;
+                }
+                return total + additions + deletions;
+              }, 0);
+            }
+
+            function setJsonOutput(name, value) {
+              core.setOutput(name, JSON.stringify(value));
+            }
+
+            try {
+              const primaryFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              });
+              const expectedChangedFiles = context.payload.pull_request.changed_files;
+              if (
+                Number.isFinite(expectedChangedFiles) &&
+                primaryFiles.length !== expectedChangedFiles
+              ) {
+                core.setOutput("needs_git_fallback", "true");
+                core.setOutput(
+                  "fallback_reason",
+                  `pulls.listFiles returned ${primaryFiles.length} of ${expectedChangedFiles} files`,
+                );
+                return;
+              }
+
+              setJsonOutput("primary_files_json", normalizePathList(primaryFiles));
+              core.setOutput("primary_line_count", String(lineCount(primaryFiles)));
+
+              if (context.payload.action === "synchronize" && beforeSha) {
+                const basehead = `${beforeSha}...${context.payload.pull_request.head.sha}`;
+                const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  basehead,
+                  per_page: 100,
+                });
+                const deltaFiles = data.files || [];
+                if (deltaFiles.length >= 300) {
+                  core.setOutput("needs_git_fallback", "true");
+                  core.setOutput(
+                    "fallback_reason",
+                    "compare API returned the conservative file limit",
+                  );
+                  return;
+                }
+                setJsonOutput("latest_delta_files_json", normalizePathList(deltaFiles));
+                core.setOutput("latest_delta_line_count", String(lineCount(deltaFiles)));
+              } else {
+                setJsonOutput("latest_delta_files_json", []);
+                core.setOutput("latest_delta_line_count", "0");
+              }
+
+              core.setOutput("needs_git_fallback", "false");
+              core.setOutput("fallback_reason", "");
+            } catch (error) {
+              core.warning(`failed to resolve PR diff via GitHub API: ${error.message}`);
+              core.setOutput("needs_git_fallback", "true");
+              core.setOutput("fallback_reason", error.message);
+            }
+
+      - name: Fetch history for git diff fallback
+        if: ${{ steps.pr_diff.outputs.needs_git_fallback == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha='${{ steps.shas.outputs.base_sha }}'
+          head_sha='${{ steps.shas.outputs.head_sha }}'
+          before_sha='${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}'
+          head_repo='${{ github.event.pull_request.head.repo.clone_url }}'
+
+          git fetch --no-tags --depth=1 origin "${base_sha}" || true
+          git fetch --no-tags --depth=1 "${head_repo}" "${head_sha}" || true
+          if [[ -n "${before_sha}" ]]; then
+            git fetch --no-tags --depth=1 "${head_repo}" "${before_sha}" || true
+          fi
+          if ! git rev-parse --verify "${base_sha}^{commit}" >/dev/null 2>&1 ||
+             ! git rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1 ||
+             { [[ -n "${before_sha}" ]] && ! git rev-parse --verify "${before_sha}^{commit}" >/dev/null 2>&1; }; then
+            git fetch --no-tags --prune --unshallow origin || git fetch --no-tags --prune origin
+          fi
 
       - name: Detect changed paths and rust-ci mode
         id: detect
+        if: ${{ steps.schedule_duplicate.outputs.should_skip != 'true' }}
         shell: bash
         env:
           EVENT_ACTION: ${{ github.event.action || '' }}
           PREVIOUS_GREEN_REQUIRED: ${{ steps.previous_required.outputs.previous_green_required || 'false' }}
+          COMPARISON_BEFORE_SHA: ${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}
+          PRIMARY_FILES_JSON: ${{ steps.pr_diff.outputs.primary_files_json || '' }}
+          PRIMARY_LINE_COUNT: ${{ steps.pr_diff.outputs.primary_line_count || '' }}
+          LATEST_DELTA_FILES_JSON: ${{ steps.pr_diff.outputs.latest_delta_files_json || '' }}
+          LATEST_DELTA_LINE_COUNT: ${{ steps.pr_diff.outputs.latest_delta_line_count || '' }}
         run: |
           set -euo pipefail
 
@@ -162,8 +311,12 @@ jobs:
             --event-action "${EVENT_ACTION}" \
             --base-sha '${{ steps.shas.outputs.base_sha }}' \
             --head-sha '${{ steps.shas.outputs.head_sha }}' \
-            --before-sha '${{ steps.shas.outputs.before_sha }}' \
-            --previous-green-required "${PREVIOUS_GREEN_REQUIRED}")"
+            --before-sha "${COMPARISON_BEFORE_SHA}" \
+            --previous-green-required "${PREVIOUS_GREEN_REQUIRED}" \
+            --primary-files-json "${PRIMARY_FILES_JSON}" \
+            --primary-line-count "${PRIMARY_LINE_COUNT}" \
+            --latest-delta-files-json "${LATEST_DELTA_FILES_JSON}" \
+            --latest-delta-line-count "${LATEST_DELTA_LINE_COUNT}")"
 
           PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -173,6 +326,28 @@ jobs:
           for key, value in plan.items():
               print(f"{key}={value}")
           PY
+
+      - name: Emit duplicate scheduled skip plan
+        id: scheduled_skip_plan
+        if: ${{ steps.schedule_duplicate.outputs.should_skip == 'true' }}
+        shell: bash
+        run: |
+          {
+            echo "validation_mode=scheduled_duplicate"
+            echo "codex=false"
+            echo "argument_comment_lint=false"
+            echo "argument_comment_lint_package=false"
+            echo "workflows=false"
+            echo "has_relevant_changes=false"
+            echo "run_general=false"
+            echo "run_cargo_shear=false"
+            echo "run_argument_comment_lint_package=false"
+            echo "run_argument_comment_lint_prebuilt=false"
+            echo "run_incremental_validation=false"
+            echo "incremental_profile="
+            echo "incremental_lane_set="
+            echo "incremental_lanes="
+          } >> "$GITHUB_OUTPUT"
 
   incremental_validation:
     name: Incremental targeted validation
@@ -186,7 +361,6 @@ jobs:
       lanes: ${{ needs.changed.outputs.incremental_lanes }}
       artifact_build: false
       supersession_mode: auto
-      notes: rust-ci incremental follow-up validation
 
   planner_fixtures:
     name: Planner fixtures
@@ -196,7 +370,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Check planner script syntax
-        run: python3 -m py_compile .github/scripts/resolve_validation_plan.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/test_ci_planners.py
+        run: python3 -m py_compile .github/scripts/resolve_validation_plan.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/test_ci_planners.py
       - name: Run planner fixtures
         run: python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
 
@@ -210,12 +384,21 @@ jobs:
       run:
         working-directory: codex-rs
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: nightly-2025-09-18
           components: rustfmt
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: just
       - name: cargo fmt
         run: cargo fmt -- --config imports_granularity=Item --check
+      - name: Rust benchmark smoke test
+        run: just bench-smoke
 
   cargo_shear:
     name: cargo shear
@@ -226,23 +409,31 @@ jobs:
       run:
         working-directory: codex-rs
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
-      - uses: taiki-e/install-action@7a4939c09608b2a1986b484eca1d16fd0db8ebef # v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          tool: cargo-shear
-          version: 1.5.1
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: cargo-shear@1.11.2
       - name: cargo shear
-        run: cargo shear
+        run: cargo shear --deny-warnings
 
   argument_comment_lint_package:
     name: Argument comment lint package
     runs-on: ubuntu-24.04
     needs: changed
     if: ${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}
+    env:
+      CARGO_DYLINT_VERSION: 5.0.0
+      DYLINT_LINK_VERSION: 5.0.0
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - name: Install nightly argument-comment-lint toolchain
         shell: bash
         run: |
@@ -255,7 +446,7 @@ jobs:
           rustup default nightly-2025-09-18
       - name: Cache cargo-dylint tooling
         id: cargo_dylint_cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ~/.cargo/bin/cargo-dylint
@@ -263,10 +454,13 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: argument-comment-lint-${{ runner.os }}-${{ hashFiles('tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain', '.github/workflows/rust-ci.yml', '.github/workflows/rust-ci-full.yml') }}
+          key: argument-comment-lint-${{ runner.os }}-${{ env.CARGO_DYLINT_VERSION }}-${{ env.DYLINT_LINK_VERSION }}-${{ hashFiles('tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain', '.github/workflows/rust-ci.yml', '.github/workflows/rust-ci-full.yml') }}
       - name: Install cargo-dylint tooling
         if: ${{ steps.cargo_dylint_cache.outputs.cache-hit != 'true' }}
-        run: cargo install --locked cargo-dylint dylint-link
+        shell: bash
+        run: |
+          cargo install --locked cargo-dylint --version "$CARGO_DYLINT_VERSION"
+          cargo install --locked dylint-link --version "$DYLINT_LINK_VERSION"
       - name: Check Python wrapper syntax
         run: python3 -m py_compile tools/argument-comment-lint/wrapper_common.py tools/argument-comment-lint/run.py tools/argument-comment-lint/run-prebuilt-linter.py tools/argument-comment-lint/test_wrapper_common.py
       - name: Test Python wrapper helpers
@@ -279,55 +473,55 @@ jobs:
     name: Argument comment lint - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
-    needs:
-      - matrix_plan
-      - changed
-    if: ${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}
+    needs: changed
+    environment:
+      name: bazel
+      deployment: false
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            timeout_minutes: 30
+          - name: macOS
+            runner: macos-15-xlarge
+            timeout_minutes: 30
+          - name: Windows
+            runner: windows-x64
+            timeout_minutes: 30
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: ./.github/actions/setup-bazel-ci
+      - name: Check whether argument comment lint should run
+        id: argument_comment_lint_gate
+        shell: bash
+        env:
+          ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
+          WORKFLOWS: ${{ needs.changed.outputs.workflows }}
+        run: |
+          if [[ "$ARGUMENT_COMMENT_LINT" == "true" || "$WORKFLOWS" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No argument-comment-lint relevant changes."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Run argument comment lint on codex-rs
+        if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
+        uses: ./.github/actions/run-argument-comment-lint
         with:
           target: ${{ runner.os }}
-          install-test-prereqs: true
-      - name: Install Linux sandbox build dependencies
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os != 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          mapfile -t bazel_targets < <(./tools/argument-comment-lint/list-bazel-targets.sh)
-          ./.github/scripts/run-bazel-ci.sh \
-            -- \
-            build \
-            --config=argument-comment-lint \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
-            -- \
-            "${bazel_targets[@]}"
-      - name: Run argument comment lint on codex-rs via Bazel
-        if: ${{ runner.os == 'Windows' }}
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          ./.github/scripts/run-argument-comment-lint-bazel.sh \
-            --config=argument-comment-lint \
-            --platforms=//:local_windows \
-            --keep_going \
-            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}"
 
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
-    name: CI results (required)
+    name: Rust CI required gate
     needs:
       [
         changed,
@@ -346,6 +540,9 @@ jobs:
         shell: bash
         run: |
           echo "mode   : ${{ needs.changed.outputs.validation_mode }}"
+          echo "dedupe : ${{ needs.changed.outputs.scheduled_duplicate_skip }}"
+          echo "reason : ${{ needs.changed.outputs.scheduled_duplicate_reason }}"
+          echo "reuse  : ${{ needs.changed.outputs.scheduled_duplicate_run_url }}"
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
           echo "planner: ${{ needs.planner_fixtures.result }}"
@@ -353,9 +550,21 @@ jobs:
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "incr   : ${{ needs.incremental_validation.result }}"
 
+          [[ '${{ needs.changed.result }}' == 'success' ]] || { echo 'changed planner failed'; exit 1; }
+          [[ '${{ needs.matrix_plan.result }}' == 'success' ]] || { echo 'matrix_plan failed'; exit 1; }
+          if [[ "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
+            [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.scheduled_duplicate_skip }}' == 'true' ]]; then
+            echo 'Equivalent rust-ci run already passed for this branch and commit.'
+            echo 'Reused run: ${{ needs.changed.outputs.scheduled_duplicate_run_url }}'
+            exit 0
+          fi
+
           # If nothing relevant changed (PR touching only root README, etc.),
-          # declare success regardless of other jobs.
-          if [[ '${{ needs.changed.outputs.has_relevant_changes }}' != 'true' ]]; then
+          # declare success after confirming no incremental validation was selected.
+          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' && '${{ needs.changed.outputs.run_incremental_validation }}' != 'true' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
@@ -366,10 +575,6 @@ jobs:
 
           if [[ '${{ needs.changed.outputs.run_argument_comment_lint_prebuilt }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
-          fi
-
-          if [[ '${{ needs.changed.outputs.workflows }}' == 'true' ]]; then
-            [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
           fi
 
           if [[ '${{ needs.changed.outputs.run_general }}' == 'true' ]]; then
@@ -383,3 +588,7 @@ jobs:
           if [[ '${{ needs.changed.outputs.run_incremental_validation }}' == 'true' ]]; then
             [[ '${{ needs.incremental_validation.result }}' == 'success' ]] || { echo 'incremental_validation failed'; exit 1; }
           fi
+        env:
+          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
+          NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
+          NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}

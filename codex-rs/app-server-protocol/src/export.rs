@@ -39,6 +39,11 @@ use ts_rs::TS;
 pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
+const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
+    "RemoteControlClient",
+    "RemoteControlClientsListOrder",
+    "ThreadBackgroundTerminal",
+];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
     "ClientRequest",
@@ -129,12 +134,7 @@ pub fn generate_ts_with_options(
     }
 
     // Ensure our header is present on all TS files (root + subdirs like v2/).
-    let mut ts_files = Vec::new();
-    let should_collect_ts_files =
-        options.ensure_headers || (options.run_prettier && prettier.is_some());
-    if should_collect_ts_files {
-        ts_files = ts_files_in_recursive(out_dir)?;
-    }
+    let ts_files = ts_files_in_recursive(out_dir)?;
 
     if options.ensure_headers {
         let worker_count = thread::available_parallelism()
@@ -178,6 +178,8 @@ pub fn generate_ts_with_options(
             return Err(anyhow!("Prettier failed with status {status}"));
         }
     }
+
+    trim_trailing_whitespace_in_ts_files(&ts_files)?;
 
     Ok(())
 }
@@ -557,6 +559,7 @@ fn experimental_method_types() -> HashSet<String> {
     let mut type_names = HashSet::new();
     collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES, &mut type_names);
     collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES, &mut type_names);
+    collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES, &mut type_names);
     type_names
 }
 
@@ -739,11 +742,11 @@ fn find_top_level_brace_span(input: &str) -> Option<(usize, usize)> {
     let mut state = ScanState::default();
     let mut open_index = None;
     for (index, ch) in input.char_indices() {
-        if !state.in_string() && ch == '{' && state.depth.is_top_level() {
+        if !state.in_ignored_syntax() && ch == '{' && state.depth.is_top_level() {
             open_index = Some(index);
         }
         state.observe(ch);
-        if !state.in_string()
+        if !state.in_ignored_syntax()
             && ch == '}'
             && state.depth.is_top_level()
             && let Some(open) = open_index
@@ -763,7 +766,7 @@ fn split_top_level_multi(input: &str, delimiters: &[char]) -> Vec<String> {
     let mut start = 0usize;
     let mut parts = Vec::new();
     for (index, ch) in input.char_indices() {
-        if !state.in_string() && state.depth.is_top_level() && delimiters.contains(&ch) {
+        if !state.in_ignored_syntax() && state.depth.is_top_level() && delimiters.contains(&ch) {
             let part = input[start..index].trim();
             if !part.is_empty() {
                 parts.push(part.to_string());
@@ -885,22 +888,58 @@ struct ScanState {
     depth: Depth,
     string_delim: Option<char>,
     escape: bool,
+    block_comment: bool,
+    line_comment: bool,
+    previous_char: Option<char>,
 }
 
 impl ScanState {
     fn observe(&mut self, ch: char) {
+        if self.line_comment {
+            if ch == '\n' {
+                self.line_comment = false;
+            }
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.block_comment {
+            if self.previous_char == Some('*') && ch == '/' {
+                self.block_comment = false;
+                self.previous_char = None;
+            } else {
+                self.previous_char = Some(ch);
+            }
+            return;
+        }
+
         if let Some(delim) = self.string_delim {
             if self.escape {
                 self.escape = false;
+                self.previous_char = Some(ch);
                 return;
             }
             if ch == '\\' {
                 self.escape = true;
+                self.previous_char = Some(ch);
                 return;
             }
             if ch == delim {
                 self.string_delim = None;
             }
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.previous_char == Some('/') && ch == '/' {
+            self.line_comment = true;
+            self.previous_char = Some(ch);
+            return;
+        }
+
+        if self.previous_char == Some('/') && ch == '*' {
+            self.block_comment = true;
+            self.previous_char = Some(ch);
             return;
         }
 
@@ -915,17 +954,16 @@ impl ScanState {
             '(' => self.depth.paren += 1,
             ')' => self.depth.paren = (self.depth.paren - 1).max(0),
             '<' => self.depth.angle += 1,
-            '>' => {
-                if self.depth.angle > 0 {
-                    self.depth.angle -= 1;
-                }
+            '>' if self.depth.angle > 0 => {
+                self.depth.angle -= 1;
             }
             _ => {}
         }
+        self.previous_char = Some(ch);
     }
 
-    fn in_string(&self) -> bool {
-        self.string_delim.is_some()
+    fn in_ignored_syntax(&self) -> bool {
+        self.string_delim.is_some() || self.block_comment || self.line_comment
     }
 }
 
@@ -966,11 +1004,8 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
         }
 
         let mut forced_namespace_refs: Vec<(String, String)> = Vec::new();
-        if let Value::Object(ref mut obj) = value
-            && let Some(defs) = obj.remove("definitions")
-            && let Value::Object(defs_obj) = defs
-        {
-            for (def_name, mut def_schema) in defs_obj {
+        if let Value::Object(ref mut obj) = value {
+            for (def_name, mut def_schema) in drain_schema_definitions(obj) {
                 if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
                     continue;
                 }
@@ -1024,6 +1059,20 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("definitions".to_string(), Value::Object(definitions));
 
     Ok(Value::Object(root))
+}
+
+fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
+    let mut drained = Vec::new();
+    for defs_key in ["definitions", "$defs"] {
+        let Some(defs) = schema.remove(defs_key) else {
+            continue;
+        };
+        let Value::Object(defs_obj) = defs else {
+            continue;
+        };
+        drained.extend(defs_obj);
+    }
+    drained
 }
 
 /// Build a datamodel-code-generator-friendly v2 bundle from the mixed export.
@@ -1083,7 +1132,10 @@ fn build_flat_v2_schema(bundle: &Value) -> Result<Value> {
     flat_root.insert("definitions".to_string(), Value::Object(flat_definitions));
     let mut flat_bundle = Value::Object(flat_root);
     rewrite_ref_prefix(&mut flat_bundle, "#/definitions/v2/", "#/definitions/");
+    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/v2/", "#/definitions/");
+    rewrite_ref_prefix(&mut flat_bundle, "#/$defs/", "#/definitions/");
     ensure_no_ref_prefix(&flat_bundle, "#/definitions/v2/", "flat v2")?;
+    ensure_no_ref_prefix(&flat_bundle, "#/$defs/", "flat v2")?;
     ensure_referenced_definitions_present(&flat_bundle, "flat v2")?;
     Ok(flat_bundle)
 }
@@ -1098,9 +1150,10 @@ fn collect_non_v2_refs_inner(value: &Value, refs: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
-                && !reference.starts_with("#/definitions/v2/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
+                && !suffix.starts_with("v2/")
             {
+                let name = suffix.split('/').next().unwrap_or(suffix);
                 refs.insert(name.to_string());
             }
             for child in obj.values() {
@@ -1210,9 +1263,9 @@ fn collect_missing_definitions(
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
             {
-                let name = name.split('/').next().unwrap_or(name);
+                let name = suffix.split('/').next().unwrap_or(suffix);
                 if !definitions.contains_key(name) {
                     missing.insert(name.to_string());
                 }
@@ -1497,6 +1550,12 @@ fn write_pretty_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn local_definition_ref_suffix(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/definitions/")
+        .or_else(|| reference.strip_prefix("#/$defs/"))
+}
+
 /// Split a fully-qualified type name like "v2::Type" into its namespace and logical name.
 fn split_namespace(name: &str) -> (Option<&str>, &str) {
     name.split_once("::")
@@ -1509,7 +1568,7 @@ fn rewrite_refs_to_namespace(value: &mut Value, ns: &str) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(r)) = obj.get_mut("$ref")
-                && let Some(suffix) = r.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(r)
             {
                 let prefix = format!("{ns}/");
                 if !suffix.starts_with(&prefix) {
@@ -1543,7 +1602,7 @@ fn rewrite_refs_to_known_namespaces(value: &mut Value, types: &HashMap<String, S
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref")
-                && let Some(suffix) = reference.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
             {
                 let (name, tail) = suffix
                     .split_once('/')
@@ -1859,17 +1918,22 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 }
 
 fn rewrite_named_ref_to_namespace(value: &mut Value, ns: &str, name: &str) {
-    let direct = format!("#/definitions/{name}");
-    let prefixed = format!("{direct}/");
+    let direct_refs = [format!("#/definitions/{name}"), format!("#/$defs/{name}")];
     let replacement = format!("#/definitions/{ns}/{name}");
     let replacement_prefixed = format!("{replacement}/");
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref") {
-                if reference == &direct {
-                    *reference = replacement;
-                } else if let Some(rest) = reference.strip_prefix(&prefixed) {
-                    *reference = format!("{replacement_prefixed}{rest}");
+                for direct in &direct_refs {
+                    if reference == direct {
+                        reference.clone_from(&replacement);
+                        break;
+                    }
+                    let prefixed = format!("{direct}/");
+                    if let Some(rest) = reference.strip_prefix(&prefixed) {
+                        *reference = format!("{replacement_prefixed}{rest}");
+                        break;
+                    }
                 }
             }
             for child in obj.values_mut() {
@@ -1940,6 +2004,32 @@ fn ts_files_in_recursive(dir: &Path) -> Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+fn trim_trailing_whitespace_in_ts_files(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let trimmed = trim_trailing_line_whitespace(&content);
+        if trimmed != content {
+            fs::write(path, trimmed)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn trim_trailing_line_whitespace(content: &str) -> String {
+    let mut trimmed = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        if let Some(line_without_newline) = line.strip_suffix('\n') {
+            trimmed.push_str(line_without_newline.trim_end_matches([' ', '\t']));
+            trimmed.push('\n');
+        } else {
+            trimmed.push_str(line.trim_end_matches([' ', '\t']));
+        }
+    }
+    trimmed
 }
 
 /// Generate an index.ts file that re-exports all generated types.
@@ -2039,6 +2129,38 @@ mod tests {
     use std::path::PathBuf;
     use uuid::Uuid;
 
+    fn one_of_method_literals(
+        schema: &Value,
+        definitions: &Map<String, Value>,
+    ) -> BTreeSet<String> {
+        schema["oneOf"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|variant| method_literal_from_variant(variant, definitions))
+            .collect()
+    }
+
+    fn method_literal_from_variant(
+        variant: &Value,
+        definitions: &Map<String, Value>,
+    ) -> Option<String> {
+        if let Some(method) = variant
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|props| props.get("method"))
+            .and_then(string_literal)
+        {
+            return Some(method.to_string());
+        }
+
+        let reference = variant.get("$ref").and_then(Value::as_str)?;
+        let name = reference.strip_prefix("#/definitions/")?;
+        let name = name.split('/').next().unwrap_or(name);
+        let target = definitions.get(name)?;
+        method_literal_from_variant(target, definitions)
+    }
+
     #[test]
     fn generated_ts_optional_nullable_fields_only_in_params() -> Result<()> {
         // Assert that "?: T | null" only appears in generated *Params types.
@@ -2072,6 +2194,14 @@ mod tests {
         );
         assert_eq!(
             fixture_tree.contains_key(Path::new("v2/MockExperimentalMethodResponse.ts")),
+            false
+        );
+        assert_eq!(
+            fixture_tree.contains_key(Path::new("v2/RemoteControlClient.ts")),
+            false
+        );
+        assert_eq!(
+            fixture_tree.contains_key(Path::new("v2/RemoteControlClientsListOrder.ts")),
             false
         );
 
@@ -2152,20 +2282,14 @@ mod tests {
                         continue;
                     }
                     match ch {
-                        '\\' => {
-                            if in_single || in_double {
-                                escape = true;
-                            }
+                        '\\' if (in_single || in_double) => {
+                            escape = true;
                         }
-                        '\'' => {
-                            if !in_double {
-                                in_single = !in_single;
-                            }
+                        '\'' if !in_double => {
+                            in_single = !in_single;
                         }
-                        '"' => {
-                            if !in_single {
-                                in_double = !in_double;
-                            }
+                        '"' if !in_single => {
+                            in_double = !in_double;
                         }
                         '{' if !in_single && !in_double => level_brace += 1,
                         '}' if !in_single && !in_double => level_brace -= 1,
@@ -2672,6 +2796,71 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
     }
 
     #[test]
+    fn experimental_type_fields_ts_filter_handles_generated_command_params_shape() -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_ts_filter_{}", Uuid::now_v7()));
+        fs::create_dir_all(&output_dir)?;
+
+        struct TempDirGuard(PathBuf);
+
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let _guard = TempDirGuard(output_dir.clone());
+        let path = output_dir.join("CommandExecParams.ts");
+        let content = r#"import type { CommandExecTerminalSize } from "./CommandExecTerminalSize";
+import type { SandboxPolicy } from "./SandboxPolicy";
+
+export type CommandExecParams = {/**
+ * Command argv vector. Empty arrays are rejected.
+ */
+command: Array<string>, /**
+ * Optional environment overrides merged into the server-computed
+ * environment.
+ */
+env?: { [key in string]?: string | null } | null, /**
+ * Optional initial PTY size in character cells. Only valid when `tty` is
+ * true.
+ */
+size?: CommandExecTerminalSize | null, /**
+ * Optional sandbox policy for this command.
+ *
+ * Uses the same shape as thread/turn execution sandbox configuration and
+ * defaults to the user's configured policy when omitted. Cannot be
+ * combined with `permissionProfile`.
+ */
+sandboxPolicy?: SandboxPolicy | null,
+/**
+ * Optional active permissions profile id for this command.
+ *
+ * Defaults to the user's configured permissions when omitted. Cannot be
+ * combined with `sandboxPolicy`.
+ */
+permissionProfile?: string | null};
+"#;
+        fs::write(&path, content)?;
+
+        static CUSTOM_FIELD: crate::experimental_api::ExperimentalField =
+            crate::experimental_api::ExperimentalField {
+                type_name: "CommandExecParams",
+                field_name: "permissionProfile",
+                reason: "command/exec.permissionProfile",
+            };
+        filter_experimental_type_fields_ts(&output_dir, &[&CUSTOM_FIELD])?;
+
+        let filtered = fs::read_to_string(&path)?;
+        assert_eq!(filtered.contains("permissionProfile?: string"), false);
+        assert_eq!(filtered.contains("sandboxPolicy?: SandboxPolicy"), true);
+        assert_eq!(
+            filtered.contains(r#"import type { SandboxPolicy } from "./SandboxPolicy";"#),
+            true
+        );
+        Ok(())
+    }
+
+    #[test]
     fn stable_schema_filter_removes_mock_experimental_method() -> Result<()> {
         let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
         fs::create_dir(&output_dir)?;
@@ -2682,6 +2871,23 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
 
         let bundle_str = serde_json::to_string(&bundle)?;
         assert_eq!(bundle_str.contains("mock/experimentalMethod"), false);
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn stable_schema_filter_removes_nested_experimental_fields_from_client_request_bundle()
+    -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        let schema =
+            write_json_schema_with_return::<crate::ClientRequest>(&output_dir, "ClientRequest")?;
+        let mut bundle = build_schema_bundle(vec![schema])?;
+        filter_experimental_schema(&mut bundle)?;
+
+        let bundle_str = serde_json::to_string(&bundle)?;
+        assert_eq!(bundle_str.contains("mockExperimentalField"), false);
+        assert_eq!(bundle_str.contains("additionalPermissions"), false);
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())
     }
@@ -2730,6 +2936,11 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
             flat_v2_bundle_json.contains("MockExperimentalMethodResponse"),
             false
         );
+        assert_eq!(flat_v2_bundle_json.contains("RemoteControlClient"), false);
+        assert_eq!(
+            flat_v2_bundle_json.contains("RemoteControlClientsListOrder"),
+            false
+        );
         assert_eq!(flat_v2_bundle_json.contains("#/definitions/v2/"), false);
         assert_eq!(
             flat_v2_bundle_json.contains("\"title\": \"CodexAppServerProtocolV2\""),
@@ -2740,18 +2951,8 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
         let definitions = flat_v2_bundle["definitions"]
             .as_object()
             .expect("flat v2 bundle should include definitions");
-        let client_request_methods: BTreeSet<String> = definitions["ClientRequest"]["oneOf"]
-            .as_array()
-            .expect("flat v2 ClientRequest should remain a oneOf")
-            .iter()
-            .filter_map(|variant| {
-                variant["properties"]["method"]["enum"]
-                    .as_array()
-                    .and_then(|values| values.first())
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect();
+        let client_request_methods =
+            one_of_method_literals(&definitions["ClientRequest"], definitions);
         let missing_client_request_methods: Vec<String> = [
             "account/logout",
             "account/rateLimits/read",
@@ -2765,19 +2966,8 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
         .map(str::to_string)
         .collect();
         assert_eq!(missing_client_request_methods, Vec::<String>::new());
-        let server_notification_methods: BTreeSet<String> =
-            definitions["ServerNotification"]["oneOf"]
-                .as_array()
-                .expect("flat v2 ServerNotification should remain a oneOf")
-                .iter()
-                .filter_map(|variant| {
-                    variant["properties"]["method"]["enum"]
-                        .as_array()
-                        .and_then(|values| values.first())
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .collect();
+        let server_notification_methods =
+            one_of_method_literals(&definitions["ServerNotification"], definitions);
         let missing_server_notification_methods: Vec<String> = [
             "fuzzyFileSearch/sessionCompleted",
             "fuzzyFileSearch/sessionUpdated",
@@ -2803,6 +2993,48 @@ export type Config = { stableField: Keep, unstableField: string | null } & ({ [k
                 .exists(),
             false
         );
+        assert_eq!(
+            output_dir
+                .join("v2")
+                .join("RemoteControlClient.json")
+                .exists(),
+            false
+        );
+        assert_eq!(
+            output_dir
+                .join("v2")
+                .join("RemoteControlClientsListOrder.json")
+                .exists(),
+            false
+        );
+
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn generate_json_includes_remote_control_methods_with_experimental_api() -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        generate_json_with_experimental(&output_dir, /*experimental_api*/ true)?;
+
+        let client_request_json = fs::read_to_string(output_dir.join("ClientRequest.json"))?;
+        assert!(client_request_json.contains("remoteControl/pairing/start"));
+        assert!(client_request_json.contains("remoteControl/pairing/status"));
+        assert!(client_request_json.contains("remoteControl/client/list"));
+        assert!(client_request_json.contains("remoteControl/client/revoke"));
+        for schema in [
+            "RemoteControlPairingStartParams.json",
+            "RemoteControlPairingStartResponse.json",
+            "RemoteControlPairingStatusParams.json",
+            "RemoteControlPairingStatusResponse.json",
+            "RemoteControlClientsListParams.json",
+            "RemoteControlClientsListResponse.json",
+            "RemoteControlClientsRevokeParams.json",
+            "RemoteControlClientsRevokeResponse.json",
+        ] {
+            assert!(output_dir.join("v2").join(schema).exists());
+        }
 
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())

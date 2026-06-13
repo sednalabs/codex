@@ -1,11 +1,33 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
+    "SortDirection": {
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "ThreadListCwdFilter": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
     "ThreadSortKey": {
       "enum": [
         "created_at",
         "updated_at"
       ],
+      "type": "string"
+    },
+    "ThreadSource": {
       "type": "string"
     },
     "ThreadSourceKind": {
@@ -24,9 +46,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "archived": {
-      "description": "Optional archived filter; when set to true, only archived threads are returned. If false or null, only non-archived threads are returned.",
+      "description": "Optional archived filter; when set to true, only archived threads are returned.\nIf false or null, only non-archived threads are returned.",
       "type": [
         "boolean",
         "null"
@@ -40,23 +63,27 @@
       ]
     },
     "cwd": {
-      "description": "Optional cwd filter; when set, only threads whose session cwd exactly matches this path are returned.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadListCwdFilter"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional cwd filter or filters; when set, only threads whose session cwd\nexactly matches one of these paths are returned."
     },
     "limit": {
       "description": "Optional page size; defaults to a reasonable server-side value.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
       ]
     },
     "modelProviders": {
-      "description": "Optional provider filter; when set, only sessions recorded under these providers are returned. When present but empty, includes all providers.",
+      "description": "Optional provider filter; when set, only sessions recorded under these\nproviders are returned. When present but empty, includes all providers.",
       "items": {
         "type": "string"
       },
@@ -72,10 +99,21 @@
         "null"
       ]
     },
+    "sortDirection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SortDirection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional sort direction; defaults to descending (newest first)."
+    },
     "sortKey": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSortKey"
+          "$ref": "#/$defs/ThreadSortKey"
         },
         {
           "type": "null"
@@ -84,14 +122,28 @@
       "description": "Optional sort key; defaults to created_at."
     },
     "sourceKinds": {
-      "description": "Optional source filter; when set, only sessions from these source kinds are returned. When omitted or empty, defaults to interactive sources.",
+      "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
       "items": {
-        "$ref": "#/definitions/ThreadSourceKind"
+        "$ref": "#/$defs/ThreadSourceKind"
       },
       "type": [
         "array",
         "null"
       ]
+    },
+    "threadSources": {
+      "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
+      "items": {
+        "$ref": "#/$defs/ThreadSource"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "useStateDbOnly": {
+      "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
+      "type": "boolean"
     }
   },
   "title": "ThreadListParams",

@@ -6,17 +6,19 @@ use tracing::trace;
 
 use crate::ExecBackend;
 use crate::ExecProcess;
+use crate::ExecProcessEventReceiver;
 use crate::ExecServerError;
 use crate::StartedExecProcess;
-use crate::client::ExecServerClient;
+use crate::client::LazyRemoteExecServerClient;
 use crate::client::Session;
 use crate::protocol::ExecParams;
+use crate::protocol::ProcessSignal;
 use crate::protocol::ReadResponse;
 use crate::protocol::WriteResponse;
 
 #[derive(Clone)]
 pub(crate) struct RemoteProcess {
-    client: ExecServerClient,
+    client: LazyRemoteExecServerClient,
 }
 
 struct RemoteExecProcess {
@@ -24,7 +26,7 @@ struct RemoteExecProcess {
 }
 
 impl RemoteProcess {
-    pub(crate) fn new(client: ExecServerClient) -> Self {
+    pub(crate) fn new(client: LazyRemoteExecServerClient) -> Self {
         trace!("remote process new");
         Self { client }
     }
@@ -34,8 +36,9 @@ impl RemoteProcess {
 impl ExecBackend for RemoteProcess {
     async fn start(&self, params: ExecParams) -> Result<StartedExecProcess, ExecServerError> {
         let process_id = params.process_id.clone();
-        let session = self.client.register_session(&process_id).await?;
-        if let Err(err) = self.client.exec(params).await {
+        let client = self.client.get().await?;
+        let session = client.register_session(&process_id).await?;
+        if let Err(err) = client.exec(params).await {
             session.unregister().await;
             return Err(err);
         }
@@ -56,6 +59,10 @@ impl ExecProcess for RemoteExecProcess {
         self.session.subscribe_wake()
     }
 
+    fn subscribe_events(&self) -> ExecProcessEventReceiver {
+        self.session.subscribe_events()
+    }
+
     async fn read(
         &self,
         after_seq: Option<u64>,
@@ -68,6 +75,11 @@ impl ExecProcess for RemoteExecProcess {
     async fn write(&self, chunk: Vec<u8>) -> Result<WriteResponse, ExecServerError> {
         trace!("exec process write");
         self.session.write(chunk).await
+    }
+
+    async fn signal(&self, signal: ProcessSignal) -> Result<(), ExecServerError> {
+        trace!("exec process signal");
+        self.session.signal(signal).await
     }
 
     async fn terminate(&self) -> Result<(), ExecServerError> {

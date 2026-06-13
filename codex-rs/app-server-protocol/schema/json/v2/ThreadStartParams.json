@@ -1,10 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "ApprovalsReviewer": {
-      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
         "user",
+        "auto_review",
         "guardian_subagent"
       ],
       "type": "string"
@@ -44,9 +48,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -59,8 +63,75 @@
         }
       ]
     },
+    "CapabilityRootLocation": {
+      "description": "Location used to resolve a selected capability root.",
+      "oneOf": [
+        {
+          "description": "A path owned by an execution environment.",
+          "properties": {
+            "environmentId": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "environment",
+              "title": "EnvironmentCapabilityRootLocationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "environmentId",
+            "path"
+          ],
+          "title": "EnvironmentCapabilityRootLocation",
+          "type": "object"
+        }
+      ]
+    },
+    "DynamicToolCapability": {
+      "properties": {
+        "capabilityScope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "leaseMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutationClass": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "DynamicToolSpec": {
       "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicToolCapability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "deferLoading": {
           "type": "boolean"
         },
@@ -70,12 +141,22 @@
         "inputSchema": true,
         "name": {
           "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persistOnResume": {
+          "default": true,
+          "type": "boolean"
         }
       },
       "required": [
+        "name",
         "description",
-        "inputSchema",
-        "name"
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -95,19 +176,56 @@
       ],
       "type": "string"
     },
-    "ServiceTier": {
+    "SelectedCapabilityRoot": {
+      "description": "A user-selected root that can expose one or more runtime capabilities.",
+      "properties": {
+        "id": {
+          "description": "Stable identifier supplied by the capability selection platform.",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/CapabilityRootLocation",
+          "description": "Where the selected root can be resolved."
+        }
+      },
+      "required": [
+        "id",
+        "location"
+      ],
+      "type": "object"
+    },
+    "ThreadSource": {
+      "type": "string"
+    },
+    "ThreadStartSource": {
       "enum": [
-        "fast",
-        "flex"
+        "startup",
+        "clear"
       ],
       "type": "string"
+    },
+    "TurnEnvironmentParams": {
+      "properties": {
+        "cwd": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "cwd"
+      ],
+      "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
         {
-          "$ref": "#/definitions/AskForApproval"
+          "$ref": "#/$defs/AskForApproval"
         },
         {
           "type": "null"
@@ -117,13 +235,13 @@
     "approvalsReviewer": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ApprovalsReviewer"
+          "$ref": "#/$defs/ApprovalsReviewer"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Override where approval requests are routed for review on this thread and subsequent turns."
+      "description": "Override where approval requests are routed for review on this thread\nand subsequent turns."
     },
     "baseInstructions": {
       "type": [
@@ -171,7 +289,7 @@
     "personality": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Personality"
+          "$ref": "#/$defs/Personality"
         },
         {
           "type": "null"
@@ -181,7 +299,7 @@
     "sandbox": {
       "anyOf": [
         {
-          "$ref": "#/definitions/SandboxMode"
+          "$ref": "#/$defs/SandboxMode"
         },
         {
           "type": "null"
@@ -195,21 +313,31 @@
       ]
     },
     "serviceTier": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sessionStartSource": {
       "anyOf": [
         {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ThreadStartSource"
         },
         {
           "type": "null"
         }
       ]
+    },
+    "threadSource": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional client-supplied analytics source classification for this thread."
     }
   },
   "title": "ThreadStartParams",

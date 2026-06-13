@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime\ntranscript text changes.",
+  "properties": {
+    "delta": {
+      "description": "Live transcript delta from the realtime event.",
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "role",
+    "delta"
+  ],
+  "title": "ThreadRealtimeTranscriptDeltaNotification",
+  "type": "object"
+}

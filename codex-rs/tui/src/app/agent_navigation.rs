@@ -19,6 +19,7 @@
 //! updated or marked closed.
 
 use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
@@ -87,25 +88,19 @@ impl AgentNavigationState {
     ) {
         self.upsert_with_path(
             thread_id,
-            agent_nickname,
-            agent_role,
-            /*agent_path*/ None,
-            is_closed,
-            created_at,
-            updated_at,
+            AgentPickerThreadEntry {
+                agent_nickname,
+                agent_role,
+                agent_path: None,
+                is_running: false,
+                is_closed,
+                created_at,
+                updated_at,
+            },
         );
     }
 
-    pub(crate) fn upsert_with_path(
-        &mut self,
-        thread_id: ThreadId,
-        agent_nickname: Option<String>,
-        agent_role: Option<String>,
-        agent_path: Option<String>,
-        is_closed: bool,
-        created_at: Option<i64>,
-        updated_at: Option<i64>,
-    ) {
+    pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
         let existing = self.threads.get(&thread_id).cloned();
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
@@ -113,15 +108,53 @@ impl AgentNavigationState {
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
-                agent_nickname,
-                agent_role,
-                agent_path: agent_path
+                agent_path: entry
+                    .agent_path
                     .or(existing.as_ref().and_then(|entry| entry.agent_path.clone())),
-                is_closed,
-                created_at: created_at.or(existing.as_ref().and_then(|entry| entry.created_at)),
-                updated_at: updated_at.or(existing.as_ref().and_then(|entry| entry.updated_at)),
+                created_at: entry
+                    .created_at
+                    .or(existing.as_ref().and_then(|entry| entry.created_at)),
+                updated_at: entry
+                    .updated_at
+                    .or(existing.as_ref().and_then(|entry| entry.updated_at)),
+                ..entry
             },
         );
+    }
+
+    pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
+        if !self.threads.contains_key(&activity.thread_id) {
+            self.order.push(activity.thread_id);
+        }
+        let entry =
+            self.threads
+                .entry(activity.thread_id)
+                .or_insert_with(|| AgentPickerThreadEntry {
+                    agent_nickname: None,
+                    agent_role: None,
+                    agent_path: None,
+                    is_running: false,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                });
+        entry.agent_path = Some(activity.agent_path);
+        entry.is_running = activity.is_running_hint;
+        entry.is_closed = false;
+    }
+
+    pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.is_running = is_running;
+        }
+    }
+
+    pub(crate) fn set_agent_path(&mut self, thread_id: ThreadId, agent_path: Option<String>) {
+        if let Some(agent_path) = agent_path
+            && let Some(entry) = self.threads.get_mut(&thread_id)
+        {
+            entry.agent_path = Some(agent_path);
+        }
     }
 
     /// Marks a thread as closed without removing it from the traversal cache.
@@ -133,6 +166,7 @@ impl AgentNavigationState {
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
+            entry.is_running = false;
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
@@ -183,27 +217,123 @@ impl AgentNavigationState {
             .collect()
     }
 
-    /// Returns tree connector prefixes keyed by thread id for visible picker rows.
+    pub(crate) fn ordered_path_backed_subagent_threads(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+    ) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
+        self.ordered_threads()
+            .into_iter()
+            .filter(|(thread_id, entry)| {
+                Some(*thread_id) != primary_thread_id
+                    && entry
+                        .agent_path
+                        .as_deref()
+                        .is_some_and(|agent_path| !agent_path.trim().is_empty())
+            })
+            .collect()
+    }
+
+    /// Returns tracked thread ids in the same stable order used by the picker.
+    pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
+        self.ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect()
+    }
+
+    /// Returns the adjacent thread id for keyboard navigation in stable spawn order.
     ///
-    /// Prefixes are derived from thread-spawn agent paths when available. The primary thread is
-    /// treated as `/root` only when no explicit agent path is available; otherwise we preserve the
-    /// primary thread's actual path so descendants are attached to the real parent.
-    pub(crate) fn picker_tree_prefixes(
+    /// The caller must pass the thread whose transcript is actually being shown to the user, not
+    /// just whichever thread bookkeeping most recently marked active. If the wrong current thread
+    /// is supplied, next/previous navigation will jump in a way that feels nondeterministic even
+    /// though the cache itself is correct.
+    pub(crate) fn adjacent_thread_id(
+        &self,
+        current_displayed_thread_id: Option<ThreadId>,
+        direction: AgentNavigationDirection,
+    ) -> Option<ThreadId> {
+        let ordered_threads = self.ordered_threads();
+        if ordered_threads.len() < 2 {
+            return None;
+        }
+
+        let current_thread_id = current_displayed_thread_id?;
+        let current_idx = ordered_threads
+            .iter()
+            .position(|(thread_id, _)| *thread_id == current_thread_id)?;
+        let next_idx = match direction {
+            AgentNavigationDirection::Next => (current_idx + 1) % ordered_threads.len(),
+            AgentNavigationDirection::Previous => {
+                if current_idx == 0 {
+                    ordered_threads.len() - 1
+                } else {
+                    current_idx - 1
+                }
+            }
+        };
+        Some(ordered_threads[next_idx].0)
+    }
+
+    /// Derives the contextual footer label for the currently displayed thread.
+    ///
+    /// This intentionally returns `None` until there is more than one tracked thread so
+    /// single-thread sessions do not waste footer space restating the obvious. When metadata for
+    /// the displayed thread is missing, the label falls back to the same generic naming rules used
+    /// by the picker.
+    pub(crate) fn active_agent_label(
+        &self,
+        current_displayed_thread_id: Option<ThreadId>,
+        primary_thread_id: Option<ThreadId>,
+    ) -> Option<String> {
+        if self.threads.len() <= 1 {
+            return None;
+        }
+
+        let thread_id = current_displayed_thread_id?;
+        let is_primary = primary_thread_id == Some(thread_id);
+        Some(
+            self.threads
+                .get(&thread_id)
+                .map(|entry| {
+                    if !is_primary
+                        && let Some(agent_path) = entry
+                            .agent_path
+                            .as_deref()
+                            .filter(|agent_path| !agent_path.trim().is_empty())
+                    {
+                        return format!("`{agent_path}`");
+                    }
+                    format_agent_picker_item_name(
+                        entry.agent_nickname.as_deref(),
+                        entry.agent_role.as_deref(),
+                        is_primary,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format_agent_picker_item_name(
+                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
+                    )
+                }),
+        )
+    }
+
+    #[cfg(test)]
+    /// Returns visible picker prefixes for nested agent paths.
+    fn picker_tree_prefixes(
         &self,
         primary_thread_id: Option<ThreadId>,
     ) -> HashMap<ThreadId, String> {
         self.picker_tree_layout(primary_thread_id).0
     }
 
+    #[cfg(test)]
     /// Returns visible picker thread ids in parent-first tree order, preserving existing spawn-order
     /// within sibling sets.
-    pub(crate) fn picker_tree_thread_ids(
-        &self,
-        primary_thread_id: Option<ThreadId>,
-    ) -> Vec<ThreadId> {
+    fn picker_tree_thread_ids(&self, primary_thread_id: Option<ThreadId>) -> Vec<ThreadId> {
         self.picker_tree_layout(primary_thread_id).1
     }
 
+    #[cfg(test)]
     fn picker_tree_layout(
         &self,
         primary_thread_id: Option<ThreadId>,
@@ -296,82 +426,6 @@ impl AgentNavigationState {
         (prefixes, ordered_thread_ids)
     }
 
-    /// Returns tracked thread ids in the same stable order used by the picker.
-    pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
-        self.ordered_threads()
-            .into_iter()
-            .map(|(thread_id, _)| thread_id)
-            .collect()
-    }
-
-    /// Returns the adjacent thread id for keyboard navigation in stable spawn order.
-    ///
-    /// The caller must pass the thread whose transcript is actually being shown to the user, not
-    /// just whichever thread bookkeeping most recently marked active. If the wrong current thread
-    /// is supplied, next/previous navigation will jump in a way that feels nondeterministic even
-    /// though the cache itself is correct.
-    pub(crate) fn adjacent_thread_id(
-        &self,
-        current_displayed_thread_id: Option<ThreadId>,
-        direction: AgentNavigationDirection,
-    ) -> Option<ThreadId> {
-        let ordered_threads = self.ordered_threads();
-        if ordered_threads.len() < 2 {
-            return None;
-        }
-
-        let current_thread_id = current_displayed_thread_id?;
-        let current_idx = ordered_threads
-            .iter()
-            .position(|(thread_id, _)| *thread_id == current_thread_id)?;
-        let next_idx = match direction {
-            AgentNavigationDirection::Next => (current_idx + 1) % ordered_threads.len(),
-            AgentNavigationDirection::Previous => {
-                if current_idx == 0 {
-                    ordered_threads.len() - 1
-                } else {
-                    current_idx - 1
-                }
-            }
-        };
-        Some(ordered_threads[next_idx].0)
-    }
-
-    /// Derives the contextual footer label for the currently displayed thread.
-    ///
-    /// This intentionally returns `None` until there is more than one tracked thread so
-    /// single-thread sessions do not waste footer space restating the obvious. When metadata for
-    /// the displayed thread is missing, the label falls back to the same generic naming rules used
-    /// by the picker.
-    pub(crate) fn active_agent_label(
-        &self,
-        current_displayed_thread_id: Option<ThreadId>,
-        primary_thread_id: Option<ThreadId>,
-    ) -> Option<String> {
-        if self.threads.len() <= 1 {
-            return None;
-        }
-
-        let thread_id = current_displayed_thread_id?;
-        let is_primary = primary_thread_id == Some(thread_id);
-        Some(
-            self.threads
-                .get(&thread_id)
-                .map(|entry| {
-                    format_agent_picker_item_name(
-                        entry.agent_nickname.as_deref(),
-                        entry.agent_role.as_deref(),
-                        is_primary,
-                    )
-                })
-                .unwrap_or_else(|| {
-                    format_agent_picker_item_name(
-                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
-                    )
-                }),
-        )
-    }
-
     /// Builds the `/agent` picker subtitle from the same canonical bindings used by key handling.
     ///
     /// Keeping this text derived from the actual shortcut helpers prevents the picker copy from
@@ -398,6 +452,7 @@ impl AgentNavigationState {
     }
 }
 
+#[cfg(test)]
 fn parent_agent_path(path: &str) -> Option<&str> {
     if path.is_empty() || !path.starts_with('/') {
         return None;
@@ -413,6 +468,7 @@ fn parent_agent_path(path: &str) -> Option<&str> {
     Some(&path[..slash_index])
 }
 
+#[cfg(test)]
 fn format_tree_prefix(continuation_columns: &[bool]) -> String {
     if continuation_columns.is_empty() {
         return String::new();
@@ -551,39 +607,37 @@ mod tests {
 
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             researcher_thread_id,
-            Some("Scout".to_string()),
-            Some("researcher".to_string()),
-            Some("/root/researcher".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Scout".to_string()),
+                agent_role: Some("researcher".to_string()),
+                agent_path: Some("/root/researcher".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             worker_thread_id,
-            Some("Builder".to_string()),
-            Some("worker".to_string()),
-            Some("/root/researcher/worker".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Builder".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/researcher/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             reviewer_thread_id,
-            Some("Critic".to_string()),
-            Some("reviewer".to_string()),
-            Some("/root/reviewer".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
@@ -608,30 +662,28 @@ mod tests {
 
         state.upsert_with_path(
             worker_thread_id,
-            Some("Worker".to_string()),
-            Some("worker".to_string()),
-            Some("/root/primary/worker".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Worker".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/primary/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root/primary".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/primary".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             critic_thread_id,
-            Some("Critic".to_string()),
-            Some("reviewer".to_string()),
-            Some("/root/primary/reviewer".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/primary/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let tree_order = state.picker_tree_thread_ids(Some(main_thread_id));
@@ -656,21 +708,19 @@ mod tests {
 
         state.upsert_with_path(
             main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            Some("/root/main".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/main".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
         state.upsert_with_path(
             child_thread_id,
-            Some("Child".to_string()),
-            Some("child".to_string()),
-            Some("/root/main/child".to_string()),
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("child".to_string()),
+                agent_path: Some("/root/main/child".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
         );
 
         let prefixes = state.picker_tree_prefixes(Some(main_thread_id));

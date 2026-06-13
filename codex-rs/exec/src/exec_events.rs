@@ -72,6 +72,8 @@ pub struct Usage {
     pub cached_input_tokens: i64,
     /// The number of output tokens used during the turn.
     pub output_tokens: i64,
+    /// The number of reasoning output tokens used during the turn.
+    pub reasoning_output_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -137,6 +139,13 @@ pub enum ThreadItemDetails {
     /// Represents a call to an MCP tool. The item starts when the invocation is
     /// dispatched and completes when the MCP server reports success or failure.
     McpToolCall(McpToolCallItem),
+    /// Represents a call to a brokered dynamic tool. The item starts when the
+    /// invocation is dispatched and completes when the client reports success or failure.
+    DynamicToolCall(DynamicToolCallItem),
+    /// Represents a call to a native computer-use adapter. The item starts when
+    /// the invocation is dispatched and completes when the adapter reports
+    /// success or failure.
+    ComputerUseCall(ComputerUseCallItem),
     /// Represents a call to a collab tool. The item starts when the collab tool is
     /// invoked and completes when the collab tool reports success or failure.
     CollabToolCall(CollabToolCallItem),
@@ -225,6 +234,26 @@ pub enum McpToolCallStatus {
     Failed,
 }
 
+/// The status of a dynamic tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicToolCallStatus {
+    #[default]
+    InProgress,
+    Completed,
+    Failed,
+}
+
+/// The status of a computer-use call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCallStatus {
+    #[default]
+    InProgress,
+    Completed,
+    Failed,
+}
+
 /// The status of a collab tool call.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(rename_all = "snake_case")]
@@ -299,6 +328,9 @@ pub struct McpToolCallItemResult {
     // representations). Using `JsonValue` keeps the payload wire-shaped and
     // easy to export.
     pub content: Vec<JsonValue>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub meta: Option<JsonValue>,
     pub structured_content: Option<JsonValue>,
 }
 
@@ -318,6 +350,39 @@ pub struct McpToolCallItem {
     pub result: Option<McpToolCallItemResult>,
     pub error: Option<McpToolCallItemError>,
     pub status: McpToolCallStatus,
+}
+
+/// A compact dynamic tool call item for exec JSON/JSONL output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct DynamicToolCallItem {
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: JsonValue,
+    pub status: DynamicToolCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+}
+
+/// A compact native computer-use item for exec JSON/JSONL output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct ComputerUseCallItem {
+    pub adapter: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: JsonValue,
+    pub status: ComputerUseCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 /// A web search request.

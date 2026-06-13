@@ -1,0 +1,114 @@
+name: sedna-release-install
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Sedna release tag to install
+        required: true
+        type: string
+      dry_run:
+        description: Verify assets without changing the installed binary; public workflow requires true
+        required: false
+        default: true
+        type: boolean
+      allow_prerelease:
+        description: Permit installing a GitHub prerelease when explicitly dispatched
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sedna-release-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Verify published Sedna release assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out installer
+        uses: actions/checkout@v6
+
+      - name: Resolve requested release
+        id: request
+        shell: bash
+        env:
+          EVENT_REPOSITORY: ${{ github.repository }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_ALLOW_PRERELEASE: ${{ inputs.allow_prerelease }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_REPOSITORY,,}" != "sednalabs/codex" ]]; then
+            echo "This workflow only installs sednalabs/codex releases."
+            exit 1
+          fi
+
+          release_tag="${INPUT_RELEASE_TAG}"
+          dry_run="${INPUT_DRY_RUN}"
+          allow_prerelease="${INPUT_ALLOW_PRERELEASE:-false}"
+
+          if [[ "${dry_run}" != "true" ]]; then
+            echo "This public workflow verifies release assets only; host-local installs must run through external deployment automation."
+            exit 1
+          fi
+
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
+            echo "Release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1; got ${release_tag}."
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "dry_run=${dry_run}"
+            echo "allow_prerelease=${allow_prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
+          DRY_RUN: ${{ steps.request.outputs.dry_run }}
+          ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
+        run: |
+          set -euo pipefail
+
+          dry_run_arg=()
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            dry_run_arg+=(--dry-run)
+          fi
+          allow_prerelease_arg=()
+          if [[ "${ALLOW_PRERELEASE}" == "true" ]]; then
+            allow_prerelease_arg+=(--allow-prerelease)
+          fi
+
+          scripts/install_sedna_release_asset \
+            --repository "${GITHUB_REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --dry-run \
+            "${allow_prerelease_arg[@]}"
+
+      - name: Summarize
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
+          DRY_RUN: ${{ steps.request.outputs.dry_run }}
+          ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
+        run: |
+          {
+            echo "## Sedna release install"
+            echo
+            echo "- Release tag: ${RELEASE_TAG:-unknown}"
+            echo "- Mode: public asset verification"
+            echo "- Allow prerelease: ${ALLOW_PRERELEASE:-unknown}"
+            echo "- Host-local install: external deployment path"
+          } >> "$GITHUB_STEP_SUMMARY"

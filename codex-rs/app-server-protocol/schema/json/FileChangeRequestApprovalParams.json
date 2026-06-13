@@ -1,8 +1,8 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "grantRoot": {
-      "description": "[UNSTABLE] When set, the agent is asking the user to allow writes under this root for the remainder of the session (unclear if this is honored today).",
+      "description": "[UNSTABLE] When set, the agent is asking the user to allow writes under this root\nfor the remainder of the session (unclear if this is honored today).",
       "type": [
         "string",
         "null"
@@ -18,6 +18,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -26,9 +31,10 @@
     }
   },
   "required": [
-    "itemId",
     "threadId",
-    "turnId"
+    "turnId",
+    "itemId",
+    "startedAtMs"
   ],
   "title": "FileChangeRequestApprovalParams",
   "type": "object"

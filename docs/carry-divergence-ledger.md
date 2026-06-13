@@ -6,15 +6,19 @@ This document records the current live divergences of the downstream branch
 It is an audit ledger, not a changelog. Ahead-count alone is not evidence of a
 live divergence.
 
+The snapshot below intentionally anchors to the audited code tree before the
+docs-only refresh commit that records this snapshot.
+
 ## Audit Baseline
 
-- Audited on: `2026-03-21`
-- `upstream/main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical downstream branch name `carry/main`: `5d474e652d91c7f371a28ad2069cc51a1c5b9ee8`
-- historical mirror branch name `main`: `e5f4d1fef59a3309339394575052c7cc1fff0996`
-- historical `carry/main` vs `upstream/main`: `175` ahead, `0` behind
-- Carry-only commits at audit time: `133` non-merge, `42` merge
-- Exact-subject upstream matches found during audit: `41`
+- Audited on: `2026-04-28`
+- downstream branch `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- comparison basis: `mirror`
+- mirror branch `upstream-main` (`origin/upstream-main`): `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- downstream branch vs `upstream/main`: `889` downstream ahead, `1` upstream ahead
+- Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
+- Downstream-only commits at audit time: `781` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -28,21 +32,20 @@ live divergence.
 
 ## Current Live Divergences
 
-### Fork Workflow And Operator Policy
+### Fork Workflow And Validation Policy
 
 - `main` is now the default PR and integration branch, while `upstream-main`
   is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
-- Shared-host validation and release flows may use local build-helper presets
-  where operators have them configured, but those presets are not a tracked
-  repository contract.
+- Helper-backed local validation and release flows may be used when configured,
+  but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
 - Field-level native tool-surface deltas are summarized in
   [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
 - Future registry-plus-generation maintenance direction is captured in
   [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
-- Downstream operator workflows prefer MCP tool surfaces with blocking wait
+- Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
   - `docs/contributing.md`
@@ -81,8 +84,18 @@ live divergence.
   `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
   tool invocation lifecycles, rate-limit snapshots, and parent/child thread
   relationships for spawn requests.
+- `usage_provider_calls` also stores provider-confirmed `final_model` and
+  `model_snapshot` values when turn completion reports them, preserving the
+  downstream distinction between requested/configured model, historical
+  `actual_model_used`, and final provider identity.
+- Completed thread/list/read and TUI status surfaces prefer thread-local
+  provider identity evidence from turn completion or the usage ledger before
+  falling back to configured session metadata; active/running threads keep the
+  live effective model first so sub-agent status does not regress to the
+  parent/session model.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/state/src/lib.rs`
@@ -90,32 +103,71 @@ live divergence.
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
+  - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
+
+### Side Chat Persistence And Usage Ledger Tracking
+
+- `/side` conversations are persisted as side-tagged fork threads instead of
+  pathless ephemeral forks, so they keep rollout transcripts, remain resumable,
+  and can be forked by thread id or rollout path.
+- Default history/list/search surfaces hide side chats; explicit
+  `threadSources: ["side"]` requests expose the side-chat history class.
+- Usage-ledger lineage records side forks in `usage_threads` and
+  `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
+  writes normal provider-call rows for side turns.
+- `scripts/codex-resume-recent.sh` skips side chats by default, with
+  `--include-side` available when an operator deliberately wants side-chat
+  resume candidates.
+- Primary files:
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
+  - `codex-rs/app-server/src/filters.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
+  - `scripts/codex-resume-recent.sh`
 
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
   support has been initialized for a memory root.
-- Consolidated memory artifacts are fingerprinted against the prepared immutable
-  input tree and the effective consolidator contract, then recorded in
-  attestation sidecars plus runtime state so unchanged selections can safely
-  reuse existing outputs while drifted or tampered artifacts are rejected.
+- Consolidated memory artifacts are fingerprinted against the prepared input
+  tree, the effective consolidator contract, and the output tree, then recorded
+  in runtime state so unchanged workspaces can safely reuse existing outputs
+  while drifted or tampered artifacts are rejected after bootstrap.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
+- Because these downstream state migrations occupy slots that upstream did not
+  have at the time they were introduced, later upstream migrations may need to
+  be replayed into the next free downstream migration version while preserving
+  their SQL content. Current examples include upstream's device-key binding
+  table (`0028_device_key_bindings.sql` upstream, `0031_device_key_bindings.sql`
+  downstream) and upstream's thread-goals table (`0029_thread_goals.sql`
+  upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
+  already-shipped downstream `0028` through `0031` migration versions.
 - Primary files:
-  - `codex-rs/core/src/memories/phase2.rs`
-  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
-  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/memories/write/src/phase2.rs`
+  - `codex-rs/memories/write/src/phase2_attestation.rs`
+  - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
+  - `codex-rs/memories/write/src/startup_tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
+  - `codex-rs/state/migrations/0031_device_key_bindings.sql`
+  - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `docs/memories.md`
 
-### CLI Git Metadata And Rebuild Triggers
+### Release Metadata And Rebuild Triggers
 
-- CLI builds embed `git describe` metadata.
-- CLI builds rerun when git state changes, including shared worktree git state.
+- Release builds embed canonical release identity plus compact provenance
+  metadata.
+- Version metadata rebuilds when git state changes, including shared worktree
+  git state.
 - Primary files:
-  - `codex-rs/cli/build.rs`
+  - `codex-rs/utils/version/build.rs`
+  - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
 
 ### Sub-agent orchestration override preservation, inventory metadata, and wait joins
@@ -163,11 +215,14 @@ live divergence.
   `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms`.
 - `write_stdin` still requires an empty `chars` payload when
   `wait_until_terminal=true`.
+- Spec and regression guardrails also cover the surfaced wait fields, reject
+  invalid `wait_until_terminal` types, and enforce the empty-`chars`
+  requirement for blocking `write_stdin`.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
-- In local downstream operator workflows, this composes with existing blocking
-  coordination primitives such as `wait_agent` and build-helper `*_and_wait`
+- In local downstream workflows, this composes with existing blocking
+  coordination primitives such as `wait_agent` and helper-backed `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
 - This blocking MCP tool pattern was carried downstream before task support was
   fully operational.
@@ -182,6 +237,100 @@ live divergence.
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
+
+### Native Computer-Use Adapter Bridge
+
+- Downstream promotes bare `android_observe`, `android_step`,
+  `android_install_build_from_run`, `browser_observe`, `browser_step`,
+  `desktop_observe`, and `desktop_step` dynamic tools into first-party native
+  computer-use function tools with Codex-owned schemas.
+- Namespaced Android-like or browser-like tools remain ordinary dynamic tools
+  so app-specific providers can keep their own tool surfaces without taking
+  over the native Codex contract.
+- `codex-core` owns `ComputerUseCallRequest` and
+  `ComputerUseCallResponse` events, pending response registration, timeout
+  cleanup, success/error projection, adapter selection, mutating
+  classification, install-specific timeout selection, and hook payload
+  formatting.
+- App-server API v2 owns `item/computerUse/call`, response forwarding, and
+  `ThreadItem::ComputerUseCall` start/completion projection.
+- TUI and thread-history surfaces replay native computer-use items from
+  protocol events and snapshots. The TUI provider registry handles Android and
+  routes browser calls to either a configured provider command or the built-in
+  Playwright provider for `backend=auto`; when that browser provider is
+  configured, CLI/TUI thread start, resume, and fork requests advertise
+  `browser_observe` and `browser_step` automatically. The Playwright bridge
+  supports accessibility-oriented selectors plus human-like mouse and keyboard
+  primitives, defaults to per-thread browser profile isolation for concurrent
+  sidecars, can return visible-control metadata and selector candidates for UX
+  loops, can save redacted audit artifacts, can use locally configured
+  service-account navigation headers for allowed hosts, and can still be
+  configured for shared, environment-scoped, or per-call profiles when that
+  lifecycle is intentional. Thread-spawned agents
+  inherit the parent thread's native dynamic tools, so browser-capable sidecars
+  receive the native browser surface rather than silently dropping to a
+  compatibility adapter.
+- The Android adapter is retained as the reference MCP-backed runtime provider:
+  reuse `android-emulator-mcp` or a successor when it exposes the current
+  Android MCP contract, and adapt harness-specific behavior provider-side
+  rather than in hot Codex core paths.
+- The desktop adapter is the cleanroom provider seam for macOS Screen
+  Recording/Accessibility-style runtimes and future native desktop providers.
+  TUI dispatch stays behind an operator-configured command provider.
+- `codex doctor` includes read-only native provider diagnostics for browser
+  provider configuration, headed display/Chrome fields, and Android provider
+  endpoint/credential shape without launching browsers, connecting to profiles,
+  or starting emulator sessions.
+- Android screenshots and browser viewport captures are expected to reach the
+  model as native image content items. Provider artifact paths are kept for
+  diagnostics, audit, or replay; they are not the normal model-facing visual
+  channel.
+- Rollout persistence keeps computer-use events in extended mode, and
+  rollout-trace maps those events to tool-runtime start/end boundaries.
+- Runtime providers own Android sessions, browser sessions, screenshots,
+  viewport capture, UI digests, input execution, and provider-side build
+  installation. Solar Gravity Lab is a proving and consumer app, not the
+  generic owner of Codex computer-use tooling.
+- The built-in Playwright browser provider clears Chromium tab-session restore
+  artifacts before opening a persistent browser context, so stale restored tabs
+  cannot hit an old localhost target before an explicit requested navigation.
+  Provider-managed `state.json`, cookies, local storage, and other profile data
+  are preserved.
+- Primary files:
+  - `codex-rs/protocol/src/computer_use.rs`
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/tools/src/android_tool.rs`
+  - `codex-rs/tools/src/browser_tool.rs`
+  - `codex-rs/tools/src/computer_use_tool.rs`
+  - `codex-rs/tools/src/desktop_tool.rs`
+  - `codex-rs/core-plugins/src/lib.rs`
+  - `codex-rs/core/src/tools/handlers/computer_use.rs`
+  - `codex-rs/tools/src/tool_search.rs`
+  - `codex-rs/app-server/src/computer_use.rs`
+  - `codex-rs/app-server/src/bespoke_event_handling.rs`
+  - `codex-rs/app-server-protocol/src/protocol/common.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2.rs`
+  - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/tui/src/android_computer_use_provider.rs`
+  - `codex-rs/browser-computer-use/src/lib.rs`
+  - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
+  - `codex-rs/tui/src/browser_computer_use_provider.rs`
+  - `codex-rs/tui/src/computer_use_provider.rs`
+  - `codex-rs/tui/src/desktop_computer_use_provider.rs`
+  - `codex-rs/exec/src/lib.rs`
+  - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_events.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/interrupts.rs`
+  - `codex-rs/tui/src/history_cell.rs`
+  - `codex-rs/rollout/src/policy.rs`
+  - `codex-rs/rollout-trace/src/protocol_event.rs`
+  - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
+  - `codex-rs/tools/src/android_tool_tests.rs`
+  - `codex-rs/tools/src/browser_tool_tests.rs`
+  - `codex-rs/tools/src/computer_use_tool_tests.rs`
+  - `docs/native-computer-use.md`
+  - `docs/native-computer-use-cleanroom.md`
 
 ### Review And History Accounting Alignment
 
@@ -208,22 +357,39 @@ live divergence.
   - `docs/config.md`
   - `docs/downstream.md`
 
-### Startup Plugin Sync Bounded Wait And Curated-Repo Completion Re-Arm
+### MCP OAuth Device Login For Headless Servers
 
-- Startup remote plugin sync keeps the initial curated-marketplace prerequisite
-  wait bounded to the startup race window, then parks the worker instead of
-  dropping the attempt when curated-repo sync is still in flight.
-- Curated-repo completion emits a signal that re-arms the parked worker so the
-  remote reconciliation resumes without a second concurrent sync; that wake now
-  happens on both success and failure paths.
-- While the worker is parked, repeated startup/config-triggered attempts still
-  collapse into a single in-process waiter, and they refresh the stored
-  config/auth snapshot that the eventual reconciliation will use.
-- The resumed reconciliation re-reads the latest snapshot before syncing, so
-  late config/auth updates made during the wait are still applied.
+- `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
+  login from SSH-only or browserless hosts through the OAuth Device
+  Authorization Grant instead of relying on a local browser callback.
+- Streamable HTTP OAuth discovery preserves `token_endpoint`,
+  `device_authorization_endpoint`, `registration_endpoint`, and
+  `grant_types_supported`, so the CLI can fail loudly when a server does not
+  actually advertise device-login support or lacks both configured client id
+  and dynamic registration support.
+- The device-login flow uses a configured public MCP OAuth `client_id` when one
+  is available. Otherwise, it performs standards-based dynamic client
+  registration using the device grant shape, a public-client token endpoint
+  auth method, optional requested scopes, and refresh-token registration only
+  when server grant metadata permits or omits grant support.
+- After client-id resolution, the flow uses PKCE, the identity-provider
+  verification URL/user code, token-endpoint polling, and the existing MCP
+  OAuth token cache.
+- This is an intentional downstream carry for headless MCP server login until
+  upstream ships an equivalent headless MCP OAuth login contract. During
+  upstream syncs, preserve this behavior unless the upstream replacement covers
+  the same discovery, grant-validation, dynamic-registration fallback,
+  configured-client-id fast path, PKCE, polling, and token-cache path.
 - Primary files:
-  - `codex-rs/core/src/plugins/startup_sync.rs`
-  - `codex-rs/core/src/plugins/startup_sync_tests.rs`
+  - `codex-rs/cli/src/mcp_cmd.rs`
+  - `codex-rs/codex-mcp/src/mcp/auth.rs`
+  - `codex-rs/rmcp-client/src/auth_status.rs`
+  - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
+  - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `justfile`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
@@ -239,16 +405,33 @@ live divergence.
   totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
+- Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
+  and model service-tier slash commands remain selectable while a task is
+  running so their chosen settings apply to queued follow-up turns.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
   follow-ups and queued model changes coherently.
+- Active-turn status labels preserve downstream operator cues, including
+  showing `Compacting context` while context compaction is running instead of
+  falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- `/quit` and `/exit` inside an active `/side` conversation close only that side
+  conversation and return to the parent session; the same commands in the main
+  conversation remain application exits.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+  - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
@@ -257,14 +440,67 @@ live divergence.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### TUI Transcript Compact Detail Mode
+
+- The `Ctrl+T` transcript overlay intentionally carries two detail modes:
+  verbose mode for the complete transcript and compact mode for prompt/agent
+  review without terminal/tool noise.
+- Verbose mode remains the default audit surface. Compact mode keeps user
+  prompts, assistant-facing responses, selected reasoning summaries, and
+  important warning/error/stop hook output visible while collapsing injected
+  session context, context-only hook entries, and other detail that belongs in
+  verbose transcript inspection.
+- The overlay footer exposes the active detail mode and the toggle key, and the
+  overlay state preserves scroll, selected prompt, raw/rich render mode, and
+  verbose/compact detail mode across close/reopen.
+- The transcript header now names the active mode (`Transcript: verbose` or
+  `Transcript: compact`), and the footer spells out the switch keys as
+  `raw render` / `rich render` and `compact view` / `verbose view` when there
+  is enough terminal width.
+- `[tui].transcript_default_detail_mode = "verbose" | "compact"` chooses the
+  default detail mode at startup and after active config refreshes; verbose
+  remains the default so the complete audit transcript is preserved unless the
+  user opts into quiet review. An already-open transcript keeps its current
+  mode until it is closed.
+- This is an intentional downstream TUI ergonomics carry. Preserve it during
+  upstream syncs unless upstream lands equivalent transcript detail-mode
+  behavior that keeps the same verbose audit fallback and compact prompt/agent
+  review path.
+- Primary files:
+  - `codex-rs/config/src/profile_toml.rs`
+  - `codex-rs/config/src/types.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/config.schema.json`
+  - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/hook_cell.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
+  - `codex-rs/tui/src/keymap.rs`
+  - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
+  - `codex-rs/config/src/tui_keymap.rs`
+  - `docs/downstream-regression-matrix.md`
+
 ### Custom Prompt Discovery And Review Prompt Flow
 
-- Downstream restores first-party custom prompt discovery from
-  `$CODEX_HOME/prompts`, including optional frontmatter metadata for slash-popup
+- Downstream restores a file-backed custom prompt catalogue under
+  `$CODEX_HOME/prompts`, including optional frontmatter metadata for prompt
   descriptions and argument hints.
-- The TUI review flow also keeps the downstream custom-prompt entry point, so
-  operators can open a dedicated custom prompt view from the review popup and
-  submit ad hoc review text without losing the standard review interaction.
+- Downstream also preserves the live ad hoc custom-review prompt entry point in
+  the TUI review flow, so users can still open the dedicated custom prompt
+  view from the review popup and submit review text without losing the standard
+  review interaction.
+- Today the runtime wiring is clearest for the ad hoc `ReviewTarget::Custom`
+  review path. The separate file-backed prompt catalogue remains a carried
+  downstream surface, but it should not be described as fully reconnected to a
+  user-facing picker until that runtime wiring is verified or intentionally
+  restored.
 - Primary files:
   - `codex-rs/core/src/custom_prompts.rs`
   - `codex-rs/core/src/custom_prompts_tests.rs`
@@ -278,7 +514,7 @@ live divergence.
 
 ### Code-Mode Declaration Formatting
 
-- `carry/main` still emits imported tool declarations of the form:
+- `main` still emits imported tool declarations of the form:
   `import { tools } from "..."; declare function ...`
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
@@ -292,8 +528,8 @@ live divergence.
   - `39` carry-only merge commits are sync history, not independent downstream
     behaviors.
 - Merge-repair and promotion-fix history:
-  - examples include `Fix carry/main core regressions after upstream sync`,
-    `Fix carry/main promotion follow-ups`, and
+  - examples include `Fix main core regressions after upstream sync`,
+    `Fix main promotion follow-ups`, and
     `Fix hybrid merge API drift in core/tui tests`
 - Generated and derivative churn:
   - schema outputs under `codex-rs/app-server-protocol/schema/`
@@ -301,6 +537,7 @@ live divergence.
   - TUI snapshot updates under `codex-rs/tui/src/**/snapshots/`
 - Structural test-only churn in large modules:
   - `codex-rs/core/src/plugins/manager.rs`
+  - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
 

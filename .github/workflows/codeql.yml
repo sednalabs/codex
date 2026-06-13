@@ -1,107 +1,209 @@
-# For most projects, this workflow file will not need changing; you simply need
-# to commit it to your repository.
-#
-# You may wish to alter this file to override the set of languages analyzed,
-# or to provide custom queries or build logic.
-#
-# ******** NOTE ********
-# We have attempted to detect the languages in your repository. Please check
-# the `language` matrix defined below to confirm you have the correct set of
-# supported CodeQL languages.
-#
 name: "CodeQL Advanced"
 
 on:
   push:
-    branches: [ "main", "upstream-main" ]
+    branches: ["main", "upstream-main"]
   pull_request:
-    branches: [ "main", "upstream-main" ]
+    branches: ["main", "upstream-main"]
   schedule:
-    - cron: '21 9 * * 1'
+    - cron: "21 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Runner size impacts CodeQL analysis time. To learn more, please see:
-    #   - https://gh.io/recommended-hardware-resources-for-running-codeql
-    #   - https://gh.io/supported-runners-and-hardware-resources
-    #   - https://gh.io/using-larger-runners (GitHub.com only)
-    # Consider using larger runners or machines with greater resources for possible analysis time improvements.
-    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     permissions:
-      # required for all workflows
-      security-events: write
-
-      # required to fetch internal or private CodeQL packs
-      packages: read
-
-      # only required for workflows in private repositories
       actions: read
       contents: read
-
+      packages: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
         include:
-        - language: actions
-          build-mode: none
-        - language: c-cpp
-          build-mode: autobuild
-        - language: javascript-typescript
-          build-mode: none
-        - language: python
-          build-mode: none
-        - language: rust
-          build-mode: none
-        # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
-        # Use `c-cpp` to analyze code written in C, C++ or both
-        # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
-        # Use 'javascript-typescript' to analyze code written in JavaScript, TypeScript or both
-        # To learn more about changing the languages that are analyzed or customizing the build mode for your analysis,
-        # see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning.
-        # If you are analyzing a compiled language, you can modify the 'build-mode' for that language to customize how
-        # your codebase is analyzed, see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages
+          - language: actions
+            build-mode: none
+            config_file: ./.codeql-runtime/codeql-actions.yml
+          - language: c-cpp
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: javascript-typescript
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: python
+            build-mode: none
+            config_file: ./.github/codeql/codeql-config.yml
+          - language: rust
+            build-mode: none
+            config_file: ./.github/codeql/codeql-rust.yml
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-    # Add any setup steps before running the `github/codeql-action/init` action.
-    # This includes steps like installing compilers or runtimes (`actions/setup-node`
-    # or others). This is typically only required for manual builds.
-    # - name: Setup runtime (example)
-    #   uses: actions/setup-example@v1
+      - name: Install Rust toolchains for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
 
-    # Initializes the CodeQL tools for scanning.
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
-      with:
-        languages: ${{ matrix.language }}
-        build-mode: ${{ matrix.build-mode }}
-        # If you wish to specify custom queries, you can do so here or in a config file.
-        # By default, queries listed here will override any specified in a config file.
-        # Prefix the list here with "+" to use these queries and those in the config file.
+          toolchains = {}
+          for path in sorted(Path(".").glob("**/rust-toolchain*")):
+              text = path.read_text(encoding="utf-8").strip()
+              if text.startswith("["):
+                  data = tomllib.loads(text)
+                  toolchain = data["toolchain"]
+                  channel = toolchain["channel"]
+              else:
+                  channel = text
+              toolchains.setdefault(channel, set()).add("rust-src")
 
-        # For more details on CodeQL's query packs, refer to: https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning#using-queries-in-ql-packs
-        # queries: security-extended,security-and-quality
+          for channel, components in sorted(toolchains.items()):
+              command = [
+                  "rustup",
+                  "toolchain",
+                  "install",
+                  channel,
+                  "--profile",
+                  "minimal",
+                  "--no-self-update",
+              ]
+              for component in sorted(components):
+                  command.extend(["--component", component])
+              subprocess.run(command, check=True)
+          PY
 
-    # If the analyze step fails for one of the languages you are analyzing with
-    # "We were unable to automatically build your code", modify the matrix above
-    # to set the build mode to "manual" for that language. Then modify this step
-    # to build your code.
-    # ℹ️ Command-line programs to run using the OS shell.
-    # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
-    - name: Run manual build steps
-      if: matrix.build-mode == 'manual'
-      shell: bash
-      run: |
-        echo 'If you are using a "manual" build mode for one or more of the' \
-          'languages you are analyzing, replace this with the commands to build' \
-          'your code, for example:'
-        echo '  make bootstrap'
-        echo '  make release'
-        exit 1
+      - name: Restore Rust dependency cache for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        id: cache_codeql_rust_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}
+          restore-keys: |
+            codeql-rust-cargo-home-v1-${{ runner.os }}-
 
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
-      with:
-        category: "/language:${{matrix.language}}"
+      - name: Record Rust cache telemetry for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### CodeQL Rust cache telemetry"
+            echo "- Cargo cache hit: ${{ steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit || 'false' }}"
+            echo "- Cargo cache key: \`codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prefetch Rust dependencies for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path codex-rs/Cargo.toml
+          cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml
+
+      - name: Prepare Actions CodeQL query pack config
+        if: ${{ matrix.language == 'actions' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .codeql-runtime
+          pack_path="./.github/codeql/actions-workflow-security"
+
+          if [[ '${{ github.event_name }}' == 'pull_request' &&
+            '${{ github.event.pull_request.head.repo.full_name }}' != '${{ github.repository }}' ]]; then
+            trusted_root="${GITHUB_WORKSPACE}/.codeql-runtime/trusted-base"
+            trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
+            mkdir -p "${trusted_root}"
+
+            if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
+              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
+                tar -x -C "${trusted_root}"; then
+              pack_path="${trusted_pack}"
+            else
+              echo "::warning title=CodeQL Actions query pack bootstrap::Trusted base query pack was unavailable; using the checked-out pack for this run."
+            fi
+          fi
+
+          {
+            echo "name: codex-codeql-actions-runtime"
+            echo
+            echo "queries:"
+            echo "  - uses: security-and-quality"
+            echo "  - uses: ${pack_path}"
+            echo
+            echo "threat-models: local"
+          } > .codeql-runtime/codeql-actions.yml
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ${{ matrix.config_file }}
+          dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      - name: Save Rust dependency cache for CodeQL
+        if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codeql-rust-cargo-home-v1-${{ runner.os }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml', 'tools/argument-comment-lint/Cargo.lock', 'tools/argument-comment-lint/rust-toolchain') }}
+
+  results:
+    name: CodeQL required gate
+    needs:
+      - analyze
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    steps:
+      - name: Report CodeQL timing
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "### CodeQL timing" >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '.jobs[]
+              | select(.name | test("^(Analyze \\(|CodeQL required gate)"))
+              | "- \(.name): \(.status)/\(.conclusion // "") started=\(.started_at) completed=\(.completed_at // "")"' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "analyze : ${{ needs.analyze.result }}"
+
+          if [[ '${{ needs.analyze.result }}' != 'success' ]]; then
+            echo 'CodeQL analysis failed.'
+            exit 1
+          fi

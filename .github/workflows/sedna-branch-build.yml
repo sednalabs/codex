@@ -1,4 +1,7 @@
 name: sedna-branch-build
+run-name: >-
+  sedna-branch-build
+  [target=${{ inputs.ref || github.ref_name }}]
 
 on:
   workflow_dispatch:
@@ -33,9 +36,12 @@ jobs:
       - name: Compute preview version
         id: meta
         shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+          DISPLAY_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
         run: |
           set -euo pipefail
-          checkout_ref='${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}'
+          checkout_ref="${CHECKOUT_REF}"
           short_sha="$(git rev-parse --short=8 HEAD)"
           latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
           if [[ -n "${latest_tag}" ]]; then
@@ -44,10 +50,7 @@ jobs:
             base_version="0.0.0-sedna.0"
           fi
 
-          branch_name='${{ github.ref_name }}'
-          if [[ '${{ github.event_name }}' == 'workflow_dispatch' && -n '${{ inputs.ref }}' ]]; then
-            branch_name='${{ inputs.ref }}'
-          fi
+          branch_name="${DISPLAY_REF}"
           branch_slug="$(printf '%s' "${branch_name}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
@@ -67,6 +70,7 @@ jobs:
       release_version: ${{ needs.metadata.outputs.preview_version }}
       artifact_name: ${{ needs.metadata.outputs.artifact_name }}
       artifact_path: dist/*
+      display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
         mkdir -p ../dist
         cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
@@ -83,12 +87,22 @@ jobs:
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
-        cat > "../dist/${archive_base}.json" <<EOF
-        {
-          "repository": "${GITHUB_REPOSITORY}",
-          "commit": "$(git rev-parse HEAD)",
-          "ref": "${{ needs.metadata.outputs.display_ref }}",
-          "previewVersion": "${CODEX_RELEASE_VERSION}",
-          "workflow": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        python3 - <<'PY' > "../dist/${archive_base}.json"
+        import json
+        import os
+        import subprocess
+        import sys
+
+        payload = {
+            "repository": os.environ["GITHUB_REPOSITORY"],
+            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "ref": os.environ["DISPLAY_REF"],
+            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "workflow": (
+                f'{os.environ["GITHUB_SERVER_URL"]}/'
+                f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+            ),
         }
-        EOF
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        PY

@@ -1,11 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
     "SkillDependencies": {
       "properties": {
         "tools": {
           "items": {
-            "$ref": "#/definitions/SkillToolDependency"
+            "$ref": "#/$defs/SkillToolDependency"
           },
           "type": "array"
         }
@@ -25,8 +28,8 @@
         }
       },
       "required": [
-        "message",
-        "path"
+        "path",
+        "message"
       ],
       "type": "object"
     },
@@ -51,15 +54,23 @@
           ]
         },
         "iconLarge": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "iconSmall": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "shortDescription": {
@@ -76,7 +87,7 @@
         "dependencies": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SkillDependencies"
+              "$ref": "#/$defs/SkillDependencies"
             },
             {
               "type": "null"
@@ -92,7 +103,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SkillInterface"
+              "$ref": "#/$defs/SkillInterface"
             },
             {
               "type": "null"
@@ -103,10 +114,10 @@
           "type": "string"
         },
         "path": {
-          "type": "string"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "scope": {
-          "$ref": "#/definitions/SkillScope"
+          "$ref": "#/$defs/SkillScope"
         },
         "shortDescription": {
           "description": "Legacy short_description from SKILL.md. Prefer SKILL.json interface.short_description.",
@@ -117,11 +128,11 @@
         }
       },
       "required": [
-        "description",
-        "enabled",
         "name",
+        "description",
         "path",
-        "scope"
+        "scope",
+        "enabled"
       ],
       "type": "object"
     },
@@ -180,29 +191,30 @@
         },
         "errors": {
           "items": {
-            "$ref": "#/definitions/SkillErrorInfo"
+            "$ref": "#/$defs/SkillErrorInfo"
           },
           "type": "array"
         },
         "skills": {
           "items": {
-            "$ref": "#/definitions/SkillMetadata"
+            "$ref": "#/$defs/SkillMetadata"
           },
           "type": "array"
         }
       },
       "required": [
         "cwd",
-        "errors",
-        "skills"
+        "skills",
+        "errors"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/SkillsListEntry"
+        "$ref": "#/$defs/SkillsListEntry"
       },
       "type": "array"
     }

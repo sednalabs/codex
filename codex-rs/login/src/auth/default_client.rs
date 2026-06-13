@@ -8,9 +8,12 @@ use codex_client::BuildCustomCaTransportError;
 use codex_client::CodexHttpClient;
 pub use codex_client::CodexRequestBuilder;
 use codex_client::build_reqwest_client_with_custom_ca;
+use codex_client::with_chatgpt_cloudflare_cookie_store;
 use codex_terminal_detection::user_agent;
+use codex_utils_version::RELEASE_VERSION;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
+use reqwest::header::USER_AGENT;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -129,12 +132,12 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
-    let build_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
     let originator = originator();
     let prefix = format!(
-        "{}/{build_version} ({} {}; {}) {}",
+        "{}/{} ({} {}; {}) {}",
         originator.value.as_str(),
+        RELEASE_VERSION,
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),
@@ -201,7 +204,15 @@ pub fn create_client() -> CodexHttpClient {
 pub fn build_reqwest_client() -> reqwest::Client {
     try_build_reqwest_client().unwrap_or_else(|error| {
         tracing::warn!(error = %error, "failed to build default reqwest client");
-        reqwest::Client::new()
+        with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder())
+            .build()
+            .unwrap_or_else(|fallback_error| {
+                tracing::warn!(
+                    error = %fallback_error,
+                    "failed to build fallback reqwest client with ChatGPT Cloudflare cookie store"
+                );
+                reqwest::Client::new()
+            })
     })
 }
 
@@ -210,15 +221,11 @@ pub fn build_reqwest_client() -> reqwest::Client {
 /// Callers that need a structured CA-loading failure instead of the legacy logged fallback can use
 /// this method directly.
 pub fn try_build_reqwest_client() -> Result<reqwest::Client, BuildCustomCaTransportError> {
-    let ua = get_codex_user_agent();
-
-    let mut builder = reqwest::Client::builder()
-        // Set UA via dedicated helper to avoid header validation pitfalls
-        .user_agent(ua)
-        .default_headers(default_headers());
+    let mut builder = reqwest::Client::builder().default_headers(default_headers());
     if is_sandboxed() {
         builder = builder.no_proxy();
     }
+    builder = with_chatgpt_cloudflare_cookie_store(builder);
 
     build_reqwest_client_with_custom_ca(builder)
 }
@@ -226,6 +233,9 @@ pub fn try_build_reqwest_client() -> Result<reqwest::Client, BuildCustomCaTransp
 pub fn default_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("originator", originator().header_value);
+    if let Ok(user_agent) = HeaderValue::from_str(&get_codex_user_agent()) {
+        headers.insert(USER_AGENT, user_agent);
+    }
     if let Ok(guard) = REQUIREMENTS_RESIDENCY.read()
         && let Some(requirement) = guard.as_ref()
         && !headers.contains_key(RESIDENCY_HEADER_NAME)

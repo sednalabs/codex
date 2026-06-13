@@ -1,6 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification;
 use codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -11,6 +11,11 @@ use std::path::Path;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+// macOS arm64 and Windows Bazel CI can spend tens of seconds in app-server
+// startup before the initialize response or fuzzy-search notifications arrive.
+#[cfg(any(target_os = "macos", windows))]
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 const STOP_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(250);
@@ -39,15 +44,15 @@ shell_snapshot = false
     )
 }
 
-async fn initialized_mcp(codex_home: &TempDir) -> Result<McpProcess> {
+async fn initialized_mcp(codex_home: &TempDir) -> Result<TestAppServer> {
     create_config_toml(codex_home.path())?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
     Ok(mcp)
 }
 
 async fn wait_for_session_updated(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     session_id: &str,
     query: &str,
     file_expectation: FileExpectation,
@@ -94,7 +99,7 @@ async fn wait_for_session_updated(
 }
 
 async fn wait_for_session_completed(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     session_id: &str,
 ) -> Result<FuzzyFileSearchSessionCompletedNotification> {
     let description = format!("session completion for sessionId={session_id}");
@@ -135,7 +140,7 @@ async fn wait_for_session_completed(
 }
 
 async fn assert_update_request_fails_for_missing_session(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     session_id: &str,
     query: &str,
 ) -> Result<()> {
@@ -156,7 +161,7 @@ async fn assert_update_request_fails_for_missing_session(
 }
 
 async fn assert_no_session_updates_for(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     session_id: &str,
     grace_period: std::time::Duration,
     duration: std::time::Duration,
@@ -231,7 +236,7 @@ async fn test_fuzzy_file_search_sorts_and_includes_indices() -> Result<()> {
         .to_string();
 
     // Start MCP server and initialize.
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let root_path = root.path().to_string_lossy().to_string();
@@ -297,7 +302,7 @@ async fn test_fuzzy_file_search_accepts_cancellation_token() -> Result<()> {
 
     std::fs::write(root.path().join("alpha.txt"), "contents")?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let root_path = root.path().to_string_lossy().to_string();

@@ -1,5 +1,5 @@
 [target.'cfg(all(windows, target_env = "msvc"))']
-rustflags = ["-C", "link-arg=/STACK:8388608"]
+rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "target-feature=+crt-static"]
 
 # MSVC emits a warning about code that may trip "Cortex-A53 MPCore processor bug #843419" (see
 # https://developer.arm.com/documentation/epm048406/latest) which is sometimes emitted by LLVM.
@@ -9,3 +9,7 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
 
 [target.'cfg(all(windows, target_env = "gnu"))']
 rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
+
+[alias]
+# Make CI-reported `suite::...` codex-core tests runnable without remembering `--test all`.
+core-suite = "test -p codex-core --test all"

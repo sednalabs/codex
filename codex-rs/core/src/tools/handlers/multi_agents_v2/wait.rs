@@ -1,34 +1,98 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
-use crate::codex::Session;
+use crate::session::session::Session;
+use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
-use tokio::time::timeout_at;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    options: WaitAgentTimeoutOptions,
+}
 
-#[async_trait]
-impl ToolHandler for Handler {
-    type Output = WaitAgentResult;
+impl Handler {
+    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
+        Self { options }
+    }
+}
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeSource {
+    TargetCompletion,
+    Mailbox,
+    Timeout,
+}
+
+impl WakeSource {
+    fn completion_reason(self) -> CollabWaitingCompletionReason {
+        match self {
+            WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
+            WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
+            WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompletionRule {
+    return_when: ReturnWhen,
+}
+
+impl CompletionRule {
+    fn new(return_when: ReturnWhen) -> Self {
+        Self { return_when }
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn is_satisfied(
+        self,
+        statuses: &HashMap<ThreadId, AgentStatus>,
+        receiver_thread_ids: &[ThreadId],
+    ) -> bool {
+        match self.return_when {
+            ReturnWhen::Any => !statuses.is_empty(),
+            ReturnWhen::All => receiver_thread_ids
+                .iter()
+                .all(|id| statuses.get(id).is_some_and(is_final)),
+        }
+    }
+}
+
+impl ToolExecutor<ToolInvocation> for Handler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("wait_agent")
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn spec(&self) -> ToolSpec {
+        create_wait_agent_tool_v2(self.options)
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl Handler {
+    async fn handle_call(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -61,23 +125,43 @@ impl ToolHandler for Handler {
             });
         }
 
-        let timeout_ms = args
-            .timeout_ms
-            .unwrap_or(turn.config.background_terminal_max_timeout as i64);
-        let timeout_ms = match timeout_ms {
-            ms if ms <= 0 => {
-                return Err(FunctionCallError::RespondToModel(
-                    "timeout_ms must be greater than zero".to_owned(),
-                ));
+        let min_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .min_wait_timeout_ms
+            .clamp(1, MAX_WAIT_TIMEOUT_MS);
+        let max_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .max_wait_timeout_ms
+            .clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+        let default_timeout_ms = turn
+            .config
+            .multi_agent_v2
+            .default_wait_timeout_ms
+            .clamp(min_timeout_ms, max_timeout_ms);
+        let timeout_ms = match args.timeout_ms {
+            Some(ms) if ms < min_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at least {min_timeout_ms}"
+                )));
             }
-            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+            Some(ms) if ms > max_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at most {max_timeout_ms}"
+                )));
+            }
+            Some(ms) => ms,
+            None => default_timeout_ms,
         };
+        let mut mailbox_rx = session.input_queue.subscribe_mailbox().await;
 
         session
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
-                    sender_thread_id: session.conversation_id,
+                    started_at_ms: now_unix_timestamp_ms(),
+                    sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
                     call_id: call_id.clone(),
@@ -87,98 +171,78 @@ impl ToolHandler for Handler {
             .await;
 
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
-        let mut initial_final_statuses = Vec::new();
+        let mut final_statuses = HashMap::new();
         for id in &receiver_thread_ids {
             match session.services.agent_control.subscribe_status(*id).await {
                 Ok(rx) => {
                     let status = rx.borrow().clone();
                     if is_final(&status) {
-                        initial_final_statuses.push((*id, status));
+                        final_statuses.insert(*id, status);
+                    } else {
+                        status_rxs.push((*id, rx));
                     }
-                    status_rxs.push((*id, rx));
                 }
-                Err(crate::error::CodexErr::ThreadNotFound(_)) => {
-                    initial_final_statuses.push((*id, AgentStatus::NotFound));
+                Err(CodexErr::ThreadNotFound(_)) => {
+                    final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
-                    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
-                    for receiver_thread_id in &receiver_thread_ids {
-                        statuses.insert(
-                            *receiver_thread_id,
-                            session
-                                .services
-                                .agent_control
-                                .get_status(*receiver_thread_id)
-                                .await,
-                        );
-                    }
-                    let pending_thread_ids = build_error_pending_thread_ids(
-                        &receiver_thread_ids,
-                        &initial_final_statuses,
-                        &statuses,
-                    );
-                    session
-                        .send_event(
-                            &turn,
-                            CollabWaitingEndEvent {
-                                sender_thread_id: session.conversation_id,
-                                call_id: call_id.clone(),
-                                receiver_thread_ids: receiver_thread_ids.clone(),
-                                pending_thread_ids,
-                                completion_reason: CollabWaitingCompletionReason::Terminal,
-                                timed_out: false,
-                                agent_statuses: build_wait_agent_statuses(
-                                    &statuses,
-                                    &receiver_agents,
-                                ),
-                                statuses,
-                            }
-                            .into(),
-                        )
-                        .await;
+                    let statuses =
+                        collect_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
+                    let pending_thread_ids =
+                        pending_wait_thread_ids(&receiver_thread_ids, &statuses);
+                    send_wait_end_event(
+                        session.as_ref(),
+                        turn.as_ref(),
+                        call_id.clone(),
+                        receiver_thread_ids.clone(),
+                        &receiver_agents,
+                        pending_thread_ids,
+                        CollabWaitingCompletionReason::Terminal,
+                        /*timed_out*/ false,
+                        statuses,
+                    )
+                    .await;
                     return Err(collab_agent_error(*id, err));
                 }
             }
         }
 
-        let mut final_statuses = initial_final_statuses
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        let mut timed_out = false;
-        if !has_return_condition(&final_statuses, &receiver_thread_ids, args.return_when) {
-            let mut futures = FuturesUnordered::new();
-            for (id, rx) in status_rxs {
-                let session = session.clone();
-                futures.push(wait_for_final_status(session, id, rx));
-            }
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-            loop {
-                match timeout_at(deadline, futures.next()).await {
-                    Ok(Some(Some((id, status)))) => {
-                        final_statuses.insert(id, status);
-                        if has_return_condition(
-                            &final_statuses,
-                            &receiver_thread_ids,
-                            args.return_when,
-                        ) {
-                            break;
-                        }
-                    }
-                    Ok(Some(None)) => continue,
-                    Ok(None) | Err(_) => {
-                        timed_out = true;
-                        break;
-                    }
-                }
-            }
-        }
+        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
+        let return_when = wait_capability
+            .filter(|capability| capability.return_when)
+            .map_or(ReturnWhen::Any, |_| args.return_when);
+        let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
+        let completion_rule = CompletionRule::new(return_when);
+        let wake_source = if let Some(wake_source) = ready_wake_source(
+            session.as_ref(),
+            completion_rule,
+            &final_statuses,
+            &receiver_thread_ids,
+            wake_on_mailbox,
+        )
+        .await
+        {
+            wake_source
+        } else {
+            wait_for_wake_source(
+                session.clone(),
+                &mut mailbox_rx,
+                status_rxs,
+                &receiver_thread_ids,
+                completion_rule,
+                &mut final_statuses,
+                wake_on_mailbox,
+                Instant::now() + Duration::from_millis(timeout_ms as u64),
+            )
+            .await
+        };
+        let completion_reason = wake_source.completion_reason();
 
-        let mut pending_thread_ids = Vec::new();
-        for receiver_thread_id in &receiver_thread_ids {
-            if !final_statuses.contains_key(receiver_thread_id) {
-                pending_thread_ids.push(*receiver_thread_id);
-            }
-        }
+        let pending_thread_ids = receiver_thread_ids
+            .iter()
+            .filter(|receiver_thread_id| !final_statuses.contains_key(receiver_thread_id))
+            .copied()
+            .collect::<Vec<_>>();
         let mut pending_statuses = Vec::with_capacity(pending_thread_ids.len());
         for pending_thread_id in &pending_thread_ids {
             pending_statuses.push((
@@ -191,55 +255,39 @@ impl ToolHandler for Handler {
             ));
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
-        let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
-        let completion_reason = if timed_out {
-            CollabWaitingCompletionReason::Timeout
-        } else {
-            CollabWaitingCompletionReason::Terminal
-        };
-        let result = WaitAgentResult::from_timed_out(timed_out);
+        let result = WaitAgentResult::new(
+            receiver_thread_ids.clone(),
+            pending_thread_ids.clone(),
+            completion_reason,
+        );
 
-        session
-            .send_event(
-                &turn,
-                CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
-                    call_id,
-                    receiver_thread_ids,
-                    pending_thread_ids,
-                    completion_reason,
-                    timed_out,
-                    agent_statuses,
-                    statuses: statuses_by_id,
-                }
-                .into(),
-            )
-            .await;
+        send_wait_end_event(
+            session.as_ref(),
+            turn.as_ref(),
+            call_id,
+            receiver_thread_ids,
+            &receiver_agents,
+            pending_thread_ids,
+            completion_reason,
+            result.timed_out,
+            statuses_by_id,
+        )
+        .await;
 
-        Ok(result)
+        Ok(boxed_tool_output(result))
     }
 }
 
-fn build_error_pending_thread_ids(
-    receiver_thread_ids: &[ThreadId],
-    initial_final_statuses: &[(ThreadId, AgentStatus)],
-    statuses: &HashMap<ThreadId, AgentStatus>,
-) -> Vec<ThreadId> {
-    receiver_thread_ids
-        .iter()
-        .filter(|id| {
-            !is_final(statuses.get(id).unwrap_or(&AgentStatus::NotFound))
-                && !initial_final_statuses
-                    .iter()
-                    .any(|(thread_id, _)| thread_id == *id)
-        })
-        .copied()
-        .collect()
+impl CoreToolRuntime for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct WaitArgs {
     #[serde(default)]
+    #[serde(alias = "ids")]
     targets: Vec<String>,
     timeout_ms: Option<i64>,
     #[serde(default)]
@@ -258,33 +306,69 @@ enum ReturnWhen {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
+    pub(crate) requested_ids: Vec<ThreadId>,
+    pub(crate) pending_ids: Vec<ThreadId>,
+    pub(crate) completion_reason: CollabWaitingCompletionReason,
     pub(crate) timed_out: bool,
 }
 
-fn has_return_condition(
-    statuses: &HashMap<ThreadId, AgentStatus>,
+async fn ready_wake_source(
+    session: &Session,
+    completion_rule: CompletionRule,
+    final_statuses: &HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
-    return_when: ReturnWhen,
-) -> bool {
-    match return_when {
-        ReturnWhen::Any => !statuses.is_empty(),
-        ReturnWhen::All => receiver_thread_ids
-            .iter()
-            .all(|id| statuses.get(id).is_some_and(is_final)),
+    wake_on_mailbox: bool,
+) -> Option<WakeSource> {
+    if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+        Some(WakeSource::TargetCompletion)
+    } else if wake_on_mailbox && session.input_queue.has_pending_mailbox_items().await {
+        Some(WakeSource::Mailbox)
+    } else {
+        None
     }
 }
 
 impl WaitAgentResult {
-    fn from_timed_out(timed_out: bool) -> Self {
-        let message = if timed_out {
-            "Wait timed out."
-        } else {
-            "Wait completed."
+    fn new(
+        requested_ids: Vec<ThreadId>,
+        pending_ids: Vec<ThreadId>,
+        completion_reason: CollabWaitingCompletionReason,
+    ) -> Self {
+        let message = match completion_reason {
+            CollabWaitingCompletionReason::Terminal => "Wait completed.",
+            CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
+            CollabWaitingCompletionReason::Timeout => "Wait timed out.",
         };
         Self {
             message: message.to_string(),
-            timed_out,
+            requested_ids,
+            pending_ids,
+            completion_reason,
+            timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
         }
+    }
+
+    fn output_value(&self, capabilities: ToolRuntimeCapabilities) -> JsonValue {
+        let wait_capability = capabilities.wait_agent;
+        let mut output = serde_json::Map::from_iter([
+            ("message".to_string(), json!(self.message)),
+            ("requested_ids".to_string(), json!(self.requested_ids)),
+            ("timed_out".to_string(), json!(self.timed_out)),
+        ]);
+        if wait_capability.is_some_and(|capability| capability.pending_ids) {
+            output.insert("pending_ids".to_string(), json!(self.pending_ids));
+        }
+        if wait_capability.is_some_and(|capability| capability.completion_reason) {
+            output.insert(
+                "completion_reason".to_string(),
+                json!(self.completion_reason),
+            );
+        }
+        JsonValue::Object(output)
+    }
+
+    fn output_json_text(&self, capabilities: ToolRuntimeCapabilities) -> String {
+        self.output_value(capabilities).to_string()
     }
 }
 
@@ -303,7 +387,7 @@ where
 
 impl ToolOutput for WaitAgentResult {
     fn log_preview(&self) -> String {
-        tool_output_json_text(self, "wait_agent")
+        self.output_json_text(registered_tool_runtime_capabilities())
     }
 
     fn success_for_logging(&self) -> bool {
@@ -311,11 +395,15 @@ impl ToolOutput for WaitAgentResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
+        FunctionToolOutput::from_text(
+            self.output_json_text(registered_tool_runtime_capabilities()),
+            /*success*/ None,
+        )
+        .to_response_item(call_id, payload)
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "wait_agent")
+        self.output_value(registered_tool_runtime_capabilities())
     }
 }
 
@@ -341,9 +429,87 @@ async fn wait_for_final_status(
     }
 }
 
+async fn wait_for_wake_source(
+    session: std::sync::Arc<Session>,
+    mailbox_rx: &mut tokio::sync::watch::Receiver<()>,
+    status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
+    receiver_thread_ids: &[ThreadId],
+    completion_rule: CompletionRule,
+    final_statuses: &mut HashMap<ThreadId, AgentStatus>,
+    wake_on_mailbox: bool,
+    deadline: Instant,
+) -> WakeSource {
+    let mut futures = FuturesUnordered::new();
+    for (id, rx) in status_rxs {
+        let session = session.clone();
+        futures.push(wait_for_final_status(session, id, rx));
+    }
+
+    loop {
+        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+            return WakeSource::TargetCompletion;
+        }
+
+        let sleep = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep);
+
+        tokio::select! {
+            maybe_status = futures.next(), if !futures.is_empty() => {
+                match maybe_status {
+                    Some(Some((id, status))) => {
+                        final_statuses.insert(id, status);
+                    }
+                    Some(None) => {}
+                    None => {}
+                }
+            }
+            mailbox_changed = mailbox_rx.changed(), if wake_on_mailbox => {
+                if mailbox_changed.is_ok() {
+                    return WakeSource::Mailbox;
+                }
+            }
+            _ = &mut sleep => {
+                return WakeSource::Timeout;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wake_source_maps_to_public_completion_reason() {
+        assert_eq!(
+            WakeSource::TargetCompletion.completion_reason(),
+            CollabWaitingCompletionReason::Terminal
+        );
+        assert_eq!(
+            WakeSource::Mailbox.completion_reason(),
+            CollabWaitingCompletionReason::Mailbox
+        );
+        assert_eq!(
+            WakeSource::Timeout.completion_reason(),
+            CollabWaitingCompletionReason::Timeout
+        );
+    }
+
+    #[test]
+    fn completion_rule_distinguishes_any_from_all() {
+        let finished_id = ThreadId::new();
+        let running_id = ThreadId::new();
+        let receiver_thread_ids = vec![finished_id, running_id];
+        let statuses = HashMap::from([(
+            finished_id,
+            AgentStatus::Completed(Some("done".to_string())),
+        )]);
+
+        assert!(CompletionRule::new(ReturnWhen::Any).is_satisfied(&statuses, &receiver_thread_ids));
+        assert!(
+            !CompletionRule::new(ReturnWhen::All).is_satisfied(&statuses, &receiver_thread_ids)
+        );
+    }
 
     #[test]
     fn merge_wait_end_statuses_includes_pending_targets() {
@@ -365,7 +531,36 @@ mod tests {
     }
 
     #[test]
-    fn build_error_pending_thread_ids_includes_non_final_pending_targets() {
+    fn wait_agent_output_omits_capability_owned_fields_without_provider() {
+        let requested_id = ThreadId::new();
+        let pending_id = ThreadId::new();
+        let result = WaitAgentResult::new(
+            vec![requested_id],
+            vec![pending_id],
+            CollabWaitingCompletionReason::Timeout,
+        );
+
+        let output = result.output_value(ToolRuntimeCapabilities::upstream_default());
+
+        assert_eq!(output["message"], json!("Wait timed out."));
+        assert_eq!(output["requested_ids"], json!([requested_id]));
+        assert_eq!(output["timed_out"], json!(true));
+        assert!(
+            !output
+                .as_object()
+                .expect("output should be object")
+                .contains_key("pending_ids")
+        );
+        assert!(
+            !output
+                .as_object()
+                .expect("output should be object")
+                .contains_key("completion_reason")
+        );
+    }
+
+    #[test]
+    fn pending_thread_ids_for_statuses_includes_non_final_targets() {
         let finished_id = ThreadId::new();
         let running_id = ThreadId::new();
         let errored_id = ThreadId::new();
@@ -381,14 +576,7 @@ mod tests {
                 AgentStatus::Errored("permission denied".to_string()),
             ),
         ]);
-        let pending_thread_ids = build_error_pending_thread_ids(
-            &receiver_thread_ids,
-            &[(
-                finished_id,
-                AgentStatus::Completed(Some("done".to_string())),
-            )],
-            &statuses,
-        );
+        let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses);
 
         assert_eq!(pending_thread_ids, vec![running_id]);
         assert_eq!(statuses.get(&running_id), Some(&AgentStatus::Running));

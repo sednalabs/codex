@@ -1,5 +1,42 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$defs": {
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "itemId": {
       "type": "string"
@@ -10,6 +47,16 @@
     "stdin": {
       "type": "string"
     },
+    "terminalWait": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TerminalWaitInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "threadId": {
       "type": "string"
     },
@@ -18,11 +65,11 @@
     }
   },
   "required": [
+    "threadId",
+    "turnId",
     "itemId",
     "processId",
-    "stdin",
-    "threadId",
-    "turnId"
+    "stdin"
   ],
   "title": "TerminalInteractionNotification",
   "type": "object"

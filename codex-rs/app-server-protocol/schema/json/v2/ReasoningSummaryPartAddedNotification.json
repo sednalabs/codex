@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "itemId": {
       "type": "string"
@@ -16,10 +16,10 @@
     }
   },
   "required": [
-    "itemId",
-    "summaryIndex",
     "threadId",
-    "turnId"
+    "turnId",
+    "itemId",
+    "summaryIndex"
   ],
   "title": "ReasoningSummaryPartAddedNotification",
   "type": "object"

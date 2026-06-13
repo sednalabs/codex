@@ -6,14 +6,137 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+from collections import Counter
 from collections import OrderedDict
 from pathlib import Path
 
-VALID_SETUP_CLASSES = {"light", "rust", "heavy"}
+VALID_SETUP_CLASSES = {
+    "workflow",
+    "node",
+    "rust_minimal",
+    "rust_integration",
+    "release",
+}
 VALID_FRONTIER_ROLES = {"sentinel", "depth"}
 VALID_STATUS_CLASSES = {"active", "legacy"}
 VALID_COST_CLASSES = {"low", "medium", "high"}
-ORDERED_SETUP_CLASSES = ["light", "rust", "heavy"]
+ORDERED_SETUP_CLASSES = [
+    "workflow",
+    "node",
+    "rust_minimal",
+    "rust_integration",
+    "release",
+]
+RUST_BATCH_SETUP_CLASSES = {"rust_minimal", "rust_integration"}
+RUST_BATCH_AUTO_MIN_LANES = 3
+RUST_BATCH_FORCE_MIN_LANES = 2
+# Keep auto batches small enough that link-heavy Rust recipes do not compete
+# for too much runner-local disk or memory in one job.
+RUST_BATCH_MAX_LANES = 2
+RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
+DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
+LAB_MATRIX_JOB_LIMIT = 256
+VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
+RECOMMENDATION_DOMAIN_ORDER = [
+    "workflow",
+    "docs",
+    "release",
+    "ui_protocol",
+    "core",
+]
+RECOMMENDATION_DOMAIN_LANE_SETS = {
+    "workflow": "docs",
+    "docs": "docs",
+    "release": "release",
+    "ui_protocol": "ui-protocol",
+    "core": "core-carry",
+}
+RECOMMENDATION_DOMAIN_LANES = {
+    "workflow": ["codex.workflow-ci-sanity", "codex.downstream-docs-check"],
+    "docs": ["codex.downstream-docs-check"],
+}
+RELEASE_RECOMMENDATION_PATTERNS = (
+    ".github/workflows/sedna-branch-build.yml",
+    ".github/workflows/sedna-release.yml",
+    ".github/workflows/release*.yml",
+    ".github/workflows/release*.yaml",
+    "codex-rs/cli/src/version.rs",
+    "codex-rs/cli/src/version/**",
+    "scripts/install/**",
+    "scripts/resolve_sedna_release_version",
+    "scripts/resolve_sedna_release_version/**",
+)
+LAB_FANOUT_CAPS = {
+    "balanced": {
+        "targeted": {
+            "workflow": 12,
+            "node": 6,
+            "rust_minimal": 12,
+            "rust_integration": 6,
+            "release": 1,
+        },
+        "frontier": {
+            "workflow": 24,
+            "node": 8,
+            "rust_minimal": 40,
+            "rust_integration": 24,
+            "release": 2,
+        },
+        "checkpoint": {
+            "workflow": 16,
+            "node": 6,
+            "rust_minimal": 24,
+            "rust_integration": 12,
+            "release": 1,
+        },
+    },
+    "enterprise": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 64,
+            "node": 24,
+            "rust_minimal": 128,
+            "rust_integration": 96,
+            "release": 4,
+        },
+        "checkpoint": {
+            "workflow": 48,
+            "node": 16,
+            "rust_minimal": 96,
+            "rust_integration": 64,
+            "release": 2,
+        },
+    },
+    "soak": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 6,
+        },
+        "checkpoint": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 4,
+        },
+    },
+}
 
 
 def catalog_path() -> Path:
@@ -26,6 +149,10 @@ def load_catalog(path: Path | None = None) -> dict:
     if not isinstance(payload, dict) or "lanes" not in payload:
         raise SystemExit(f"invalid validation catalog at {catalog_file}")
     return payload
+
+
+def catalog_repo_root(catalog_file: Path) -> Path:
+    return catalog_file.resolve().parent.parent
 
 
 def derive_summary_family(lane: dict) -> str:
@@ -54,38 +181,13 @@ def derive_summary_family(lane: dict) -> str:
     return normalized or lane_id or "validation-lane"
 
 
-def derive_setup_class(lane: dict) -> str:
-    groups = set(lane.get("groups", []))
-    lane_id = str(lane.get("lane_id") or "")
-    lane_sets = set(lane.get("lane_sets", []))
-
-    if groups & {"workflow", "docs"}:
-        return "light"
-    if lane.get("install_nextest"):
-        return "heavy"
-    if lane.get("smoke_gate_kinds"):
-        return "heavy"
-    if "release" in lane_sets:
-        return "heavy"
-    if any(
-        token in lane_id
-        for token in (
-            "compile-smoke",
-            "core-smoke",
-            "ui-smoke",
-            "ledger-smoke",
-            "runtime-surface-smoke",
-        )
-    ):
-        return "heavy"
-    return "rust"
-
-
 def derive_cost_class(setup_class: str) -> str:
     return {
-        "light": "low",
-        "rust": "medium",
-        "heavy": "high",
+        "workflow": "low",
+        "node": "low",
+        "rust_minimal": "medium",
+        "rust_integration": "high",
+        "release": "high",
     }[setup_class]
 
 
@@ -100,8 +202,41 @@ def family_key_for_lane(lane: dict) -> tuple[str, str]:
         ) from exc
 
 
+def resolve_repo_relative_path(
+    repo_root: Path,
+    raw_path: str,
+    *,
+    label: str,
+    must_exist: bool = False,
+    must_be_file: bool = False,
+    must_be_dir: bool = False,
+) -> Path:
+    if not raw_path:
+        raise SystemExit(f"{label} must be a non-empty relative path within the repository root")
+    path = Path(raw_path)
+    if path.is_absolute():
+        raise SystemExit(f"{label} must be a relative path within the repository root")
+    if any(part == ".." for part in path.parts):
+        raise SystemExit(f"{label} must not contain '..' path segments")
+
+    repo_root = repo_root.resolve()
+    candidate = (repo_root / path).resolve()
+    try:
+        candidate.relative_to(repo_root)
+    except ValueError as exc:
+        raise SystemExit(f"{label} must stay within the repository root") from exc
+
+    if must_exist and not candidate.exists():
+        raise SystemExit(f"{label} not found: {candidate}")
+    if must_be_file and not candidate.is_file():
+        raise SystemExit(f"{label} must point to a file: {candidate}")
+    if must_be_dir and not candidate.is_dir():
+        raise SystemExit(f"{label} must point to a directory: {candidate}")
+    return candidate
+
+
 def normalize_catalog(catalog: dict) -> dict:
-    """Backfill derived lane metadata for older target refs."""
+    """Backfill non-execution metadata for the current catalog."""
 
     normalized_lanes: list[dict] = []
     family_sentinel_ids: dict[tuple[str, str], str] = {}
@@ -109,10 +244,13 @@ def normalize_catalog(catalog: dict) -> dict:
     for original in catalog["lanes"]:
         lane = dict(original)
         lane.setdefault("status_class", "active")
-        lane.setdefault("setup_class", derive_setup_class(lane))
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
+        lane.setdefault("checkout_fetch_depth", 1)
+        lane.setdefault("timeout_minutes", 30)
         lane.setdefault("frontier_default", False)
+        lane.setdefault("needs_bazel", False)
+        lane.setdefault("smoke_gate_only", False)
         if "frontier_lane_sets" not in lane:
             if lane.get("status_class") == "active" and not lane.get("explicit_only"):
                 lane["frontier_lane_sets"] = (
@@ -145,7 +283,8 @@ def normalize_catalog(catalog: dict) -> dict:
     return normalized
 
 
-def validate_catalog(catalog: dict) -> None:
+def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
+    repo_root = repo_root or catalog_path().resolve().parent.parent
     seen_lane_ids: set[str] = set()
     for lane in catalog["lanes"]:
         lane_id = lane["lane_id"]
@@ -173,21 +312,116 @@ def validate_catalog(catalog: dict) -> None:
             valid = ", ".join(sorted(VALID_COST_CLASSES))
             raise SystemExit(f"lane {lane_id} must set cost_class to one of: {valid}")
 
+        working_directory = lane.get("working_directory")
+        if not isinstance(working_directory, str) or not working_directory:
+            raise SystemExit(f"lane {lane_id} must set working_directory")
+        resolve_repo_relative_path(
+            repo_root,
+            working_directory,
+            label=f"lane {lane_id} working_directory",
+        )
+
+        script_path = lane.get("script_path")
+        if not isinstance(script_path, str) or not script_path:
+            raise SystemExit(f"lane {lane_id} must set script_path")
+        resolve_repo_relative_path(
+            repo_root,
+            script_path,
+            label=f"lane {lane_id} script_path",
+        )
+
+        script_args = lane.get("script_args")
+        if not isinstance(script_args, list) or not all(
+            isinstance(arg, str) for arg in script_args
+        ):
+            raise SystemExit(f"lane {lane_id} must set script_args to a list of strings")
+
+        for field in (
+            "needs_just",
+            "needs_node",
+            "needs_nextest",
+            "needs_linux_build_deps",
+            "needs_dotslash",
+            "needs_sccache",
+            "needs_bazel",
+        ):
+            if not isinstance(lane.get(field), bool):
+                raise SystemExit(f"lane {lane_id} must set {field} to true or false")
+
+        if "pilot_only" in lane and not isinstance(lane.get("pilot_only"), bool):
+            raise SystemExit(f"lane {lane_id} must set pilot_only to true or false")
+
+        resolve_checkout_fetch_depth(lane)
+        resolve_timeout_minutes(lane)
+
+
+def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> int:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    checkout_fetch_depth = lane.get("checkout_fetch_depth", default)
+    if isinstance(checkout_fetch_depth, bool) or not isinstance(
+        checkout_fetch_depth, int
+    ):
+        raise SystemExit(
+            f"lane {lane_id} must set checkout_fetch_depth to a non-negative integer"
+        )
+    if checkout_fetch_depth < 0:
+        raise SystemExit(
+            f"lane {lane_id} must set checkout_fetch_depth to a non-negative integer"
+        )
+    return checkout_fetch_depth
+
+
+def resolve_timeout_minutes(lane: dict, *, default: int | None = None) -> int:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    timeout_minutes = lane.get("timeout_minutes", default)
+    if isinstance(timeout_minutes, bool) or not isinstance(timeout_minutes, int):
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    if timeout_minutes <= 0:
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    return timeout_minutes
+
 
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
         "lane_id": spec["lane_id"],
         "lane_phase": lane_phase,
-        "run_command": spec["run_command"],
-        "groups": spec["groups"],
-        "install_nextest": bool(spec.get("install_nextest", False)),
+        "groups": spec.get("groups") or [],
         "status_class": spec["status_class"],
         "frontier_default": bool(spec.get("frontier_default", False)),
         "setup_class": spec["setup_class"],
         "frontier_role": spec["frontier_role"],
         "summary_family": spec["summary_family"],
         "cost_class": spec["cost_class"],
+        "checkout_fetch_depth": resolve_checkout_fetch_depth(spec, default=1),
+        "timeout_minutes": resolve_timeout_minutes(spec, default=30),
+        "working_directory": spec["working_directory"],
+        "script_path": spec["script_path"],
+        "script_args": spec.get("script_args") or [],
+        "needs_just": bool(spec["needs_just"]),
+        "needs_node": bool(spec["needs_node"]),
+        "needs_nextest": bool(spec["needs_nextest"]),
+        "needs_linux_build_deps": bool(spec["needs_linux_build_deps"]),
+        "needs_dotslash": bool(spec["needs_dotslash"]),
+        "needs_sccache": bool(spec["needs_sccache"]),
+        "needs_bazel": bool(spec.get("needs_bazel", False)),
+        "batch_group": str(spec.get("batch_group") or default_batch_group(spec)),
+        "batch_weight_seconds": resolve_batch_weight_seconds(spec),
     }
+
+
+def default_batch_group(spec: dict) -> str:
+    groups = spec.get("groups") or []
+    if not groups:
+        return "default"
+    return "+".join(str(group) for group in groups)
+
+
+def resolve_batch_weight_seconds(spec: dict) -> int:
+    raw = spec.get("batch_weight_seconds", DEFAULT_RUST_BATCH_WEIGHT_SECONDS)
+    lane_id = str(spec.get("lane_id") or "<unknown>")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise SystemExit(f"lane {lane_id} must set batch_weight_seconds to a positive integer")
+    return raw
 
 
 def select_exact(
@@ -233,6 +467,218 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     return list(matching_routes[0].get("lane_ids", []))
 
 
+def parse_changed_files(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("changed-files-json must be a JSON array of strings") from exc
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        raise SystemExit("changed-files-json must be a JSON array of strings")
+    return [item.strip() for item in payload if item.strip()]
+
+
+def parse_recommendation_changed_files(raw: str) -> tuple[list[str], str]:
+    if not raw.strip():
+        return [], "changed-file metadata was empty"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return [], "changed-file metadata was not valid JSON"
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        return [], "changed-file metadata was not a JSON array of strings"
+    changed_files = [item.strip() for item in payload if item.strip()]
+    if not changed_files:
+        return [], "changed-file metadata was empty"
+    return changed_files, ""
+
+
+def recommendation_domain(path: str) -> str:
+    if any(path_matches(path, pattern) for pattern in RELEASE_RECOMMENDATION_PATTERNS):
+        return "release"
+    if path.startswith("docs/") or path == "README.md":
+        return "docs"
+    if path.startswith(".github/") or path.startswith(".codex/skills/"):
+        return "workflow"
+    if path.startswith("codex-rs/app-server") or path.startswith("codex-rs/tui/"):
+        return "ui_protocol"
+    if path.startswith("codex-rs/protocol/"):
+        return "ui_protocol"
+    if (
+        path.startswith("codex-rs/core/")
+        or path.startswith("codex-rs/exec/")
+        or path.startswith("codex-rs/cli/")
+    ):
+        return "core"
+    return "unknown"
+
+
+def ordered_recommendation_domains(domains: list[str]) -> list[str]:
+    return sorted(
+        set(domains),
+        key=lambda item: (
+            RECOMMENDATION_DOMAIN_ORDER.index(item)
+            if item in RECOMMENDATION_DOMAIN_ORDER
+            else 99
+        ),
+    )
+
+
+def infer_lane_set_for_lanes(
+    catalog_by_id: dict[str, dict], lane_ids: list[str], changed_files: list[str]
+) -> str:
+    path_domains = ordered_recommendation_domains(
+        [recommendation_domain(path) for path in changed_files]
+    )
+    known_path_domains = [domain for domain in path_domains if domain != "unknown"]
+    if len(known_path_domains) == 1 and "unknown" not in path_domains:
+        return RECOMMENDATION_DOMAIN_LANE_SETS[known_path_domains[0]]
+
+    groups = {
+        group
+        for lane_id in lane_ids
+        for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+    }
+    if groups <= {"workflow", "docs"}:
+        return "docs"
+    if "release" in groups:
+        return "release"
+    if "ui_protocol" in groups:
+        return "ui-protocol"
+    if "attestation" in groups:
+        return "attestation"
+    if "core" in groups:
+        return "core-carry"
+    return "all"
+
+
+def require_known_route_lanes(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> None:
+    missing_lanes = [lane_id for lane_id in lane_ids if lane_id not in catalog_by_id]
+    if missing_lanes:
+        raise SystemExit(
+            "matched follow-up route contains unknown lane IDs: "
+            + ", ".join(missing_lanes)
+        )
+
+
+def recommendation_payload(
+    *,
+    profile: str,
+    lane_set: str,
+    lane_ids: list[str],
+    reason: str,
+    confidence: str,
+    source: str,
+    domains: list[str],
+    changed_files: list[str],
+    include_explicit_lanes: bool = False,
+) -> dict:
+    return {
+        "profile": profile,
+        "lane_set": lane_set,
+        "lane_ids": lane_ids,
+        "lanes": ",".join(lane_ids),
+        "lanes_csv": ",".join(lane_ids),
+        "reason": reason,
+        "confidence": confidence,
+        "source": source,
+        "domains": domains,
+        "changed_file_count": len(changed_files),
+        "include_explicit_lanes": include_explicit_lanes,
+        "dispatch_inputs": {
+            "profile": profile,
+            "lane_set": lane_set,
+            "lanes": ",".join(lane_ids),
+            "include_explicit_lanes": "true" if include_explicit_lanes else "false",
+        },
+        "advisory": True,
+    }
+
+
+def recommend_lab_plan(args: argparse.Namespace) -> None:
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
+    catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
+    changed_files, metadata_issue = parse_recommendation_changed_files(
+        args.changed_files_json
+    )
+
+    def emit_fallback(reason: str, domains: list[str] | None = None) -> None:
+        emit(
+            recommendation_payload(
+                profile="frontier",
+                lane_set="all",
+                lane_ids=[],
+                reason=reason,
+                confidence="low",
+                source="conservative_fallback",
+                domains=domains or ["unknown"],
+                changed_files=changed_files,
+            )
+        )
+
+    if metadata_issue:
+        emit_fallback(metadata_issue)
+        return
+
+    route_lanes = select_followup_lanes(changed_files, catalog.get("followup_routes", []))
+    if route_lanes:
+        require_known_route_lanes(catalog_by_id, route_lanes)
+        route_domains = sorted(
+            {
+                group
+                for lane_id in route_lanes
+                for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+            }
+        )
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=infer_lane_set_for_lanes(
+                    catalog_by_id, route_lanes, changed_files
+                ),
+                lane_ids=route_lanes,
+                reason="changed files matched one exact validation follow-up route",
+                confidence="high",
+                source="followup_route",
+                domains=route_domains,
+                changed_files=changed_files,
+                include_explicit_lanes=any(
+                    bool(catalog_by_id.get(lane_id, {}).get("explicit_only"))
+                    for lane_id in route_lanes
+                ),
+            )
+        )
+        return
+
+    domains = [recommendation_domain(path) for path in changed_files]
+    unique_domains = ordered_recommendation_domains(domains)
+    known_domains = [domain for domain in unique_domains if domain != "unknown"]
+    if len(known_domains) == 1 and "unknown" not in unique_domains:
+        domain = known_domains[0]
+        lane_ids = RECOMMENDATION_DOMAIN_LANES.get(domain, [])
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=RECOMMENDATION_DOMAIN_LANE_SETS[domain],
+                lane_ids=lane_ids,
+                reason=f"changed files stayed within the {domain} validation domain",
+                confidence="medium",
+                source="domain_rules",
+                domains=[domain],
+                changed_files=changed_files,
+            )
+        )
+        return
+
+    emit_fallback(
+        "changed files crossed domains or did not match a known validation route",
+        unique_domains or ["unknown"],
+    )
+
+
 def select_for_lane_set(
     catalog: dict,
     target_lane_set: str,
@@ -251,24 +697,19 @@ def select_for_lane_set(
     return selected
 
 
-def select_frontier_all(catalog: dict) -> list[dict]:
-    selected = [
-        lane_payload(spec, lane_phase="downstream_lanes")
-        for spec in catalog["lanes"]
-        if spec.get("status_class") == "active"
-        and spec.get("frontier_default") is True
-        and not spec.get("explicit_only")
-    ]
-    if selected:
-        return selected
+def is_smoke_gate_lane(spec: dict) -> bool:
+    return bool(spec.get("smoke_gate_only"))
+
+
+def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:
+    allowed_status_classes = {"active", "legacy"} if include_explicit_only else {"active"}
     return [
         lane_payload(spec, lane_phase="downstream_lanes")
         for spec in catalog["lanes"]
-        if spec.get("status_class") == "active"
-        and not spec.get("explicit_only")
-        and not spec.get("smoke_gate_kinds")
-        and "release" not in spec.get("lane_sets", [])
-        and "docs" not in spec.get("lane_sets", [])
+        if spec.get("status_class") in allowed_status_classes
+        and (include_explicit_only or not spec.get("explicit_only"))
+        and not spec.get("pilot_only")
+        and not is_smoke_gate_lane(spec)
     ]
 
 
@@ -318,19 +759,215 @@ def emit_grouped_setup_class_payload(payload: dict, lanes: list[dict], *, key_pr
         payload[f"{key_prefix}_{setup_class}_lane_count"] = len(grouped_lanes)
 
 
-def setup_parallel_limits(profile: str) -> dict[str, int]:
+def normalize_rust_batching_mode(raw: str) -> str:
+    mode = (raw or "auto").strip().lower()
+    if mode not in {"auto", "off", "force"}:
+        raise SystemExit("rust batching mode must be one of: auto, off, force")
+    return mode
+
+
+def normalize_lab_fanout_tier(raw: str) -> str:
+    tier = (raw or "enterprise").strip().lower()
+    if tier not in VALID_LAB_FANOUT_TIERS:
+        valid = ", ".join(sorted(VALID_LAB_FANOUT_TIERS))
+        raise SystemExit(f"validation-lab fanout tier must be one of: {valid}")
+    return tier
+
+
+def effective_rust_batching_mode(
+    requested: str, repo_override: str, *, override_label: str
+) -> tuple[str, str]:
+    requested_mode = normalize_rust_batching_mode(requested)
+    override = (repo_override or "").strip().lower()
+    if override and override not in {"auto", "off", "force"}:
+        return requested_mode, f"ignoring unknown repo override {override!r}"
+    if requested_mode == "force":
+        return "force", "forced by workflow input"
+    if override == "off":
+        return "off", f"disabled by {override_label}"
+    if override == "force":
+        return "force", f"forced by {override_label}"
+    if requested_mode == "off":
+        return "off", "disabled by workflow input"
+    return "auto", "auto"
+
+
+def split_rust_batch_execution_lanes(
+    selected: list[dict], *, mode: str
+) -> tuple[list[dict], dict[str, list[dict]], dict[str, str]]:
+    batched_by_setup_class: dict[str, list[dict]] = {name: [] for name in RUST_BATCH_SETUP_CLASSES}
+    selected_by_setup_class = group_lanes_by_setup_class(selected)
+    min_lanes = RUST_BATCH_FORCE_MIN_LANES if mode == "force" else RUST_BATCH_AUTO_MIN_LANES
+
+    if mode != "off":
+        for setup_class in sorted(RUST_BATCH_SETUP_CLASSES):
+            lanes = selected_by_setup_class.get(setup_class, [])
+            grouped: OrderedDict[str, list[dict]] = OrderedDict()
+            for lane in lanes:
+                grouped.setdefault(str(lane.get("batch_group") or "default"), []).append(lane)
+            batched_by_setup_class[setup_class] = [
+                lane
+                for grouped_lanes in grouped.values()
+                if len(grouped_lanes) >= min_lanes
+                for lane in grouped_lanes
+            ]
+
+    batched_lane_ids = {
+        lane["lane_id"]
+        for lanes in batched_by_setup_class.values()
+        for lane in lanes
+    }
+    single_lanes = [lane for lane in selected if lane["lane_id"] not in batched_lane_ids]
+    reasons = {}
+    for setup_class in sorted(RUST_BATCH_SETUP_CLASSES):
+        selected_count = len(selected_by_setup_class.get(setup_class, []))
+        batched_count = len(batched_by_setup_class[setup_class])
+        if mode == "off":
+            reasons[setup_class] = "batching disabled"
+        elif batched_count:
+            reasons[setup_class] = f"batched {batched_count} lanes"
+        else:
+            reasons[setup_class] = f"only {selected_count} lanes selected"
+    return single_lanes, batched_by_setup_class, reasons
+
+
+def batch_lane_matrix(lanes: list[dict], *, setup_class: str) -> list[dict]:
+    groups: OrderedDict[str, list[dict]] = OrderedDict()
+    for lane in lanes:
+        groups.setdefault(str(lane.get("batch_group") or "default"), []).append(lane)
+
+    batches: list[dict] = []
+    batch_index = 0
+    for batch_group, grouped_lanes in groups.items():
+        sorted_lanes = sorted(
+            grouped_lanes,
+            key=lambda lane: (-int(lane["batch_weight_seconds"]), str(lane["lane_id"])),
+        )
+        packed: list[dict] = []
+        for lane in sorted_lanes:
+            candidate_indexes = [
+                idx
+                for idx, batch in enumerate(packed)
+                if len(batch["lanes"]) < RUST_BATCH_MAX_LANES
+                and batch["estimated_weight_seconds"] + int(lane["batch_weight_seconds"])
+                <= RUST_BATCH_TARGET_WEIGHT_SECONDS
+            ]
+            if candidate_indexes:
+                target = min(
+                    candidate_indexes,
+                    key=lambda idx: (
+                        packed[idx]["estimated_weight_seconds"],
+                        len(packed[idx]["lanes"]),
+                        packed[idx]["batch_index"],
+                    ),
+                )
+                batch = packed[target]
+            else:
+                batch = {
+                    "batch_index": batch_index,
+                    "batch_group": batch_group,
+                    "lanes": [],
+                    "estimated_weight_seconds": 0,
+                }
+                packed.append(batch)
+                batch_index += 1
+            batch["lanes"].append(lane)
+            batch["estimated_weight_seconds"] += int(lane["batch_weight_seconds"])
+
+        for batch in packed:
+            batch_lanes = sorted(batch["lanes"], key=lambda lane: str(lane["lane_id"]))
+            lane_ids = [lane["lane_id"] for lane in batch_lanes]
+            batch_id = f"{setup_class}-{batch['batch_index'] + 1:02d}"
+            batches.append(
+                {
+                    "batch_id": batch_id,
+                    "setup_class": setup_class,
+                    "batch_index": batch["batch_index"],
+                    "batch_group": batch["batch_group"],
+                    "batch_lane_count": len(batch_lanes),
+                    "estimated_weight_seconds": batch["estimated_weight_seconds"],
+                    "lane_ids": lane_ids,
+                    "lane_ids_json": json.dumps(lane_ids, separators=(",", ":")),
+                    "checkout_fetch_depth": max(
+                        resolve_checkout_fetch_depth(lane, default=1) for lane in batch_lanes
+                    ),
+                    "needs_just": any(lane["needs_just"] for lane in batch_lanes),
+                    "needs_node": any(lane["needs_node"] for lane in batch_lanes),
+                    "needs_nextest": any(lane["needs_nextest"] for lane in batch_lanes),
+                    "needs_linux_build_deps": any(
+                        lane["needs_linux_build_deps"] for lane in batch_lanes
+                    ),
+                    "needs_dotslash": any(lane["needs_dotslash"] for lane in batch_lanes),
+                    "needs_sccache": any(lane["needs_sccache"] for lane in batch_lanes),
+                }
+            )
+    return sorted(batches, key=lambda batch: batch["batch_index"])
+
+
+def cap_parallel_limits(counts: Counter[str], caps: dict[str, int]) -> dict[str, int]:
+    return {
+        setup_class: max(1, min(counts.get(setup_class, 0), cap))
+        for setup_class, cap in caps.items()
+    }
+
+
+def lab_fanout_band(profile: str) -> str:
     if profile == "frontier":
-        return {"light": 16, "rust": 10, "heavy": 4}
+        return "frontier"
     if profile in {"broad", "full"}:
-        return {"light": 10, "rust": 6, "heavy": 3}
+        return "checkpoint"
+    return "targeted"
+
+
+def setup_parallel_limits(
+    profile: str,
+    selected: list[dict] | None = None,
+    *,
+    fanout_tier: str = "legacy",
+) -> dict[str, int]:
+    counts = Counter(lane["setup_class"] for lane in (selected or []))
+    if fanout_tier != "legacy" and profile != "smoke":
+        tier = normalize_lab_fanout_tier(fanout_tier)
+        return cap_parallel_limits(counts, LAB_FANOUT_CAPS[tier][lab_fanout_band(profile)])
+
+    if profile == "frontier":
+        return {
+            "workflow": max(1, min(counts.get("workflow", 0), 12)),
+            "node": max(1, min(counts.get("node", 0), 6)),
+            "rust_minimal": max(1, min(counts.get("rust_minimal", 0), 20)),
+            "rust_integration": max(1, min(counts.get("rust_integration", 0), 8)),
+            "release": max(1, min(counts.get("release", 0), 1)),
+        }
+    if profile in {"broad", "full"}:
+        return {
+            "workflow": max(1, min(counts.get("workflow", 0), 10)),
+            "node": max(1, min(counts.get("node", 0), 4)),
+            "rust_minimal": max(1, min(counts.get("rust_minimal", 0), 12)),
+            "rust_integration": max(1, min(counts.get("rust_integration", 0), 6)),
+            "release": max(1, min(counts.get("release", 0), 1)),
+        }
     if profile == "smoke":
-        return {"light": 4, "rust": 3, "heavy": 2}
-    return {"light": 8, "rust": 4, "heavy": 2}
+        return {
+            "workflow": 6,
+            "node": 3,
+            "rust_minimal": 4,
+            "rust_integration": 5,
+            "release": 1,
+        }
+    return {
+        "workflow": 8,
+        "node": 4,
+        "rust_minimal": 6,
+        "rust_integration": 2,
+        "release": 1,
+    }
 
 
-def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
+def determine_lab_matrix_policy(
+    profile: str, selected: list[dict], *, fanout_tier: str
+) -> tuple[str, str, dict[str, int]]:
     fail_fast = "false" if profile == "frontier" else "true"
-    parallel_limits = setup_parallel_limits(profile)
+    parallel_limits = setup_parallel_limits(profile, selected, fanout_tier=fanout_tier)
     active_limits = [
         parallel_limits[lane["setup_class"]]
         for lane in selected
@@ -338,6 +975,33 @@ def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str
     ]
     max_parallel = str(max(active_limits) if active_limits else 1)
     return fail_fast, max_parallel, parallel_limits
+
+
+def enforce_lab_matrix_job_limit(
+    *,
+    smoke_matrix: list[dict],
+    execution_selected: list[dict],
+    rust_minimal_batch_matrix: list[dict],
+    rust_integration_batch_matrix: list[dict],
+    run_artifact: bool,
+    fanout_tier: str,
+    profile: str,
+) -> int:
+    planned_job_count = (
+        len(smoke_matrix)
+        + len(execution_selected)
+        + len(rust_minimal_batch_matrix)
+        + len(rust_integration_batch_matrix)
+        + (1 if run_artifact else 0)
+    )
+    if planned_job_count > LAB_MATRIX_JOB_LIMIT:
+        raise SystemExit(
+            "validation-lab plan would create "
+            f"{planned_job_count} matrix/artifact jobs, above the {LAB_MATRIX_JOB_LIMIT} "
+            f"job cap for profile={profile} fanout_tier={fanout_tier}; "
+            "choose a narrower lane_set, pass explicit lanes, or lower the fanout tier"
+        )
+    return planned_job_count
 
 
 def profile_metadata(profile: str) -> tuple[str, str]:
@@ -354,7 +1018,7 @@ def profile_metadata(profile: str) -> tuple[str, str]:
     if profile == "frontier":
         return (
             "frontier",
-            "Bounded next-blocker harvest; trust a recent baseline first, then widen just enough to expose the next family.",
+            "Wide blocker harvest with fail-fast disabled; use the selected family to surface multiple independent failure groups in one remote pass.",
         )
     if profile in {"broad", "full"}:
         return (
@@ -377,6 +1041,7 @@ def summarize_lab_selection(
     smoke_gate_kind: str,
     run_artifact: bool,
     selected_setup_classes: list[str],
+    include_explicit_lanes: bool,
 ) -> str:
     parts = [f"selected={len(selected)}"]
     if selected_setup_classes:
@@ -390,17 +1055,20 @@ def summarize_lab_selection(
         parts.append(f"lanes={','.join(preview_ids)}{suffix}")
     if run_artifact:
         parts.append("artifact=true")
+    if include_explicit_lanes:
+        parts.append("explicit=true")
     return ", ".join(parts)
 
 
 def lab_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(
-        load_catalog(Path(args.catalog_path) if args.catalog_path else None)
-    )
-    validate_catalog(catalog)
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
+    include_explicit_lanes = parse_bool(args.include_explicit_lanes)
+    fanout_tier = normalize_lab_fanout_tier(args.fanout_tier)
 
     smoke_matrix: list[dict] = []
 
@@ -434,14 +1102,20 @@ def lab_plan(args: argparse.Namespace) -> None:
         run_smoke_gate = False
         smoke_gate_kind = ""
     elif args.profile == "frontier":
+        allowed_status_classes = (
+            {"active", "legacy"} if include_explicit_lanes else {"active"}
+        )
         if args.lane_set == "all":
-            selected = select_frontier_all(catalog)
+            selected = select_frontier_all(
+                catalog, include_explicit_only=include_explicit_lanes
+            )
         else:
             selected = select_for_lane_set(
                 catalog,
                 args.lane_set,
                 lane_phase="downstream_lanes",
                 field_name="frontier_lane_sets",
+                include_explicit_only=include_explicit_lanes,
             )
             if not selected:
                 selected = [
@@ -450,8 +1124,9 @@ def lab_plan(args: argparse.Namespace) -> None:
                         catalog,
                         args.lane_set,
                         lane_phase="downstream_lanes",
+                        include_explicit_only=include_explicit_lanes,
                     )
-                    if lane.get("status_class") == "active"
+                    if lane.get("status_class") in allowed_status_classes
                 ]
         run_smoke_gate = False
         smoke_gate_kind = ""
@@ -461,7 +1136,7 @@ def lab_plan(args: argparse.Namespace) -> None:
             "all" if args.lane_set == "all" else args.lane_set,
             lane_phase="downstream_lanes",
         )
-        groups = {group for spec in selected for group in spec["groups"]}
+        groups = {group for spec in selected for group in (spec.get("groups") or [])}
         has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
         smoke_matrix = select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
         run_smoke_gate = bool(selected) and bool(smoke_matrix)
@@ -470,8 +1145,43 @@ def lab_plan(args: argparse.Namespace) -> None:
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
+    rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="VALIDATION_LAB_RUST_BATCHING",
+    )
+    execution_selected, batched_by_setup_class, rust_batching_reasons = (
+        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+    )
+    rust_minimal_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
+    )
+    rust_integration_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_integration"], setup_class="rust_integration"
+    )
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
+        rust_batching_reason = "; ".join(
+            [
+                rust_batching_reason,
+                rust_batching_reasons["rust_minimal"],
+                rust_batching_reasons["rust_integration"],
+            ]
+        )
+    planned_job_count = enforce_lab_matrix_job_limit(
+        smoke_matrix=smoke_matrix,
+        execution_selected=execution_selected,
+        rust_minimal_batch_matrix=rust_minimal_batch_matrix,
+        rust_integration_batch_matrix=rust_integration_batch_matrix,
+        run_artifact=run_artifact,
+        fanout_tier=fanout_tier,
+        profile=args.profile,
+    )
     matrix_fail_fast, matrix_max_parallel, parallel_limits = determine_lab_matrix_policy(
-        args.profile, selected
+        args.profile, selected, fanout_tier=fanout_tier
     )
     grouped = group_lanes_by_setup_class(selected)
     selected_setup_classes = [
@@ -485,41 +1195,48 @@ def lab_plan(args: argparse.Namespace) -> None:
         smoke_gate_kind=smoke_gate_kind,
         run_artifact=run_artifact,
         selected_setup_classes=selected_setup_classes,
+        include_explicit_lanes=include_explicit_lanes,
     )
     planned_matrix = {"include": [*smoke_matrix, *selected]}
 
-    emit(
-        {
-            "profile_intent": profile_intent,
-            "profile_notes": profile_notes,
-            "lane_summary": lane_summary,
-            "selected_matrix": {"include": selected},
-            "planned_matrix": planned_matrix,
-            "selected_lane_ids": [lane["lane_id"] for lane in selected],
-            "smoke_matrix": {"include": smoke_matrix},
-            "run_selected_lanes": "true" if bool(selected) else "false",
-            "run_smoke_gate": "true" if run_smoke_gate else "false",
-            "smoke_gate_kind": smoke_gate_kind,
-            "run_artifact": "true" if run_artifact else "false",
-            "matrix_fail_fast": matrix_fail_fast,
-            "matrix_max_parallel": matrix_max_parallel,
-            "selected_setup_classes": selected_setup_classes,
-            "selected_light_matrix": {"include": grouped["light"]},
-            "selected_rust_matrix": {"include": grouped["rust"]},
-            "selected_heavy_matrix": {"include": grouped["heavy"]},
-            "selected_light_lane_count": len(grouped["light"]),
-            "selected_rust_lane_count": len(grouped["rust"]),
-            "selected_heavy_lane_count": len(grouped["heavy"]),
-            "light_max_parallel": str(parallel_limits["light"]),
-            "rust_max_parallel": str(parallel_limits["rust"]),
-            "heavy_max_parallel": str(parallel_limits["heavy"]),
-        }
-    )
+    payload = {
+        "profile_intent": profile_intent,
+        "profile_notes": profile_notes,
+        "lane_summary": lane_summary,
+        "selected_matrix": {"include": selected},
+        "planned_matrix": planned_matrix,
+        "selected_lane_ids": [lane["lane_id"] for lane in selected],
+        "smoke_matrix": {"include": smoke_matrix},
+        "run_selected_lanes": "true" if bool(selected) else "false",
+        "run_smoke_gate": "true" if run_smoke_gate else "false",
+        "smoke_gate_kind": smoke_gate_kind,
+        "run_artifact": "true" if run_artifact else "false",
+        "matrix_fail_fast": matrix_fail_fast,
+        "matrix_max_parallel": matrix_max_parallel,
+        "fanout_tier": fanout_tier,
+        "planned_job_count": planned_job_count,
+        "rust_batching_mode": rust_batching_mode,
+        "rust_batching_reason": rust_batching_reason,
+        "selected_rust_minimal_batch_matrix": {"include": rust_minimal_batch_matrix},
+        "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
+        "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
+        "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
+        "selected_setup_classes": selected_setup_classes,
+        "workflow_max_parallel": str(parallel_limits["workflow"]),
+        "node_max_parallel": str(parallel_limits["node"]),
+        "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),
+        "rust_integration_max_parallel": str(parallel_limits["rust_integration"]),
+        "release_max_parallel": str(parallel_limits["release"]),
+    }
+    emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
+    emit_grouped_setup_class_payload(payload, execution_selected, key_prefix="selected")
+    emit(payload)
 
 
 def heavy_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(load_catalog())
-    validate_catalog(catalog)
+    catalog_file = catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     changed_files = json.loads(args.changed_files_json) if args.changed_files_json else []
     route_lanes = (
@@ -567,8 +1284,10 @@ def heavy_plan(args: argparse.Namespace) -> None:
             elif not parse_bool(args.run_all_lanes):
                 if spec.get("explicit_only"):
                     continue
-                if not active_groups.intersection(spec["groups"]):
+                if not active_groups.intersection(spec.get("groups") or []):
                     continue
+            elif spec.get("pilot_only"):
+                continue
             if lane_id in seen:
                 continue
             seen.add(lane_id)
@@ -579,7 +1298,7 @@ def heavy_plan(args: argparse.Namespace) -> None:
             smoke_gate_kind = ""
             run_smoke_gate = False
         else:
-            groups = {group for spec in selected for group in spec["groups"]}
+            groups = {group for spec in selected for group in (spec.get("groups") or [])}
             has_smoke_gate, smoke_gate_kind = determine_smoke_gate(groups)
             smoke_matrix = (
                 select_smoke_matrix(catalog, smoke_gate_kind) if has_smoke_gate else []
@@ -590,18 +1309,62 @@ def heavy_plan(args: argparse.Namespace) -> None:
             if run_smoke_gate:
                 selected = exclude_smoke_gate_lanes(selected, smoke_matrix)
 
-    parallel_limits = setup_parallel_limits("targeted")
+    full_heavy_harvest = explicit_requested_lane is False and parse_bool(args.run_all_lanes)
+    parallel_limits = setup_parallel_limits(
+        "frontier" if full_heavy_harvest else "targeted", [*smoke_matrix, *selected]
+    )
+    rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="SEDNA_HEAVY_RUST_BATCHING",
+    )
+    execution_selected, batched_by_setup_class, rust_batching_reasons = (
+        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+    )
+    rust_minimal_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
+    )
+    rust_integration_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_integration"], setup_class="rust_integration"
+    )
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
+        rust_batching_reason = "; ".join(
+            [
+                rust_batching_reason,
+                rust_batching_reasons["rust_minimal"],
+                rust_batching_reasons["rust_integration"],
+            ]
+        )
+    planned_matrix = {"include": [*smoke_matrix, *selected]}
     payload = {
+        "planned_matrix": planned_matrix,
         "selected_matrix": {"include": selected},
+        "execution_selected_matrix": {"include": execution_selected},
+        "selected_lane_ids": [lane["lane_id"] for lane in selected],
         "smoke_matrix": {"include": smoke_matrix},
         "run_selected_lanes": "true" if bool(selected) else "false",
         "run_smoke_gate": "true" if run_smoke_gate else "false",
         "smoke_gate_kind": smoke_gate_kind,
-        "light_max_parallel": str(parallel_limits["light"]),
-        "rust_max_parallel": str(parallel_limits["rust"]),
-        "heavy_max_parallel": str(parallel_limits["heavy"]),
+        "matrix_fail_fast": "false" if full_heavy_harvest else "true",
+        "continue_after_smoke_failure": "true" if full_heavy_harvest else "false",
+        "eager_release_lanes": "true" if full_heavy_harvest else "false",
+        "workflow_max_parallel": str(parallel_limits["workflow"]),
+        "node_max_parallel": str(parallel_limits["node"]),
+        "rust_minimal_max_parallel": str(parallel_limits["rust_minimal"]),
+        "rust_integration_max_parallel": str(parallel_limits["rust_integration"]),
+        "release_max_parallel": str(parallel_limits["release"]),
+        "rust_batching_mode": rust_batching_mode,
+        "rust_batching_reason": rust_batching_reason,
+        "selected_rust_minimal_batch_matrix": {"include": rust_minimal_batch_matrix},
+        "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
+        "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
+        "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
     }
-    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit_grouped_setup_class_payload(payload, execution_selected, key_prefix="selected")
     emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
     emit(payload)
 
@@ -615,8 +1378,17 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--lane-set", required=True)
     lab.add_argument("--lanes", default="")
     lab.add_argument("--artifact-build", default="false")
+    lab.add_argument("--include-explicit-lanes", default="false")
+    lab.add_argument("--rust-batching", default="auto")
+    lab.add_argument("--rust-batching-override", default="")
+    lab.add_argument("--fanout-tier", default="enterprise")
     lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
+
+    recommend = subparsers.add_parser("recommend-lab")
+    recommend.add_argument("--changed-files-json", default="")
+    recommend.add_argument("--catalog-path", default="")
+    recommend.set_defaults(func=recommend_lab_plan)
 
     heavy = subparsers.add_parser("heavy")
     heavy.add_argument("--event-name", required=True)
@@ -628,6 +1400,8 @@ def build_parser() -> argparse.ArgumentParser:
     heavy.add_argument("--run-ui-protocol-family", required=True)
     heavy.add_argument("--run-docs-family", required=True)
     heavy.add_argument("--changed-files-json", default="")
+    heavy.add_argument("--rust-batching", default="auto")
+    heavy.add_argument("--rust-batching-override", default="")
     heavy.set_defaults(func=heavy_plan)
 
     return parser

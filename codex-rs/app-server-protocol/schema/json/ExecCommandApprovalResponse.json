@@ -1,18 +1,24 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
+    "ExecPolicyAmendment": {
+      "description": "Proposed execpolicy change to allow commands starting with this prefix.\n\nThe `command` tokens form the prefix that would be added as an execpolicy\n`prefix_rule(..., decision=\"allow\")`, letting the agent bypass approval for\ncommands that start with this token sequence.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/definitions/NetworkPolicyRuleAction"
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "action",
-        "host"
+        "host",
+        "action"
       ],
       "type": "object"
     },
@@ -27,23 +33,18 @@
       "description": "User's decision in response to an ExecApprovalRequest.",
       "oneOf": [
         {
+          "const": "approved",
           "description": "User has approved this command and the agent should execute it.",
-          "enum": [
-            "approved"
-          ],
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User has approved this command and wants to apply the proposed execpolicy amendment so future matching commands are permitted.",
+          "description": "User has approved this command and wants to apply the proposed execpolicy\namendment so future matching commands are permitted.",
           "properties": {
             "approved_execpolicy_amendment": {
               "properties": {
                 "proposed_execpolicy_amendment": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
+                  "$ref": "#/$defs/ExecPolicyAmendment"
                 }
               },
               "required": [
@@ -59,20 +60,18 @@
           "type": "object"
         },
         {
-          "description": "User has approved this request and wants future prompts in the same session-scoped approval cache to be automatically approved for the remainder of the session.",
-          "enum": [
-            "approved_for_session"
-          ],
+          "const": "approved_for_session",
+          "description": "User has approved this request and wants future prompts in the same\nsession-scoped approval cache to be automatically approved for the\nremainder of the session.",
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User chose to persist a network policy rule (allow/deny) for future requests to the same host.",
+          "description": "User chose to persist a network policy rule (allow/deny) for future\nrequests to the same host.",
           "properties": {
             "network_policy_amendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/definitions/NetworkPolicyAmendment"
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -88,25 +87,27 @@
           "type": "object"
         },
         {
-          "description": "User has denied this command and the agent should not execute it, but it should continue the session and try something else.",
-          "enum": [
-            "denied"
-          ],
+          "const": "denied",
+          "description": "User has denied this command and the agent should not execute it, but\nit should continue the session and try something else.",
           "type": "string"
         },
         {
-          "description": "User has denied this command and the agent should not do anything until the user's next command.",
-          "enum": [
-            "abort"
-          ],
+          "const": "timed_out",
+          "description": "The approval flow timed out before the user or guardian completed a\ndecision. Downstream may surface this distinctly from an explicit\ndenial so agents can retry or explain the timeout accurately.",
+          "type": "string"
+        },
+        {
+          "const": "abort",
+          "description": "User has denied this command and the agent should not do anything until\nthe user's next command.",
           "type": "string"
         }
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "decision": {
-      "$ref": "#/definitions/ReviewDecision"
+      "$ref": "#/$defs/ReviewDecision"
     }
   },
   "required": [

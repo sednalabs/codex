@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CancelLoginAccountStatus": {
       "enum": [
         "canceled",
@@ -9,9 +8,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "status": {
-      "$ref": "#/definitions/CancelLoginAccountStatus"
+      "$ref": "#/$defs/CancelLoginAccountStatus"
     }
   },
   "required": [

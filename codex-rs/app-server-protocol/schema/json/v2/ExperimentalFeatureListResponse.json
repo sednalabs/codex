@@ -1,10 +1,9 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ExperimentalFeature": {
       "properties": {
         "announcement": {
-          "description": "Announcement copy shown to users when the feature is introduced. Null when this feature is not in beta.",
+          "description": "Announcement copy shown to users when the feature is introduced.\nNull when this feature is not in beta.",
           "type": [
             "string",
             "null"
@@ -15,14 +14,14 @@
           "type": "boolean"
         },
         "description": {
-          "description": "Short summary describing what the feature does. Null when this feature is not in beta.",
+          "description": "Short summary describing what the feature does.\nNull when this feature is not in beta.",
           "type": [
             "string",
             "null"
           ]
         },
         "displayName": {
-          "description": "User-facing display name shown in the experimental features UI. Null when this feature is not in beta.",
+          "description": "User-facing display name shown in the experimental features UI.\nNull when this feature is not in beta.",
           "type": [
             "string",
             "null"
@@ -37,71 +36,58 @@
           "type": "string"
         },
         "stage": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ExperimentalFeatureStage"
-            }
-          ],
+          "$ref": "#/$defs/ExperimentalFeatureStage",
           "description": "Lifecycle stage of this feature flag."
         }
       },
       "required": [
-        "defaultEnabled",
-        "enabled",
         "name",
-        "stage"
+        "stage",
+        "enabled",
+        "defaultEnabled"
       ],
       "type": "object"
     },
     "ExperimentalFeatureStage": {
       "oneOf": [
         {
+          "const": "beta",
           "description": "Feature is available for user testing and feedback.",
-          "enum": [
-            "beta"
-          ],
           "type": "string"
         },
         {
+          "const": "underDevelopment",
           "description": "Feature is still being built and not ready for broad use.",
-          "enum": [
-            "underDevelopment"
-          ],
           "type": "string"
         },
         {
+          "const": "stable",
           "description": "Feature is production-ready.",
-          "enum": [
-            "stable"
-          ],
           "type": "string"
         },
         {
+          "const": "deprecated",
           "description": "Feature is deprecated and should be avoided.",
-          "enum": [
-            "deprecated"
-          ],
           "type": "string"
         },
         {
+          "const": "removed",
           "description": "Feature flag is retained only for backwards compatibility.",
-          "enum": [
-            "removed"
-          ],
           "type": "string"
         }
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ExperimentalFeature"
+        "$ref": "#/$defs/ExperimentalFeature"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
       "type": [
         "string",
         "null"

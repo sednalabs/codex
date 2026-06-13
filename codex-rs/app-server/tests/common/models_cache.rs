@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use chrono::Utc;
 use codex_core::test_support::all_model_presets;
+use codex_models_manager::client_version_to_whole;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
@@ -17,7 +18,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         slug: preset.id.clone(),
         display_name: preset.display_name.clone(),
         description: Some(preset.description.clone()),
-        default_reasoning_level: Some(preset.default_reasoning_effort),
+        default_reasoning_level: Some(preset.default_reasoning_effort.clone()),
         supported_reasoning_levels: preset.supported_reasoning_efforts.clone(),
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: if preset.show_in_picker {
@@ -27,6 +28,9 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         },
         supported_in_api: preset.supported_in_api,
         priority,
+        additional_speed_tiers: preset.additional_speed_tiers.clone(),
+        service_tiers: preset.service_tiers.clone(),
+        default_service_tier: preset.default_service_tier.clone(),
         upgrade: preset.upgrade.as_ref().map(Into::into),
         base_instructions: "base instructions".to_string(),
         model_messages: None,
@@ -34,19 +38,25 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
         default_verbosity: None,
-        availability_nux: None,
+        availability_nux: preset.availability_nux.clone(),
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
+        max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        use_responses_lite: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
     }
 }
 
@@ -84,7 +94,7 @@ pub fn write_models_cache_with_models(
     let cache_path = codex_home.join("models_cache.json");
     // DateTime<Utc> serializes to RFC3339 format by default with serde
     let fetched_at: DateTime<Utc> = Utc::now();
-    let client_version = codex_core::models_manager::client_version_to_whole();
+    let client_version = client_version_to_whole();
     let cache = json!({
         "fetched_at": fetched_at,
         "etag": null,

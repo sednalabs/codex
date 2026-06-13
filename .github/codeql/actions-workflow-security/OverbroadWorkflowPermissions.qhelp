@@ -1,0 +1,18 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Workflow-level write permissions and unnecessary job-level write
+      permissions make every step in the affected scope more powerful than it
+      needs to be.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Set read-only permissions at workflow level and grant write permissions at
+      the smallest job scope that needs them. Avoid <code>write-all</code>, and
+      remove write scopes that do not correspond to a publish, attestation, or
+      reporting sink in the job.
+    </p>
+  </recommendation>
+</qhelp>

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use app_test_support::DEFAULT_CLIENT_NAME;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use codex_app_server_protocol::AskForApproval;
@@ -11,9 +11,14 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadMemoryMode;
+use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_protocol::protocol::RealtimeOutputModality;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::time::Duration;
@@ -25,13 +30,14 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 #[tokio::test]
 async fn mock_experimental_method_requires_experimental_api_capability() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
 
     let init = mcp
         .initialize_with_capabilities(
             default_client_info(),
             Some(InitializeCapabilities {
                 experimental_api: false,
+                request_attestation: false,
                 opt_out_notification_methods: None,
             }),
         )
@@ -55,13 +61,14 @@ async fn mock_experimental_method_requires_experimental_api_capability() -> Resu
 #[tokio::test]
 async fn realtime_conversation_start_requires_experimental_api_capability() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
 
     let init = mcp
         .initialize_with_capabilities(
             default_client_info(),
             Some(InitializeCapabilities {
                 experimental_api: false,
+                request_attestation: false,
                 opt_out_notification_methods: None,
             }),
         )
@@ -73,8 +80,123 @@ async fn realtime_conversation_start_requires_experimental_api_capability() -> R
     let request_id = mcp
         .send_thread_realtime_start_request(ThreadRealtimeStartParams {
             thread_id: "thr_123".to_string(),
-            prompt: "hello".to_string(),
-            session_id: None,
+            model: None,
+            output_modality: RealtimeOutputModality::Audio,
+            prompt: Some(Some("hello".to_string())),
+            realtime_session_id: None,
+            transport: None,
+            version: None,
+            voice: None,
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "thread/realtime/start");
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_memory_mode_set_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    let init = mcp
+        .initialize_with_capabilities(
+            default_client_info(),
+            Some(InitializeCapabilities {
+                experimental_api: false,
+                request_attestation: false,
+                opt_out_notification_methods: None,
+            }),
+        )
+        .await?;
+    let JSONRPCMessage::Response(_) = init else {
+        anyhow::bail!("expected initialize response, got {init:?}");
+    };
+
+    let request_id = mcp
+        .send_thread_memory_mode_set_request(ThreadMemoryModeSetParams {
+            thread_id: "thr_123".to_string(),
+            mode: ThreadMemoryMode::Disabled,
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "thread/memoryMode/set");
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    let init = mcp
+        .initialize_with_capabilities(
+            default_client_info(),
+            Some(InitializeCapabilities {
+                experimental_api: false,
+                request_attestation: false,
+                opt_out_notification_methods: None,
+            }),
+        )
+        .await?;
+    let JSONRPCMessage::Response(_) = init else {
+        anyhow::bail!("expected initialize response, got {init:?}");
+    };
+
+    let request_id = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: "thr_123".to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "thread/settings/update");
+    Ok(())
+}
+
+#[tokio::test]
+async fn realtime_webrtc_start_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    let init = mcp
+        .initialize_with_capabilities(
+            default_client_info(),
+            Some(InitializeCapabilities {
+                experimental_api: false,
+                request_attestation: false,
+                opt_out_notification_methods: None,
+            }),
+        )
+        .await?;
+    let JSONRPCMessage::Response(_) = init else {
+        anyhow::bail!("expected initialize response, got {init:?}");
+    };
+
+    let request_id = mcp
+        .send_thread_realtime_start_request(ThreadRealtimeStartParams {
+            thread_id: "thr_123".to_string(),
+            model: None,
+            output_modality: RealtimeOutputModality::Audio,
+            prompt: Some(Some("hello".to_string())),
+            realtime_session_id: None,
+            transport: Some(ThreadRealtimeStartTransport::Webrtc {
+                sdp: "v=offer\r\n".to_string(),
+            }),
+            version: None,
+            voice: None,
         })
         .await?;
     let error = timeout(
@@ -92,12 +214,13 @@ async fn thread_start_mock_field_requires_experimental_api_capability() -> Resul
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     let init = mcp
         .initialize_with_capabilities(
             default_client_info(),
             Some(InitializeCapabilities {
                 experimental_api: false,
+                request_attestation: false,
                 opt_out_notification_methods: None,
             }),
         )
@@ -129,12 +252,13 @@ async fn thread_start_without_dynamic_tools_allows_without_experimental_api_capa
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     let init = mcp
         .initialize_with_capabilities(
             default_client_info(),
             Some(InitializeCapabilities {
                 experimental_api: false,
+                request_attestation: false,
                 opt_out_notification_methods: None,
             }),
         )
@@ -165,12 +289,13 @@ async fn thread_start_granular_approval_policy_requires_experimental_api_capabil
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     let init = mcp
         .initialize_with_capabilities(
             default_client_info(),
             Some(InitializeCapabilities {
                 experimental_api: false,
+                request_attestation: false,
                 opt_out_notification_methods: None,
             }),
         )

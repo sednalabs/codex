@@ -69,7 +69,35 @@ Use the smallest validator that can answer the current question.
 
 For Linux release readiness, prefer `validation-lab` `profile=targeted` with
 `lane_set=release` when the question is narrow `--locked` release-build drift.
-Use artifact mode only when you also need a disposable preview package.
+That lane currently resolves to `sedna.release-linux-smoke`, which is a
+preflight check only; it does not publish a GitHub Release. It is a plain
+locked Linux release build, so it keeps Linux build dependencies and `sccache`
+but does not install release-publish helpers such as DotSlash. The same lane is
+part of the `sedna-heavy-tests` runtime smoke gate for core changes, which keeps
+release-mode compile drift from first surfacing in the official publisher. Use
+artifact mode only when you also need a disposable preview package.
+
+## Snapshot refs for exact-tree remote proof
+
+When the tree you need to validate is not yet available as a clean remote ref
+(for example, dirty worktree state, detached HEAD, or scratch history), use a
+disposable snapshot ref and validate that exact snapshot remotely.
+
+Preferred pattern:
+
+1. Create/push a disposable `validation/snapshot-*` ref from the exact local
+   tree.
+2. Dispatch `validation-lab.yml` from downstream `main`.
+3. Pass the snapshot branch name via workflow input `ref`.
+
+For the concrete command helper and dispatch examples, use
+[`github-ci-offload.md`](github-ci-offload.md) (`validation-lab` dispatch rule
+and snapshot helper section).
+
+This remote-proof path is intentionally current-contract only. The validated
+ref must carry the current `.github/validation-lanes.json` schema plus the
+lane helper scripts the workflows call. Historical refs that predate the
+explicit lane contract are no longer supported by the lab planner.
 
 ## Fan-out and concurrency
 
@@ -78,15 +106,122 @@ Use separate runs only when the questions are genuinely independent.
 
 Default validation-lab policy:
 
-- `targeted`: low fan-out
+- `targeted`: focused fan-out for one named lane family
 - `frontier`: bounded fan-out with `fail-fast=false` and split setup-class
-  matrices so lighter seams can use higher concurrency than heavy Rust lanes
+  matrices so `workflow`, `node`, `rust_minimal`, `rust_integration`, and
+  `release` lanes can scale independently
 - `broad`: moderate fan-out
-- `full`: conservative fan-out
+- `full`: checkpoint fan-out
+
+`fanout_tier` controls how much hosted runner capacity the lab is allowed to
+use for selected lanes:
+
+- `balanced`: smaller caps for routine comparison runs
+- `enterprise`: the default tier for public-repo hosted validation, using more
+  of the available GitHub-hosted runner pool while preserving profile-specific
+  caps
+- `soak`: explicit high-capacity probes for capacity and queueing behavior
+
+The planner rejects any lab plan that would create more than 256 matrix or
+artifact jobs. Use a narrower `lane_set`, explicit `lanes=...`, or a lower
+fanout tier when the guard trips.
+
+Rust validation-lab lanes support `rust_batching=auto|off|force`. Batching
+uses the reusable Rust batch workflow so compatible Rust lanes can share runner
+setup and build artifacts while still reporting per-lane summaries.
 
 Do not widen every iteration into a broad or full run.
 Get one seam green first, use `frontier` to harvest nearby blockers when the
 baseline is trustworthy, and only then widen deliberately.
+
+For blocker-fix iteration, prefer getting narrower over rerunning the whole
+family. A good loop is:
+
+1. run the smallest reasonable named `lane_set` once to discover the blocker
+2. once the failing seam is known, rerun only that seam or that small handful
+   of seams with explicit `lanes=...`
+3. widen again only if the fix changes the question
+
+This is an intentional `validation-lab` use case, not a workaround. It reduces
+runner-minutes, wait time, and unnecessary compute while preserving hosted,
+attributable proof.
+
+## Advisory route recommendations
+
+Use the lab recommendation helper when changed-file metadata is available but
+the final dispatch should remain an explicit operator choice:
+
+```bash
+python3 .github/scripts/resolve_validation_plan.py recommend-lab \
+  --changed-files-json '[".github/workflows/validation-lab.yml"]'
+```
+
+The helper returns an advisory `profile`, `lane_set`, and optional comma
+separated `lanes` input. It prefers exact catalog follow-up routes when one
+route covers the changed files. If no exact route is available, it falls back to
+single-domain rules for workflow, docs, release, UI protocol, or Rust core
+changes. Empty, incomplete, cross-domain, or unknown metadata recommends
+`profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+
+The recommendation output is planner guidance only. It does not change default
+or required gates, does not make checkout-trust decisions, and does not dispatch
+GitHub Actions by itself.
+
+## Lane catalog contract
+
+The validation planners now consume an explicit lane catalog rather than
+deriving execution behavior from an inline command string.
+
+Named lane families include `product-surfaces` for app-server, MCP server,
+exec-server, CLI, and workflow policy checks, and `sdk` for targeted Python and
+TypeScript SDK checks.
+
+Every lane row in `.github/validation-lanes.json` is expected to define:
+
+- `setup_class`
+- `checkout_fetch_depth` (defaults to shallow checkout; widen only when the
+  lane truly needs more history)
+- `timeout_minutes` (defaults to 30; raise it only for lanes whose normal
+  cold-cache runtime is legitimately longer)
+- `working_directory`
+- `script_path`
+- `script_args`
+- `needs_just`
+- `needs_node`
+- `needs_nextest`
+- `needs_linux_build_deps`
+- `needs_dotslash`
+- `needs_sccache`
+
+When `needs_sccache` is true, the Rust-oriented reusable workflows first try the
+native GitHub Actions cache backend expected by current `sccache` releases.
+They only fall back to a workspace-local `.sccache` archive when the runner does
+not expose the GitHub cache-service environment that backend needs.
+Fallback `.sccache` archives are restore-only by default so validation runs do
+not keep minting run-id-keyed multi-gigabyte caches. `validation-lab` opts into
+fallback writes only for retained non-`auto` supersession modes such as
+comparison or milestone runs.
+The compile-heavy `rust_minimal` lanes now use that same contract instead of
+stopping at cargo-home restore alone.
+
+Execution is script-backed:
+
+- reusable workflows fan out by `setup_class`
+- validation-lab plans ordinary non-artifact runs from a shallow target
+  checkout and fetches full target history only when artifact versioning needs
+  merged Sedna tags
+- reusable workflows source shared helper scripts from a `.workflow-src`
+  checkout at the workflow ref so older checked-out PR heads stay compatible
+  with newer helper and summary-artifact contracts
+- each lane runs the checked-in script referenced by `script_path`
+- the root `justfile` is a convenience layer, not the workflow source of truth
+- lanes that still rely on `just` now declare that explicitly via `needs_just`
+  and can call a small wrapper script instead of embedding `run_command` in the
+  catalog
+
+This keeps setup cost visible and makes it much harder for small lanes to
+silently inherit heavyweight Node, `apt`, DotSlash, `nextest`, or `sccache`
+preparation they do not actually need.
 
 ## Remote measurement and summaries
 
@@ -95,16 +230,28 @@ baseline is trustworthy, and only then widen deliberately.
 
 That summary should identify:
 
+- the host workflow ref when the run is dispatched from a branch that carries
+  newer workflow behavior than the validated target
 - the validated ref and head SHA
 - the selected profile and lanes
 - setup-class job results and started-lane counts
+- setup-versus-command timing totals so slow setup paths are visible separately
+  from the actual lane command time
 - the first strong blocker, if any
 - the frontier blocker queue when `profile=frontier`
 - one primary blocker per exercised summary family, rather than a raw duplicate
   list of every failing sentinel and depth lane
 - secondary findings for remaining cancelled or missing depth lanes
+- whether failed lane evidence is active, stale, cancelled, or needs a targeted
+  latest-head proof rerun
+- the smallest lane set to rerun when stale failure evidence is still plausible
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
+- enough structured failure context to route debugging without embedding raw
+  commands, planner payload fragments, or bulky log excerpts in the public
+  summary surface
+- avoid restating exact refs, commit SHAs, or workflow URLs in the public
+  summary payload when GitHub already provides that run context separately
 
 Watchers and follow-up tooling should prefer this structured summary over raw
 log scraping when it is available.
@@ -116,6 +263,55 @@ The summary should also state:
 - short profile notes explaining when that mode is appropriate
 - a compact lane-selection summary so operators can see the active shape at a
   glance
+
+For workflow/planner-only changes, prefer an exact light-weight route instead
+of broad product lanes. In this fork that means remote proof should stay on the
+workflow sanity and downstream docs lanes unless the diff also touches real
+runtime/product seams. That light route includes the reusable validation-lane
+workflow files and the explicit lane catalog when the diff stays inside those
+CI-only surfaces.
+
+For native computer-use adapter work, choose validation by
+ownership boundary:
+
+- Codex protocol, app-server, TUI provider dispatch, rollout, plugin
+  discoverability, and tool-registry changes should use the Codex lanes
+  `codex.app-server-protocol-test`,
+  `codex.app-server-computer-use-targeted`,
+  `codex.tui-native-computer-use-targeted`, and
+  `codex.native-computer-use-tool-registry-targeted`.
+- `codex exec` native browser advertisement or provider-handling changes
+  should add `codex.exec-native-computer-use-targeted`.
+- Provider configuration diagnostics should add
+  `codex.native-computer-use-doctor-targeted`.
+- Android harness, emulator, device, screenshot, UI digest, and input execution
+  changes should be validated in the Android runtime provider or consumer app
+  that owns that behavior.
+- Browser provider-selection, command-bridge, Playwright-shim, and native-image
+  guard changes inside `codex-rs/browser-computer-use` should use the focused
+  Codex TUI/exec and tool-registry lanes above. Also run `node --check` on the
+  Playwright shim when it changes.
+- Browser provider changes that target realistic editor UX should also be
+  proved on the owning runtime surface with a headed Chrome provider,
+  persistent profile, configured display, and native `inputImage` response.
+- Browser runtime work outside this repo, such as in-app-browser,
+  Chrome-extension, remote-browser, viewport capture, and browser input
+  execution providers, should be validated in the browser provider or client
+  integration that owns that behavior.
+- Desktop runtime work outside this repo, such as macOS Screen
+  Recording/Accessibility capture, lock-screen handling, app focus, UI digest
+  generation, and desktop input execution, should be validated in the desktop
+  provider that owns that behavior. Codex lanes prove only the canonical tool
+  schema, event path, and command-provider seam.
+- Solar Gravity Lab validation is appropriate when proving a consumer workflow,
+  not when the question is the generic Codex computer-use contract.
+
+App-server protocol schema fixture drift should stay on the narrow
+`codex.app-server-protocol-test` proof lane. When that lane reports vendored
+schema fixtures diverging from freshly generated output, the lane summary
+artifact records the fixture family, fixture path when available, the
+vendored-versus-generated direction, and the targeted proof lane to rerun after
+regenerating fixtures.
 
 ## Documentation boundaries
 

@@ -2,6 +2,7 @@
 
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::SandboxMode;
@@ -10,7 +11,7 @@ use codex_utils_json_to_toml::json_to_toml;
 use rmcp::model::JsonObject;
 use rmcp::model::Tool;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaSettings;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -19,7 +20,8 @@ use std::sync::Arc;
 
 /// Client-supplied configuration for a `codex` tool-call.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
 pub struct CodexToolCallParam {
     /// The *initial user prompt* to start the Codex conversation.
     pub prompt: String,
@@ -27,10 +29,6 @@ pub struct CodexToolCallParam {
     /// Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex').
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-
-    /// Configuration profile from config.toml to specify default options.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
 
     /// Working directory for the session. If relative, it is resolved against
     /// the server process's current working directory.
@@ -111,27 +109,19 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallParam>();
 
     let input_schema = create_tool_input_schema(schema, "Codex tool schema should serialize");
 
-    Tool {
-        name: "codex".into(),
-        title: Some("Codex".to_string()),
+    Tool::new(
+        "codex",
+        "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
         input_schema,
-        output_schema: Some(codex_tool_output_schema()),
-        description: Some(
-            "Run a Codex session. Accepts configuration parameters matching the Codex Config struct."
-                .into(),
-        ),
-        annotations: None,
-        execution: None,
-        icons: None,
-        meta: None,
-    }
+    )
+    .with_title("Codex")
+    .with_raw_output_schema(codex_tool_output_schema())
 }
 
 fn codex_tool_output_schema() -> Arc<JsonObject> {
@@ -159,7 +149,6 @@ impl CodexToolCallParam {
         let Self {
             prompt,
             model,
-            profile,
             cwd,
             approval_policy,
             sandbox,
@@ -172,7 +161,6 @@ impl CodexToolCallParam {
         // Build the `ConfigOverrides` recognized by codex-core.
         let overrides = ConfigOverrides {
             model,
-            config_profile: profile,
             cwd: cwd.map(PathBuf::from),
             approval_policy: approval_policy.map(Into::into),
             sandbox_mode: sandbox.map(Into::into),
@@ -191,8 +179,11 @@ impl CodexToolCallParam {
             .map(|(k, v)| (k, json_to_toml(v)))
             .collect();
 
-        let cfg =
-            Config::load_with_cli_overrides_and_harness_overrides(cli_overrides, overrides).await?;
+        let cfg = ConfigBuilder::default()
+            .cli_overrides(cli_overrides)
+            .harness_overrides(overrides)
+            .build()
+            .await?;
 
         Ok((prompt, cfg))
     }
@@ -236,34 +227,25 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
     let schema = SchemaSettings::draft2019_09()
         .with(|s| {
             s.inline_subschemas = true;
-            s.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<CodexToolCallReplyParam>();
 
     let input_schema = create_tool_input_schema(schema, "Codex reply tool schema should serialize");
 
-    Tool {
-        name: "codex-reply".into(),
-        title: Some("Codex Reply".to_string()),
+    Tool::new(
+        "codex-reply",
+        "Continue a Codex conversation by providing the thread id and prompt.",
         input_schema,
-        output_schema: Some(codex_tool_output_schema()),
-        description: Some(
-            "Continue a Codex conversation by providing the thread id and prompt.".into(),
-        ),
-        annotations: None,
-        execution: None,
-        icons: None,
-        meta: None,
-    }
+    )
+    .with_title("Codex Reply")
+    .with_raw_output_schema(codex_tool_output_schema())
 }
 
-fn create_tool_input_schema(
-    schema: schemars::schema::RootSchema,
-    panic_message: &str,
-) -> Arc<JsonObject> {
+fn create_tool_input_schema(schema: schemars::Schema, panic_message: &str) -> Arc<JsonObject> {
     #[expect(clippy::expect_used)]
-    let schema_value = serde_json::to_value(&schema).expect(panic_message);
+    let mut schema_value = serde_json::to_value(&schema).expect(panic_message);
+    strip_null_type_admissions(&mut schema_value);
     let mut schema_object = match schema_value {
         serde_json::Value::Object(object) => object,
         _ => panic!("tool schema should serialize to a JSON object"),
@@ -273,13 +255,100 @@ fn create_tool_input_schema(
     // in case any `$ref` leaks into the generated schema (even though we try
     // to inline subschemas).
     let mut input_schema = JsonObject::new();
-    for key in ["properties", "required", "type", "$defs", "definitions"] {
+    for key in [
+        "additionalProperties",
+        "properties",
+        "required",
+        "type",
+        "$defs",
+        "definitions",
+    ] {
         if let Some(value) = schema_object.remove(key) {
             input_schema.insert(key.to_string(), value);
         }
     }
 
     Arc::new(input_schema)
+}
+
+// Schemars 1.x always models `Option<T>` as accepting JSON null. Tool inputs
+// use omission for optional fields, so keep the MCP tool schema non-nullable.
+fn strip_null_type_admissions(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if object
+                .get("type")
+                .is_some_and(|value| value.as_str() == Some("null"))
+            {
+                object.remove("type");
+            }
+
+            let type_replacement =
+                if let Some(serde_json::Value::Array(types)) = object.get_mut("type") {
+                    types.retain(|value| value.as_str() != Some("null"));
+                    match types.as_slice() {
+                        [] => Some(None),
+                        [only] => Some(Some(only.clone())),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            if let Some(replacement) = type_replacement {
+                match replacement {
+                    Some(value) => {
+                        object.insert("type".to_string(), value);
+                    }
+                    None => {
+                        object.remove("type");
+                    }
+                }
+            }
+
+            if object.get("const").is_some_and(serde_json::Value::is_null) {
+                object.remove("const");
+            }
+
+            if let Some(serde_json::Value::Array(values)) = object.get_mut("enum") {
+                values.retain(|value| !value.is_null());
+                if values.is_empty() {
+                    object.remove("enum");
+                }
+            }
+
+            for key in ["anyOf", "oneOf"] {
+                if let Some(serde_json::Value::Array(schemas)) = object.get_mut(key) {
+                    schemas.retain(|schema| !is_null_only_schema(schema));
+                }
+            }
+
+            for value in object.values_mut() {
+                strip_null_type_admissions(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strip_null_type_admissions(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_null_only_schema(schema: &serde_json::Value) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+
+    object
+        .get("type")
+        .is_some_and(|value| value.as_str() == Some("null"))
+        || object.get("const").is_some_and(serde_json::Value::is_null)
+        || object.get("enum").is_some_and(|value| {
+            value
+                .as_array()
+                .is_some_and(|values| values.len() == 1 && values[0].is_null())
+        })
 }
 
 #[cfg(test)]
@@ -305,6 +374,7 @@ mod tests {
         let expected_tool_json = serde_json::json!({
           "description": "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
           "inputSchema": {
+            "additionalProperties": false,
             "properties": {
               "approval-policy": {
                 "description": "Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.",
@@ -339,10 +409,6 @@ mod tests {
               },
               "model": {
                 "description": "Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex').",
-                "type": "string"
-              },
-              "profile": {
-                "description": "Configuration profile from config.toml to specify default options.",
                 "type": "string"
               },
               "prompt": {
@@ -383,6 +449,20 @@ mod tests {
           "title": "Codex"
         });
         assert_eq!(expected_tool_json, tool_json);
+    }
+
+    #[test]
+    fn codex_tool_call_param_rejects_removed_profile_field() {
+        let err = serde_json::from_value::<CodexToolCallParam>(serde_json::json!({
+            "prompt": "hello",
+            "profile": "work"
+        }))
+        .expect_err("removed profile field should fail");
+
+        assert!(
+            err.to_string().contains("unknown field `profile`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

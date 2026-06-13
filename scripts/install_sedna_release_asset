@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository="${GITHUB_REPOSITORY:-}"
+release_tag=""
+dry_run=false
+allow_prerelease=false
+
+usage() {
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG [--dry-run] [--allow-prerelease]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repository)
+      repository="${2:-}"
+      shift 2
+      ;;
+    --release-tag)
+      release_tag="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    --allow-prerelease)
+      allow_prerelease=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      echo "error: unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "${repository,,}" != "sednalabs/codex" ]]; then
+  echo "error: repository must be sednalabs/codex, got ${repository@Q}" >&2
+  exit 1
+fi
+
+if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
+  echo "error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got ${release_tag@Q}" >&2
+  exit 1
+fi
+
+target="x86_64-unknown-linux-gnu"
+release_version="${release_tag#v}"
+archive_name="codex-sedna-${release_version}-${target}.tar.gz"
+api_root="https://api.github.com/repos/sednalabs/codex"
+install_root="${HOME}/.codex/packages/standalone"
+bin_dir="${HOME}/.local/bin"
+
+work_dir="$(mktemp -d -t sedna-release-install.XXXXXX)"
+cleanup() {
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT
+
+github_header=(
+  -H "User-Agent: sedna-release-install"
+  -H "X-GitHub-Api-Version: 2022-11-28"
+)
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  github_header+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+fi
+
+fetch_json() {
+  local url="$1"
+  local output="$2"
+  curl --fail --location --silent --show-error \
+    "${github_header[@]}" \
+    -H "Accept: application/vnd.github+json" \
+    "$url" \
+    --output "$output"
+}
+
+fetch_asset() {
+  local asset_id="$1"
+  local output="$2"
+  curl --fail --location --silent --show-error \
+    "${github_header[@]}" \
+    -H "Accept: application/octet-stream" \
+    "${api_root}/releases/assets/${asset_id}" \
+    --output "$output"
+}
+
+release_json="${work_dir}/release.json"
+fetch_json "${api_root}/releases/tags/${release_tag}" "$release_json"
+
+python3 - "$release_json" "$release_tag" "$allow_prerelease" <<'PY'
+import json
+import sys
+
+path, expected_tag, allow_prerelease = sys.argv[1:4]
+release = json.loads(open(path, encoding="utf-8").read())
+if release.get("draft"):
+    raise SystemExit(f"error: refusing draft release {expected_tag}")
+if release.get("prerelease") and allow_prerelease != "true":
+    raise SystemExit(f"error: refusing prerelease {expected_tag}; pass --allow-prerelease to override")
+if release.get("tag_name") != expected_tag:
+    raise SystemExit(f"error: release API returned tag {release.get('tag_name')!r}, expected {expected_tag!r}")
+PY
+
+asset_manifest="${work_dir}/assets.tsv"
+python3 - "$release_json" "$archive_name" > "$asset_manifest" <<'PY'
+import json
+import sys
+
+release_path, archive_name = sys.argv[1:3]
+required = (archive_name, "SHA256SUMS.txt", "RELEASE-METADATA.json")
+release = json.loads(open(release_path, encoding="utf-8").read())
+assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+missing = [name for name in required if name not in assets]
+if missing:
+    raise SystemExit(f"error: release is missing required assets: {', '.join(missing)}")
+for name in required:
+    asset_id = assets[name].get("id")
+    if not isinstance(asset_id, int):
+        raise SystemExit(f"error: release asset {name!r} has no numeric id")
+    print(f"{name}\t{asset_id}")
+PY
+
+while IFS=$'\t' read -r name asset_id; do
+  case "$name" in
+    "$archive_name")
+      fetch_asset "$asset_id" "${work_dir}/${archive_name}"
+      ;;
+    SHA256SUMS.txt)
+      fetch_asset "$asset_id" "${work_dir}/SHA256SUMS.txt"
+      ;;
+    RELEASE-METADATA.json)
+      fetch_asset "$asset_id" "${work_dir}/RELEASE-METADATA.json"
+      ;;
+  esac
+done < "$asset_manifest"
+
+python3 - "$work_dir" "$archive_name" "$release_tag" "$release_version" "$target" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+work_dir, archive_name, release_tag, release_version, target = sys.argv[1:6]
+root = Path(work_dir)
+metadata = json.loads((root / "RELEASE-METADATA.json").read_text(encoding="utf-8"))
+expected = {
+    "release_tag": release_tag,
+    "release_version": release_version,
+    "target": target,
+}
+for key, value in expected.items():
+    if metadata.get(key) != value:
+        raise SystemExit(f"error: metadata {key}={metadata.get(key)!r}, expected {value!r}")
+if str(metadata.get("repository", "")).lower() != "sednalabs/codex":
+    raise SystemExit(f"error: metadata repository={metadata.get('repository')!r}, expected 'sednalabs/codex'")
+
+checksums = {}
+for raw in (root / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
+    fields = raw.strip().split()
+    if len(fields) >= 2:
+        digest, name = fields[0], fields[1].lstrip("*").removeprefix("./")
+        checksums[name] = digest.lower()
+digest = checksums.get(archive_name)
+if digest is None:
+    raise SystemExit(f"error: SHA256SUMS.txt does not include {archive_name}")
+actual = hashlib.sha256((root / archive_name).read_bytes()).hexdigest()
+if actual != digest:
+    raise SystemExit(f"error: checksum mismatch for {archive_name}: expected {digest}, got {actual}")
+PY
+
+staged="${work_dir}/stage"
+mkdir "$staged"
+python3 - "$work_dir/$archive_name" "$staged" <<'PY'
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+archive_path, destination = sys.argv[1:3]
+destination_path = Path(destination)
+allowed = {"codex", "codex-responses-api-proxy"}
+with tarfile.open(archive_path, mode="r:gz") as archive:
+    for member in archive.getmembers():
+        if member.name in ("", ".", "./"):
+            continue
+        parts = [part for part in member.name.split("/") if part not in ("", ".")]
+        if len(parts) != 1 or parts[0] not in allowed or ".." in parts:
+            raise SystemExit(f"error: refusing unexpected archive member {member.name!r}")
+        if not member.isfile():
+            raise SystemExit(f"error: refusing unsafe archive member {member.name!r}")
+        source = archive.extractfile(member)
+        if source is None:
+            raise SystemExit(f"error: failed to read archive member {member.name!r}")
+        target = destination_path / parts[0]
+        with source, target.open("wb") as output:
+            shutil.copyfileobj(source, output)
+        target.chmod(member.mode & 0o777)
+PY
+cp "$work_dir/RELEASE-METADATA.json" "$staged/RELEASE-METADATA.json"
+cp "$work_dir/SHA256SUMS.txt" "$staged/SHA256SUMS.txt"
+
+for executable in codex codex-responses-api-proxy; do
+  if [[ ! -x "$staged/$executable" ]]; then
+    echo "error: required executable is missing or not executable: $executable" >&2
+    exit 1
+  fi
+done
+
+staged_version_output="$("$staged/codex" --version 2>&1)"
+if [[ "$staged_version_output" != *"$release_version"* ]]; then
+  echo "error: staged codex --version did not report ${release_version@Q}: $staged_version_output" >&2
+  exit 1
+fi
+
+release_dir="${install_root}/releases/${release_tag}"
+if [[ -d "$release_dir" ]]; then
+  python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" <<'PY'
+import json
+import sys
+
+metadata_path, expected_tag = sys.argv[1:3]
+metadata = json.loads(open(metadata_path, encoding="utf-8").read())
+if metadata.get("release_tag") != expected_tag:
+    raise SystemExit(f"error: existing release metadata tag does not match {expected_tag}")
+PY
+  for executable in codex codex-responses-api-proxy; do
+    if [[ ! -x "$release_dir/$executable" ]]; then
+      echo "error: existing release is missing required executable: $executable" >&2
+      exit 1
+    fi
+  done
+fi
+
+if [[ "$dry_run" == "true" ]]; then
+  echo "dry-run: verified sednalabs/codex@${release_tag} for ${target}"
+  echo "$staged_version_output"
+  exit 0
+fi
+
+mkdir -p "${install_root}/releases" "$bin_dir"
+if [[ ! -d "$release_dir" ]]; then
+  tmp_release="${install_root}/releases/.${release_tag}.tmp.$$"
+  rm -rf "$tmp_release"
+  mkdir "$tmp_release"
+  cp -p "$staged/codex" "$tmp_release/codex"
+  cp -p "$staged/codex-responses-api-proxy" "$tmp_release/codex-responses-api-proxy"
+  cp "$staged/RELEASE-METADATA.json" "$tmp_release/RELEASE-METADATA.json"
+  cp "$staged/SHA256SUMS.txt" "$tmp_release/SHA256SUMS.txt"
+  mv -T "$tmp_release" "$release_dir"
+fi
+
+current_tmp="${install_root}/.current.tmp.$$"
+ln -s "$release_dir" "$current_tmp"
+mv -Tf "$current_tmp" "${install_root}/current"
+
+visible_codex="${bin_dir}/codex"
+if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
+  mkdir -p "${install_root}/backups"
+  backup="${install_root}/backups/codex.$(date +%s)"
+  mv "$visible_codex" "$backup"
+  echo "backed up previous codex binary"
+fi
+
+codex_tmp="${bin_dir}/.codex.tmp.$$"
+ln -s "${release_dir}/codex" "$codex_tmp"
+mv -Tf "$codex_tmp" "$visible_codex"
+
+visible_version_output="$("$visible_codex" --version 2>&1)"
+if [[ "$visible_version_output" != *"$release_version"* ]]; then
+  echo "error: codex --version did not report ${release_version@Q}: $visible_version_output" >&2
+  exit 1
+fi
+
+echo "installed sednalabs/codex@${release_tag}"
+echo "$visible_version_output"

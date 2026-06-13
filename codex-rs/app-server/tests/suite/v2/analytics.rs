@@ -2,10 +2,10 @@ use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::write_chatgpt_auth;
-use codex_core::auth::AuthCredentialsStoreMode;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::OtelExporterKind;
+use codex_config::types::OtelHttpProtocol;
 use codex_core::config::ConfigBuilder;
-use codex_core::config::types::OtelExporterKind;
-use codex_core::config::types::OtelHttpProtocol;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -79,7 +79,7 @@ async fn app_server_default_analytics_enabled_with_flag() -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn enable_analytics_capture(server: &MockServer, codex_home: &Path) -> Result<()> {
+pub(crate) async fn mount_analytics_capture(server: &MockServer, codex_home: &Path) -> Result<()> {
     Mock::given(method("POST"))
         .and(path("/codex/analytics-events/events"))
         .respond_with(ResponseTemplate::new(200))
@@ -120,6 +120,63 @@ pub(crate) async fn wait_for_analytics_payload(
     serde_json::from_slice(&body).map_err(|err| anyhow::anyhow!("invalid analytics payload: {err}"))
 }
 
+pub(crate) async fn wait_for_analytics_event(
+    server: &MockServer,
+    read_timeout: Duration,
+    event_type: &str,
+) -> Result<Value> {
+    wait_for_matching_analytics_event(server, read_timeout, |event| {
+        event["event_type"] == event_type
+    })
+    .await
+}
+
+pub(crate) async fn wait_for_goal_event(
+    server: &MockServer,
+    read_timeout: Duration,
+    event_kind: &str,
+    goal_status: &str,
+) -> Result<Value> {
+    wait_for_matching_analytics_event(server, read_timeout, |event| {
+        event["event_type"] == "codex_goal_event"
+            && event["event_params"]["event_kind"] == event_kind
+            && event["event_params"]["goal_status"] == goal_status
+    })
+    .await
+}
+
+async fn wait_for_matching_analytics_event(
+    server: &MockServer,
+    read_timeout: Duration,
+    matches: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    timeout(read_timeout, async {
+        loop {
+            let Some(requests) = server.received_requests().await else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            };
+            for request in &requests {
+                if request.method != "POST"
+                    || request.url.path() != "/codex/analytics-events/events"
+                {
+                    continue;
+                }
+                let payload: Value = serde_json::from_slice(&request.body)
+                    .map_err(|err| anyhow::anyhow!("invalid analytics payload: {err}"))?;
+                let Some(events) = payload["events"].as_array() else {
+                    continue;
+                };
+                if let Some(event) = events.iter().find(|event| matches(event)) {
+                    return Ok::<Value, anyhow::Error>(event.clone());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?
+}
+
 pub(crate) fn thread_initialized_event(payload: &Value) -> Result<&Value> {
     let events = payload["events"]
         .as_array()
@@ -133,10 +190,13 @@ pub(crate) fn thread_initialized_event(payload: &Value) -> Result<&Value> {
 pub(crate) fn assert_basic_thread_initialized_event(
     event: &Value,
     thread_id: &str,
+    session_id: &str,
     expected_model: &str,
     initialization_mode: &str,
+    expected_thread_source: &str,
 ) {
     assert_eq!(event["event_params"]["thread_id"], thread_id);
+    assert_eq!(event["event_params"]["session_id"], session_id);
     assert_eq!(
         event["event_params"]["app_server_client"]["product_client_id"],
         DEFAULT_CLIENT_NAME
@@ -151,7 +211,10 @@ pub(crate) fn assert_basic_thread_initialized_event(
     );
     assert_eq!(event["event_params"]["model"], expected_model);
     assert_eq!(event["event_params"]["ephemeral"], false);
-    assert_eq!(event["event_params"]["thread_source"], "user");
+    assert_eq!(
+        event["event_params"]["thread_source"],
+        expected_thread_source
+    );
     assert_eq!(
         event["event_params"]["subagent_source"],
         serde_json::Value::Null

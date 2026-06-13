@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "items": {
+      "description": "Raw Responses API items to append to the thread's model-visible history.",
+      "items": true,
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "items"
+  ],
+  "title": "ThreadInjectItemsParams",
+  "type": "object"
+}

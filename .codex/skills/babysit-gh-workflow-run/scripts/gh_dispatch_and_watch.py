@@ -33,10 +33,37 @@ def _is_head_sha_prefix(value):
     return all(ch in "0123456789abcdefABCDEF" for ch in value)
 
 
-def _head_sha_matches_prefix(observed_sha, expected_sha):
-    return bool(str(observed_sha or "").strip()) and str(observed_sha).startswith(
-        str(expected_sha).strip()
+def _head_sha_prefixes(expected_sha):
+    if not expected_sha:
+        return []
+    raw_prefixes = (
+        expected_sha if isinstance(expected_sha, (list, tuple, set)) else [expected_sha]
     )
+    prefixes = []
+    seen = set()
+    for prefix in raw_prefixes:
+        stripped = str(prefix or "").strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        prefixes.append(stripped)
+    return prefixes
+
+
+def _head_sha_matches_prefix(observed_sha, expected_sha):
+    observed = str(observed_sha or "").strip().lower()
+    expected_prefixes = _head_sha_prefixes(expected_sha)
+    return bool(observed) and any(observed.startswith(prefix.lower()) for prefix in expected_prefixes)
+
+
+def _head_sha_display(expected_sha):
+    prefixes = _head_sha_prefixes(expected_sha)
+    if not prefixes:
+        return ""
+    return prefixes[0] if len(prefixes) == 1 else " or ".join(prefixes)
 
 
 def parse_args():
@@ -589,6 +616,27 @@ def main():
                 f"Timed out waiting for remote ref '{validation_ref}' to match expected SHA prefix '{expected_sha}'."
             )
 
+    selection_expected_head_shas = [expected_sha]
+    if validation_ref != dispatch_ref:
+        dispatch_selection_sha = (
+            str(dispatch_ref).strip()
+            if watcher.is_sha_like(dispatch_ref)
+            else (
+                _resolve_remote_ref_sha(watcher, repo, dispatch_ref)
+                or _resolve_local_ref_sha(watcher, dispatch_ref)
+            )
+        )
+        if not dispatch_selection_sha:
+            return _emit_error(
+                f"Unable to resolve dispatch ref '{dispatch_ref}' to a commit SHA for run selection."
+            )
+        if not _is_head_sha_prefix(dispatch_selection_sha):
+            return _emit_error(
+                f"Resolved dispatch ref '{dispatch_ref}' to invalid commit SHA "
+                f"'{dispatch_selection_sha}'."
+            )
+        selection_expected_head_shas = [dispatch_selection_sha]
+
     try:
         baseline_runs = watcher.list_workflow_runs(repo, args.workflow, dispatch_ref)
         baseline_max_run_id = max(
@@ -603,6 +651,7 @@ def main():
     max_dispatch_attempts = max(1, int(args.stale_head_retries) + 1)
     stale_runs = []
     selected_run = None
+    last_selection_expected_head_sha_display = _head_sha_display(selection_expected_head_shas)
     for dispatch_attempt in range(1, max_dispatch_attempts + 1):
         dispatch_start_time = time.monotonic()
         try:
@@ -618,14 +667,39 @@ def main():
         except watcher.GhCommandError as err:
             return _emit_error(f"Workflow dispatch failed: {err}")
 
+        current_selection_expected_head_shas = list(selection_expected_head_shas)
+        if validation_ref != dispatch_ref and not watcher.is_sha_like(dispatch_ref):
+            post_dispatch_selection_sha = (
+                _resolve_remote_ref_sha(watcher, repo, dispatch_ref)
+                or _resolve_local_ref_sha(watcher, dispatch_ref)
+            )
+            if post_dispatch_selection_sha:
+                if not _is_head_sha_prefix(post_dispatch_selection_sha):
+                    return _emit_error(
+                        f"Resolved dispatch ref '{dispatch_ref}' to invalid commit SHA "
+                        f"'{post_dispatch_selection_sha}'."
+                    )
+                if post_dispatch_selection_sha.lower() not in {
+                    prefix.lower() for prefix in current_selection_expected_head_shas
+                }:
+                    current_selection_expected_head_shas.append(post_dispatch_selection_sha)
+
         min_run_id = _effective_minimum_run_id(baseline_max_run_id, args.min_run_id)
-        selection_expected_head_sha = expected_sha if validation_ref == dispatch_ref else None
+        current_selection_expected_head_sha = (
+            current_selection_expected_head_shas[0]
+            if len(current_selection_expected_head_shas) == 1
+            else current_selection_expected_head_shas
+        )
+        current_selection_expected_head_sha_display = _head_sha_display(
+            current_selection_expected_head_shas
+        )
+        last_selection_expected_head_sha_display = current_selection_expected_head_sha_display
         selection, attempts = _select_newest_matching_run(
             watcher,
             repo,
             args.workflow,
             dispatch_ref,
-            expected_head_sha=selection_expected_head_sha,
+            expected_head_sha=current_selection_expected_head_sha,
             minimum_run_id=min_run_id,
             start_time=start_time,
             attempts=attempts,
@@ -649,14 +723,14 @@ def main():
                     "run_id": stale_run_id,
                     "run_url": str(selected.get("url") or ""),
                     "run_head_sha": str(selected.get("headSha") or ""),
-                    "expected_head_sha": expected_sha,
+                    "expected_head_sha": current_selection_expected_head_sha_display,
                 }
             )
             if dispatch_attempt >= max_dispatch_attempts:
                 return _emit_stale_head_timeout(
                     workflow=args.workflow,
                     ref=dispatch_ref,
-                    expected_sha=expected_sha,
+                    expected_sha=current_selection_expected_head_sha_display,
                     attempts_used=dispatch_attempt,
                     retries_allowed=args.stale_head_retries,
                     stale_runs=stale_runs,
@@ -682,7 +756,7 @@ def main():
             return _emit_dispatch_appearance_timeout(
                 workflow=args.workflow,
                 ref=dispatch_ref,
-                expected_sha=expected_sha,
+                expected_sha=current_selection_expected_head_sha_display,
                 appearance_timeout_seconds=args.appearance_timeout_seconds,
                 attempts_used=dispatch_attempt,
             )
@@ -694,14 +768,14 @@ def main():
             return _emit_stale_head_timeout(
                 workflow=args.workflow,
                 ref=dispatch_ref,
-                expected_sha=expected_sha,
+                expected_sha=last_selection_expected_head_sha_display,
                 attempts_used=max_dispatch_attempts,
                 retries_allowed=args.stale_head_retries,
                 stale_runs=stale_runs,
             )
         return _emit_error(
             f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{dispatch_ref}', "
-            f"head-sha '{expected_sha}' after dispatch."
+            f"head-sha '{last_selection_expected_head_sha_display}' after dispatch."
         )
 
     run_id = int(selected_run.get("databaseId") or 0)

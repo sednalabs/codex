@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AppSummary": {
       "description": "EXPERIMENTAL - app metadata summary for plugin responses.",
       "properties": {
@@ -21,15 +20,11 @@
         },
         "name": {
           "type": "string"
-        },
-        "needsAuth": {
-          "type": "boolean"
         }
       },
       "required": [
         "id",
-        "name",
-        "needsAuth"
+        "name"
       ],
       "type": "object"
     },
@@ -41,20 +36,21 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "appsNeedingAuth": {
       "items": {
-        "$ref": "#/definitions/AppSummary"
+        "$ref": "#/$defs/AppSummary"
       },
       "type": "array"
     },
     "authPolicy": {
-      "$ref": "#/definitions/PluginAuthPolicy"
+      "$ref": "#/$defs/PluginAuthPolicy"
     }
   },
   "required": [
-    "appsNeedingAuth",
-    "authPolicy"
+    "authPolicy",
+    "appsNeedingAuth"
   ],
   "title": "PluginInstallResponse",
   "type": "object"
