@@ -1405,6 +1405,8 @@ struct TurnCompletionMetadata {
     started_at: Option<i64>,
     completed_at: Option<i64>,
     duration_ms: Option<i64>,
+    final_model: Option<String>,
+    model_snapshot: Option<String>,
 }
 
 async fn emit_turn_completed_with_status(
@@ -1425,6 +1427,8 @@ async fn emit_turn_completed_with_status(
             completed_at: turn_completion_metadata.completed_at,
             duration_ms: turn_completion_metadata.duration_ms,
         },
+        final_model: turn_completion_metadata.final_model,
+        model_snapshot: turn_completion_metadata.model_snapshot,
     };
     outgoing
         .send_server_notification(ServerNotification::TurnCompleted(notification))
@@ -1608,8 +1612,10 @@ async fn handle_turn_complete(
             status,
             error,
             started_at: turn_summary.started_at,
-            completed_at: None,
-            duration_ms: None,
+            completed_at: turn_complete_event.completed_at,
+            duration_ms: turn_complete_event.duration_ms,
+            final_model: turn_complete_event.final_model,
+            model_snapshot: turn_complete_event.model_snapshot,
         },
         outgoing,
     )
@@ -1619,7 +1625,7 @@ async fn handle_turn_complete(
 async fn handle_turn_interrupted(
     conversation_id: ThreadId,
     event_turn_id: String,
-    turn_aborted_event: TurnAbortedEvent,
+    _turn_aborted_event: TurnAbortedEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1634,6 +1640,8 @@ async fn handle_turn_interrupted(
             started_at: turn_summary.started_at,
             completed_at: None,
             duration_ms: None,
+            final_model: None,
+            model_snapshot: None,
         },
         outgoing,
     )
@@ -2351,6 +2359,8 @@ mod tests {
             turn_id: turn_id.to_string(),
             last_agent_message: None,
             compaction_events_in_turn: 0,
+            final_model: None,
+            model_snapshot: None,
             completed_at: Some(TEST_TURN_COMPLETED_AT),
             duration_ms: Some(TEST_TURN_DURATION_MS),
             time_to_first_token_ms: None,
@@ -3483,6 +3493,11 @@ mod tests {
             ThreadId::new(),
         );
         let thread_state = new_thread_state();
+        let turn_complete = TurnCompleteEvent {
+            final_model: Some("codex-route-orchid-7319".to_string()),
+            model_snapshot: Some("codex-snapshot-northstar-4404".to_string()),
+            ..turn_complete_event(&event_turn_id)
+        };
         {
             let mut state = thread_state.lock().await;
             state.track_current_turn_event(
@@ -3497,14 +3512,14 @@ mod tests {
             );
             state.track_current_turn_event(
                 &event_turn_id,
-                &EventMsg::TurnComplete(turn_complete_event(&event_turn_id)),
+                &EventMsg::TurnComplete(turn_complete.clone()),
             );
         }
 
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
-            turn_complete_event(&event_turn_id),
+            turn_complete,
             &outgoing,
             &thread_state,
         )
@@ -3518,9 +3533,14 @@ mod tests {
                 assert_eq!(n.turn.items_view, TurnItemsView::NotLoaded);
                 assert!(n.turn.items.is_empty());
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.started_at, None);
-                assert_eq!(n.turn.completed_at, None);
-                assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.turn.started_at, Some(42));
+                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
+                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.final_model.as_deref(), Some("codex-route-orchid-7319"));
+                assert_eq!(
+                    n.model_snapshot.as_deref(),
+                    Some("codex-snapshot-northstar-4404")
+                );
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3571,6 +3591,8 @@ mod tests {
                 assert_eq!(n.turn.error, None);
                 assert_eq!(n.turn.completed_at, None);
                 assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.final_model, None);
+                assert_eq!(n.model_snapshot, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }

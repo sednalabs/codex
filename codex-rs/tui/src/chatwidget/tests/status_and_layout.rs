@@ -2338,6 +2338,63 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 }
 
 #[tokio::test]
+async fn status_surfaces_prefer_turn_completed_provider_model_identity() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["model-with-reasoning".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["model".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.refresh_status_surfaces();
+
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            final_model: Some("provider-final-model".to_string()),
+            model_snapshot: Some("provider-model-snapshot".to_string()),
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn: app_server_turn(
+                "turn-identity",
+                AppServerTurnStatus::Completed,
+                /*duration_ms*/ None,
+                /*error*/ None,
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.current_model(), "gpt-5.4");
+    assert_eq!(
+        status_line_text(&chat),
+        Some("provider-final-model high".to_string())
+    );
+    assert_eq!(
+        chat.last_terminal_title,
+        Some("provider-final-model".to_string())
+    );
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw provider-model footer");
+    assert_chatwidget_snapshot!(
+        "status_line_provider_final_model_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+
+    chat.set_model("gpt-5.3-codex");
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.3-codex high".to_string())
+    );
+    assert_eq!(chat.last_terminal_title, Some("gpt-5.3-codex".to_string()));
+}
+
+#[tokio::test]
 async fn terminal_title_model_updates_on_model_change_without_manual_refresh() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config.tui_terminal_title = Some(vec!["model".to_string()]);
