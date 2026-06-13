@@ -13,7 +13,6 @@ use crate::tools::ToolRouter;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::ExtensionData;
-use codex_extension_api::TurnItemContributionFuture;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::error::CodexErr;
 use codex_protocol::items::AgentMessageContent;
@@ -174,7 +173,7 @@ impl TurnItemContributor for TestTurnItemContributor {
         _thread_store: &'a ExtensionData,
         turn_store: &'a ExtensionData,
         item: &'a mut TurnItem,
-    ) -> TurnItemContributionFuture<'a> {
+    ) -> codex_extension_api::ExtensionFuture<'a, Result<(), String>> {
         Box::pin(async move {
             turn_store.insert(TurnItemContributorRan);
             if let TurnItem::AgentMessage(agent_message) = item {
@@ -196,7 +195,7 @@ impl TurnItemContributor for RewriteAgentMessageContributor {
         _thread_store: &'a ExtensionData,
         _turn_store: &'a ExtensionData,
         item: &'a mut TurnItem,
-    ) -> TurnItemContributionFuture<'a> {
+    ) -> codex_extension_api::ExtensionFuture<'a, Result<(), String>> {
         Box::pin(async move {
             if let TurnItem::AgentMessage(agent_message) = item {
                 agent_message.content = vec![AgentMessageContent::Text {

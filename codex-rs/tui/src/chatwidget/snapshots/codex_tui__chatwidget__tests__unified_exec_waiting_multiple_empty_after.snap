@@ -2,4 +2,4 @@
 source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
-• Waited for background terminal · just fix
+• Waiting · primitive: write_stdin(empty stdin poll) · just fix

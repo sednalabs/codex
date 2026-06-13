@@ -12,6 +12,7 @@ This fork publishes downstream behavior on `main` and keeps an exact upstream mi
 - `sedna-sync-upstream` fast-forwards the mirror and then runs the downstream divergence audit against the exact synced SHA.
 - avoid force-push on `main` during normal sync; reserve `--force-with-lease` for exceptional repair only
 - new feature branches: create from `main` by default
+- completed feature, bugfix, docs, or cleanup branch work must be committed, pushed, and opened as a PR targeting `origin/main` before handoff; do not leave finished work local-only
 - upstream-only compatibility/test probes: create from `upstream-main`, then cherry-pick to `main` if retained downstream
 
 ## Local clone migration
@@ -80,7 +81,7 @@ docs-only refresh commit that records this snapshot.
 Supporting docs:
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
-- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use and Android tool contract, including app-server, TUI, rollout, and validation boundaries.
+- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use adapter contract, including Android, browser, app-server, TUI, rollout, and validation boundaries.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -105,23 +106,44 @@ User-visible behavior:
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
-### Core + app-server: native computer-use and first-party Android bridge
+### Core + app-server: native computer-use adapter bridge
 
 Why:
-- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android observe/step as ordinary ad hoc dynamic tools.
-- Let Android providers supply runtime capability while Codex owns the canonical model-facing schema, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
-- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling.
+- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
+- Let runtime providers supply Android or browser capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
+- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
 User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
-- Namespaced Android-like tools remain normal dynamic tools.
+- Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
+- Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
+- Namespaced Android-like and browser-like tools remain normal dynamic tools.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
+- `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
+- The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
+- Thread-spawned sidecars inherit the parent thread's advertised native dynamic tools, so browser-capable agents receive `browser_observe` and `browser_step` through the native computer-use path instead of having to fall back to Playwright MCP or another compatibility adapter.
+- The Android adapter remains the MCP-backed reference runtime provider; reuse
+  `android-emulator-mcp` or a successor when it exposes the current Android MCP
+  contract, and keep harness-specific translation in the provider rather than
+  in hot Codex core paths.
+- Android provider behavior should absorb emulator-QA discipline without
+  pushing shell recipes into Codex core: explicit device serial/readiness,
+  UIAutomator-style hierarchy capture, selector-to-bounds targeting, screenshot
+  and hierarchy receipts, log/performance artifacts for focused debugging, and
+  post-failure observations that help agents recover from partially completed
+  mutating actions.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
+- TUI transcript and replay surfaces render native computer-use items with
+  compact adapter-specific labels such as `Used browser`, `Used computer`, and
+  `Used Android emulator`; exec JSON/human output projects the same calls as
+  compact computer-use events without embedding screenshot bytes in transcript
+  text.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
-- Android screenshots are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
+- Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
+- See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for the sanitized desktop, browser-shell, Chrome-extension, and bundled-plugin cleanroom contracts.
 
 ### Usage ledger: first-party local `usage.sqlite`
 
@@ -228,6 +250,23 @@ User-visible behavior:
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
 
+### MCP OAuth: device-code login for headless servers
+
+Why:
+- Let operators authenticate MCP servers from SSH-only or browserless hosts without installing temporary login helpers or copying fallback credential files by hand.
+- Preserve OAuth discovery metadata needed for standards-based Device Authorization Grant flows instead of flattening the authorization-server response down to browser-only fields.
+- Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with either an explicitly configured public client id or standards-based dynamic client registration when the authorization server advertises a registration endpoint.
+- Preserve grant-aware registration shape so device-login DCR asks for the Device Authorization Grant, keeps `token_endpoint_auth_method=none`, and only requests `refresh_token` when server metadata does not rule it out.
+
+User-visible behavior:
+- `codex mcp login --device-auth <server>` uses the discovered `device_authorization_endpoint` and requires `grant_types_supported` to include `urn:ietf:params:oauth:grant-type:device_code`.
+- The command uses the configured public MCP OAuth `client_id` when one is present; otherwise it performs dynamic client registration from OAuth discovery before requesting the device code.
+- Dynamic registration keeps the request public-client shaped (`token_endpoint_auth_method=none`), uses `grant_types=["urn:ietf:params:oauth:grant-type:device_code"]`, adds `refresh_token` only when server metadata permits or omits grant support, and forwards the configured scope string when scopes are requested.
+- The device-code step uses PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
+- Discovery keeps `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- If no configured client id exists and the authorization server does not advertise dynamic registration, the CLI fails with an explicit public-client-id-required error instead of reporting a misleading generic registration failure.
+- This is an intentional downstream carry until upstream has an equivalent headless MCP OAuth login path. If upstream lands native device-login support, compare behavior and drop or re-home this carry rather than keeping both paths.
+
 ### App-server transport: raw-byte websocket auth secrets
 
 Why:
@@ -303,6 +342,18 @@ User-visible behavior:
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
 - `/quit` remains immediate while a task is running instead of being queued behind the active turn.
+
+### TUI: Side conversation local exit
+
+Why:
+- Keep `/side` conversations scoped to their parent session so closing a side
+  question does not end the whole TUI session.
+- Preserve the existing main-thread `/quit` and `/exit` behavior.
+
+User-visible behavior:
+- `/quit` and `/exit` in an active side conversation close that side conversation
+  and return to the parent thread.
+- `/quit` and `/exit` in the main conversation remain application exits.
 
 ### Review + history: downstream accounting and runtime-context alignment
 

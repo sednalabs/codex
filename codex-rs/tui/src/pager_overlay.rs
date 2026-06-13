@@ -15,11 +15,25 @@
 //! recomputed. `ChatWidget` is responsible for producing a key that changes when the active cell
 //! mutates in place or when its transcript output is time-dependent.
 
+use std::any::TypeId;
 use std::io::Result;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::chatwidget::ActiveCellTranscriptKey;
+use crate::chatwidget::CopyStatus;
+use crate::footer_hints::FooterHint;
+use crate::footer_hints::first_fitting_right_label;
+use crate::footer_hints::footer_hint_line_for_row;
+use crate::footer_hints::render_footer_line_with_optional_right;
+use crate::footer_hints::render_footer_separator;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::HistoryRenderMode;
+use crate::history_cell::SessionInfoCell;
+use crate::history_cell::TranscriptDetailMode;
 use crate::history_cell::UserHistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -29,6 +43,9 @@ use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
 use crate::style::user_message_style;
+use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
+use crate::terminal_hyperlinks::visible_lines;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -39,7 +56,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
@@ -47,14 +63,72 @@ use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 
+const NO_HIGHLIGHT_CELL: usize = usize::MAX;
+
+#[derive(Clone)]
+struct HighlightCell(Arc<AtomicUsize>);
+
+impl HighlightCell {
+    fn new(cell: Option<usize>) -> Self {
+        Self(Arc::new(AtomicUsize::new(Self::encode(cell))))
+    }
+
+    fn get(&self) -> Option<usize> {
+        Self::decode(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, cell: Option<usize>) {
+        self.0.store(Self::encode(cell), Ordering::Relaxed);
+    }
+
+    fn encode(cell: Option<usize>) -> usize {
+        cell.unwrap_or(NO_HIGHLIGHT_CELL)
+    }
+
+    fn decode(cell: usize) -> Option<usize> {
+        (cell != NO_HIGHLIGHT_CELL).then_some(cell)
+    }
+}
+
 pub(crate) enum Overlay {
-    Transcript(TranscriptOverlay),
-    Static(StaticOverlay),
+    Transcript(Box<TranscriptOverlay>),
+    Static(Box<StaticOverlay>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptOverlayState {
+    pub(crate) scroll_offset: usize,
+    pub(crate) highlight_cell: Option<usize>,
+    pub(crate) render_mode: HistoryRenderMode,
+    pub(crate) detail_mode: TranscriptDetailMode,
+}
+
+impl TranscriptOverlayState {
+    pub(crate) fn new(render_mode: HistoryRenderMode, detail_mode: TranscriptDetailMode) -> Self {
+        Self {
+            scroll_offset: usize::MAX,
+            highlight_cell: None,
+            render_mode,
+            detail_mode,
+        }
+    }
 }
 
 impl Overlay {
-    pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
-        Self::Transcript(TranscriptOverlay::new(cells, keymap))
+    pub(crate) fn new_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        copy_keymap: Vec<KeyBinding>,
+        toggle_raw_output_keymap: Vec<KeyBinding>,
+        state: TranscriptOverlayState,
+    ) -> Self {
+        Self::Transcript(Box::new(TranscriptOverlay::new(
+            cells,
+            keymap,
+            copy_keymap,
+            toggle_raw_output_keymap,
+            state,
+        )))
     }
 
     pub(crate) fn new_static_with_lines(
@@ -62,7 +136,7 @@ impl Overlay {
         title: String,
         keymap: PagerKeymap,
     ) -> Self {
-        Self::Static(StaticOverlay::with_title(lines, title, keymap))
+        Self::Static(Box::new(StaticOverlay::with_title(lines, title, keymap)))
     }
 
     pub(crate) fn new_static_with_renderables(
@@ -70,7 +144,11 @@ impl Overlay {
         title: String,
         keymap: PagerKeymap,
     ) -> Self {
-        Self::Static(StaticOverlay::with_renderables(renderables, title, keymap))
+        Self::Static(Box::new(StaticOverlay::with_renderables(
+            renderables,
+            title,
+            keymap,
+        )))
     }
 
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
@@ -92,25 +170,12 @@ fn first_or_empty(bindings: &[KeyBinding]) -> Vec<KeyBinding> {
     bindings.first().copied().into_iter().collect()
 }
 
-// Render a single line of key hints from (key(s), description) pairs.
-fn render_key_hints(area: Rect, buf: &mut Buffer, pairs: &[(Vec<KeyBinding>, &str)]) {
-    let mut spans: Vec<Span<'static>> = vec![" ".into()];
-    let mut first = true;
-    for (keys, desc) in pairs {
-        if !first {
-            spans.push("   ".into());
-        }
-        for (i, key) in keys.iter().enumerate() {
-            if i > 0 {
-                spans.push("/".into());
-            }
-            spans.push(Span::from(key));
-        }
-        spans.push(" ".into());
-        spans.push(Span::from(desc.to_string()));
-        first = false;
-    }
-    Paragraph::new(vec![Line::from(spans).dim()]).render_ref(area, buf);
+fn key_label(bindings: &[KeyBinding]) -> String {
+    bindings
+        .iter()
+        .map(KeyBinding::display_label)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Generic widget for rendering a pager view.
@@ -118,11 +183,22 @@ struct PagerView {
     renderables: Vec<Box<dyn Renderable>>,
     scroll_offset: usize,
     title: String,
+    footer_separator_label: String,
+    show_header_progress: bool,
     keymap: PagerKeymap,
     last_content_height: Option<usize>,
     last_rendered_height: Option<usize>,
-    /// If set, on next render ensure this chunk is visible.
-    pending_scroll_chunk: Option<usize>,
+    layout: Option<PagerLayout>,
+    /// If set, on next render position this row of the chunk near the upper third.
+    pending_anchor_chunk: Option<(usize, usize)>,
+}
+
+#[derive(Debug)]
+struct PagerLayout {
+    width: u16,
+    offsets: Arc<[usize]>,
+    heights: Arc<[usize]>,
+    total_height: usize,
 }
 
 impl PagerView {
@@ -136,55 +212,102 @@ impl PagerView {
             renderables,
             scroll_offset,
             title,
+            footer_separator_label: String::new(),
+            show_header_progress: true,
             keymap,
             last_content_height: None,
             last_rendered_height: None,
-            pending_scroll_chunk: None,
+            layout: None,
+            pending_anchor_chunk: None,
         }
     }
 
-    fn content_height(&self, width: u16) -> usize {
-        self.renderables
-            .iter()
-            .map(|c| c.desired_height(width) as usize)
-            .sum()
+    fn invalidate_layout(&mut self) {
+        self.layout = None;
+    }
+
+    fn content_height(&mut self, width: u16) -> usize {
+        self.layout(width).total_height
+    }
+
+    fn layout(&mut self, width: u16) -> &PagerLayout {
+        let needs_rebuild = self.layout.as_ref().is_none_or(|layout| {
+            layout.width != width || layout.heights.len() != self.renderables.len()
+        });
+        if needs_rebuild {
+            let mut offsets = Vec::with_capacity(self.renderables.len());
+            let mut heights = Vec::with_capacity(self.renderables.len());
+            let mut total_height = 0usize;
+            for renderable in &self.renderables {
+                offsets.push(total_height);
+                let height = renderable.desired_height(width) as usize;
+                heights.push(height);
+                total_height = total_height.saturating_add(height);
+            }
+            self.layout = Some(PagerLayout {
+                width,
+                offsets: offsets.into(),
+                heights: heights.into(),
+                total_height,
+            });
+        }
+        match self.layout.as_ref() {
+            Some(layout) => layout,
+            None => unreachable!("pager layout missing after rebuild"),
+        }
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        self.render_header(area, buf);
         let content_area = self.content_area(area);
         self.update_last_content_height(content_area.height);
         let content_height = self.content_height(content_area.width);
         self.last_rendered_height = Some(content_height);
-        // If there is a pending request to scroll a specific chunk into view,
-        // satisfy it now that wrapping is up to date for this width.
-        if let Some(idx) = self.pending_scroll_chunk.take() {
-            self.ensure_chunk_visible(idx, content_area);
-        }
-        self.scroll_offset = self
-            .scroll_offset
-            .min(content_height.saturating_sub(content_area.height as usize));
+        self.resolve_pending_scroll(content_area, content_height);
+        self.render_header(area, content_area, buf, content_height);
 
         self.render_content(content_area, buf);
 
         self.render_bottom_bar(area, content_area, buf, content_height);
     }
 
-    fn render_header(&self, area: Rect, buf: &mut Buffer) {
-        Span::from("/ ".repeat(area.width as usize / 2))
-            .dim()
-            .render_ref(area, buf);
-        let header = format!("/ {}", self.title);
-        header.dim().render_ref(area, buf);
+    fn render_header(&self, area: Rect, content_area: Rect, buf: &mut Buffer, total_len: usize) {
+        let header = Rect::new(area.x, area.y, area.width, 1);
+        render_footer_separator(header, buf, "");
+        let title = if self.show_header_progress {
+            let percent = self.scroll_percent(content_area.height, total_len);
+            format!(" {} · {percent}% ", self.title)
+        } else {
+            format!(" {} ", self.title)
+        };
+        title.dim().render_ref(header, buf);
     }
 
-    fn render_content(&self, area: Rect, buf: &mut Buffer) {
-        let mut y = -(self.scroll_offset as isize);
+    fn render_content(&mut self, area: Rect, buf: &mut Buffer) {
+        let (offsets, heights) = {
+            let layout = self.layout(area.width);
+            (layout.offsets.clone(), layout.heights.clone())
+        };
+        if offsets.is_empty() {
+            for y in area.y..area.bottom() {
+                if area.width == 0 {
+                    break;
+                }
+                buf[(area.x, y)] = Cell::from('~');
+                for x in area.x + 1..area.right() {
+                    buf[(x, y)] = Cell::from(' ');
+                }
+            }
+            return;
+        }
+        let first_visible = offsets
+            .partition_point(|offset| *offset <= self.scroll_offset)
+            .saturating_sub(1);
+        let mut y = offsets[first_visible] as isize - self.scroll_offset as isize;
         let mut drawn_bottom = area.y;
-        for renderable in &self.renderables {
+        for (idx, renderable) in self.renderables.iter().enumerate().skip(first_visible) {
             let top = y;
-            let height = renderable.desired_height(area.width) as isize;
+            let height = heights[idx] as isize;
             y += height;
             let bottom = y;
             if bottom < area.y as isize {
@@ -220,34 +343,31 @@ impl PagerView {
         full_area: Rect,
         content_area: Rect,
         buf: &mut Buffer,
-        total_len: usize,
+        _total_len: usize,
     ) {
         let sep_y = content_area.bottom();
         let sep_rect = Rect::new(full_area.x, sep_y, full_area.width, 1);
 
-        Span::from("─".repeat(sep_rect.width as usize))
-            .dim()
-            .render_ref(sep_rect, buf);
-        let percent = if total_len == 0 {
-            100
-        } else {
-            let max_scroll = total_len.saturating_sub(content_area.height as usize);
-            if max_scroll == 0 {
-                100
-            } else {
-                (((self.scroll_offset.min(max_scroll)) as f32 / max_scroll as f32) * 100.0).round()
-                    as u8
-            }
-        };
-        let pct_text = format!(" {percent}% ");
-        let pct_w = pct_text.chars().count() as u16;
-        let pct_x = sep_rect.x + sep_rect.width - pct_w - 1;
-        Span::from(pct_text)
-            .dim()
-            .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
+        render_footer_separator(sep_rect, buf, self.footer_separator_label.as_str());
     }
 
-    fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
+    fn scroll_percent(&self, content_height: u16, total_len: usize) -> u8 {
+        if total_len == 0 {
+            return 100;
+        }
+        let max_scroll = total_len.saturating_sub(content_height as usize);
+        if max_scroll == 0 {
+            return 100;
+        }
+        (((self.scroll_offset.min(max_scroll)) as f32 / max_scroll as f32) * 100.0).round() as u8
+    }
+
+    fn handle_key_event(
+        &mut self,
+        tui: &mut tui::Tui,
+        key_event: KeyEvent,
+        viewport_area: Rect,
+    ) -> Result<bool> {
         match key_event {
             e if self.keymap.scroll_up.is_pressed(e) => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
@@ -256,20 +376,20 @@ impl PagerView {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
             }
             e if self.keymap.page_up.is_pressed(e) => {
-                let page_height = self.page_height(tui.terminal.viewport_area);
+                let page_height = self.page_height(viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_sub(page_height);
             }
             e if self.keymap.page_down.is_pressed(e) => {
-                let page_height = self.page_height(tui.terminal.viewport_area);
+                let page_height = self.page_height(viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_add(page_height);
             }
             e if self.keymap.half_page_down.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
+                let area = self.content_area(viewport_area);
                 let half_page = (area.height as usize).saturating_add(1) / 2;
                 self.scroll_offset = self.scroll_offset.saturating_add(half_page);
             }
             e if self.keymap.half_page_up.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
+                let area = self.content_area(viewport_area);
                 let half_page = (area.height as usize).saturating_add(1) / 2;
                 self.scroll_offset = self.scroll_offset.saturating_sub(half_page);
             }
@@ -280,12 +400,12 @@ impl PagerView {
                 self.scroll_offset = usize::MAX;
             }
             _ => {
-                return Ok(());
+                return Ok(false);
             }
         }
         tui.frame_requester()
             .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
-        Ok(())
+        Ok(true)
     }
 
     /// Returns the height of one page in content rows.
@@ -331,29 +451,35 @@ impl PagerView {
         self.scroll_offset >= max_scroll
     }
 
-    /// Request that the given text chunk index be scrolled into view on next render.
-    fn scroll_chunk_into_view(&mut self, chunk_index: usize) {
-        self.pending_scroll_chunk = Some(chunk_index);
+    fn resolve_pending_scroll(&mut self, area: Rect, content_height: usize) {
+        if let Some((idx, row_offset)) = self.pending_anchor_chunk.take() {
+            self.position_chunk_at_upper_third(idx, row_offset, area);
+        }
+        self.scroll_offset = self
+            .scroll_offset
+            .min(content_height.saturating_sub(area.height as usize));
     }
 
-    fn ensure_chunk_visible(&mut self, idx: usize, area: Rect) {
+    fn clamped_scroll_offset(&mut self, area: Rect) -> usize {
+        self.scroll_offset.min(
+            self.content_height(area.width)
+                .saturating_sub(area.height as usize),
+        )
+    }
+
+    /// Request that a row inside a selected chunk be anchored on next render.
+    fn scroll_chunk_to_upper_third(&mut self, chunk_index: usize, row_offset: usize) {
+        self.pending_anchor_chunk = Some((chunk_index, row_offset));
+    }
+
+    fn position_chunk_at_upper_third(&mut self, idx: usize, row_offset: usize, area: Rect) {
         if area.height == 0 || idx >= self.renderables.len() {
             return;
         }
-        let first = self
-            .renderables
-            .iter()
-            .take(idx)
-            .map(|r| r.desired_height(area.width) as usize)
-            .sum();
-        let last = first + self.renderables[idx].desired_height(area.width) as usize;
-        let current_top = self.scroll_offset;
-        let current_bottom = current_top.saturating_add(area.height.saturating_sub(1) as usize);
-        if first < current_top {
-            self.scroll_offset = first;
-        } else if last > current_bottom {
-            self.scroll_offset = last.saturating_sub(area.height.saturating_sub(1) as usize);
-        }
+        let layout = self.layout(area.width);
+        let row = layout.offsets[idx].saturating_add(row_offset);
+        let anchor = (area.height as usize) / 3;
+        self.scroll_offset = row.saturating_sub(anchor);
     }
 }
 
@@ -390,19 +516,60 @@ impl Renderable for CachedRenderable {
 
 struct CellRenderable {
     cell: Arc<dyn HistoryCell>,
+    cell_index: usize,
     style: Style,
+    selected_style: Option<Style>,
+    highlight_cell: HighlightCell,
+    render_mode: HistoryRenderMode,
+    detail_mode: TranscriptDetailMode,
 }
 
 impl Renderable for CellRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let p = Paragraph::new(Text::from(self.cell.transcript_lines(area.width)))
-            .style(self.style)
+        let style = if self.highlight_cell.get() == Some(self.cell_index) {
+            self.selected_style.unwrap_or(self.style)
+        } else {
+            self.style
+        };
+        let hyperlink_lines = self.cell.transcript_hyperlink_lines_for_detail_mode(
+            area.width,
+            self.render_mode,
+            self.detail_mode,
+        );
+        let p = Paragraph::new(Text::from(visible_lines(hyperlink_lines.clone())))
+            .style(style)
             .wrap(Wrap { trim: false });
         p.render(area, buf);
+        mark_buffer_hyperlinks(buf, area, &hyperlink_lines, /*scroll_rows*/ 0);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.cell.desired_transcript_height(width)
+        self.cell.desired_transcript_height_for_detail_mode(
+            width,
+            self.render_mode,
+            self.detail_mode,
+        )
+    }
+}
+
+struct HyperlinkLinesRenderable {
+    lines: Vec<HyperlinkLine>,
+}
+
+impl Renderable for HyperlinkLinesRenderable {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        Paragraph::new(Text::from(visible_lines(self.lines.clone())))
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+        mark_buffer_hyperlinks(buf, area, &self.lines, /*scroll_rows*/ 0);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        Paragraph::new(Text::from(visible_lines(self.lines.clone())))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .try_into()
+            .unwrap_or(/*default*/ 0)
     }
 }
 
@@ -414,10 +581,27 @@ pub(crate) struct TranscriptOverlay {
     view: PagerView,
     /// Committed transcript cells (does not include the live tail).
     cells: Vec<Arc<dyn HistoryCell>>,
-    highlight_cell: Option<usize>,
+    highlight_cell: HighlightCell,
+    user_prompt_positions: Vec<usize>,
+    render_mode: HistoryRenderMode,
+    detail_mode: TranscriptDetailMode,
+    copy_keymap: Vec<KeyBinding>,
+    toggle_raw_output_keymap: Vec<KeyBinding>,
+    copy_requested: bool,
+    scroll_selected_user_cell: Option<usize>,
+    footer_status: Option<FooterStatus>,
+    last_rendered_area: Option<Rect>,
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
     is_done: bool,
+}
+
+const FOOTER_STATUS_TTL: Duration = Duration::from_secs(2);
+
+#[derive(Clone)]
+struct FooterStatus {
+    line: Line<'static>,
+    expires_at: Instant,
 }
 
 /// Cache key for the active-cell "live tail" appended to the transcript overlay.
@@ -433,6 +617,10 @@ struct LiveTailKey {
     is_stream_continuation: bool,
     /// Optional animation tick to refresh spinners/progress indicators.
     animation_tick: Option<u64>,
+    /// Active transcript rich/raw rendering mode.
+    render_mode: HistoryRenderMode,
+    /// Active transcript verbose/compact detail mode.
+    detail_mode: TranscriptDetailMode,
 }
 
 impl TranscriptOverlay {
@@ -440,16 +628,41 @@ impl TranscriptOverlay {
     ///
     /// This overlay does not own the "active cell"; callers may optionally append a live tail via
     /// `sync_live_tail` during draws to reflect in-flight activity.
-    pub(crate) fn new(transcript_cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
+    pub(crate) fn new(
+        transcript_cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        copy_keymap: Vec<KeyBinding>,
+        toggle_raw_output_keymap: Vec<KeyBinding>,
+        state: TranscriptOverlayState,
+    ) -> Self {
+        let highlight_cell = HighlightCell::new(state.highlight_cell);
         Self {
-            view: PagerView::new(
-                Self::render_cells(&transcript_cells, /*highlight_cell*/ None),
-                "T R A N S C R I P T".to_string(),
-                usize::MAX,
-                keymap,
-            ),
+            view: {
+                let mut view = PagerView::new(
+                    Self::render_cells(
+                        &transcript_cells,
+                        highlight_cell.clone(),
+                        state.render_mode,
+                        state.detail_mode,
+                    ),
+                    "Transcript".to_string(),
+                    state.scroll_offset,
+                    keymap,
+                );
+                view.show_header_progress = false;
+                view
+            },
+            user_prompt_positions: Self::user_prompt_positions(&transcript_cells),
             cells: transcript_cells,
-            highlight_cell: None,
+            highlight_cell,
+            render_mode: state.render_mode,
+            detail_mode: state.detail_mode,
+            copy_keymap,
+            toggle_raw_output_keymap,
+            copy_requested: false,
+            scroll_selected_user_cell: None,
+            footer_status: None,
+            last_rendered_area: None,
             live_tail_key: None,
             is_done: false,
         }
@@ -457,28 +670,37 @@ impl TranscriptOverlay {
 
     fn render_cells(
         cells: &[Arc<dyn HistoryCell>],
-        highlight_cell: Option<usize>,
+        highlight_cell: HighlightCell,
+        render_mode: HistoryRenderMode,
+        detail_mode: TranscriptDetailMode,
     ) -> Vec<Box<dyn Renderable>> {
         cells
             .iter()
             .enumerate()
             .flat_map(|(i, c)| {
                 let mut v: Vec<Box<dyn Renderable>> = Vec::new();
-                let mut cell_renderable = if c.as_any().is::<UserHistoryCell>() {
+                let base_renderable = if c.as_any().is::<UserHistoryCell>() {
                     Box::new(CachedRenderable::new(CellRenderable {
                         cell: c.clone(),
-                        style: if highlight_cell == Some(i) {
-                            user_message_style().reversed()
-                        } else {
-                            user_message_style()
-                        },
+                        cell_index: i,
+                        style: user_message_style(),
+                        selected_style: Some(user_message_style().reversed()),
+                        highlight_cell: highlight_cell.clone(),
+                        render_mode,
+                        detail_mode,
                     })) as Box<dyn Renderable>
                 } else {
                     Box::new(CachedRenderable::new(CellRenderable {
                         cell: c.clone(),
+                        cell_index: i,
                         style: Style::default(),
+                        selected_style: None,
+                        highlight_cell: highlight_cell.clone(),
+                        render_mode,
+                        detail_mode,
                     })) as Box<dyn Renderable>
                 };
+                let mut cell_renderable = base_renderable;
                 if !c.is_stream_continuation() && i > 0 {
                     cell_renderable = Box::new(InsetRenderable::new(
                         cell_renderable,
@@ -490,6 +712,16 @@ impl TranscriptOverlay {
                 v.push(cell_renderable);
                 v
             })
+            .collect()
+    }
+
+    fn user_prompt_positions(cells: &[Arc<dyn HistoryCell>]) -> Vec<usize> {
+        let start = session_start_index(cells);
+        cells
+            .iter()
+            .enumerate()
+            .skip(start)
+            .filter_map(|(idx, cell)| cell.is_user_prompt().then_some(idx))
             .collect()
     }
 
@@ -508,7 +740,14 @@ impl TranscriptOverlay {
         let had_prior_cells = !self.cells.is_empty();
         let tail_renderable = self.take_live_tail_renderable();
         self.cells.push(cell);
-        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
+        self.view.renderables = Self::render_cells(
+            &self.cells,
+            self.highlight_cell.clone(),
+            self.render_mode,
+            self.detail_mode,
+        );
+        self.view.invalidate_layout();
         if let Some(tail) = tail_renderable {
             let tail = if !had_prior_cells
                 && self
@@ -541,11 +780,13 @@ impl TranscriptOverlay {
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         self.cells = cells;
+        self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
         if self
             .highlight_cell
+            .get()
             .is_some_and(|idx| idx >= self.cells.len())
         {
-            self.highlight_cell = None;
+            self.highlight_cell.set(/*cell*/ None);
         }
         self.rebuild_renderables();
         if follow_bottom {
@@ -572,22 +813,25 @@ impl TranscriptOverlay {
         let clamped_start = range.start.min(clamped_end);
         if clamped_start < clamped_end {
             let removed = clamped_end - clamped_start;
-            if let Some(highlight_cell) = self.highlight_cell.as_mut()
-                && *highlight_cell >= clamped_start
+            if let Some(mut highlight_cell) = self.highlight_cell.get()
+                && highlight_cell >= clamped_start
             {
-                if *highlight_cell < clamped_end {
-                    *highlight_cell = clamped_start;
+                if highlight_cell < clamped_end {
+                    highlight_cell = clamped_start;
                 } else {
-                    *highlight_cell = highlight_cell.saturating_sub(removed.saturating_sub(1));
+                    highlight_cell = highlight_cell.saturating_sub(removed.saturating_sub(1));
                 }
+                self.highlight_cell.set(Some(highlight_cell));
             }
             self.cells
                 .splice(clamped_start..clamped_end, std::iter::once(consolidated));
+            self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
             if self
                 .highlight_cell
+                .get()
                 .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
             {
-                self.highlight_cell = None;
+                self.highlight_cell.set(/*cell*/ None);
             }
             self.rebuild_renderables();
         }
@@ -612,13 +856,15 @@ impl TranscriptOverlay {
         &mut self,
         width: u16,
         active_key: Option<ActiveCellTranscriptKey>,
-        compute_lines: impl FnOnce(u16) -> Option<Vec<Line<'static>>>,
+        compute_lines: impl FnOnce(u16) -> Option<Vec<HyperlinkLine>>,
     ) {
         let next_key = active_key.map(|key| LiveTailKey {
             width,
             revision: key.revision,
             is_stream_continuation: key.is_stream_continuation,
             animation_tick: key.animation_tick,
+            render_mode: self.render_mode,
+            detail_mode: self.detail_mode,
         });
 
         if self.live_tail_key == next_key {
@@ -637,6 +883,7 @@ impl TranscriptOverlay {
                     !self.cells.is_empty(),
                     key.is_stream_continuation,
                 ));
+                self.view.invalidate_layout();
             }
         }
         if follow_bottom {
@@ -645,11 +892,35 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn set_highlight_cell(&mut self, cell: Option<usize>) {
-        self.highlight_cell = cell;
-        self.rebuild_renderables();
-        if let Some(idx) = self.highlight_cell {
-            self.view.scroll_chunk_into_view(idx);
+        self.set_highlight_cell_with_placement(cell, PromptSelectionPlacement::AnchorUpperThird);
+    }
+
+    fn set_highlight_cell_preserving_viewport(&mut self, cell: Option<usize>) {
+        self.set_highlight_cell_with_placement(cell, PromptSelectionPlacement::PreserveViewport);
+    }
+
+    fn set_highlight_cell_with_placement(
+        &mut self,
+        cell: Option<usize>,
+        placement: PromptSelectionPlacement,
+    ) {
+        let prompt_row_offset = cell.map(|idx| self.prompt_first_text_row_offset(idx));
+        self.highlight_cell.set(cell);
+        if let (Some(idx), Some(row_offset), PromptSelectionPlacement::AnchorUpperThird) =
+            (cell, prompt_row_offset, placement)
+        {
+            self.view.scroll_chunk_to_upper_third(idx, row_offset);
         }
+    }
+
+    pub(crate) fn user_prompt_count(&self) -> usize {
+        self.user_prompt_positions.len()
+    }
+
+    pub(crate) fn set_highlighted_user_prompt(&mut self, nth_user_message: usize) -> Option<usize> {
+        let cell_idx = self.user_prompt_positions.get(nth_user_message).copied()?;
+        self.set_highlight_cell(Some(cell_idx));
+        Some(cell_idx)
     }
 
     /// Returns whether the underlying pager view is currently pinned to the bottom.
@@ -660,12 +931,201 @@ impl TranscriptOverlay {
         self.view.is_scrolled_to_bottom()
     }
 
+    pub(crate) fn state(&self) -> TranscriptOverlayState {
+        TranscriptOverlayState {
+            scroll_offset: self.view.scroll_offset,
+            highlight_cell: self.highlight_cell.get(),
+            render_mode: self.render_mode,
+            detail_mode: self.detail_mode,
+        }
+    }
+
+    pub(crate) fn render_mode(&self) -> HistoryRenderMode {
+        self.render_mode
+    }
+
+    pub(crate) fn detail_mode(&self) -> TranscriptDetailMode {
+        self.detail_mode
+    }
+
+    pub(crate) fn take_copy_requested(&mut self) -> bool {
+        std::mem::take(&mut self.copy_requested)
+    }
+
+    pub(crate) fn take_scroll_selected_user_cell(&mut self) -> Option<usize> {
+        self.scroll_selected_user_cell.take()
+    }
+
+    pub(crate) fn show_copy_status(&mut self, status: &CopyStatus, tui: &mut tui::Tui) {
+        self.show_copy_status_at(status, Instant::now());
+        tui.frame_requester().schedule_frame();
+        tui.frame_requester().schedule_frame_in(FOOTER_STATUS_TTL);
+    }
+
+    pub(crate) fn selected_user_cell(&self) -> Option<usize> {
+        self.highlight_cell.get().filter(|idx| {
+            self.cells
+                .get(*idx)
+                .is_some_and(|cell| cell.is_user_prompt())
+        })
+    }
+
+    fn toggle_render_mode(&mut self) {
+        self.render_mode = match self.render_mode {
+            HistoryRenderMode::Rich => HistoryRenderMode::Raw,
+            HistoryRenderMode::Raw => HistoryRenderMode::Rich,
+        };
+        self.live_tail_key = None;
+        self.take_live_tail_renderable();
+        self.rebuild_renderables();
+    }
+
+    fn toggle_detail_mode(&mut self) {
+        self.detail_mode = self.detail_mode.opposite();
+        self.live_tail_key = None;
+        self.take_live_tail_renderable();
+        self.rebuild_renderables();
+    }
+
+    fn move_prompt_selection(&mut self, direction: PromptSelectionDirection) {
+        let Some(last_prompt) = self.user_prompt_positions.last().copied() else {
+            return;
+        };
+
+        let next_prompt = match self.highlight_cell.get() {
+            Some(current) => {
+                let current_idx = self
+                    .user_prompt_positions
+                    .iter()
+                    .position(|idx| *idx == current)
+                    .unwrap_or(self.user_prompt_positions.len().saturating_sub(1));
+                match direction {
+                    PromptSelectionDirection::Previous => {
+                        self.user_prompt_positions[current_idx.saturating_sub(1)]
+                    }
+                    PromptSelectionDirection::Next => self
+                        .user_prompt_positions
+                        .get(current_idx.saturating_add(1))
+                        .copied()
+                        .unwrap_or(last_prompt),
+                }
+            }
+            None => last_prompt,
+        };
+        self.set_highlight_cell(Some(next_prompt));
+    }
+
+    fn prompt_first_text_row_offset(&self, idx: usize) -> usize {
+        let inter_cell_spacing = usize::from(
+            idx > 0
+                && self
+                    .cells
+                    .get(idx)
+                    .is_some_and(|cell| !cell.is_stream_continuation()),
+        );
+        let rich_prompt_padding = usize::from(
+            matches!(self.render_mode, HistoryRenderMode::Rich)
+                && matches!(self.detail_mode, TranscriptDetailMode::Verbose),
+        );
+        inter_cell_spacing.saturating_add(rich_prompt_padding)
+    }
+
+    fn prompt_entering_viewport(
+        &mut self,
+        width: u16,
+        height: u16,
+        before: usize,
+        after: usize,
+    ) -> Option<usize> {
+        if before == after || height == 0 {
+            return None;
+        }
+        let offsets = self.view.layout(width).offsets.clone();
+        let prompts = self
+            .user_prompt_positions
+            .iter()
+            .copied()
+            .filter_map(|idx| {
+                offsets.get(idx).map(|offset| {
+                    (
+                        idx,
+                        offset.saturating_add(self.prompt_first_text_row_offset(idx)),
+                    )
+                })
+            });
+        if after > before {
+            let previous_bottom = before.saturating_add(height as usize);
+            let current_bottom = after.saturating_add(height as usize);
+            prompts
+                .filter(|(_, row)| previous_bottom <= *row && *row < current_bottom)
+                .map(|(idx, _)| idx)
+                .next_back()
+        } else {
+            prompts
+                .filter(|(_, row)| after <= *row && *row < before)
+                .map(|(idx, _)| idx)
+                .next()
+        }
+    }
+
+    fn handle_viewport_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) -> Result<()> {
+        let Some(area) = self.last_rendered_area else {
+            return Ok(());
+        };
+        let top_h = area.height.saturating_sub(3);
+        let top = Rect::new(area.x, area.y, area.width, top_h);
+        let content_area = self.view.content_area(top);
+        let before = self.view.clamped_scroll_offset(content_area);
+        if !self.view.handle_key_event(tui, key_event, top)? {
+            return Ok(());
+        }
+        let after = self.view.clamped_scroll_offset(content_area);
+        if let Some(cell_idx) =
+            self.prompt_entering_viewport(content_area.width, content_area.height, before, after)
+        {
+            self.set_highlight_cell_preserving_viewport(Some(cell_idx));
+            self.scroll_selected_user_cell = Some(cell_idx);
+        }
+        Ok(())
+    }
+
+    fn header_title(&self) -> String {
+        format!("Transcript: {}", self.detail_mode.name())
+    }
+
+    fn footer_progress_label(&self, content_height: u16, total_len: usize, width: u16) -> String {
+        let total = self.user_prompt_positions.len();
+        let selected = self
+            .highlight_cell
+            .get()
+            .and_then(|highlight_cell| {
+                let selected = self
+                    .user_prompt_positions
+                    .partition_point(|idx| *idx <= highlight_cell);
+                (selected > 0).then_some(selected)
+            })
+            .unwrap_or(total);
+        let percent = self.view.scroll_percent(content_height, total_len);
+        let labels = [
+            format!(" {selected} / {total} · {percent}% "),
+            format!(" {selected}/{total} · {percent}% "),
+            format!(" {percent}% "),
+        ];
+        first_fitting_right_label(width, &labels)
+    }
+
     fn rebuild_renderables(&mut self) {
         let tail_renderable = self.take_live_tail_renderable();
-        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        self.view.renderables = Self::render_cells(
+            &self.cells,
+            self.highlight_cell.clone(),
+            self.render_mode,
+            self.detail_mode,
+        );
         if let Some(tail) = tail_renderable {
             self.view.renderables.push(tail);
         }
+        self.view.invalidate_layout();
     }
 
     /// Removes and returns the cached live-tail renderable, if present.
@@ -674,16 +1134,21 @@ impl TranscriptOverlay {
     /// cell renderables, so this relies on the live tail always being the final entry in
     /// `view.renderables` when present.
     fn take_live_tail_renderable(&mut self) -> Option<Box<dyn Renderable>> {
-        (self.view.renderables.len() > self.cells.len()).then(|| self.view.renderables.pop())?
+        let tail = (self.view.renderables.len() > self.cells.len())
+            .then(|| self.view.renderables.pop())?;
+        if tail.is_some() {
+            self.view.invalidate_layout();
+        }
+        tail
     }
 
     fn live_tail_renderable(
-        lines: Vec<Line<'static>>,
+        lines: Vec<HyperlinkLine>,
         has_prior_cells: bool,
         is_stream_continuation: bool,
     ) -> Box<dyn Renderable> {
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let mut renderable: Box<dyn Renderable> = Box::new(CachedRenderable::new(paragraph));
+        let mut renderable: Box<dyn Renderable> =
+            Box::new(CachedRenderable::new(HyperlinkLinesRenderable { lines }));
         if has_prior_cells && !is_stream_continuation {
             renderable = Box::new(InsetRenderable::new(
                 renderable,
@@ -695,59 +1160,166 @@ impl TranscriptOverlay {
         renderable
     }
 
+    fn show_copy_status_at(&mut self, status: &CopyStatus, now: Instant) {
+        let line = if status.is_success() {
+            Line::from(status.message().to_string().green())
+        } else {
+            Line::from(status.message().to_string().red())
+        };
+        self.footer_status = Some(FooterStatus {
+            line,
+            expires_at: now + FOOTER_STATUS_TTL,
+        });
+    }
+
+    fn clear_footer_status(&mut self) -> bool {
+        self.footer_status.take().is_some()
+    }
+
+    fn clear_expired_footer_status_at(&mut self, now: Instant) -> bool {
+        if self
+            .footer_status
+            .as_ref()
+            .is_some_and(|status| status.expires_at <= now)
+        {
+            return self.clear_footer_status();
+        }
+        false
+    }
+
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
-        render_key_hints(
+        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
+        let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.scroll_down))
+            .collect::<Vec<_>>();
+        let page_keys = first_or_empty(&self.view.keymap.page_up)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.page_down))
+            .collect::<Vec<_>>();
+        let jump_keys = first_or_empty(&self.view.keymap.jump_top)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.jump_bottom))
+            .collect::<Vec<_>>();
+        let prompt_keys = first_or_empty(&self.view.keymap.previous_user_prompt)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.next_user_prompt))
+            .collect::<Vec<_>>();
+        let navigation_hints = vec![
+            FooterHint::new(
+                key_label(&scroll_keys),
+                "scroll",
+                "scroll",
+                /*priority*/ 1,
+            ),
+            FooterHint::new(
+                key_label(&prompt_keys),
+                "prompts",
+                "prompts",
+                /*priority*/ 2,
+            ),
+            FooterHint::new(key_label(&page_keys), "page", "page", /*priority*/ 6),
+            FooterHint::new(key_label(&jump_keys), "jump", "jump", /*priority*/ 7),
+        ];
+        render_footer_line_with_optional_right(
             line1,
             buf,
-            &[
-                (
-                    first_or_empty(&self.view.keymap.scroll_up)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.scroll_down))
-                        .collect(),
-                    "to scroll",
-                ),
-                (
-                    first_or_empty(&self.view.keymap.page_up)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.page_down))
-                        .collect(),
-                    "to page",
-                ),
-                (
-                    first_or_empty(&self.view.keymap.jump_top)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.jump_bottom))
-                        .collect(),
-                    "to jump",
-                ),
-            ],
+            footer_hint_line_for_row(&navigation_hints, area.width),
+            self.footer_status
+                .as_ref()
+                .map(|status| status.line.clone()),
         );
 
-        let mut pairs: Vec<(Vec<KeyBinding>, &str)> =
-            vec![(first_or_empty(&self.view.keymap.close), "to quit")];
-        if self.highlight_cell.is_some() {
-            pairs.push((
-                vec![
-                    key_hint::plain(KeyCode::Esc),
-                    key_hint::plain(KeyCode::Left),
-                ],
-                "to edit prev",
+        let mut action_hints = Vec::new();
+        action_hints.push(FooterHint::new(
+            key_label(&first_or_empty(&self.view.keymap.close)),
+            "quit",
+            "quit",
+            /*priority*/ 0,
+        ));
+        if !self.copy_keymap.is_empty() {
+            action_hints.push(FooterHint::new(
+                key_label(&first_or_empty(&self.copy_keymap)),
+                "copy",
+                "copy",
+                /*priority*/ 3,
             ));
-            pairs.push((vec![key_hint::plain(KeyCode::Right)], "to edit next"));
-            pairs.push((vec![key_hint::plain(KeyCode::Enter)], "to edit message"));
-        } else {
-            pairs.push((vec![key_hint::plain(KeyCode::Esc)], "to edit prev"));
         }
-        render_key_hints(line2, buf, &pairs);
+        if !self.toggle_raw_output_keymap.is_empty() {
+            let (action_label, mode_label) = match self.render_mode {
+                HistoryRenderMode::Rich => ("switch to raw render", "raw render"),
+                HistoryRenderMode::Raw => ("switch to rich render", "rich render"),
+            };
+            action_hints.push(FooterHint::new(
+                key_label(&first_or_empty(&self.toggle_raw_output_keymap)),
+                action_label,
+                mode_label,
+                /*priority*/ 4,
+            ));
+        }
+        if !self.view.keymap.toggle_transcript_mode.is_empty() {
+            let (action_label, detail_label) = match self.detail_mode {
+                TranscriptDetailMode::Verbose => ("switch to compact view", "compact view"),
+                TranscriptDetailMode::Compact => ("switch to verbose view", "verbose view"),
+            };
+            action_hints.push(FooterHint::new(
+                key_label(&first_or_empty(&self.view.keymap.toggle_transcript_mode)),
+                action_label,
+                detail_label,
+                /*priority*/ 5,
+            ));
+        }
+        if self.highlight_cell.get().is_some() {
+            let previous_edit_keys = std::iter::once(key_hint::plain(KeyCode::Esc))
+                .chain(first_or_empty(&self.view.keymap.previous_user_prompt))
+                .collect::<Vec<_>>();
+            action_hints.push(FooterHint::new(
+                key_label(&previous_edit_keys),
+                "edit prev",
+                "prev",
+                /*priority*/ 8,
+            ));
+            action_hints.push(FooterHint::new(
+                key_label(&first_or_empty(&self.view.keymap.next_user_prompt)),
+                "edit next",
+                "next",
+                /*priority*/ 9,
+            ));
+            action_hints.push(FooterHint::new(
+                key_label(&[key_hint::plain(KeyCode::Enter)]),
+                "edit message",
+                "edit",
+                /*priority*/ 10,
+            ));
+        } else {
+            let previous_edit_keys = std::iter::once(key_hint::plain(KeyCode::Esc))
+                .chain(first_or_empty(&self.view.keymap.previous_user_prompt))
+                .collect::<Vec<_>>();
+            action_hints.push(FooterHint::new(
+                key_label(&previous_edit_keys),
+                "edit prev",
+                "prev",
+                /*priority*/ 8,
+            ));
+        }
+        footer_hint_line_for_row(&action_hints, area.width).render_ref(line2, buf);
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        self.clear_expired_footer_status_at(Instant::now());
+        self.last_rendered_area = Some(area);
         let top_h = area.height.saturating_sub(3);
         let top = Rect::new(area.x, area.y, area.width, top_h);
         let bottom = Rect::new(area.x, area.y + top_h, area.width, 3);
+        self.view.title = self.header_title();
+        let content_area = self.view.content_area(top);
+        let total_len = self.view.content_height(content_area.width);
+        self.view.resolve_pending_scroll(content_area, total_len);
+        self.view.footer_separator_label =
+            self.footer_progress_label(content_area.height, total_len, top.width);
         self.view.render(top, buf);
         self.render_hints(bottom, buf);
     }
@@ -756,15 +1328,46 @@ impl TranscriptOverlay {
 impl TranscriptOverlay {
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         match event {
-            TuiEvent::Key(key_event) => match key_event {
-                e if self.view.keymap.close.is_pressed(e)
-                    || self.view.keymap.close_transcript.is_pressed(e) =>
-                {
-                    self.is_done = true;
-                    Ok(())
+            TuiEvent::Key(key_event) => {
+                self.clear_footer_status();
+                match key_event {
+                    e if self.view.keymap.close.is_pressed(e)
+                        || self.view.keymap.close_transcript.is_pressed(e) =>
+                    {
+                        self.is_done = true;
+                        Ok(())
+                    }
+                    e if self.view.keymap.previous_user_prompt.is_pressed(e) => {
+                        self.move_prompt_selection(PromptSelectionDirection::Previous);
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                        Ok(())
+                    }
+                    e if self.view.keymap.next_user_prompt.is_pressed(e) => {
+                        self.move_prompt_selection(PromptSelectionDirection::Next);
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                        Ok(())
+                    }
+                    e if self.toggle_raw_output_keymap.is_pressed(e) => {
+                        self.toggle_render_mode();
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                        Ok(())
+                    }
+                    e if self.view.keymap.toggle_transcript_mode.is_pressed(e) => {
+                        self.toggle_detail_mode();
+                        tui.frame_requester()
+                            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
+                        Ok(())
+                    }
+                    e if self.copy_keymap.is_pressed(e) => {
+                        self.copy_requested = true;
+                        Ok(())
+                    }
+                    other => self.handle_viewport_key_event(tui, other),
                 }
-                other => self.view.handle_key_event(tui, other),
-            },
+            }
             TuiEvent::Draw | TuiEvent::Resize => {
                 tui.draw(u16::MAX, |frame| {
                     self.render(frame.area(), frame.buffer);
@@ -782,6 +1385,17 @@ impl TranscriptOverlay {
     pub(crate) fn committed_cell_count(&self) -> usize {
         self.cells.len()
     }
+}
+
+enum PromptSelectionDirection {
+    Previous,
+    Next,
+}
+
+#[derive(Clone, Copy)]
+enum PromptSelectionPlacement {
+    AnchorUpperThird,
+    PreserveViewport,
 }
 
 pub(crate) struct StaticOverlay {
@@ -817,36 +1431,39 @@ impl StaticOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
-        render_key_hints(
-            line1,
-            buf,
-            &[
-                (
-                    first_or_empty(&self.view.keymap.scroll_up)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.scroll_down))
-                        .collect(),
-                    "to scroll",
-                ),
-                (
-                    first_or_empty(&self.view.keymap.page_up)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.page_down))
-                        .collect(),
-                    "to page",
-                ),
-                (
-                    first_or_empty(&self.view.keymap.jump_top)
-                        .into_iter()
-                        .chain(first_or_empty(&self.view.keymap.jump_bottom))
-                        .collect(),
-                    "to jump",
-                ),
-            ],
-        );
-        let pairs: Vec<(Vec<KeyBinding>, &str)> =
-            vec![(first_or_empty(&self.view.keymap.close), "to quit")];
-        render_key_hints(line2, buf, &pairs);
+        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
+        let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.scroll_down))
+            .collect::<Vec<_>>();
+        let page_keys = first_or_empty(&self.view.keymap.page_up)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.page_down))
+            .collect::<Vec<_>>();
+        let jump_keys = first_or_empty(&self.view.keymap.jump_top)
+            .into_iter()
+            .chain(first_or_empty(&self.view.keymap.jump_bottom))
+            .collect::<Vec<_>>();
+        let navigation_hints = vec![
+            FooterHint::new(
+                key_label(&scroll_keys),
+                "scroll",
+                "scroll",
+                /*priority*/ 1,
+            ),
+            FooterHint::new(key_label(&page_keys), "page", "page", /*priority*/ 6),
+            FooterHint::new(key_label(&jump_keys), "jump", "jump", /*priority*/ 7),
+        ];
+        footer_hint_line_for_row(&navigation_hints, area.width).render_ref(line1, buf);
+
+        let action_hints = vec![FooterHint::new(
+            key_label(&first_or_empty(&self.view.keymap.close)),
+            "quit",
+            "quit",
+            /*priority*/ 0,
+        )];
+        footer_hint_line_for_row(&action_hints, area.width).render_ref(line2, buf);
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -866,7 +1483,10 @@ impl StaticOverlay {
                     self.is_done = true;
                     Ok(())
                 }
-                other => self.view.handle_key_event(tui, other),
+                other => self
+                    .view
+                    .handle_key_event(tui, other, tui.terminal.viewport_area)
+                    .map(|_| ()),
             },
             TuiEvent::Draw | TuiEvent::Resize => {
                 tui.draw(u16::MAX, |frame| {
@@ -909,26 +1529,51 @@ fn render_offset_content(
     copy_height
 }
 
+fn session_start_index(cells: &[Arc<dyn HistoryCell>]) -> usize {
+    let session_start_type = TypeId::of::<SessionInfoCell>();
+    let type_of = |cell: &Arc<dyn HistoryCell>| cell.as_any().type_id();
+
+    cells
+        .iter()
+        .rposition(|cell| type_of(cell) == session_start_type)
+        .map_or(0, |idx| idx + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::history_cell::ReviewDecision;
+    use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+    use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::time::Instant;
+    use tempfile::TempDir;
 
     use crate::diff_model::FileChange;
     use crate::exec_cell::CommandOutput;
     use crate::history_cell;
+    use crate::history_cell::AgentMessageCell;
     use crate::history_cell::HistoryCell;
     use crate::history_cell::new_patch_event;
+    use crate::history_cell::new_session_info;
+    use crate::legacy_core::config::ConfigBuilder;
+    use crate::session_state::ThreadSessionState;
     use codex_protocol::parse_command::ParsedCommand;
-    use ratatui::Terminal;
+    use ratatui::Terminal as RatatuiTerminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
     use ratatui::text::Text;
 
     #[derive(Debug)]
@@ -950,6 +1595,26 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DetailModeTestCell {
+        display_lines: Vec<Line<'static>>,
+        transcript_lines: Vec<Line<'static>>,
+    }
+
+    impl crate::history_cell::HistoryCell for DetailModeTestCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            self.display_lines.clone()
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            self.transcript_lines.clone()
+        }
+
+        fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            self.transcript_lines.clone()
+        }
+    }
+
     fn paragraph_block(label: &str, lines: usize) -> Box<dyn Renderable> {
         let text = Text::from(
             (0..lines)
@@ -964,7 +1629,82 @@ mod tests {
     }
 
     fn transcript_overlay(cells: Vec<Arc<dyn HistoryCell>>) -> TranscriptOverlay {
-        TranscriptOverlay::new(cells, default_pager_keymap())
+        let keymap = crate::keymap::RuntimeKeymap::defaults();
+        TranscriptOverlay::new(
+            cells,
+            keymap.pager,
+            keymap.app.copy,
+            keymap.app.toggle_raw_output,
+            TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
+        )
+    }
+
+    fn user_cell(message: &str) -> Arc<dyn HistoryCell> {
+        Arc::new(UserHistoryCell {
+            message: message.to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        })
+    }
+
+    fn synthetic_transcript(prompt_count: usize) -> Vec<Arc<dyn HistoryCell>> {
+        let mut cells = Vec::with_capacity(prompt_count.saturating_mul(2));
+        for i in 0..prompt_count {
+            cells.push(user_cell(&format!("prompt {i}")));
+            cells.push(Arc::new(AgentMessageCell::new(
+                vec![
+                    Line::from(format!("assistant response {i}")),
+                    Line::from(
+                        "additional detail to make wrapping and height measurement realistic",
+                    ),
+                ],
+                /*is_first_line*/ true,
+            )) as Arc<dyn HistoryCell>);
+        }
+        cells
+    }
+
+    fn session_info_cell(cwd: &str) -> Arc<dyn HistoryCell> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let temp_dir = TempDir::new().expect("tempdir");
+        let config = runtime
+            .block_on(
+                ConfigBuilder::default()
+                    .codex_home(temp_dir.path().to_path_buf())
+                    .build(),
+            )
+            .expect("config");
+        let session = ThreadSessionState {
+            thread_id: ThreadId::new(),
+            forked_from_id: None,
+            fork_parent_title: None,
+            thread_name: None,
+            model: "gpt-test".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            permission_profile: PermissionProfile::read_only(),
+            active_permission_profile: None,
+            cwd: test_path_buf(cwd).abs(),
+            runtime_workspace_roots: Vec::new(),
+            instruction_source_paths: Vec::new(),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            collaboration_mode: None,
+            personality: None,
+            message_history: None,
+            network_proxy: None,
+            rollout_path: Some(PathBuf::new()),
+        };
+        Arc::new(new_session_info(
+            &config, "gpt-test", &session, /*is_first_event*/ false,
+            /*tooltip_override*/ None, /*auth_plan*/ None,
+            /*show_fast_status*/ false,
+        )) as Arc<dyn HistoryCell>
     }
 
     fn static_overlay(lines: Vec<Line<'static>>, title: &str) -> StaticOverlay {
@@ -1035,10 +1775,79 @@ mod tests {
                 lines: vec![Line::from("gamma")],
             }),
         ]);
-        let mut term = Terminal::new(TestBackend::new(40, 10)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(40, 10)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
+    }
+
+    #[test]
+    fn transcript_overlay_preserves_semantic_web_links() {
+        let destination = "https://example.com/a/very/long/path";
+        let mut overlay = transcript_overlay(vec![Arc::new(history_cell::AgentMarkdownCell::new(
+            destination.to_string(),
+            std::path::Path::new("/tmp"),
+        ))]);
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 24, /*height*/ 10,
+        );
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+
+        assert!(area.positions().any(|position| {
+            buf[position]
+                .symbol()
+                .contains(&format!("\x1b]8;;{destination}\x07"))
+        }));
+    }
+
+    #[test]
+    #[ignore = "local performance probe for transcript prompt selection"]
+    fn transcript_prompt_selection_perf() {
+        const PROMPTS: usize = 1_500;
+        const STEPS: usize = 300;
+        const WIDTH: u16 = 120;
+        const HEIGHT: u16 = 40;
+
+        let cells = synthetic_transcript(PROMPTS);
+        let cell_count = cells.len();
+        let mut selection_only = transcript_overlay(cells.clone());
+        selection_only.set_highlight_cell(Some(cell_count.saturating_sub(2)));
+
+        let selection_start = Instant::now();
+        for _ in 0..STEPS {
+            selection_only.move_prompt_selection(PromptSelectionDirection::Previous);
+            selection_only.move_prompt_selection(PromptSelectionDirection::Next);
+        }
+        let selection_elapsed = selection_start.elapsed();
+
+        let mut selection_plus_render = transcript_overlay(cells);
+        selection_plus_render.set_highlight_cell(Some(cell_count.saturating_sub(2)));
+        let mut term = RatatuiTerminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("term");
+
+        let render_start = Instant::now();
+        for _ in 0..STEPS {
+            selection_plus_render.move_prompt_selection(PromptSelectionDirection::Previous);
+            term.draw(|f| selection_plus_render.render(f.area(), f.buffer_mut()))
+                .expect("draw previous");
+            selection_plus_render.move_prompt_selection(PromptSelectionDirection::Next);
+            term.draw(|f| selection_plus_render.render(f.area(), f.buffer_mut()))
+                .expect("draw next");
+        }
+        let render_elapsed = render_start.elapsed();
+
+        let operations = STEPS.saturating_mul(2);
+        let mut stdout = std::io::stdout().lock();
+        writeln!(
+            stdout,
+            "transcript_prompt_selection_perf prompts={PROMPTS} cells={cell_count} steps={operations} selection_only_ms={:.3} selection_only_avg_us={:.3} selection_plus_render_ms={:.3} selection_plus_render_avg_us={:.3}",
+            selection_elapsed.as_secs_f64() * 1_000.0,
+            selection_elapsed.as_secs_f64() * 1_000_000.0 / operations as f64,
+            render_elapsed.as_secs_f64() * 1_000.0,
+            render_elapsed.as_secs_f64() * 1_000_000.0 / operations as f64,
+        )
+        .expect("write perf output");
     }
 
     #[test]
@@ -1053,13 +1862,426 @@ mod tests {
                 is_stream_continuation: false,
                 animation_tick: None,
             }),
-            |_| Some(vec![Line::from("tail")]),
+            |_| Some(vec![HyperlinkLine::from("tail")]),
         );
 
-        let mut term = Terminal::new(TestBackend::new(40, 10)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(40, 10)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
+    }
+
+    #[test]
+    fn transcript_overlay_compact_mode_uses_display_lines() {
+        let mut overlay = transcript_overlay(vec![Arc::new(DetailModeTestCell {
+            display_lines: vec![Line::from("$ cat huge.txt"), Line::from("... +98 lines")],
+            transcript_lines: vec![
+                Line::from("$ cat huge.txt"),
+                Line::from("first line"),
+                Line::from("full file tail"),
+            ],
+        })]);
+
+        assert_eq!(
+            visible_lines(overlay.cells[0].transcript_hyperlink_lines_for_detail_mode(
+                /*width*/ 80,
+                overlay.render_mode,
+                overlay.detail_mode,
+            )),
+            vec![
+                Line::from("$ cat huge.txt"),
+                Line::from("first line"),
+                Line::from("full file tail"),
+            ],
+        );
+
+        overlay.toggle_detail_mode();
+
+        assert_eq!(
+            visible_lines(overlay.cells[0].transcript_hyperlink_lines_for_detail_mode(
+                /*width*/ 80,
+                overlay.render_mode,
+                overlay.detail_mode,
+            )),
+            vec![Line::from("$ cat huge.txt"), Line::from("... +98 lines")],
+        );
+        assert_eq!(overlay.state().detail_mode, TranscriptDetailMode::Compact);
+    }
+
+    #[test]
+    fn transcript_overlay_live_tail_preserves_semantic_web_links() {
+        let destination = "https://example.com/a/streamed/path";
+        let cell = history_cell::AgentMarkdownCell::new(
+            destination.to_string(),
+            std::path::Path::new("/tmp"),
+        );
+        let mut overlay = transcript_overlay(Vec::new());
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 24, /*height*/ 10,
+        );
+        let mut buf = Buffer::empty(area);
+
+        overlay.sync_live_tail(
+            area.width,
+            Some(ActiveCellTranscriptKey {
+                revision: 1,
+                is_stream_continuation: false,
+                animation_tick: None,
+            }),
+            |width| Some(cell.transcript_hyperlink_lines(width)),
+        );
+        overlay.render(area, &mut buf);
+
+        assert!(area.positions().any(|position| {
+            buf[position]
+                .symbol()
+                .contains(&format!("\x1b]8;;{destination}\x07"))
+        }));
+    }
+
+    #[test]
+    fn transcript_overlay_state_round_trips_scroll_selection_and_mode() {
+        let keymap = crate::keymap::RuntimeKeymap::defaults();
+        let state = TranscriptOverlayState {
+            scroll_offset: 3,
+            highlight_cell: Some(0),
+            render_mode: HistoryRenderMode::Raw,
+            detail_mode: TranscriptDetailMode::Verbose,
+        };
+        let overlay = TranscriptOverlay::new(
+            vec![user_cell("prompt")],
+            keymap.pager,
+            keymap.app.copy,
+            keymap.app.toggle_raw_output,
+            state,
+        );
+
+        assert_eq!(overlay.state(), state);
+    }
+
+    #[test]
+    fn prompt_navigation_moves_between_user_prompts() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(TestCell {
+                lines: vec![Line::from("assistant")],
+            }),
+            user_cell("second"),
+        ]);
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.selected_user_cell(), Some(2));
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.selected_user_cell(), Some(0));
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Next);
+        assert_eq!(overlay.selected_user_cell(), Some(2));
+    }
+
+    #[test]
+    fn transcript_header_title_is_stable() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("assistant")],
+                /*is_first_line*/ true,
+            )),
+            user_cell("second"),
+        ]);
+
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
+
+        overlay.toggle_detail_mode();
+        assert_eq!(overlay.header_title(), "Transcript: compact");
+    }
+
+    #[test]
+    fn transcript_footer_progress_label_counts_selected_user_prompt() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("assistant")],
+                /*is_first_line*/ true,
+            )),
+            user_cell("second"),
+        ]);
+
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 2 / 2 · 100% "
+        );
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 2 / 2 · 100% "
+        );
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 1 / 2 · 100% "
+        );
+    }
+
+    #[test]
+    fn transcript_scroll_selects_prompt_when_its_first_line_enters_from_below() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(TestCell {
+                lines: (0..8)
+                    .map(|idx| Line::from(format!("answer-{idx}")))
+                    .collect(),
+            }),
+            user_cell("second"),
+            Arc::new(TestCell {
+                lines: vec![Line::from("after second")],
+            }),
+        ]);
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 60, /*height*/ 12,
+        );
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        let top = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(3));
+        let content_area = overlay.view.content_area(top);
+        let second_row = {
+            let layout = overlay.view.layout(content_area.width);
+            layout.offsets[2].saturating_add(overlay.prompt_first_text_row_offset(/*idx*/ 2))
+        };
+
+        let before = second_row.saturating_sub(content_area.height as usize);
+        let after = before.saturating_add(1);
+        let selected = overlay.prompt_entering_viewport(
+            content_area.width,
+            content_area.height,
+            before,
+            after,
+        );
+        overlay.view.scroll_offset = after;
+        overlay.set_highlight_cell_preserving_viewport(selected);
+        overlay.render(area, &mut buf);
+
+        assert_eq!(selected, Some(2));
+        assert_eq!(overlay.selected_user_cell(), Some(2));
+        assert_eq!(overlay.view.scroll_offset, after);
+        assert_snapshot!(
+            "transcript_scroll_selects_prompt_entering_from_below",
+            buffer_to_text(&buf, area)
+        );
+    }
+
+    #[test]
+    fn transcript_scroll_selects_prompt_when_its_first_line_enters_from_above() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(TestCell {
+                lines: (0..16)
+                    .map(|idx| Line::from(format!("answer-{idx}")))
+                    .collect(),
+            }),
+        ]);
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 60, /*height*/ 12,
+        );
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        let top = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(3));
+        let content_area = overlay.view.content_area(top);
+
+        let selected = overlay.prompt_entering_viewport(
+            content_area.width,
+            content_area.height,
+            /*before*/ 2,
+            /*after*/ 1,
+        );
+        overlay.view.scroll_offset = 1;
+        overlay.set_highlight_cell_preserving_viewport(selected);
+
+        assert_eq!(selected, Some(0));
+        assert_eq!(overlay.selected_user_cell(), Some(0));
+        assert_eq!(overlay.view.scroll_offset, 1);
+    }
+
+    #[test]
+    fn explicit_prompt_selection_anchors_prompt_in_upper_third() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first"),
+            Arc::new(TestCell {
+                lines: (0..12)
+                    .map(|idx| Line::from(format!("before-{idx}")))
+                    .collect(),
+            }),
+            user_cell("second"),
+            Arc::new(TestCell {
+                lines: (0..12)
+                    .map(|idx| Line::from(format!("after-{idx}")))
+                    .collect(),
+            }),
+        ]);
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 60, /*height*/ 15,
+        );
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+
+        overlay.set_highlight_cell(Some(2));
+        overlay.render(area, &mut buf);
+
+        let top = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(3));
+        let content_area = overlay.view.content_area(top);
+        let selected_row = {
+            let layout = overlay.view.layout(content_area.width);
+            layout.offsets[2].saturating_add(overlay.prompt_first_text_row_offset(/*idx*/ 2))
+        };
+        assert_eq!(
+            selected_row.saturating_sub(overlay.view.scroll_offset),
+            (content_area.height as usize) / 3,
+        );
+        assert_snapshot!(
+            "explicit_prompt_selection_anchors_prompt_in_upper_third",
+            buffer_to_text(&buf, area)
+        );
+    }
+
+    #[test]
+    fn transcript_prompt_selection_ignores_prompts_before_latest_session_header() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("old prompt"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("old assistant")],
+                /*is_first_line*/ true,
+            )),
+            session_info_cell("/tmp/project"),
+            user_cell("current first"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("current assistant")],
+                /*is_first_line*/ true,
+            )),
+            user_cell("current second"),
+        ]);
+
+        assert_eq!(overlay.user_prompt_count(), 2);
+        assert_eq!(overlay.header_title(), "Transcript: verbose");
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 2 / 2 · 100% "
+        );
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.selected_user_cell(), Some(5));
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 2 / 2 · 100% "
+        );
+
+        overlay.move_prompt_selection(PromptSelectionDirection::Previous);
+        assert_eq!(overlay.selected_user_cell(), Some(3));
+        assert_eq!(
+            overlay.footer_progress_label(
+                /*content_height*/ 5, /*total_len*/ 12, /*width*/ 80
+            ),
+            " 1 / 2 · 100% "
+        );
+
+        assert_eq!(
+            overlay.set_highlighted_user_prompt(/*nth_user_message*/ 2),
+            None
+        );
+    }
+
+    #[test]
+    fn selected_user_prompt_keeps_reversed_style_without_role_gutter() {
+        let mut overlay = transcript_overlay(vec![user_cell("selected prompt")]);
+        overlay.set_highlight_cell(Some(0));
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 60, /*height*/ 8,
+        );
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        let rendered = buffer_to_text(&buf, area);
+
+        assert!(!rendered.contains('▌'));
+        assert!(!rendered.contains('│'));
+        let prompt_marker = (area.y..area.bottom())
+            .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
+            .find(|(x, y)| buf[(*x, *y)].symbol() == "›")
+            .expect("expected selected prompt marker");
+        assert!(
+            buf[prompt_marker]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
+    #[test]
+    fn prompt_selection_updates_style_without_rebuilding_layout() {
+        let mut overlay = transcript_overlay(vec![
+            user_cell("first prompt"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("assistant")],
+                /*is_first_line*/ true,
+            )),
+            user_cell("second prompt"),
+        ]);
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 14,
+        );
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        assert!(overlay.view.layout.is_some());
+        let renderable_count = overlay.view.renderables.len();
+
+        overlay.set_highlight_cell(Some(0));
+        assert!(overlay.view.layout.is_some());
+        assert_eq!(overlay.view.renderables.len(), renderable_count);
+        overlay.render(area, &mut buf);
+        let first_selection = prompt_marker_reversed_states(&buf, area);
+        assert_eq!(first_selection, vec![true, false]);
+
+        overlay.set_highlight_cell(Some(2));
+        assert!(overlay.view.layout.is_some());
+        assert_eq!(overlay.view.renderables.len(), renderable_count);
+        overlay.render(area, &mut buf);
+        let second_selection = prompt_marker_reversed_states(&buf, area);
+        assert_eq!(second_selection, vec![false, true]);
+    }
+
+    fn prompt_marker_reversed_states(buf: &Buffer, area: Rect) -> Vec<bool> {
+        let mut states = Vec::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if buf[(x, y)].symbol() == "›" {
+                    states.push(
+                        buf[(x, y)]
+                            .style()
+                            .add_modifier
+                            .contains(Modifier::REVERSED),
+                    );
+                }
+            }
+        }
+        states
     }
 
     #[test]
@@ -1077,11 +2299,11 @@ mod tests {
 
         overlay.sync_live_tail(/*width*/ 40, Some(key), |_| {
             calls.set(calls.get() + 1);
-            Some(vec![Line::from("tail")])
+            Some(vec![HyperlinkLine::from("tail")])
         });
         overlay.sync_live_tail(/*width*/ 40, Some(key), |_| {
             calls.set(calls.get() + 1);
-            Some(vec![Line::from("tail2")])
+            Some(vec![HyperlinkLine::from("tail2")])
         });
 
         assert_eq!(calls.get(), 1);
@@ -1105,6 +2327,12 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    fn render_snapshot(overlay: &mut TranscriptOverlay, area: Rect) -> String {
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        buffer_to_text(&buf, area)
     }
 
     #[test]
@@ -1146,6 +2374,7 @@ mod tests {
             vec![ParsedCommand::Unknown { cmd: "ls".into() }],
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            /*terminal_wait*/ None,
             /*animations_enabled*/ true,
         );
         exec_cell.complete_call(
@@ -1173,6 +2402,94 @@ mod tests {
     }
 
     #[test]
+    fn transcript_overlay_footer_status_snapshot() {
+        let mut overlay = transcript_overlay(vec![user_cell("prompt")]);
+        overlay.show_copy_status_at(
+            &CopyStatus::Success("Copied selected turn to clipboard".into()),
+            Instant::now(),
+        );
+
+        assert_snapshot!(
+            "transcript_overlay_footer_status",
+            render_snapshot(
+                &mut overlay,
+                Rect::new(
+                    /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 8
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn transcript_overlay_footer_status_snapshot_narrow() {
+        let mut overlay = transcript_overlay(vec![user_cell("prompt")]);
+        overlay.show_copy_status_at(
+            &CopyStatus::Error("No agent response to copy for selected prompt".into()),
+            Instant::now(),
+        );
+
+        assert_snapshot!(
+            "transcript_overlay_footer_status_narrow",
+            render_snapshot(
+                &mut overlay,
+                Rect::new(
+                    /*x*/ 0, /*y*/ 0, /*width*/ 28, /*height*/ 8
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn transcript_overlay_footer_status_can_be_cleared_immediately() {
+        let mut overlay = transcript_overlay(vec![user_cell("prompt")]);
+        overlay.show_copy_status_at(
+            &CopyStatus::Success("Copied selected turn to clipboard".into()),
+            Instant::now(),
+        );
+        assert!(overlay.clear_footer_status());
+
+        assert!(overlay.footer_status.is_none());
+    }
+
+    #[test]
+    fn transcript_overlay_footer_status_clears_after_expiry() {
+        let mut overlay = transcript_overlay(vec![user_cell("prompt")]);
+        overlay.show_copy_status_at(
+            &CopyStatus::Success("Copied selected turn to clipboard".into()),
+            Instant::now() - FOOTER_STATUS_TTL,
+        );
+
+        let _ = render_snapshot(
+            &mut overlay,
+            Rect::new(
+                /*x*/ 0, /*y*/ 0, /*width*/ 60, /*height*/ 8,
+            ),
+        );
+
+        assert!(overlay.footer_status.is_none());
+    }
+
+    #[test]
+    fn transcript_overlay_footer_status_replaces_previous_message() {
+        let mut overlay = transcript_overlay(vec![user_cell("prompt")]);
+        overlay.show_copy_status_at(
+            &CopyStatus::Error("Copy failed: blocked".into()),
+            Instant::now(),
+        );
+        overlay.show_copy_status_at(
+            &CopyStatus::Success("Copied selected turn to clipboard".into()),
+            Instant::now(),
+        );
+
+        let status = overlay.footer_status.as_ref().expect("status").line.clone();
+        assert_eq!(status.spans.len(), 1);
+        assert_eq!(
+            status.spans[0].content.as_ref(),
+            "Copied selected turn to clipboard"
+        );
+    }
+
+    #[test]
     fn transcript_overlay_keeps_scroll_pinned_at_bottom() {
         let mut overlay = transcript_overlay(
             (0..20)
@@ -1183,7 +2500,7 @@ mod tests {
                 })
                 .collect(),
         );
-        let mut term = Terminal::new(TestBackend::new(40, 12)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(40, 12)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
 
@@ -1210,7 +2527,7 @@ mod tests {
                 })
                 .collect(),
         );
-        let mut term = Terminal::new(TestBackend::new(40, 12)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(40, 12)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
 
@@ -1244,7 +2561,7 @@ mod tests {
         );
 
         assert_eq!(
-            overlay.highlight_cell,
+            overlay.highlight_cell.get(),
             Some(2),
             "highlight inside consolidated range should point to replacement cell",
         );
@@ -1271,7 +2588,7 @@ mod tests {
         );
 
         assert_eq!(
-            overlay.highlight_cell,
+            overlay.highlight_cell.get(),
             Some(4),
             "highlight after consolidated range should shift left by removed cells",
         );
@@ -1284,7 +2601,7 @@ mod tests {
             vec!["one".into(), "two".into(), "three".into()],
             "S T A T I C",
         );
-        let mut term = Terminal::new(TestBackend::new(40, 10)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(40, 10)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
@@ -1390,7 +2707,7 @@ mod tests {
             vec!["a very long line that should wrap when rendered within a narrow pager overlay width".into()],
             "S T A T I C",
         );
-        let mut term = Terminal::new(TestBackend::new(24, 8)).expect("term");
+        let mut term = RatatuiTerminal::new(TestBackend::new(24, 8)).expect("term");
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
@@ -1398,7 +2715,7 @@ mod tests {
 
     #[test]
     fn pager_view_content_height_counts_renderables() {
-        let pv = pager_view(
+        let mut pv = pager_view(
             vec![
                 paragraph_block("a", /*lines*/ 2),
                 paragraph_block("b", /*lines*/ 3),
@@ -1411,7 +2728,7 @@ mod tests {
     }
 
     #[test]
-    fn pager_view_ensure_chunk_visible_scrolls_down_when_needed() {
+    fn pager_view_positions_selected_chunk_in_upper_third() {
         let mut pv = pager_view(
             vec![
                 paragraph_block("a", /*lines*/ 1),
@@ -1423,30 +2740,14 @@ mod tests {
         );
         let area = Rect::new(0, 0, 20, 8);
 
-        pv.scroll_offset = 0;
         let content_area = pv.content_area(area);
-        pv.ensure_chunk_visible(/*idx*/ 2, content_area);
+        pv.position_chunk_at_upper_third(/*idx*/ 2, /*row_offset*/ 0, content_area);
 
-        let mut buf = Buffer::empty(area);
-        pv.render(area, &mut buf);
-        let rendered = buffer_to_text(&buf, area);
-
-        assert!(
-            rendered.contains("c0"),
-            "expected chunk top in view: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("c1"),
-            "expected chunk middle in view: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("c2"),
-            "expected chunk bottom in view: {rendered:?}"
-        );
+        assert_eq!(pv.scroll_offset, 2);
     }
 
     #[test]
-    fn pager_view_ensure_chunk_visible_scrolls_up_when_needed() {
+    fn pager_view_upper_third_position_clamps_at_start() {
         let mut pv = pager_view(
             vec![
                 paragraph_block("a", /*lines*/ 2),
@@ -1459,7 +2760,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 3);
 
         pv.scroll_offset = 6;
-        pv.ensure_chunk_visible(/*idx*/ 0, area);
+        pv.position_chunk_at_upper_third(/*idx*/ 0, /*row_offset*/ 0, area);
 
         assert_eq!(pv.scroll_offset, 0);
     }

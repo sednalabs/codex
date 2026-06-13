@@ -56,7 +56,7 @@ pub(crate) async fn maybe_prompt_and_install_mcp_dependencies(
     let installed = sess
         .services
         .mcp_manager
-        .configured_servers(config.as_ref())
+        .runtime_servers(config.as_ref())
         .await;
     let missing = collect_missing_mcp_dependencies(mentioned_skills, &installed);
     if missing.is_empty() {
@@ -98,7 +98,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
     }
 
     let codex_home = config.codex_home.clone();
-    let installed = sess.services.mcp_manager.configured_servers(config).await;
+    let installed = sess.services.mcp_manager.runtime_servers(config).await;
     let missing = collect_missing_mcp_dependencies(mentioned_skills, &installed);
     if missing.is_empty() {
         return;
@@ -190,16 +190,22 @@ pub(crate) async fn maybe_install_mcp_dependencies(
         }
     }
 
-    // Refresh from the config-backed merged MCP map (global + repo + managed)
-    // and overlay the updated global servers so we don't drop repo-scoped
-    // servers. Runtime additions such as built-ins are rebuilt by the refresh
-    // path from the current config.
-    let mut refresh_servers = sess.services.mcp_manager.configured_servers(config).await;
+    let mut refresh_config = config.clone();
+    let mut configured_servers = config.mcp_servers.get().clone();
     for (name, server_config) in &servers {
-        refresh_servers
+        configured_servers
             .entry(name.clone())
             .or_insert_with(|| server_config.clone());
     }
+    if let Err(err) = refresh_config.mcp_servers.set(configured_servers) {
+        warn!("failed to refresh MCP dependencies for mentioned skills: {err}");
+        return;
+    }
+    let refresh_servers = sess
+        .services
+        .mcp_manager
+        .runtime_servers(&refresh_config)
+        .await;
     sess.refresh_mcp_servers_now(
         turn_context,
         refresh_servers,
@@ -361,7 +367,7 @@ fn mcp_dependency_to_server_config(
                 http_headers: None,
                 env_http_headers: None,
             },
-            experimental_environment: None,
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
@@ -395,7 +401,7 @@ fn mcp_dependency_to_server_config(
                 env_vars: Vec::new(),
                 cwd: None,
             },
-            experimental_environment: None,
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,

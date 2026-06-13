@@ -167,11 +167,9 @@ impl From<OutgoingMessage> for OutgoingJsonRpcMessage {
                     result,
                 })
             }
-            Error(OutgoingError { id, error }) => JsonRpcMessage::Error(JsonRpcError {
-                jsonrpc: JsonRpcVersion2_0,
-                id,
-                error,
-            }),
+            Error(OutgoingError { id, error }) => {
+                JsonRpcMessage::Error(JsonRpcError::new(Some(id), error))
+            }
         }
     }
 }
@@ -299,6 +297,7 @@ mod tests {
                 session_id: codex_protocol::SessionId::new(),
                 thread_id,
                 forked_from_id: None,
+                parent_thread_id: None,
                 thread_source: None,
                 thread_name: None,
                 model: "gpt-4o".to_string(),
@@ -344,6 +343,7 @@ mod tests {
             session_id: codex_protocol::SessionId::new(),
             thread_id,
             forked_from_id: None,
+            parent_thread_id: None,
             thread_source: None,
             thread_name: None,
             model: "gpt-4o".to_string(),
@@ -411,6 +411,7 @@ mod tests {
             session_id: codex_protocol::SessionId::new(),
             thread_id,
             forked_from_id: None,
+            parent_thread_id: None,
             thread_source: None,
             thread_name: None,
             model: "gpt-4o".to_string(),

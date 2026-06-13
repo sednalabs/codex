@@ -45,17 +45,22 @@ impl ToolOutput for PlanToolOutput {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PlanHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("update_plan")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_update_plan_tool())
+    fn spec(&self) -> ToolSpec {
+        create_update_plan_tool()
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl PlanHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {

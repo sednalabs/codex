@@ -4,7 +4,9 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "android-computer-use",
     "backend-client",
+    "browser-computer-use",
     "bwrap",
     "ansi-escape",
     "async-utils",
@@ -14,7 +16,6 @@ members = [
     "app-server-client",
     "app-server-protocol",
     "app-server-test-client",
-    "debug-client",
     "apply-patch",
     "arg0",
     "feedback",
@@ -22,7 +23,7 @@ members = [
     "install-context",
     "codex-backend-openapi-models",
     "code-mode",
-    "cloud-requirements",
+    "cloud-config",
     "cloud-tasks",
     "cloud-tasks-client",
     "cloud-tasks-mock-client",
@@ -30,6 +31,7 @@ members = [
     "collaboration-mode-templates",
     "connectors",
     "config",
+    "context-fragments",
     "shell-command",
     "shell-escalation",
     "skills",
@@ -47,7 +49,11 @@ members = [
     "ext/extension-api",
     "ext/goal",
     "ext/guardian",
+    "ext/image-generation",
     "ext/memories",
+    "ext/mcp",
+    "ext/skills",
+    "ext/web-search",
     "external-agent-migration",
     "external-agent-sessions",
     "keyring-store",
@@ -58,7 +64,6 @@ members = [
     "login",
     "codex-mcp",
     "mcp-server",
-    "memories/mcp",
     "memories/read",
     "memories/write",
     "model-provider-info",
@@ -68,6 +73,7 @@ members = [
     "process-hardening",
     "protocol",
     "realtime-webrtc",
+    "prompts",
     "rollout",
     "rollout-trace",
     "rmcp-client",
@@ -80,6 +86,7 @@ members = [
     "tools",
     "v8-poc",
     "utils/absolute-path",
+    "utils/path-uri",
     "utils/cargo-bin",
     "git-utils",
     "utils/cache",
@@ -133,6 +140,7 @@ codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
 codex-ansi-escape = { path = "ansi-escape" }
+codex-android-computer-use = { path = "android-computer-use" }
 codex-api = { path = "codex-api" }
 codex-aws-auth = { path = "aws-auth" }
 codex-app-server = { path = "app-server" }
@@ -145,16 +153,18 @@ codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
+codex-browser-computer-use = { path = "browser-computer-use" }
 codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
-codex-cloud-requirements = { path = "cloud-requirements" }
+codex-cloud-config = { path = "cloud-config" }
 codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
+codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
 codex-core-plugins = { path = "core-plugins" }
@@ -166,6 +176,7 @@ codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-goal-extension = { path = "ext/goal" }
 codex-guardian = { path = "ext/guardian" }
+codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-external-agent-sessions = { path = "external-agent-sessions" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
@@ -182,9 +193,11 @@ codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
 codex-message-history = { path = "message-history" }
 codex-memories-extension = { path = "ext/memories" }
+codex-web-search-extension = { path = "ext/web-search" }
 codex-memories-read = { path = "memories/read" }
 codex-memories-write = { path = "memories/write" }
 codex-mcp = { path = "codex-mcp" }
+codex-mcp-extension = { path = "ext/mcp" }
 codex-mcp-server = { path = "mcp-server" }
 codex-model-provider-info = { path = "model-provider-info" }
 codex-models-manager = { path = "models-manager" }
@@ -196,6 +209,7 @@ codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-realtime-webrtc = { path = "realtime-webrtc" }
+codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
@@ -205,6 +219,7 @@ codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
 codex-shell-escalation = { path = "shell-escalation" }
+codex-skills-extension = { path = "ext/skills" }
 codex-skills = { path = "skills" }
 codex-state = { path = "state" }
 codex-stdio-to-uds = { path = "stdio-to-uds" }
@@ -277,6 +292,7 @@ deno_core_icudata = "0.77.0"
 derive_more = "2"
 diffy = "0.4.2"
 dirs = "6"
+divan = "0.1.21"
 dns-lookup = "3.0.1"
 dotenvy = "0.15.7"
 dunce = "1.0.4"
@@ -287,7 +303,7 @@ eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
-gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
+gix = { version = "0.83.0", default-features = false, features = ["sha1"] }
 glob = "0.3"
 globset = "0.4"
 hmac = "0.12.1"
@@ -303,7 +319,8 @@ indexmap = "2.12.0"
 insta = "1.46.3"
 inventory = "0.3.22"
 itertools = "0.14.0"
-jsonwebtoken = "9.3.1"
+jsonptr = { version = "0.7.1", default-features = false }
+jsonwebtoken = "10.4.0"
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
@@ -311,6 +328,7 @@ libc = "0.2.182"
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
+memchr = "2.7.6"
 mime_guess = "2.0.5"
 multimap = "0.10.0"
 notify = "8.2.0"
@@ -341,7 +359,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 regex = "1.12.3"
 regex-lite = "0.1.8"
 reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "0.15.0", default-features = false }
+rmcp = { version = "1.7.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
@@ -365,18 +383,19 @@ sha2 = "0.10"
 shlex = "1.3.0"
 similar = "2.7.0"
 socket2 = "0.6.1"
-sqlx = { version = "0.8.6", default-features = false, features = [
+sqlx = { version = "0.9.0", default-features = false, features = [
     "chrono",
     "json",
     "macros",
     "migrate",
-    "runtime-tokio-rustls",
-    "sqlite",
+    "runtime-tokio",
+    "tls-rustls",
+    "sqlite-bundled",
     "time",
     "uuid",
 ] }
-starlark = "0.13.0"
-strum = "0.28.0"
+starlark = { version = "0.14.2", default-features = false }
+strum = "0.27.2"
 strum_macros = "0.28.0"
 supports-color = "3.0.2"
 syntect = "5"
@@ -415,7 +434,7 @@ unicode-width = "0.2"
 url = "2"
 urlencoding = "2.1"
 uuid = "1"
-v8 = "=147.4.0"
+v8 = "=149.2.0"
 vt100 = "0.16.2"
 walkdir = "2.5.0"
 webbrowser = "1.0"
@@ -474,8 +493,6 @@ unwrap_used = "deny"
 [workspace.metadata.cargo-shear]
 ignored = [
     "codex-agent-graph-store",
-    "codex-goal-extension",
-    "codex-memories-mcp",
     "icu_provider",
     "openssl-sys",
     "codex-v8-poc",
@@ -493,11 +510,12 @@ debug = "none"
 strip = "symbols"
 
 [profile.release]
-lto = "fat"
+lto = "thin"
+debug = "line-tables-only"
 split-debuginfo = "off"
-# Because we bundle some of these executables with the TypeScript CLI, we
-# remove everything to make the binary as small as possible.
-strip = "symbols"
+# Keep release binaries symbolicateable until packaging has archived the
+# sidecar symbols and stripped the binaries.
+strip = false
 
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1

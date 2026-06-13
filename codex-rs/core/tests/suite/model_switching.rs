@@ -4,6 +4,7 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -31,6 +32,7 @@ use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -44,11 +46,11 @@ fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -
         turn_permission_fields(PermissionProfile::read_only(), test.cwd_path());
     Op::UserInput {
         items,
-        environments: None,
         final_output_json_schema: None,
         responsesapi_client_metadata: None,
+        additional_context: Default::default(),
         thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            cwd: Some(test.cwd_path().to_path_buf()),
+            environments: Some(local_selections(test.config.cwd.clone())),
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: Some(sandbox_policy),
             permission_profile,
@@ -56,7 +58,7 @@ fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -
                 mode: codex_protocol::config_types::ModeKind::Default,
                 settings: codex_protocol::config_types::Settings {
                     model,
-                    reasoning_effort: test.config.model_reasoning_effort,
+                    reasoning_effort: test.config.model_reasoning_effort.clone(),
                     developer_instructions: None,
                 },
             }),
@@ -110,9 +112,14 @@ fn test_model_info(
         input_modalities,
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        use_responses_lite: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
         priority: 1,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: None,
@@ -129,6 +136,7 @@ fn test_model_info(
         context_window: Some(272_000),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
     }
@@ -289,7 +297,7 @@ async fn service_tier_change_is_applied_on_next_http_turn() -> Result<()> {
 
     let test = test_codex().build(&server).await?;
 
-    test.submit_turn_with_service_tier("fast turn", Some(ServiceTier::Fast))
+    test.submit_turn_with_service_tier("fast turn", Some(ServiceTier::Fast.request_value()))
         .await?;
     test.submit_turn_with_service_tier("standard turn", /*service_tier*/ None)
         .await?;
@@ -334,7 +342,7 @@ async fn flex_service_tier_is_applied_to_http_turn() -> Result<()> {
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn_with_service_tier("flex turn", Some(ServiceTier::Flex))
+    test.submit_turn_with_service_tier("flex turn", Some(ServiceTier::Flex.request_value()))
         .await?;
 
     let request = resp_mock.single_request();
@@ -367,7 +375,85 @@ async fn unsupported_service_tier_is_omitted_from_http_turn() -> Result<()> {
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn_with_service_tier("fast turn", Some(ServiceTier::Fast))
+    test.submit_turn_with_service_tier("fast turn", Some(ServiceTier::Fast.request_value()))
+        .await?;
+
+    let request = resp_mock.single_request();
+    let body = request.body_json();
+    assert_eq!(body.get("service_tier"), None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_service_tier_override_is_omitted_from_http_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let model_slug = "test-default-tier-model";
+    let mut model = test_model_info(
+        model_slug,
+        model_slug,
+        "has catalog default service tier",
+        default_input_modalities(),
+    );
+    model.service_tiers = vec![ModelServiceTier {
+        id: ServiceTier::Fast.request_value().to_string(),
+        name: "fast".to_string(),
+        description: "Fast processing.".to_string(),
+    }];
+    model.default_service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
+
+    let mut builder = test_codex()
+        .with_model(model_slug)
+        .with_config(move |config| {
+            config.model_catalog = Some(ModelsResponse {
+                models: vec![model],
+            });
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn_with_service_tier("default turn", Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE))
+        .await?;
+
+    let request = resp_mock.single_request();
+    let body = request.body_json();
+    assert_eq!(body.get("service_tier"), None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn null_service_tier_override_is_omitted_from_http_turn_with_catalog_default() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let model_slug = "test-null-default-tier-model";
+    let mut model = test_model_info(
+        model_slug,
+        model_slug,
+        "has catalog default service tier",
+        default_input_modalities(),
+    );
+    model.service_tiers = vec![ModelServiceTier {
+        id: ServiceTier::Fast.request_value().to_string(),
+        name: "fast".to_string(),
+        description: "Fast processing.".to_string(),
+    }];
+    model.default_service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
+
+    let mut builder = test_codex()
+        .with_model(model_slug)
+        .with_config(move |config| {
+            config.model_catalog = Some(ModelsResponse {
+                models: vec![model],
+            });
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn_with_service_tier("standard turn", /*service_tier*/ None)
         .await?;
 
     let request = resp_mock.single_request();
@@ -474,19 +560,6 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
             .any(|text| text == "image content omitted because you do not support image input"),
         "second request should include the image-omitted placeholder text"
     );
-    assert!(
-        second_user_texts
-            .iter()
-            .any(|text| text == &codex_protocol::models::image_open_tag_text()),
-        "second request should preserve the image open tag text"
-    );
-    assert!(
-        second_user_texts
-            .iter()
-            .any(|text| text == &codex_protocol::models::image_close_tag_text()),
-        "second request should preserve the image close tag text"
-    );
-
     Ok(())
 }
 
@@ -861,9 +934,14 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        use_responses_lite: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
         priority: 1,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: None,
@@ -880,6 +958,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         context_window: Some(large_context_window),
         max_context_window: None,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent,
         experimental_supported_tools: Vec::new(),
     };

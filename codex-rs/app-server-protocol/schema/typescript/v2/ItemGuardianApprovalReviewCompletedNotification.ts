@@ -6,12 +6,8 @@ import type { GuardianApprovalReview } from "./GuardianApprovalReview";
 import type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";
 
 /**
- * [UNSTABLE] Temporary notification payload for guardian automatic approval
- * review. This shape is expected to change soon.
- *
- * TODO(ccunningham): Attach guardian review state to the reviewed tool item's
- * lifecycle instead of sending separate standalone review notifications so the
- * app-server API can persist and replay review state via `thread/read`.
+ * [UNSTABLE] Temporary notification payload for approval auto-review. This
+ * shape is expected to change soon.
  */
 export type ItemGuardianApprovalReviewCompletedNotification = { threadId: string, turnId: string,
 /**

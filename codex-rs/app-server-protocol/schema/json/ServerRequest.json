@@ -435,11 +435,10 @@
         }
       },
       "required": [
-        "itemId",
-        "startedAtMs",
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
       ],
       "type": "object"
     },
@@ -652,11 +651,10 @@
         }
       },
       "required": [
-        "itemId",
-        "startedAtMs",
         "threadId",
         "turnId",
-        "itemId"
+        "itemId",
+        "startedAtMs"
       ],
       "type": "object"
     },
@@ -776,7 +774,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1594,6 +1591,13 @@
         "cwd": {
           "$ref": "#/$defs/AbsolutePathBuf"
         },
+        "environmentId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -1619,13 +1623,10 @@
         }
       },
       "required": [
-        "cwd",
-        "itemId",
-        "permissions",
-        "startedAtMs",
         "threadId",
         "turnId",
         "itemId",
+        "startedAtMs",
         "cwd",
         "permissions"
       ],
@@ -1942,29 +1943,27 @@
       "description": "Generate a fresh upstream attestation result on demand.",
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "attestation/generate"
-          ],
+          "const": "attestation/generate",
           "title": "Attestation/generateRequestMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/AttestationGenerateParams"
+          "$ref": "#/$defs/AttestationGenerateParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "Attestation/generateRequest",
       "type": "object"
     },
     {
-      "description": "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+      "description": "DEPRECATED APIs below\nRequest to approve a patch.\nThis request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"

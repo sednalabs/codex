@@ -51,6 +51,7 @@ pub struct ProviderAccountState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAccountError {
     MissingChatgptAccountDetails,
+    UnsupportedBedrockApiKeyAuth,
 }
 
 impl fmt::Display for ProviderAccountError {
@@ -60,6 +61,12 @@ impl fmt::Display for ProviderAccountError {
                 write!(
                     f,
                     "email and plan type are required for chatgpt authentication"
+                )
+            }
+            Self::UnsupportedBedrockApiKeyAuth => {
+                write!(
+                    f,
+                    "Bedrock API key auth is only supported by the Amazon Bedrock model provider"
                 )
             }
         }
@@ -73,6 +80,14 @@ pub type ProviderAccountResult = std::result::Result<ProviderAccountState, Provi
 /// Default model used for automatic approval review when a provider does not
 /// require a backend-specific model ID.
 pub const DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL: &str = "codex-auto-review";
+
+/// Default model used for memory extraction when a provider does not require a
+/// backend-specific model ID.
+pub const DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL: &str = "gpt-5.4-mini";
+
+/// Default model used for memory consolidation when a provider does not require
+/// a backend-specific model ID.
+pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.4";
 
 /// Runtime provider abstraction used by model execution.
 ///
@@ -94,6 +109,20 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     /// Providers that require backend-specific model IDs should override this.
     fn approval_review_preferred_model(&self) -> &'static str {
         DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL
+    }
+
+    /// Returns the preferred model used for memory extraction.
+    ///
+    /// Providers that require backend-specific model IDs should override this.
+    fn memory_extraction_preferred_model(&self) -> &'static str {
+        DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL
+    }
+
+    /// Returns the preferred model used for memory consolidation.
+    ///
+    /// Providers that require backend-specific model IDs should override this.
+    fn memory_consolidation_preferred_model(&self) -> &'static str {
+        DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL
     }
 
     /// Returns whether requests made through this provider should include attestation.
@@ -210,9 +239,13 @@ impl ModelProvider for ConfiguredModelProvider {
                 })
                 .map(|auth| match &auth {
                     CodexAuth::ApiKey(_) => Ok(ProviderAccount::ApiKey),
+                    CodexAuth::BedrockApiKey(_) => {
+                        Err(ProviderAccountError::UnsupportedBedrockApiKeyAuth)
+                    }
                     CodexAuth::Chatgpt(_)
                     | CodexAuth::ChatgptAuthTokens(_)
-                    | CodexAuth::AgentIdentity(_) => {
+                    | CodexAuth::AgentIdentity(_)
+                    | CodexAuth::PersonalAccessToken(_) => {
                         let email = auth.get_account_email();
                         let plan_type = auth.account_plan_type();
 
@@ -264,6 +297,7 @@ impl ModelProvider for ConfiguredModelProvider {
 mod tests {
     use std::num::NonZeroU64;
 
+    use codex_login::auth::BedrockApiKeyAuth;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::WireApi;
     use codex_models_manager::manager::RefreshStrategy;
@@ -349,6 +383,13 @@ mod tests {
             "experimental_supported_tools": [],
         }))
         .expect("valid model")
+    }
+
+    fn bedrock_api_key_auth() -> CodexAuth {
+        CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "bedrock-api-key-test".to_string(),
+            region: "us-east-1".to_string(),
+        })
     }
 
     #[test]
@@ -454,6 +495,34 @@ mod tests {
     }
 
     #[test]
+    fn openai_provider_rejects_chatgpt_account_state_without_email() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        );
+
+        assert_eq!(
+            provider.account_state(),
+            Err(ProviderAccountError::MissingChatgptAccountDetails)
+        );
+    }
+
+    #[test]
+    fn openai_provider_rejects_bedrock_api_key_account_state() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            Some(AuthManager::from_auth_for_testing(bedrock_api_key_auth())),
+        );
+
+        assert_eq!(
+            provider.account_state(),
+            Err(ProviderAccountError::UnsupportedBedrockApiKeyAuth)
+        );
+    }
+
+    #[test]
     fn custom_non_openai_provider_returns_no_account_state() {
         let provider = create_model_provider(
             ModelProviderInfo {
@@ -507,14 +576,7 @@ mod tests {
             .map(|model| model.slug.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            model_ids,
-            vec![
-                "openai.gpt-5.4",
-                "openai.gpt-oss-120b",
-                "openai.gpt-oss-20b"
-            ]
-        );
+        assert_eq!(model_ids, vec!["openai.gpt-5.5", "openai.gpt-5.4"]);
 
         let default_model = manager
             .list_models(RefreshStrategy::Online)
@@ -523,13 +585,19 @@ mod tests {
             .find(|preset| preset.is_default)
             .expect("Bedrock catalog should have a default model");
 
-        assert_eq!(default_model.model, "openai.gpt-5.4");
+        assert_eq!(default_model.model, "openai.gpt-5.5");
     }
 
     #[tokio::test]
-    async fn amazon_bedrock_provider_uses_configured_static_catalog_when_present() {
-        let custom_model =
-            codex_models_manager::model_info::model_info_from_slug("custom-bedrock-model");
+    async fn configured_bedrock_catalog_only_allows_default_service_tier() {
+        let configured_model = codex_models_manager::bundled_models_response()
+            .expect("bundled models should parse")
+            .models
+            .into_iter()
+            .find(|model| model.slug == "gpt-5.5")
+            .expect("bundled models should include GPT-5.5");
+        assert!(!configured_model.additional_speed_tiers.is_empty());
+        assert!(!configured_model.service_tiers.is_empty());
 
         let provider = create_model_provider(
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
@@ -538,14 +606,20 @@ mod tests {
         let manager = provider.models_manager(
             test_codex_home(),
             Some(ModelsResponse {
-                models: vec![custom_model],
+                models: vec![configured_model],
             }),
         );
 
         let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
 
         assert_eq!(catalog.models.len(), 1);
-        assert_eq!(catalog.models[0].slug, "custom-bedrock-model");
+        assert_eq!(catalog.models[0].slug, "gpt-5.5");
+        assert_eq!(
+            catalog.models[0].additional_speed_tiers,
+            Vec::<String>::new()
+        );
+        assert_eq!(catalog.models[0].service_tiers, Vec::new());
+        assert_eq!(catalog.models[0].default_service_tier, None);
     }
 
     #[tokio::test]

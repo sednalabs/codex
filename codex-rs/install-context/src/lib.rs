@@ -11,6 +11,7 @@ const PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
+const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,7 +125,7 @@ impl InstallContext {
             && let Some(path_dir) = &package_layout.path_dir
         {
             let bundled_rg = path_dir.join(default_rg_command());
-            if bundled_rg.exists() {
+            if bundled_rg.is_file() {
                 return bundled_rg.into_path_buf();
             }
         }
@@ -135,23 +136,62 @@ impl InstallContext {
         } = &self.method
         {
             let bundled_rg = resources_dir.join(default_rg_command());
-            if bundled_rg.exists() {
+            if bundled_rg.is_file() {
                 return bundled_rg.into_path_buf();
             }
         }
 
         default_rg_command()
     }
+
+    pub fn bundled_resource(&self, file_name: impl AsRef<Path>) -> Option<AbsolutePathBuf> {
+        if let Some(package_layout) = &self.package_layout
+            && let Some(resources_dir) = &package_layout.resources_dir
+        {
+            let resource = resources_dir.join(file_name.as_ref());
+            if resource.is_file() {
+                return Some(resource);
+            }
+        }
+
+        if let InstallMethod::Standalone {
+            resources_dir: Some(resources_dir),
+            ..
+        } = &self.method
+        {
+            let resource = resources_dir.join(file_name);
+            if resource.is_file() {
+                return Some(resource);
+            }
+        }
+
+        None
+    }
+
+    pub fn bundled_zsh_path(&self) -> Option<AbsolutePathBuf> {
+        if cfg!(windows) {
+            None
+        } else {
+            self.bundled_resource(zsh_resource_path())
+        }
+    }
+
+    pub fn bundled_zsh_bin_dir(&self) -> Option<AbsolutePathBuf> {
+        self.bundled_zsh_path()?.parent()
+    }
 }
 
 impl CodexPackageLayout {
     fn from_exe(exe_path: &Path) -> Option<Self> {
         let canonical_exe = canonical_absolute_path(exe_path)?;
-        let bin_dir = canonical_exe.parent()?;
-        if bin_dir.file_name() != Some(OsStr::new(BIN_DIRNAME)) {
-            return None;
+        let exe_dir = canonical_exe.parent()?;
+        match exe_dir.file_name() {
+            Some(name) if name == OsStr::new(BIN_DIRNAME) => Self::from_package_bin_dir(exe_dir),
+            Some(_) | None => None,
         }
+    }
 
+    fn from_package_bin_dir(bin_dir: AbsolutePathBuf) -> Option<Self> {
         let package_dir = bin_dir.parent()?;
         if !package_dir.join(PACKAGE_METADATA_FILENAME).is_file() {
             return None;
@@ -236,11 +276,17 @@ fn default_rg_command() -> PathBuf {
     }
 }
 
+fn zsh_resource_path() -> PathBuf {
+    PathBuf::from(ZSH_DIRNAME).join(BIN_DIRNAME).join("zsh")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use std::fs;
+
+    const TEST_RESOURCE_NAME: &str = "codex-test-helper";
 
     #[test]
     fn detects_standalone_install_from_release_layout() -> std::io::Result<()> {
@@ -253,6 +299,7 @@ mod tests {
         let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(default_rg_command()), "")?;
+        fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         let canonical_release_dir =
             AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?;
         let canonical_resources_dir =
@@ -270,11 +317,15 @@ mod tests {
             InstallContext {
                 method: InstallMethod::Standalone {
                     release_dir: canonical_release_dir,
-                    resources_dir: Some(canonical_resources_dir),
+                    resources_dir: Some(canonical_resources_dir.clone()),
                     platform: standalone_platform(),
                 },
                 package_layout: None,
             }
+        );
+        assert_eq!(
+            context.bundled_resource(TEST_RESOURCE_NAME),
+            Some(canonical_resources_dir.join(TEST_RESOURCE_NAME))
         );
         Ok(())
     }
@@ -312,7 +363,13 @@ mod tests {
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
         let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
+        fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
+        if !cfg!(windows) {
+            let zsh_path = resources_dir.join(zsh_resource_path());
+            fs::create_dir_all(zsh_path.parent().expect("zsh path should have parent"))?;
+            fs::write(&zsh_path, "")?;
+        }
         let canonical_package_dir =
             AbsolutePathBuf::from_absolute_path(package_dir.path().canonicalize()?)?;
         let canonical_bin_dir = AbsolutePathBuf::from_absolute_path(bin_dir.canonicalize()?)?;
@@ -322,7 +379,7 @@ mod tests {
         let package_layout = CodexPackageLayout {
             package_dir: canonical_package_dir,
             bin_dir: canonical_bin_dir,
-            resources_dir: Some(canonical_resources_dir),
+            resources_dir: Some(canonical_resources_dir.clone()),
             path_dir: Some(canonical_path_dir.clone()),
         };
 
@@ -346,6 +403,23 @@ mod tests {
                 .join(default_rg_command())
                 .into_path_buf()
         );
+        assert_eq!(
+            context.bundled_resource(TEST_RESOURCE_NAME),
+            Some(canonical_resources_dir.join(TEST_RESOURCE_NAME))
+        );
+        if cfg!(windows) {
+            assert_eq!(context.bundled_zsh_path(), None);
+            assert_eq!(context.bundled_zsh_bin_dir(), None);
+        } else {
+            assert_eq!(
+                context.bundled_zsh_path(),
+                Some(canonical_resources_dir.join(zsh_resource_path()))
+            );
+            assert_eq!(
+                context.bundled_zsh_bin_dir(),
+                Some(canonical_resources_dir.join(ZSH_DIRNAME).join(BIN_DIRNAME))
+            );
+        }
         Ok(())
     }
 
@@ -364,6 +438,7 @@ mod tests {
         fs::write(package_dir.join(PACKAGE_METADATA_FILENAME), "{}")?;
         let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
+        fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
         let canonical_package_dir =
             AbsolutePathBuf::from_absolute_path(package_dir.canonicalize()?)?;
@@ -390,7 +465,7 @@ mod tests {
                 package_layout: Some(CodexPackageLayout {
                     package_dir: canonical_package_dir,
                     bin_dir: canonical_bin_dir,
-                    resources_dir: Some(canonical_resources_dir),
+                    resources_dir: Some(canonical_resources_dir.clone()),
                     path_dir: Some(canonical_path_dir.clone()),
                 }),
             }
@@ -400,6 +475,10 @@ mod tests {
             canonical_path_dir
                 .join(default_rg_command())
                 .into_path_buf()
+        );
+        assert_eq!(
+            context.bundled_resource(TEST_RESOURCE_NAME),
+            Some(canonical_resources_dir.join(TEST_RESOURCE_NAME))
         );
         Ok(())
     }
@@ -452,6 +531,31 @@ mod tests {
             /*codex_home*/ None,
         );
         assert_eq!(context.rg_command(), default_rg_command());
+        Ok(())
+    }
+
+    #[test]
+    fn bundled_file_lookups_ignore_directories() -> std::io::Result<()> {
+        let package_dir = tempfile::tempdir()?;
+        let bin_dir = package_dir.path().join(BIN_DIRNAME);
+        let resources_dir = package_dir.path().join(RESOURCES_DIRNAME);
+        let path_dir = package_dir.path().join(PATH_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(resources_dir.join(TEST_RESOURCE_NAME))?;
+        fs::create_dir_all(path_dir.join(default_rg_command()))?;
+        fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+
+        let context = InstallContext::from_exe_with_codex_home(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*managed_by_npm*/ false,
+            /*managed_by_bun*/ false,
+            /*codex_home*/ None,
+        );
+        assert_eq!(context.rg_command(), default_rg_command());
+        assert_eq!(context.bundled_resource(TEST_RESOURCE_NAME), None);
         Ok(())
     }
 

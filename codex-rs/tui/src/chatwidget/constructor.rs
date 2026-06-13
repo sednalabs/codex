@@ -64,7 +64,11 @@ impl ChatWidget {
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
 
         let current_cwd = Some(config.cwd.to_path_buf());
-        let effective_service_tier = config.service_tier.clone();
+        let effective_service_tier = crate::service_tier_resolution::effective_service_tier(
+            &config,
+            &header_model,
+            &model_catalog.try_list_models().unwrap_or_default(),
+        );
         let current_terminal_info = terminal_info();
         let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).ok();
         let default_keymap = RuntimeKeymap::defaults();
@@ -104,6 +108,7 @@ impl ChatWidget {
             raw_output_mode: config.tui_raw_output_mode,
             config,
             effective_service_tier,
+            observed_model_display_name: None,
             skills_all: Vec::new(),
             skills_initial_state: None,
             current_collaboration_mode,
@@ -115,6 +120,7 @@ impl ChatWidget {
             initial_user_message,
             status_account_display,
             runtime_model_provider_base_url,
+            remote_connection: None,
             token_info: None,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
@@ -177,6 +183,7 @@ impl ChatWidget {
             forked_from: None,
             interrupted_turn_notice_mode: InterruptedTurnNoticeMode::Default,
             input_queue: InputQueueState::default(),
+            cancel_edit: CancelEditState::default(),
             chat_keymap,
             queued_message_edit_hint_binding,
             show_welcome_banner: is_first_run,

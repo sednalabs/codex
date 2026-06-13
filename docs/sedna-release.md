@@ -175,3 +175,22 @@ runner. It intentionally does not perform host-local installation from the publi
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
+
+### Operator deployment boundary
+
+The public release architecture ends at GitHub Release publication and
+GitHub-hosted asset verification. The repository tracks the release resolver,
+metadata contract, signing/checksum process, artifact names, and dry-run asset
+verification because those are public product behavior.
+
+Operator deployment policy is downstream-owned and external to this public
+Actions surface. Do not add hostnames, tunnel names, self-hosted runner labels,
+service-unit paths, installation directories, or production-machine routing to
+tracked workflows or public release notes. If a public workflow needs to refer
+to that handoff, use repository-neutral wording such as external deployment
+automation.
+
+`.github/scripts/check_workflow_policy.py` is the checked-in guardrail for the
+highest-risk workflow drift: it rejects public self-hosted runners, direct
+release publication without the release environment, and public release-install
+paths that are not dry-run asset verification.

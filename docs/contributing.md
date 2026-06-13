@@ -36,6 +36,7 @@ If you are invited by a fork maintainer to contribute a PR, here is the recommen
 - Upstream sync for `main` is merge-based (`upstream-main` -> `main`), not rebase-based.
 - Keep your changes focused. Multiple unrelated fixes should be opened as separate PRs.
 - Ensure your change is free of lint warnings and test failures.
+- When branch work is complete, commit it, push the topic branch, and open a PR targeting `main`; do not leave completed work as local-only changes.
 
 ### Guidance for invited code contributions
 
@@ -57,8 +58,9 @@ When a change updates model catalogs or model metadata (`/models` payloads, pres
 
 - Fill in the PR template (or include similar information) - **What? Why? How?**
 - Include a link to a bug report or enhancement request in the issue tracker
-- Run the smallest relevant local checks first. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant crate-scoped tests. Heavy sweeps and release-mode validation should be offloaded to GitHub Actions after the branch is pushed.
+- Run the smallest relevant local checks first. Use the root `just` helpers so you stay consistent with the rest of the workspace: `just fmt`, `just fix -p <crate>` for the crate you touched, and the relevant tests (for example, `just test -p codex-tui`). Heavy sweeps and release-mode validation should be offloaded to GitHub Actions after the branch is pushed.
 - Make sure your branch is up-to-date with `main` and that you have resolved merge conflicts.
+- Open a PR for every completed topic branch. Branch work is not considered handed off until a PR exists.
 - Mark the PR as **Ready for review** only when you believe it is in a merge-able state.
 
 ### Review process

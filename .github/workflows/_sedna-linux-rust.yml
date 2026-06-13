@@ -61,6 +61,10 @@ on:
         required: false
         type: string
         default: ""
+      display_ref:
+        required: false
+        type: string
+        default: ""
       install_nextest:
         required: false
         type: boolean
@@ -196,7 +200,7 @@ jobs:
       - name: Install DotSlash
         uses: facebook/install-dotslash@v2
 
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: dtolnay/rust-toolchain@1.95.0
         if: ${{ inputs.setup_class != 'light' }}
         with:
           targets: x86_64-unknown-linux-gnu
@@ -233,7 +237,7 @@ jobs:
         id: sccache_backend
         if: ${{ inputs.setup_class != 'light' }}
         shell: bash
-        run: bash .workflow-src/.github/scripts/configure_sccache_backend.sh '${{ inputs.cache_policy }}'
+        run: bash ../.workflow-src/.github/scripts/configure_sccache_backend.sh '${{ inputs.cache_policy }}'
 
       - name: Enable sccache wrapper
         if: ${{ inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend != 'off' }}
@@ -276,6 +280,7 @@ jobs:
         continue-on-error: true
         env:
           LANE_COMMAND: ${{ inputs.run_command }}
+          DISPLAY_REF: ${{ inputs.display_ref }}
         run: |
           set -euo pipefail
           command_file="${RUNNER_TEMP}/sedna-lane-command.sh"

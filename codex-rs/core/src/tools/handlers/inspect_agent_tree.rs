@@ -4,10 +4,10 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
-use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::multi_agents_common::tool_output_code_mode_result;
 use crate::tools::handlers::multi_agents_common::tool_output_json_text;
 use crate::tools::handlers::multi_agents_common::tool_output_response_item;
+use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -22,17 +22,22 @@ const DEFAULT_TREE_MAX_AGENTS: usize = 25;
 
 pub struct InspectAgentTreeHandler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("inspect_agent_tree")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_inspect_agent_tree_tool())
+    fn spec(&self) -> ToolSpec {
+        create_inspect_agent_tree_tool()
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl InspectAgentTreeHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, crate::function_tool::FunctionCallError>
@@ -65,12 +70,12 @@ impl ToolExecutor<ToolInvocation> for InspectAgentTreeHandler {
         session
             .services
             .agent_control
-            .register_session_root(session.conversation_id, &turn.session_source);
+            .register_session_root(session.thread_id, turn.session_source.parent_thread_id());
         session
             .services
             .agent_control
             .inspect_agent_tree(
-                session.conversation_id,
+                session.thread_id,
                 &turn.session_source,
                 args.target.as_deref(),
                 args.agent_roots.as_deref(),

@@ -1,13 +1,18 @@
 use std::sync::Arc;
+use std::sync::Weak;
 
-use async_trait::async_trait;
+use codex_analytics::AnalyticsEventsClient;
+use codex_core::ThreadManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
+use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
-use codex_extension_api::NoopExtensionEventSink;
+use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
+use codex_extension_api::ThreadStopInput;
 use codex_extension_api::TokenUsageContributor;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolContributor;
@@ -15,18 +20,29 @@ use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
+use codex_otel::MetricsClient;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::ThreadGoal;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsageInfo;
-use codex_protocol::protocol::TurnAbortReason;
 
+use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
+use crate::analytics::GoalAnalytics;
+use crate::api::GoalService;
 use crate::events::GoalEventEmitter;
+use crate::metrics::GoalMetrics;
+use crate::runtime::ActiveGoalStopReason;
+use crate::runtime::GoalRuntimeConfig;
+use crate::runtime::GoalRuntimeHandle;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
-use crate::tool::CreateGoalRequest;
+use crate::steering::budget_limit_steering_item;
 use crate::tool::GoalToolExecutor;
 
 #[derive(Clone, Debug)]
@@ -42,8 +58,12 @@ impl GoalExtensionConfig {
 
 #[derive(Clone)]
 pub struct GoalExtension<C> {
-    backend: Arc<dyn GoalToolBackend>,
+    state_dbs: Arc<codex_state::StateRuntime>,
+    analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
+    metrics: GoalMetrics,
+    thread_manager: Weak<ThreadManager>,
+    goal_service: Arc<GoalService>,
     goals_enabled: Arc<dyn Fn(&C) -> bool + Send + Sync>,
 }
 
@@ -54,86 +74,104 @@ impl<C> std::fmt::Debug for GoalExtension<C> {
 }
 
 impl<C> GoalExtension<C> {
-    pub fn new(
-        backend: Arc<dyn GoalToolBackend>,
-        goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        Self::new_with_event_sink(backend, Arc::new(NoopExtensionEventSink), goals_enabled)
-    }
-
-    pub fn new_with_event_sink(
-        backend: Arc<dyn GoalToolBackend>,
+    pub(crate) fn new_with_host_capabilities(
+        state_dbs: Arc<codex_state::StateRuntime>,
+        analytics_events_client: AnalyticsEventsClient,
         event_sink: Arc<dyn ExtensionEventSink>,
+        metrics_client: Option<MetricsClient>,
+        thread_manager: Weak<ThreadManager>,
+        goal_service: Arc<GoalService>,
         goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
-            backend,
+            state_dbs,
+            analytics: GoalAnalytics::new(analytics_events_client),
             event_emitter: GoalEventEmitter::new(event_sink),
+            metrics: GoalMetrics::new(metrics_client),
+            thread_manager,
+            goal_service,
             goals_enabled: Arc::new(goals_enabled),
         }
     }
-
-    pub fn without_backend(goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static) -> Self {
-        Self::new(Arc::new(NoGoalToolBackend), goals_enabled)
-    }
 }
 
-#[async_trait]
-pub trait GoalToolBackend: Send + Sync {
-    async fn get_goal(&self, thread_id: ThreadId) -> Result<Option<ThreadGoal>, String>;
-
-    async fn create_goal(
-        &self,
-        thread_id: ThreadId,
-        request: CreateGoalRequest,
-    ) -> Result<ThreadGoal, String>;
-
-    async fn complete_goal(&self, thread_id: ThreadId) -> Result<ThreadGoal, String>;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoGoalToolBackend;
-
-#[async_trait]
-impl GoalToolBackend for NoGoalToolBackend {
-    async fn get_goal(&self, _thread_id: ThreadId) -> Result<Option<ThreadGoal>, String> {
-        Err(missing_backend_message())
-    }
-
-    async fn create_goal(
-        &self,
-        _thread_id: ThreadId,
-        _request: CreateGoalRequest,
-    ) -> Result<ThreadGoal, String> {
-        Err(missing_backend_message())
-    }
-
-    async fn complete_goal(&self, _thread_id: ThreadId) -> Result<ThreadGoal, String> {
-        Err(missing_backend_message())
-    }
-}
-
-fn missing_backend_message() -> String {
-    // TODO: replace this fallback with a host-provided goal backend once
-    // ToolContributor invocations can reach thread-scoped goal persistence and
-    // the current turn context.
-    "goal tools are not connected to host goal persistence yet".to_string()
-}
-
-#[async_trait]
 impl<C> ThreadLifecycleContributor<C> for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
-    async fn on_thread_start(&self, input: ThreadStartInput<'_, C>) {
-        input
-            .thread_store
-            .insert(GoalExtensionConfig::from_enabled((self.goals_enabled)(
-                input.config,
-            )));
-        input
-            .thread_store
-            .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
+    fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let enabled = (self.goals_enabled)(input.config);
+            let tools_available_for_thread = input.persistent_thread_state_available
+                && !matches!(
+                    input.session_source,
+                    SessionSource::SubAgent(SubAgentSource::Review)
+                );
+            input
+                .thread_store
+                .insert(GoalExtensionConfig::from_enabled(enabled));
+            let accounting_state = input
+                .thread_store
+                .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
+            let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
+                return;
+            };
+            let runtime = input.thread_store.get_or_init::<GoalRuntimeHandle>(|| {
+                GoalRuntimeHandle::new(
+                    thread_id,
+                    Arc::clone(&self.state_dbs),
+                    self.event_emitter.clone(),
+                    self.metrics.clone(),
+                    self.thread_manager.clone(),
+                    accounting_state,
+                    GoalRuntimeConfig {
+                        analytics: self.analytics.clone(),
+                        enabled,
+                        tools_available_for_thread,
+                    },
+                )
+            });
+            runtime.set_enabled(enabled);
+            self.goal_service.register_runtime(&runtime);
+        })
+    }
+
+    fn on_thread_resume<'a>(&'a self, input: ThreadResumeInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+
+            if let Err(err) = runtime.restore_after_resume().await {
+                tracing::warn!(
+                    "failed to restore goal runtime after thread resume for {}: {err}",
+                    runtime.thread_id()
+                );
+            }
+        })
+    }
+
+    fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+
+            if let Err(err) = runtime.continue_if_idle().await {
+                tracing::warn!(
+                    "failed to continue active goal for idle thread {}: {err}",
+                    runtime.thread_id()
+                );
+            }
+        })
+    }
+
+    fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(runtime) = goal_runtime_handle(input.thread_store) {
+                self.goal_service.unregister_runtime(&runtime);
+            }
+        })
     }
 }
 
@@ -148,81 +186,169 @@ where
         _previous_config: &C,
         new_config: &C,
     ) {
-        thread_store.insert(GoalExtensionConfig::from_enabled((self.goals_enabled)(
-            new_config,
-        )));
+        let enabled = (self.goals_enabled)(new_config);
+        thread_store.insert(GoalExtensionConfig::from_enabled(enabled));
+        if let Some(runtime) = goal_runtime_handle(thread_store) {
+            runtime.set_enabled(enabled);
+        }
     }
 }
 
-#[async_trait]
 impl<C> TurnLifecycleContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
-    async fn on_turn_start(&self, input: TurnStartInput<'_>) {
-        if !goal_enabled(input.thread_store) {
-            return;
-        }
+    fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+            if !runtime.is_enabled() {
+                return;
+            }
 
-        // TODO: TurnStartInput should expose collaboration mode and token usage
-        // at turn start. Goals need mode to suppress plan-mode accounting and
-        // the token baseline to account deltas exactly.
-        accounting_state(input.thread_store).start_turn(input.turn_store.level_id());
+            let accounting = runtime.accounting_state();
+            accounting.start_turn(
+                input.turn_id,
+                input.collaboration_mode.mode,
+                input.token_usage_at_turn_start,
+            );
+            if matches!(
+                input.collaboration_mode.mode,
+                codex_protocol::config_types::ModeKind::Plan
+            ) {
+                accounting.clear_current_turn_goal();
+                return;
+            }
+            let Ok(goal) = self
+                .state_dbs
+                .thread_goals()
+                .get_thread_goal(runtime.thread_id())
+                .await
+            else {
+                return;
+            };
+            if let Some(goal) = goal
+                && matches!(
+                    goal.status,
+                    codex_state::ThreadGoalStatus::Active
+                        | codex_state::ThreadGoalStatus::BudgetLimited
+                )
+            {
+                accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+            }
+        })
     }
 
-    async fn on_turn_stop(&self, input: TurnStopInput<'_>) {
-        if !goal_enabled(input.thread_store) {
-            return;
-        }
+    fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+            if !runtime.is_enabled() {
+                return;
+            }
 
-        // TODO: this should flush wall-clock and any unflushed token usage to
-        // persisted goal storage, emit ThreadGoalUpdated, and optionally inject
-        // budget-limit steering through a host event/input capability.
-        // TODO: the host also needs an idle/next-turn wake capability so an
-        // active goal can enqueue continuation context after the turn is fully
-        // cleared, only when there is no pending user or mailbox work.
-        accounting_state(input.thread_store).stop_turn(input.turn_store.level_id());
+            let turn_id = input.turn_store.level_id();
+            if let Err(err) = runtime
+                .account_active_goal_progress(
+                    turn_id,
+                    &format!("{turn_id}:turn-stop"),
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::ClearActive,
+                )
+                .await
+            {
+                tracing::warn!(
+                    "failed to account active goal progress at turn stop for {turn_id}: {err}"
+                );
+                return;
+            }
+            runtime.accounting_state().finish_turn(turn_id);
+        })
     }
 
-    async fn on_turn_abort(&self, input: TurnAbortInput<'_>) {
-        if !goal_enabled(input.thread_store) {
-            return;
-        }
+    fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+            if !runtime.is_enabled() {
+                return;
+            }
 
-        accounting_state(input.thread_store).stop_turn(input.turn_store.level_id());
-        if input.reason == TurnAbortReason::Interrupted {
-            // TODO: interrupted turns should pause the active goal via persisted
-            // goal storage and emit ThreadGoalUpdated with turn_id None.
-        }
+            let turn_id = input.turn_store.level_id();
+            if let Err(err) = runtime
+                .account_active_goal_progress(
+                    turn_id,
+                    &format!("{turn_id}:turn-abort"),
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::ClearActive,
+                )
+                .await
+            {
+                tracing::warn!(
+                    "failed to account active goal progress after turn abort for {turn_id}: {err}"
+                );
+                return;
+            }
+            runtime.accounting_state().finish_turn(turn_id);
+        })
+    }
+
+    fn on_turn_error<'a>(&'a self, input: TurnErrorInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+
+            let reason = match input.error {
+                CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
+                // The turn has ended because the error was non-retryable or its
+                // retries were exhausted. Block the goal to prevent automatic
+                // continuation from looping and consuming tokens, as can happen
+                // with compaction errors.
+                _ => ActiveGoalStopReason::TurnError,
+            };
+            if let Err(err) = runtime
+                .stop_active_goal_for_turn(input.turn_id, reason)
+                .await
+            {
+                tracing::warn!(
+                    error = ?input.error,
+                    "failed to stop active goal after turn error: {err}"
+                );
+            }
+        })
     }
 }
 
-#[async_trait]
 impl<C> TokenUsageContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
-    async fn on_token_usage(
-        &self,
-        _session_store: &ExtensionData,
-        thread_store: &ExtensionData,
-        turn_store: &ExtensionData,
-        token_usage: &TokenUsageInfo,
-    ) {
-        if !goal_enabled(thread_store) {
-            return;
-        }
+    fn on_token_usage<'a>(
+        &'a self,
+        _session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+        token_usage: &'a TokenUsageInfo,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(thread_store) else {
+                return;
+            };
+            if !runtime.is_enabled() {
+                return;
+            }
 
-        let Some(_recorded) = accounting_state(thread_store)
-            .record_token_usage(turn_store.level_id(), &token_usage.last_token_usage)
-        else {
-            return;
-        };
-
-        // TODO: TokenUsageContributor needs a host goal storage capability so
-        // this recorded delta can be committed to the active persisted goal.
-        // It also needs an event/input capability to emit ThreadGoalUpdated and
-        // inject budget-limit steering when accounting changes goal status.
+            let Some(_recorded) = runtime
+                .accounting_state()
+                .record_token_usage(turn_store.level_id(), &token_usage.total_token_usage)
+            else {
+                return;
+            };
+        })
     }
 }
 
@@ -232,24 +358,50 @@ where
 {
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
-            let _should_count_for_goal_progress = goal_enabled(input.thread_store)
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+            let should_count_for_goal_progress = runtime.is_enabled()
                 && tool_attempt_counts_for_goal_progress(input.outcome)
                 && !(input.tool_name.namespace.is_none()
                     && input.tool_name.name == UPDATE_GOAL_TOOL_NAME);
-
-            // TODO: commit active goal progress through host goal storage and emit
-            // ThreadGoalUpdated when the persisted goal changes. This replaces
-            // GoalRuntimeEvent::ToolCompleted once the goal extension owns runtime
-            // accounting.
+            if !should_count_for_goal_progress {
+                return;
+            }
+            let turn_id = input.turn_id;
+            let progress = match runtime
+                .account_active_goal_progress(
+                    turn_id,
+                    input.call_id,
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::KeepActive,
+                )
+                .await
+            {
+                Ok(Some(progress)) => progress,
+                Ok(None) => return,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to account active goal progress after tool finish for {turn_id}: {err}"
+                    );
+                    return;
+                }
+            };
+            let goal = progress.goal;
+            if goal.status != ThreadGoalStatus::BudgetLimited {
+                return;
+            }
+            if !runtime
+                .accounting_state()
+                .mark_budget_limit_reported_if_new(progress.goal_id.as_str())
+            {
+                return;
+            }
+            let item = budget_limit_steering_item(&goal);
+            runtime.inject_active_turn_steering(item).await;
         })
     }
 }
-
-// TODO: app-server initiated goal set/clear operations need a contributor or
-// backend callback here. They currently happen outside thread/turn/token
-// lifecycle, but the goal extension must observe them to account before
-// mutation, refresh active-goal accounting, emit objective-update steering, and
-// clear runtime state when a goal is removed.
 
 impl<C> ToolContributor for GoalExtension<C>
 where
@@ -260,52 +412,60 @@ where
         _session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn codex_extension_api::ToolExecutor<codex_extension_api::ToolCall>>> {
-        if !goal_enabled(thread_store) {
+        let Some(runtime) = goal_runtime_handle(thread_store) else {
+            return Vec::new();
+        };
+        if !runtime.tools_visible() {
             return Vec::new();
         }
 
-        let Ok(thread_id) = ThreadId::from_string(thread_store.level_id()) else {
-            return Vec::new();
-        };
         vec![
             Arc::new(GoalToolExecutor::get(
-                thread_id,
-                Arc::clone(&self.backend),
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.analytics.clone(),
                 self.event_emitter.clone(),
+                self.metrics.clone(),
             )),
             Arc::new(GoalToolExecutor::create(
-                thread_id,
-                Arc::clone(&self.backend),
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.analytics.clone(),
                 self.event_emitter.clone(),
+                self.metrics.clone(),
             )),
             Arc::new(GoalToolExecutor::update(
-                thread_id,
-                Arc::clone(&self.backend),
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.analytics.clone(),
                 self.event_emitter.clone(),
+                self.metrics.clone(),
             )),
         ]
     }
 }
 
-pub fn install<C>(
-    registry: &mut ExtensionRegistryBuilder<C>,
-    goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
-) where
-    C: Send + Sync + 'static,
-{
-    install_with_backend(registry, Arc::new(NoGoalToolBackend), goals_enabled);
-}
-
 pub fn install_with_backend<C>(
     registry: &mut ExtensionRegistryBuilder<C>,
-    backend: Arc<dyn GoalToolBackend>,
+    state_dbs: Arc<codex_state::StateRuntime>,
+    analytics_events_client: AnalyticsEventsClient,
+    metrics_client: Option<MetricsClient>,
+    thread_manager: Weak<ThreadManager>,
+    goal_service: Arc<GoalService>,
     goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
 ) where
     C: Send + Sync + 'static,
 {
-    let extension = Arc::new(GoalExtension::new_with_event_sink(
-        backend,
+    let extension = Arc::new(GoalExtension::new_with_host_capabilities(
+        state_dbs,
+        analytics_events_client,
         registry.event_sink(),
+        metrics_client,
+        thread_manager,
+        Arc::clone(&goal_service),
         goals_enabled,
     ));
     registry.thread_lifecycle_contributor(extension.clone());
@@ -316,14 +476,8 @@ pub fn install_with_backend<C>(
     registry.tool_contributor(extension);
 }
 
-fn goal_enabled(thread_store: &ExtensionData) -> bool {
-    thread_store
-        .get::<GoalExtensionConfig>()
-        .is_some_and(|config| config.enabled)
-}
-
-fn accounting_state(thread_store: &ExtensionData) -> Arc<GoalAccountingState> {
-    thread_store.get_or_init::<GoalAccountingState>(GoalAccountingState::default)
+fn goal_runtime_handle(thread_store: &ExtensionData) -> Option<Arc<GoalRuntimeHandle>> {
+    thread_store.get::<GoalRuntimeHandle>()
 }
 
 fn tool_attempt_counts_for_goal_progress(outcome: ToolCallOutcome) -> bool {

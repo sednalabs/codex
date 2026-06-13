@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def test_generated_files_are_up_to_date():
 
     # Regenerate contract artifacts via the pinned runtime package, not a local
     # app-server binary from the checkout or CI environment.
-    assert importlib.metadata.version("openai-codex-cli-bin") == "0.131.0a4"
+    assert importlib.metadata.version("openai-codex-cli-bin") == "0.137.0a4"
     env = os.environ.copy()
     env.pop("CODEX_EXEC_PATH", None)
     python_bin = str(Path(sys.executable).parent)
@@ -58,7 +59,7 @@ def test_generated_files_are_up_to_date():
 
 
 def test_generated_v2_all_has_no_redundant_pass_before_model_config():
-    source = (ROOT / "src/codex_app_server/generated/v2_all.py").read_text()
+    source = (ROOT / "src/openai_codex/generated/v2_all.py").read_text()
     assert not re.search(
         r"^class [A-Za-z_][A-Za-z0-9_]*\(.*BaseModel\):\n    pass\n    model_config = ConfigDict\(",
         source,

@@ -4,23 +4,22 @@ use super::App;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
-use crate::android_computer_use_provider::AndroidComputerUseOutcome;
-use crate::android_computer_use_provider::handle_android_computer_use;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
+use crate::computer_use_provider::ComputerUseProviderOutcome;
+use crate::computer_use_provider::handle_computer_use;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 
 impl App {
-    fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
+    pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
         let enabled_config_mcp_servers: Vec<String> = self
-            .chat_widget
-            .config_ref()
+            .config
             .mcp_servers
             .get()
             .iter()
@@ -79,7 +78,7 @@ impl App {
             }
             ServerNotification::AccountRateLimitsUpdated(notification) => {
                 self.chat_widget
-                    .on_rate_limit_snapshot(Some(notification.rate_limits.clone()));
+                    .on_rolling_rate_limit_snapshot(notification.rate_limits.clone());
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {
@@ -89,24 +88,32 @@ impl App {
                         notification.plan_type,
                     ),
                     notification.plan_type,
-                    matches!(
-                        notification.auth_mode,
-                        Some(AuthMode::Chatgpt) | Some(AuthMode::ChatgptAuthTokens)
-                    ),
+                    notification
+                        .auth_mode
+                        .is_some_and(AuthMode::has_chatgpt_account),
                 );
                 return;
             }
             ServerNotification::ExternalAgentConfigImportCompleted(_) => {
-                let cwd = self.chat_widget.config_ref().cwd.to_path_buf();
+                let should_report_completion =
+                    app_server_client.consume_external_agent_config_import_completion();
                 if let Err(err) = self.refresh_in_memory_config_from_disk().await {
                     tracing::warn!(
                         error = %err,
                         "failed to refresh config after external agent config import"
                     );
                 }
+                let cwd = self.chat_widget.config_ref().cwd.to_path_buf();
                 self.chat_widget.refresh_plugin_mentions();
                 self.chat_widget.submit_op(AppCommand::reload_user_config());
                 self.fetch_plugins_list(app_server_client, cwd);
+                if should_report_completion {
+                    self.chat_widget.add_info_message(
+                        crate::external_agent_config_migration_flow::EXTERNAL_AGENT_CONFIG_MIGRATION_FINISHED_MESSAGE
+                            .to_string(),
+                        /*hint*/ None,
+                    );
+                }
                 return;
             }
             ServerNotification::AppListUpdated(notification) => {
@@ -144,6 +151,12 @@ impl App {
                 );
                 return;
             }
+            ServerNotificationThreadTarget::AppScoped => {
+                tracing::debug!(
+                    "ignoring app-scoped MCP startup notification without a TUI app-level target"
+                );
+                return;
+            }
             ServerNotificationThreadTarget::Global => {}
         }
 
@@ -158,8 +171,8 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            match handle_android_computer_use(params).await {
-                AndroidComputerUseOutcome::Handled(response) => {
+            match handle_computer_use(params).await {
+                ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
                         Ok(result) => result,
                         Err(err) => {
@@ -174,7 +187,7 @@ impl App {
                         tracing::warn!("failed to resolve computer-use request: {err}");
                     }
                 }
-                AndroidComputerUseOutcome::Unavailable => {
+                ComputerUseProviderOutcome::Unavailable => {
                     let message = format!(
                         "No TUI computer-use provider is available for `{}`/`{}`.",
                         params.adapter, params.tool

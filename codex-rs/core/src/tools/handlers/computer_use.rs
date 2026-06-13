@@ -14,16 +14,20 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::registry::ToolExposure;
 use codex_protocol::computer_use::ComputerUseCallRequest;
 use codex_protocol::computer_use::ComputerUseOutputContentItem;
 use codex_protocol::computer_use::ComputerUseResponse;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
-use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
+use codex_tools::ToolSearchSourceInfo;
+use codex_tools::ToolSpec;
+use codex_tools::canonical_native_computer_use_dynamic_tool;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
@@ -32,14 +36,20 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::warn;
 
-pub struct ComputerUseHandler;
+pub struct ComputerUseHandler {
+    tool_name: ToolName,
+    adapter: String,
+    spec: ToolSpec,
+    exposure: ToolExposure,
+    search_text: String,
+    response_timeout: Duration,
+}
 
 pub struct ComputerUseOutput {
     tool_name: String,
     output: FunctionToolOutput,
 }
 
-const ADAPTER_ANDROID: &str = "android";
 const DEFAULT_COMPUTER_USE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_COMPUTER_USE_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -73,18 +83,73 @@ impl ToolOutput for ComputerUseOutput {
 }
 
 impl ComputerUseHandler {
-    async fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
-        invocation.tool_name.name != ANDROID_OBSERVE_TOOL_NAME
+    pub fn from_dynamic_tool(tool: &DynamicToolSpec) -> Option<Self> {
+        let native_tool = canonical_native_computer_use_dynamic_tool(tool)?;
+        let response_timeout = if native_tool.uses_long_timeout {
+            DEFAULT_COMPUTER_USE_INSTALL_TIMEOUT
+        } else {
+            DEFAULT_COMPUTER_USE_TIMEOUT
+        };
+        let output_tool = native_tool.tool;
+        let search_text = [
+            output_tool.name.clone(),
+            output_tool.name.replace('_', " "),
+            output_tool.description.clone(),
+        ]
+        .join(" ");
+        let tool_name = ToolName::plain(output_tool.name.clone());
+        Some(Self {
+            tool_name,
+            adapter: native_tool.adapter.to_string(),
+            spec: ToolSpec::Function(output_tool),
+            exposure: if tool.defer_loading {
+                ToolExposure::Deferred
+            } else {
+                ToolExposure::Direct
+            },
+            search_text,
+            response_timeout,
+        })
+    }
+
+    pub fn planned_tool_name(&self) -> ToolName {
+        self.tool_name.clone()
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("computer_use")
+        self.tool_name.clone()
     }
 
-    async fn handle(
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        ToolSearchInfo::from_spec(
+            self.search_text.clone(),
+            self.spec(),
+            Some(ToolSearchSourceInfo {
+                name: "Native computer-use tools".to_string(),
+                description: Some(
+                    "Client-backed computer-use tools for the current environment.".to_string(),
+                ),
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ComputerUseHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -108,14 +173,14 @@ impl ToolExecutor<ToolInvocation> for ComputerUseHandler {
 
         let args: Value = parse_arguments(&arguments)?;
         let output_tool_name = tool_name.to_string();
-        let response_timeout = computer_use_timeout_for_tool(&tool_name.name);
         let response = request_computer_use(
             &session,
             turn.as_ref(),
             call_id,
+            self.adapter.clone(),
             tool_name,
             args,
-            response_timeout,
+            self.response_timeout,
         )
         .await
         .ok_or_else(|| {
@@ -233,14 +298,6 @@ fn computer_use_command(tool_name: &str, arguments: &str) -> String {
     }
 }
 
-fn computer_use_timeout_for_tool(tool_name: &str) -> Duration {
-    if tool_name == ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME {
-        DEFAULT_COMPUTER_USE_INSTALL_TIMEOUT
-    } else {
-        DEFAULT_COMPUTER_USE_TIMEOUT
-    }
-}
-
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "active turn checks and computer-use response registration must remain atomic"
@@ -249,6 +306,7 @@ async fn request_computer_use(
     session: &Session,
     turn_context: &TurnContext,
     call_id: String,
+    adapter: String,
     tool_name: ToolName,
     arguments: Value,
     response_timeout: Duration,
@@ -256,12 +314,12 @@ async fn request_computer_use(
     let tool = tool_name.name;
     let turn_id = turn_context.sub_id.clone();
     let environment_id = selected_computer_use_environment_id(turn_context);
-    let adapter = ADAPTER_ANDROID.to_string();
     let started_at = Instant::now();
     if environment_id.is_none() {
-        let response = unavailable_response(
-            "Android computer-use environment is unavailable: no turn environment is selected.",
-        );
+        let response = unavailable_response(&format!(
+            "{} computer-use environment is unavailable: no turn environment is selected.",
+            adapter_display_name(&adapter)
+        ));
         session
             .send_event(
                 turn_context,
@@ -379,38 +437,58 @@ fn unavailable_response(message: &str) -> ComputerUseResponse {
     }
 }
 
+fn adapter_display_name(adapter: &str) -> String {
+    match adapter {
+        "android" => "Android".to_string(),
+        "browser" => "Browser".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ComputerUseHandler;
     use super::computer_use_command;
     use super::computer_use_response_content_for_model;
-    use super::computer_use_timeout_for_tool;
     use super::request_computer_use;
     use super::selected_computer_use_environment_id;
     use super::unavailable_response;
-    use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::turn_context::TurnEnvironment;
     use crate::state::ActiveTurn;
-    use crate::tools::context::ToolCallSource;
-    use crate::tools::context::ToolInvocation;
-    use crate::tools::context::ToolPayload;
-    use crate::tools::registry::CoreToolRuntime;
-    use crate::turn_diff_tracker::TurnDiffTracker;
+    use crate::tools::registry::ToolExecutor;
     use codex_protocol::computer_use::ComputerUseOutputContentItem;
     use codex_protocol::computer_use::ComputerUseResponse;
+    use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
     use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
     use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
-    use codex_tools::ANDROID_STEP_TOOL_NAME;
+    use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
+    use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
+    use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+    use codex_tools::LoadableToolSpec;
     use codex_tools::ToolName;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::Mutex;
-    use tokio_util::sync::CancellationToken;
+
+    fn native_dynamic_tool(name: &str, defer_loading: bool) -> DynamicToolSpec {
+        DynamicToolSpec {
+            namespace: None,
+            name: name.to_string(),
+            description: format!("{name} dynamic tool"),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading,
+            persist_on_resume: true,
+            capability: None,
+        }
+    }
 
     #[test]
     fn computer_use_command_uses_compact_json_arguments() {
@@ -423,88 +501,81 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn android_observe_is_non_mutating_but_step_and_install_are_mutating() {
-        let (session, turn) = make_session_and_context().await;
-        let session = Arc::new(session);
-        let turn = Arc::new(turn);
-        let handler = ComputerUseHandler;
+    #[test]
+    fn browser_handler_uses_browser_adapter() {
+        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+            BROWSER_OBSERVE_TOOL_NAME,
+            /*defer_loading*/ false,
+        ))
+        .expect("browser observe should create a native computer-use handler");
 
-        let observe_payload = ToolPayload::Function {
-            arguments: json!({"scope": "screen_and_ui"}).to_string(),
-        };
-        assert!(
-            !handler
-                .is_mutating(&ToolInvocation {
-                    session: session.clone(),
-                    turn: turn.clone(),
-                    cancellation_token: CancellationToken::new(),
-                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-                    call_id: "call-observe".to_string(),
-                    tool_name: codex_tools::ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
-                    source: ToolCallSource::Direct,
-                    payload: observe_payload,
-                })
-                .await
-        );
-
-        let step_payload = ToolPayload::Function {
-            arguments: json!({"action": "tap", "x": 1, "y": 2}).to_string(),
-        };
-        assert!(
-            handler
-                .is_mutating(&ToolInvocation {
-                    session: session.clone(),
-                    turn: turn.clone(),
-                    cancellation_token: CancellationToken::new(),
-                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-                    call_id: "call-step".to_string(),
-                    tool_name: codex_tools::ToolName::plain(ANDROID_STEP_TOOL_NAME),
-                    source: ToolCallSource::Direct,
-                    payload: step_payload,
-                })
-                .await
-        );
-
-        let install_payload = ToolPayload::Function {
-            arguments: json!({
-                "workflow_run_id": 25106447821_u64,
-                "artifact_name": "interactive-android-build-stage-first-mirror-on-hosted-debug-lite"
-            })
-            .to_string(),
-        };
-        assert!(
-            handler
-                .is_mutating(&ToolInvocation {
-                    session,
-                    turn,
-                    cancellation_token: CancellationToken::new(),
-                    tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-                    call_id: "call-install".to_string(),
-                    tool_name: codex_tools::ToolName::plain(
-                        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
-                    ),
-                    source: ToolCallSource::Direct,
-                    payload: install_payload,
-                })
-                .await
-        );
+        assert_eq!(observe_handler.adapter, COMPUTER_USE_ADAPTER_BROWSER);
     }
 
     #[test]
-    fn install_build_from_run_uses_longer_computer_use_timeout() {
-        assert_eq!(
-            computer_use_timeout_for_tool(ANDROID_OBSERVE_TOOL_NAME),
-            Duration::from_secs(120)
+    fn android_handler_uses_android_adapter() {
+        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+            ANDROID_OBSERVE_TOOL_NAME,
+            /*defer_loading*/ false,
+        ))
+        .expect("android observe should create a native computer-use handler");
+        let install_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+            ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
+            /*defer_loading*/ false,
+        ))
+        .expect("android install should create a native computer-use handler");
+
+        assert_eq!(observe_handler.adapter, COMPUTER_USE_ADAPTER_ANDROID);
+        assert_eq!(observe_handler.response_timeout, Duration::from_secs(120));
+        assert_eq!(install_handler.adapter, COMPUTER_USE_ADAPTER_ANDROID);
+        assert_eq!(install_handler.response_timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn search_info_uses_native_computer_use_metadata() {
+        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+            ANDROID_OBSERVE_TOOL_NAME,
+            /*defer_loading*/ true,
+        ))
+        .expect("android observe should create a native computer-use handler");
+
+        let search_info = observe_handler
+            .search_info()
+            .expect("native computer-use search info");
+        assert!(
+            search_info
+                .entry
+                .search_text
+                .contains(ANDROID_OBSERVE_TOOL_NAME),
+            "search text should include the canonical native tool name: {}",
+            search_info.entry.search_text
         );
-        assert_eq!(
-            computer_use_timeout_for_tool(ANDROID_STEP_TOOL_NAME),
-            Duration::from_secs(120)
+        assert!(
+            search_info.entry.search_text.contains("android observe"),
+            "search text should include the native display name: {}",
+            search_info.entry.search_text
         );
-        assert_eq!(
-            computer_use_timeout_for_tool(ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME),
-            Duration::from_secs(300)
+        assert!(
+            search_info
+                .entry
+                .search_text
+                .contains("Capture the current Android screen"),
+            "search text should include the canonical native description: {}",
+            search_info.entry.search_text
         );
+        let source_info = search_info
+            .source_info
+            .expect("native computer-use source info");
+        assert_eq!(source_info.name, "Native computer-use tools");
+        assert_eq!(
+            source_info.description.as_deref(),
+            Some("Client-backed computer-use tools for the current environment.")
+        );
+        let LoadableToolSpec::Function(tool) = search_info.entry.output else {
+            panic!("native computer-use search info should expose one function");
+        };
+        assert_eq!(tool.name, ANDROID_OBSERVE_TOOL_NAME);
+        assert_eq!(tool.defer_loading, Some(true));
     }
 
     #[test]
@@ -614,6 +685,7 @@ mod tests {
             &session,
             &turn,
             "call-no-env".to_string(),
+            COMPUTER_USE_ADAPTER_ANDROID.to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
             json!({ "scope": "screen_and_ui" }),
             Duration::from_secs(1),
@@ -656,6 +728,7 @@ mod tests {
             &session,
             &turn,
             "call-timeout".to_string(),
+            COMPUTER_USE_ADAPTER_ANDROID.to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
             json!({ "scope": "screen_and_ui" }),
             Duration::from_millis(1),

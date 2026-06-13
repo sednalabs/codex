@@ -291,6 +291,18 @@ impl RealtimeWebsocketWriter {
             .await
     }
 
+    pub async fn send_conversation_handoff_append(
+        &self,
+        handoff_id: String,
+        output_text: String,
+    ) -> Result<(), ApiError> {
+        self.send_json(&RealtimeOutboundMessage::ConversationHandoffAppend {
+            handoff_id,
+            output_text,
+        })
+        .await
+    }
+
     pub async fn send_conversation_function_call_output(
         &self,
         call_id: String,
@@ -994,6 +1006,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_v1_input_transcript_turn_marked_event() {
+        let payload = json!({
+            "type": "conversation.input_transcript.turn_marked",
+            "transcript": "hello realtime"
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_realtime_event(payload.as_str(), RealtimeEventParser::V1),
+            Some(RealtimeEvent::InputTranscriptDone(RealtimeTranscriptDone {
+                text: "hello realtime".to_string(),
+            }))
+        );
+    }
+
+    #[test]
     fn parse_output_transcript_delta_event() {
         let payload = json!({
             "type": "conversation.output_transcript.delta",
@@ -1581,6 +1609,10 @@ mod tests {
                 .expect("text");
             let third_json: Value = serde_json::from_str(&third).expect("json");
             assert_eq!(third_json["type"], "conversation.item.create");
+            assert_eq!(
+                third_json["item"]["content"][0]["type"],
+                Value::String("input_text".to_string())
+            );
             assert_eq!(third_json["item"]["content"][0]["text"], "hello agent");
 
             let fourth = ws

@@ -7,10 +7,12 @@ use super::*;
 
 impl ChatWidget {
     pub(super) fn on_patch_apply_begin(&mut self, changes: HashMap<PathBuf, FileChange>) {
+        self.record_visible_turn_activity();
         self.add_to_history(history_cell::new_patch_event(changes, &self.config.cwd));
     }
 
     pub(super) fn on_view_image_tool_call(&mut self, path: AbsolutePathBuf) {
+        self.record_visible_turn_activity();
         self.flush_answer_stream_with_separator();
         self.add_to_history(history_cell::new_view_image_tool_call(
             path,
@@ -20,6 +22,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_image_generation_begin(&mut self) {
+        self.record_visible_turn_activity();
         self.flush_answer_stream_with_separator();
     }
 
@@ -62,7 +65,51 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn on_computer_use_call_started(&mut self, item: ThreadItem) {
+        let item2 = item.clone();
+        self.defer_or_handle(
+            |q| q.push_item_started(item),
+            |s| s.handle_computer_use_call_started_now(item2),
+        );
+    }
+
+    pub(super) fn on_computer_use_call_completed(&mut self, item: ThreadItem) {
+        let item2 = item.clone();
+        self.defer_or_handle(
+            |q| q.push_item_completed(item),
+            |s| s.handle_computer_use_call_completed_now(item2),
+        );
+    }
+
+    pub(super) fn on_context_compaction_started(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            |q| q.push_item_started(item),
+            |s| s.handle_context_compaction_started_now(),
+        );
+    }
+
+    fn handle_context_compaction_started_now(&mut self) {
+        self.set_status_header(String::from("Compacting context"));
+        self.request_redraw();
+    }
+
+    pub(super) fn on_context_compaction_completed(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            |q| q.push_item_completed(item),
+            |s| s.handle_context_compaction_completed_now(),
+        );
+    }
+
+    fn handle_context_compaction_completed_now(&mut self) {
+        self.add_info_message("Context compacted".to_string(), /*hint*/ None);
+        if self.bottom_pane.is_task_running() {
+            self.set_status_header(String::from("Context compacted"));
+        }
+        self.request_redraw();
+    }
+
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
+        self.record_visible_turn_activity();
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
         self.transcript.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
@@ -109,6 +156,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
+        self.record_visible_turn_activity();
         let ThreadItem::CollabAgentToolCall {
             id, tool, status, ..
         } = &item
@@ -139,6 +187,13 @@ impl ChatWidget {
         }
     }
 
+    pub(super) fn on_sub_agent_activity(&mut self, item: ThreadItem) {
+        self.record_visible_turn_activity();
+        if let Some(cell) = multi_agents::sub_agent_activity_history_cell(&item) {
+            self.on_collab_event(cell);
+        }
+    }
+
     pub(crate) fn handle_file_change_completed_now(&mut self, item: ThreadItem) {
         let ThreadItem::FileChange { status, .. } = item else {
             return;
@@ -153,6 +208,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_mcp_tool_call_started_now(&mut self, item: ThreadItem) {
+        self.record_visible_turn_activity();
         let ThreadItem::McpToolCall {
             id,
             server,
@@ -239,6 +295,89 @@ impl ChatWidget {
         self.transcript.had_work_activity = true;
     }
 
+    pub(crate) fn handle_computer_use_call_started_now(&mut self, item: ThreadItem) {
+        let ThreadItem::ComputerUseCall {
+            id,
+            adapter,
+            tool,
+            arguments,
+            ..
+        } = item
+        else {
+            return;
+        };
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.transcript.active_cell = Some(Box::new(history_cell::new_active_computer_use_call(
+            id,
+            ComputerUseInvocation {
+                adapter,
+                tool,
+                arguments: Some(arguments),
+            },
+            self.config.animations,
+        )));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_computer_use_call_completed_now(&mut self, item: ThreadItem) {
+        self.flush_answer_stream_with_separator();
+
+        let ThreadItem::ComputerUseCall {
+            id,
+            adapter,
+            tool,
+            arguments,
+            status,
+            content_items,
+            success,
+            error,
+            duration_ms,
+            ..
+        } = item
+        else {
+            return;
+        };
+        let outcome = ComputerUseCallOutcome {
+            status,
+            content_items,
+            success,
+            error,
+            duration: duration_ms
+                .map(|duration_ms| Duration::from_millis(duration_ms.max(0) as u64)),
+        };
+
+        match self
+            .transcript
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<ComputerUseCallCell>())
+        {
+            Some(cell) if cell.call_id() == id => {
+                cell.complete(outcome);
+                self.bump_active_cell_revision();
+            }
+            _ => {
+                self.flush_active_cell();
+                let mut cell = history_cell::new_active_computer_use_call(
+                    id,
+                    ComputerUseInvocation {
+                        adapter,
+                        tool,
+                        arguments: Some(arguments),
+                    },
+                    self.config.animations,
+                );
+                cell.complete(outcome);
+                self.transcript.active_cell = Some(Box::new(cell));
+            }
+        }
+
+        self.flush_active_cell();
+        self.transcript.had_work_activity = true;
+    }
+
     pub(crate) fn handle_queued_item_started_now(&mut self, item: ThreadItem) {
         match item {
             item @ ThreadItem::CommandExecution { .. } => {
@@ -246,6 +385,12 @@ impl ChatWidget {
             }
             item @ ThreadItem::McpToolCall { .. } => {
                 self.handle_mcp_tool_call_started_now(item);
+            }
+            item @ ThreadItem::ComputerUseCall { .. } => {
+                self.handle_computer_use_call_started_now(item);
+            }
+            ThreadItem::ContextCompaction { .. } => {
+                self.handle_context_compaction_started_now();
             }
             _ => {}
         }
@@ -258,6 +403,12 @@ impl ChatWidget {
             }
             item @ ThreadItem::FileChange { .. } => self.handle_file_change_completed_now(item),
             item @ ThreadItem::McpToolCall { .. } => self.handle_mcp_tool_call_completed_now(item),
+            item @ ThreadItem::ComputerUseCall { .. } => {
+                self.handle_computer_use_call_completed_now(item);
+            }
+            ThreadItem::ContextCompaction { .. } => {
+                self.handle_context_compaction_completed_now();
+            }
             _ => {}
         }
     }

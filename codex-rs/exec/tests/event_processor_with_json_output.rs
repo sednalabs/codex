@@ -5,6 +5,8 @@ use codex_app_server_protocol::CollabAgentToolCallStatus as ApiCollabAgentToolCa
 use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus as ApiCommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem as ApiComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallStatus as ApiComputerUseCallStatus;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as ApiDynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallStatus as ApiDynamicToolCallStatus;
 use codex_app_server_protocol::ErrorNotification;
@@ -51,6 +53,8 @@ use codex_exec::exec_events::CollabToolCallItem;
 use codex_exec::exec_events::CollabToolCallStatus;
 use codex_exec::exec_events::CommandExecutionItem;
 use codex_exec::exec_events::CommandExecutionStatus;
+use codex_exec::exec_events::ComputerUseCallItem;
+use codex_exec::exec_events::ComputerUseCallStatus;
 use codex_exec::exec_events::DynamicToolCallItem;
 use codex_exec::exec_events::DynamicToolCallStatus;
 use codex_exec::exec_events::ErrorItem;
@@ -115,6 +119,7 @@ fn session_configured_produces_thread_started_event() {
         session_id: SessionId::from(thread_id),
         thread_id,
         forked_from_id: None,
+        parent_thread_id: None,
         thread_source: None,
         thread_name: None,
         model: "codex-mini-latest".to_string(),
@@ -178,6 +183,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
         command: "ls".to_string(),
         cwd: test_path_buf("/tmp/project").abs(),
         process_id: Some("123".to_string()),
+        terminal_wait: None,
         source: CommandExecutionSource::UserShell,
         status: ApiCommandExecutionStatus::InProgress,
         command_actions: Vec::<CommandAction>::new(),
@@ -220,6 +226,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs(),
                 process_id: Some("123".to_string()),
+                terminal_wait: None,
                 source: CommandExecutionSource::UserShell,
                 status: ApiCommandExecutionStatus::Completed,
                 command_actions: Vec::<CommandAction>::new(),
@@ -337,6 +344,106 @@ fn dynamic_tool_started_and_completed_translate_to_thread_events() {
                         preview: Some("screen summary\n<1 image output>".to_string()),
                         success: Some(true),
                         duration_ms: Some(42),
+                    }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+}
+
+#[test]
+fn computer_use_started_and_completed_translate_to_thread_events() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+
+    let started =
+        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
+            item: ThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: ApiComputerUseCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                error: None,
+                duration_ms: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+        }));
+
+    assert_eq!(
+        started,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemStarted(ItemStartedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                item: ExecThreadItem {
+                    id: "item_0".to_string(),
+                    details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
+                        adapter: "browser".to_string(),
+                        tool: "browser_step".to_string(),
+                        arguments: json!({"action": "click"}),
+                        status: ComputerUseCallStatus::InProgress,
+                        preview: None,
+                        success: None,
+                        error: None,
+                        duration_ms: None,
+                    }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+
+    let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            item: ThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: ApiComputerUseCallStatus::Completed,
+                content_items: Some(vec![
+                    ApiComputerUseCallOutputContentItem::InputText {
+                        text: "Browser observation".to_string(),
+                    },
+                    ApiComputerUseCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ]),
+                success: Some(true),
+                error: None,
+                duration_ms: Some(64),
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        },
+    ));
+
+    assert_eq!(
+        completed,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: Some("thread-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                item: ExecThreadItem {
+                    id: "item_0".to_string(),
+                    details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
+                        adapter: "browser".to_string(),
+                        tool: "browser_step".to_string(),
+                        arguments: json!({"action": "click"}),
+                        status: ComputerUseCallStatus::Completed,
+                        preview: Some("Browser observation\n<native screenshot>".to_string()),
+                        success: Some(true),
+                        error: None,
+                        duration_ms: Some(64),
                     }),
                 },
             })],
@@ -591,6 +698,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 status: ApiMcpToolCallStatus::InProgress,
                 arguments: json!({ "key": "value" }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -608,6 +716,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 status: ApiMcpToolCallStatus::Completed,
                 arguments: json!({ "key": "value" }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: Vec::new(),
                     structured_content: None,
@@ -683,6 +792,7 @@ fn mcp_tool_call_failure_sets_failed_status() {
                 status: ApiMcpToolCallStatus::Failed,
                 arguments: json!({ "param": 42 }),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "tool exploded".to_string(),
@@ -733,6 +843,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 status: ApiMcpToolCallStatus::InProgress,
                 arguments: serde_json::Value::Null,
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -750,6 +861,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 status: ApiMcpToolCallStatus::Completed,
                 arguments: serde_json::Value::Null,
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![json!({
                         "type": "text",
@@ -1242,6 +1354,8 @@ fn plan_update_emits_started_then_updated_then_completed() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1306,6 +1420,8 @@ fn plan_update_after_completion_starts_new_todo_list_with_new_id() {
     ));
     let _ = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1391,6 +1507,8 @@ fn token_usage_update_is_emitted_on_turn_completion() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1428,6 +1546,8 @@ fn turn_completion_recovers_final_message_from_turn_items() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1472,6 +1592,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                 command: "ls".to_string(),
                 cwd: test_path_buf("/tmp/project").abs(),
                 process_id: Some("123".to_string()),
+                terminal_wait: None,
                 source: CommandExecutionSource::UserShell,
                 status: ApiCommandExecutionStatus::InProgress,
                 command_actions: Vec::<CommandAction>::new(),
@@ -1505,6 +1626,8 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1514,6 +1637,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                     command: "ls".to_string(),
                     cwd: test_path_buf("/tmp/project").abs(),
                     process_id: Some("123".to_string()),
+                    terminal_wait: None,
                     source: CommandExecutionSource::UserShell,
                     status: ApiCommandExecutionStatus::Completed,
                     command_actions: Vec::<CommandAction>::new(),
@@ -1577,6 +1701,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1629,6 +1755,8 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1680,6 +1808,8 @@ fn failed_turn_clears_stale_final_message() {
 
     let collected = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1708,6 +1838,8 @@ fn turn_completion_falls_back_to_final_plan_text() {
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -1767,6 +1899,8 @@ fn turn_failure_prefers_structured_error_message() {
 
     let failed = processor.collect_thread_events(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),

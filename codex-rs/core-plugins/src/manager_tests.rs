@@ -6,8 +6,10 @@ use crate::loader::load_plugins_from_layer_stack;
 use crate::loader::refresh_non_curated_plugin_cache;
 use crate::loader::refresh_non_curated_plugin_cache_force_reinstall;
 use crate::marketplace::MarketplacePluginInstallPolicy;
+use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
+use crate::remote::REMOTE_WORKSPACE_MARKETPLACE_NAME;
+use crate::remote::REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME;
 use crate::remote::RemoteInstalledPlugin;
-use crate::remote::RemotePluginScope;
 use crate::startup_sync::curated_plugins_repo_path;
 use crate::test_support::TEST_CURATED_PLUGIN_CACHE_VERSION;
 use crate::test_support::TEST_CURATED_PLUGIN_SHA;
@@ -15,6 +17,7 @@ use crate::test_support::load_plugins_config as load_plugins_config_input;
 use crate::test_support::write_curated_plugin_sha_with as write_curated_plugin_sha;
 use crate::test_support::write_file;
 use crate::test_support::write_openai_curated_marketplace;
+use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::AppToolApproval;
 use codex_config::CONFIG_TOML_FILE;
@@ -44,6 +47,21 @@ use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
+
+#[test]
+fn plugins_manager_tracks_auth_mode() {
+    let tmp = TempDir::new().unwrap();
+    let manager = PluginsManager::new(tmp.path().to_path_buf());
+
+    assert_eq!(manager.auth_mode(), None);
+    assert!(manager.set_auth_mode(Some(AuthMode::ApiKey)));
+    assert_eq!(manager.auth_mode(), Some(AuthMode::ApiKey));
+    assert!(!manager.set_auth_mode(Some(AuthMode::ApiKey)));
+    assert!(manager.set_auth_mode(Some(AuthMode::ChatgptAuthTokens)));
+    assert_eq!(manager.auth_mode(), Some(AuthMode::ChatgptAuthTokens));
+    assert!(manager.set_auth_mode(/*auth_mode*/ None));
+    assert_eq!(manager.auth_mode(), None);
+}
 
 fn write_plugin_with_version(
     root: &Path,
@@ -101,28 +119,12 @@ fn run_git(repo: &Path, args: &[&str]) {
 }
 
 fn plugin_config_toml(enabled: bool, plugins_feature_enabled: bool) -> String {
-    plugin_config_toml_with_plugin_hooks(
-        enabled,
-        plugins_feature_enabled,
-        /*plugin_hooks_feature_enabled*/ false,
-    )
-}
-
-fn plugin_config_toml_with_plugin_hooks(
-    enabled: bool,
-    plugins_feature_enabled: bool,
-    plugin_hooks_feature_enabled: bool,
-) -> String {
     let mut root = toml::map::Map::new();
 
     let mut features = toml::map::Map::new();
     features.insert(
         "plugins".to_string(),
         Value::Boolean(plugins_feature_enabled),
-    );
-    features.insert(
-        "plugin_hooks".to_string(),
-        Value::Boolean(plugin_hooks_feature_enabled),
     );
     root.insert("features".to_string(), Value::Table(features));
 
@@ -149,10 +151,21 @@ async fn load_config(codex_home: &Path, cwd: &Path) -> PluginsConfigInput {
 }
 
 fn remote_installed_linear_plugin() -> RemoteInstalledPlugin {
+    remote_installed_plugin("linear")
+}
+
+fn remote_installed_plugin(name: &str) -> RemoteInstalledPlugin {
+    remote_installed_plugin_in_marketplace(name, REMOTE_GLOBAL_MARKETPLACE_NAME)
+}
+
+fn remote_installed_plugin_in_marketplace(
+    name: &str,
+    marketplace_name: &str,
+) -> RemoteInstalledPlugin {
     RemoteInstalledPlugin {
-        marketplace_name: "openai-curated-remote".to_string(),
-        id: "plugins~Plugin_linear".to_string(),
-        name: "linear".to_string(),
+        marketplace_name: marketplace_name.to_string(),
+        id: format!("plugins~Plugin_{name}"),
+        name: name.to_string(),
         enabled: true,
         install_policy: codex_app_server_protocol::PluginInstallPolicy::Available,
         auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
@@ -160,6 +173,18 @@ fn remote_installed_linear_plugin() -> RemoteInstalledPlugin {
         interface: None,
         keywords: Vec::new(),
     }
+}
+
+fn write_cached_plugin(codex_home: &Path, marketplace_name: &str, plugin_name: &str) {
+    write_plugin_with_version(
+        &codex_home
+            .join("plugins/cache")
+            .join(marketplace_name)
+            .join(plugin_name),
+        "local",
+        plugin_name,
+        /*manifest_version*/ Some("local"),
+    );
 }
 
 #[tokio::test]
@@ -235,7 +260,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
                         http_headers: None,
                         env_http_headers: None,
                     },
-                    experimental_environment: None,
+                    environment_id: "local".to_string(),
                     enabled: true,
                     required: false,
                     supports_parallel_tool_calls: false,
@@ -373,6 +398,92 @@ remote_plugin = true
 }
 
 #[tokio::test]
+async fn remote_installed_cache_prefers_local_curated_conflicts_when_remote_plugin_disabled() {
+    let codex_home = TempDir::new().unwrap();
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+remote_plugin = false
+
+[plugins."linear@openai-curated"]
+enabled = true
+
+[plugins."calendar@openai-curated"]
+enabled = true
+"#,
+    );
+    write_cached_plugin(codex_home.path(), "openai-curated", "linear");
+    write_cached_plugin(codex_home.path(), "openai-curated", "calendar");
+    write_cached_plugin(codex_home.path(), "openai-curated-remote", "linear");
+    write_cached_plugin(codex_home.path(), "openai-curated-remote", "remote-only");
+
+    let config = load_config(codex_home.path(), codex_home.path()).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    manager.write_remote_installed_plugins_cache(vec![
+        remote_installed_plugin("linear"),
+        remote_installed_plugin("remote-only"),
+    ]);
+
+    let outcome = manager.plugins_for_config(&config).await;
+    assert_eq!(
+        outcome
+            .plugins()
+            .iter()
+            .map(|plugin| plugin.config_name.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "calendar@openai-curated".to_string(),
+            "linear@openai-curated".to_string(),
+            "remote-only@openai-curated-remote".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn remote_installed_cache_prefers_remote_curated_conflicts_when_remote_plugin_enabled() {
+    let codex_home = TempDir::new().unwrap();
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+remote_plugin = true
+
+[plugins."linear@openai-curated"]
+enabled = true
+
+[plugins."calendar@openai-curated"]
+enabled = true
+"#,
+    );
+    write_cached_plugin(codex_home.path(), "openai-curated", "linear");
+    write_cached_plugin(codex_home.path(), "openai-curated", "calendar");
+    write_cached_plugin(codex_home.path(), "openai-curated-remote", "linear");
+    write_cached_plugin(codex_home.path(), "openai-curated-remote", "remote-only");
+
+    let config = load_config(codex_home.path(), codex_home.path()).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    manager.write_remote_installed_plugins_cache(vec![
+        remote_installed_plugin("linear"),
+        remote_installed_plugin("remote-only"),
+    ]);
+
+    let outcome = manager.plugins_for_config(&config).await;
+    assert_eq!(
+        outcome
+            .plugins()
+            .iter()
+            .map(|plugin| plugin.config_name.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "calendar@openai-curated".to_string(),
+            "linear@openai-curated-remote".to_string(),
+            "remote-only@openai-curated-remote".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn build_remote_installed_plugin_marketplaces_from_cache_uses_remote_metadata() {
     let codex_home = TempDir::new().unwrap();
     let manager = PluginsManager::new(codex_home.path().to_path_buf());
@@ -402,7 +513,7 @@ async fn build_remote_installed_plugin_marketplaces_from_cache_uses_remote_metad
     manager.write_remote_installed_plugins_cache(vec![plugin]);
 
     let marketplaces = manager
-        .build_remote_installed_plugin_marketplaces_from_cache(&[RemotePluginScope::Global])
+        .build_remote_installed_plugin_marketplaces_from_cache(&[REMOTE_GLOBAL_MARKETPLACE_NAME])
         .expect("remote installed cache should be present");
     assert_eq!(marketplaces.len(), 1);
     assert_eq!(marketplaces[0].name, "openai-curated-remote");
@@ -439,9 +550,42 @@ async fn build_remote_installed_plugin_marketplaces_from_cache_uses_remote_metad
     );
     assert_eq!(
         manager
-            .build_remote_installed_plugin_marketplaces_from_cache(&[RemotePluginScope::Workspace])
+            .build_remote_installed_plugin_marketplaces_from_cache(&[
+                REMOTE_WORKSPACE_MARKETPLACE_NAME
+            ])
             .expect("remote installed cache should be present"),
         Vec::new()
+    );
+}
+
+#[tokio::test]
+async fn build_remote_installed_plugin_marketplaces_from_cache_filters_by_marketplace_name() {
+    let codex_home = TempDir::new().unwrap();
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    manager.write_remote_installed_plugins_cache(vec![
+        remote_installed_plugin_in_marketplace(
+            "workspace-linear",
+            REMOTE_WORKSPACE_MARKETPLACE_NAME,
+        ),
+        remote_installed_plugin_in_marketplace(
+            "shared-linear",
+            REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME,
+        ),
+    ]);
+
+    let marketplaces = manager
+        .build_remote_installed_plugin_marketplaces_from_cache(&[REMOTE_WORKSPACE_MARKETPLACE_NAME])
+        .expect("remote installed cache should be present");
+
+    assert_eq!(marketplaces.len(), 1);
+    assert_eq!(marketplaces[0].name, REMOTE_WORKSPACE_MARKETPLACE_NAME);
+    assert_eq!(
+        marketplaces[0]
+            .plugins
+            .iter()
+            .map(|plugin| plugin.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["workspace-linear@workspace-directory"]
     );
 }
 
@@ -742,7 +886,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
                     http_headers: None,
                     env_http_headers: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -858,7 +1002,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
                     http_headers: None,
                     env_http_headers: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -882,6 +1026,43 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
     assert_eq!(
         outcome.plugins()[0].apps,
         vec![AppConnectorId("connector_default".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn load_plugins_ignores_invalid_manifest_skills_shape() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local");
+
+    write_file(
+        &plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{
+  "name": "sample",
+  "skills": ["./custom-skills/"]
+}"#,
+    );
+    write_file(
+        &plugin_root.join("skills/default-skill/SKILL.md"),
+        "---\nname: default-skill\ndescription: default skill\n---\n",
+    );
+    write_file(
+        &plugin_root.join("custom-skills/custom-skill/SKILL.md"),
+        "---\nname: custom-skill\ndescription: custom skill\n---\n",
+    );
+
+    let outcome = load_plugins_from_config(
+        &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
+        codex_home.path(),
+    )
+    .await;
+
+    assert_eq!(outcome.plugins()[0].error, None);
+    assert_eq!(
+        outcome.plugins()[0].skill_roots,
+        vec![plugin_root.join("skills").abs()]
     );
 }
 
@@ -1013,6 +1194,50 @@ async fn effective_apps_dedupes_connector_ids_across_plugins() {
     );
 }
 
+#[tokio::test]
+async fn effective_apps_preserves_app_config_order() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local");
+
+    write_file(
+        &plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"sample"}"#,
+    );
+    write_file(
+        &plugin_root.join(".app.json"),
+        r#"{
+  "apps": {
+    "slack": {
+      "id": "connector_slack"
+    },
+    "github": {
+      "id": "connector_github"
+    },
+    "slack-copy": {
+      "id": "connector_slack"
+    }
+  }
+}"#,
+    );
+
+    let outcome = load_plugins_from_config(
+        &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
+        codex_home.path(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.effective_apps(),
+        vec![
+            AppConnectorId("connector_slack".to_string()),
+            AppConnectorId("connector_github".to_string()),
+        ]
+    );
+}
+
 #[test]
 fn capability_index_filters_inactive_and_zero_capability_plugins() {
     let codex_home = TempDir::new().unwrap();
@@ -1024,7 +1249,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
             http_headers: None,
             env_http_headers: None,
         },
-        experimental_environment: None,
+        environment_id: "local".to_string(),
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
@@ -1150,58 +1375,94 @@ async fn load_plugins_returns_empty_when_feature_disabled() {
 }
 
 #[tokio::test]
-async fn plugins_for_config_reloads_when_plugin_hooks_enablement_changes() {
+async fn plugin_cache_ignores_unrelated_session_overrides() {
     let codex_home = TempDir::new().unwrap();
     let plugin_root = codex_home
         .path()
         .join("plugins/cache")
         .join("test/sample/local");
-
-    write_file(
-        &plugin_root.join(".codex-plugin/plugin.json"),
-        r#"{"name":"sample"}"#,
+    write_plugin(
+        codex_home.path().join("plugins/cache/test").as_path(),
+        "sample/local",
+        "sample",
     );
     write_file(
-        &plugin_root.join("hooks/hooks.json"),
+        &plugin_root.join(".mcp.json"),
         r#"{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "hooks": [{ "type": "command", "command": "echo plugin hook" }]
-      }
-    ]
+  "mcpServers": {
+    "sample": {
+      "url": "https://sample.example/mcp"
+    }
   }
 }"#,
     );
 
+    let user_file = codex_home.path().join(CONFIG_TOML_FILE).abs();
+    let user_config: toml::Value = toml::from_str(&plugin_config_toml(
+        /*enabled*/ true, /*plugins_feature_enabled*/ true,
+    ))
+    .expect("user config should parse");
+    let stack = |session_config: &str| {
+        ConfigLayerStack::new(
+            vec![
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::User {
+                        file: user_file.clone(),
+                        profile: None,
+                    },
+                    user_config.clone(),
+                ),
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::SessionFlags,
+                    toml::from_str(session_config).expect("session config should parse"),
+                ),
+            ],
+            ConfigRequirements::default(),
+            ConfigRequirementsToml::default(),
+        )
+        .expect("config layer stack should build")
+    };
+    let config = |session_config| {
+        PluginsConfigInput::new(
+            stack(session_config),
+            /*plugins_enabled*/ true,
+            /*remote_plugin_enabled*/ false,
+            "https://chatgpt.com".to_string(),
+        )
+    };
     let manager = PluginsManager::new(codex_home.path().to_path_buf());
-    write_file(
-        &codex_home.path().join(CONFIG_TOML_FILE),
-        &plugin_config_toml_with_plugin_hooks(
-            /*enabled*/ true, /*plugins_feature_enabled*/ true,
-            /*plugin_hooks_feature_enabled*/ false,
-        ),
-    );
-    let config_without_plugin_hooks = load_config(codex_home.path(), codex_home.path()).await;
-    let without_plugin_hooks = manager
-        .plugins_for_config(&config_without_plugin_hooks)
+
+    let first = manager
+        .plugins_for_config(&config(r#"model = "first""#))
         .await;
-    assert!(
-        without_plugin_hooks
-            .effective_plugin_hook_sources()
-            .is_empty()
+    std::fs::remove_file(plugin_root.join(".mcp.json")).unwrap();
+    let second = manager
+        .plugins_for_config(&config(r#"model = "second""#))
+        .await;
+
+    assert_eq!(second, first);
+    assert_eq!(second.plugins()[0].mcp_servers.len(), 1);
+}
+
+#[test]
+fn plugin_cache_invalidation_rejects_stale_load_completion() {
+    let codex_home = TempDir::new().unwrap();
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    let cache_key = PluginLoadCacheKey {
+        configured_plugins: HashMap::new(),
+        skill_config_rules: SkillConfigRules::default(),
+        remote_plugin_enabled: false,
+    };
+    let stale_generation = manager.enabled_outcome_cache_generation();
+
+    manager.clear_enabled_outcome_cache();
+    manager.cache_enabled_outcome_if_current(
+        stale_generation,
+        cache_key.clone(),
+        PluginLoadOutcome::default(),
     );
 
-    write_file(
-        &codex_home.path().join(CONFIG_TOML_FILE),
-        &plugin_config_toml_with_plugin_hooks(
-            /*enabled*/ true, /*plugins_feature_enabled*/ true,
-            /*plugin_hooks_feature_enabled*/ true,
-        ),
-    );
-    let config_with_plugin_hooks = load_config(codex_home.path(), codex_home.path()).await;
-    let with_plugin_hooks = manager.plugins_for_config(&config_with_plugin_hooks).await;
-    assert_eq!(with_plugin_hooks.effective_plugin_hook_sources().len(), 1);
+    assert_eq!(manager.cached_enabled_outcome(&cache_key), None);
 }
 
 #[tokio::test]
@@ -1586,7 +1847,11 @@ enabled = false
 
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
+        .list_marketplaces_for_config(
+            &config,
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            /*include_openai_curated*/ true,
+        )
         .unwrap()
         .marketplaces;
 
@@ -1615,6 +1880,7 @@ enabled = false
                     id: "enabled-plugin@debug".to_string(),
                     name: "enabled-plugin".to_string(),
                     local_version: None,
+                    installed_version: Some("local".to_string()),
                     source: MarketplacePluginSource::Local {
                         path: AbsolutePathBuf::try_from(tmp.path().join("repo/enabled-plugin"))
                             .unwrap(),
@@ -1633,6 +1899,7 @@ enabled = false
                     id: "disabled-plugin@debug".to_string(),
                     name: "disabled-plugin".to_string(),
                     local_version: None,
+                    installed_version: Some("local".to_string()),
                     source: MarketplacePluginSource::Local {
                         path: AbsolutePathBuf::try_from(tmp.path().join("repo/disabled-plugin"),)
                             .unwrap(),
@@ -1686,7 +1953,11 @@ enabled = true
 
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
+        .list_marketplaces_for_config(
+            &config,
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            /*include_openai_curated*/ true,
+        )
         .unwrap()
         .marketplaces;
 
@@ -1734,7 +2005,11 @@ plugins = true
 
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
+        .list_marketplaces_for_config(
+            &config,
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            /*include_openai_curated*/ true,
+        )
         .unwrap()
         .marketplaces;
 
@@ -1754,6 +2029,7 @@ plugins = true
             id: "default-plugin@debug".to_string(),
             name: "default-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo/default-plugin")).unwrap(),
             },
@@ -2045,7 +2321,6 @@ async fn read_plugin_for_config_installed_git_source_reads_from_cache_without_cl
         &tmp.path().join(CONFIG_TOML_FILE),
         r#"[features]
 plugins = true
-plugin_hooks = true
 
 [plugins."toolkit@debug"]
 enabled = true
@@ -2171,7 +2446,11 @@ enabled = true
 
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
+        .list_marketplaces_for_config(
+            &config,
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            /*include_openai_curated*/ true,
+        )
         .unwrap()
         .marketplaces;
 
@@ -2186,6 +2465,7 @@ enabled = true
             id: "toolkit@debug".to_string(),
             name: "toolkit".to_string(),
             local_version: None,
+            installed_version: Some("local".to_string()),
             source: MarketplacePluginSource::Git {
                 url: missing_remote_repo_url,
                 path: Some("plugins/toolkit".to_string()),
@@ -2227,25 +2507,6 @@ enabled = true
 }
 
 #[tokio::test]
-async fn sync_plugins_from_remote_returns_default_when_feature_disabled() {
-    let tmp = tempfile::tempdir().unwrap();
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = false
-"#,
-    );
-
-    let config = load_config(tmp.path(), tmp.path()).await;
-    let outcome = PluginsManager::new(tmp.path().to_path_buf())
-        .sync_plugins_from_remote(&config, /*auth*/ None, /*additive_only*/ false)
-        .await
-        .unwrap();
-
-    assert_eq!(outcome, RemotePluginSyncResult::default());
-}
-
-#[tokio::test]
 async fn list_marketplaces_includes_curated_repo_marketplace() {
     let tmp = tempfile::tempdir().unwrap();
     let curated_root = curated_plugins_repo_path(tmp.path());
@@ -2283,7 +2544,7 @@ plugins = true
 
     let config = load_config(tmp.path(), tmp.path()).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[])
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
         .unwrap()
         .marketplaces;
 
@@ -2303,6 +2564,7 @@ plugins = true
                 id: "linear@openai-curated".to_string(),
                 name: "linear".to_string(),
                 local_version: None,
+                installed_version: None,
                 source: MarketplacePluginSource::Local {
                     path: AbsolutePathBuf::try_from(curated_root.join("plugins/linear")).unwrap(),
                 },
@@ -2317,6 +2579,37 @@ plugins = true
                 enabled: false,
             }],
         }
+    );
+}
+
+#[tokio::test]
+async fn list_marketplaces_can_skip_openai_curated_before_loading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+"#,
+    );
+    write_file(
+        &curated_root.join(".agents/plugins/marketplace.json"),
+        "{not valid json",
+    );
+
+    let config = load_config(tmp.path(), tmp.path()).await;
+    let outcome = PluginsManager::new(tmp.path().to_path_buf())
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ false)
+        .unwrap();
+
+    assert_eq!(outcome.errors, Vec::new());
+    assert_eq!(
+        outcome
+            .marketplaces
+            .iter()
+            .any(|marketplace| marketplace.name == OPENAI_CURATED_MARKETPLACE_NAME),
+        false
     );
 }
 
@@ -2362,7 +2655,7 @@ source = "/tmp/debug"
     .unwrap();
     let config = load_config(tmp.path(), tmp.path()).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[])
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
         .unwrap()
         .marketplaces;
 
@@ -2438,7 +2731,7 @@ source = "/tmp/debug"
 
     let config = load_config(tmp.path(), tmp.path()).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[])
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
         .unwrap()
         .marketplaces;
 
@@ -2493,7 +2786,7 @@ plugins = true
     .unwrap();
     let config = load_config(tmp.path(), tmp.path()).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[])
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
         .unwrap()
         .marketplaces;
 
@@ -2578,6 +2871,7 @@ enabled = false
                 AbsolutePathBuf::try_from(repo_a_root).unwrap(),
                 AbsolutePathBuf::try_from(repo_b_root).unwrap(),
             ],
+            /*include_openai_curated*/ true,
         )
         .unwrap()
         .marketplaces;
@@ -2598,6 +2892,7 @@ enabled = false
             id: "dup-plugin@debug".to_string(),
             name: "dup-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo-a/from-a")).unwrap(),
             },
@@ -2629,6 +2924,7 @@ enabled = false
             id: "b-only-plugin@debug".to_string(),
             name: "b-only-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo-b/from-b-only")).unwrap(),
             },
@@ -2686,7 +2982,11 @@ enabled = true
 
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
-        .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
+        .list_marketplaces_for_config(
+            &config,
+            &[AbsolutePathBuf::try_from(repo_root).unwrap()],
+            /*include_openai_curated*/ true,
+        )
         .unwrap()
         .marketplaces;
 
@@ -2714,6 +3014,7 @@ enabled = true
                 id: "sample-plugin@debug".to_string(),
                 name: "sample-plugin".to_string(),
                 local_version: None,
+                installed_version: None,
                 source: MarketplacePluginSource::Local {
                     path: AbsolutePathBuf::try_from(tmp.path().join("repo/sample-plugin")).unwrap(),
                 },
@@ -2728,431 +3029,6 @@ enabled = true
                 enabled: true,
             }],
         }
-    );
-}
-
-#[tokio::test]
-async fn sync_plugins_from_remote_reconciles_cache_and_config() {
-    let tmp = tempfile::tempdir().unwrap();
-    let curated_root = curated_plugins_repo_path(tmp.path());
-    write_openai_curated_marketplace(&curated_root, &["linear", "gmail", "calendar"]);
-    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "linear/local",
-        "linear",
-    );
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "gmail/local",
-        "gmail",
-    );
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "calendar/local",
-        "calendar",
-    );
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = true
-
-[plugins."linear@openai-curated"]
-enabled = false
-
-[plugins."gmail@openai-curated"]
-enabled = false
-
-[plugins."calendar@openai-curated"]
-enabled = true
-"#,
-    );
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/plugins/list"))
-        .and(header("authorization", "Bearer Access Token"))
-        .and(header("chatgpt-account-id", "account_id"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"[
-  {"id":"1","name":"linear","marketplace_name":"openai-curated","version":"1.0.0","enabled":true},
-  {"id":"2","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":false}
-]"#,
-        ))
-        .mount(&server)
-        .await;
-
-    let mut config = load_config(tmp.path(), tmp.path()).await;
-    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let result = manager
-        .sync_plugins_from_remote(
-            &config,
-            Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-            /*additive_only*/ false,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        RemotePluginSyncResult {
-            installed_plugin_ids: Vec::new(),
-            enabled_plugin_ids: vec!["linear@openai-curated".to_string()],
-            disabled_plugin_ids: Vec::new(),
-            uninstalled_plugin_ids: vec![
-                "gmail@openai-curated".to_string(),
-                "calendar@openai-curated".to_string(),
-            ],
-        }
-    );
-
-    assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/linear/local")
-            .is_dir()
-    );
-    assert!(
-        !tmp.path()
-            .join("plugins/cache/openai-curated/gmail")
-            .exists()
-    );
-    assert!(
-        !tmp.path()
-            .join("plugins/cache/openai-curated/calendar")
-            .exists()
-    );
-
-    let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(config.contains("enabled = true"));
-    assert!(!config.contains(r#"[plugins."gmail@openai-curated"]"#));
-    assert!(!config.contains(r#"[plugins."calendar@openai-curated"]"#));
-
-    let synced_config = load_config(tmp.path(), tmp.path()).await;
-    let curated_marketplace = manager
-        .list_marketplaces_for_config(&synced_config, &[])
-        .unwrap()
-        .marketplaces
-        .into_iter()
-        .find(|marketplace| marketplace.name == OPENAI_CURATED_MARKETPLACE_NAME)
-        .unwrap();
-    assert_eq!(
-        curated_marketplace
-            .plugins
-            .into_iter()
-            .map(|plugin| (plugin.id, plugin.installed, plugin.enabled))
-            .collect::<Vec<_>>(),
-        vec![
-            ("linear@openai-curated".to_string(), true, true),
-            ("gmail@openai-curated".to_string(), false, false),
-            ("calendar@openai-curated".to_string(), false, false),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn sync_plugins_from_remote_additive_only_keeps_existing_plugins() {
-    let tmp = tempfile::tempdir().unwrap();
-    let curated_root = curated_plugins_repo_path(tmp.path());
-    write_openai_curated_marketplace(&curated_root, &["linear", "gmail", "calendar"]);
-    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "linear/local",
-        "linear",
-    );
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "gmail/local",
-        "gmail",
-    );
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "calendar/local",
-        "calendar",
-    );
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = true
-
-[plugins."linear@openai-curated"]
-enabled = false
-
-[plugins."gmail@openai-curated"]
-enabled = false
-
-[plugins."calendar@openai-curated"]
-enabled = true
-"#,
-    );
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/plugins/list"))
-        .and(header("authorization", "Bearer Access Token"))
-        .and(header("chatgpt-account-id", "account_id"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"[
-  {"id":"1","name":"linear","marketplace_name":"openai-curated","version":"1.0.0","enabled":true},
-  {"id":"2","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":false}
-]"#,
-        ))
-        .mount(&server)
-        .await;
-
-    let mut config = load_config(tmp.path(), tmp.path()).await;
-    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let result = manager
-        .sync_plugins_from_remote(
-            &config,
-            Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-            /*additive_only*/ true,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        RemotePluginSyncResult {
-            installed_plugin_ids: Vec::new(),
-            enabled_plugin_ids: vec!["linear@openai-curated".to_string()],
-            disabled_plugin_ids: Vec::new(),
-            uninstalled_plugin_ids: Vec::new(),
-        }
-    );
-
-    assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/linear/local")
-            .is_dir()
-    );
-    assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/gmail/local")
-            .is_dir()
-    );
-    assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/calendar/local")
-            .is_dir()
-    );
-
-    let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(config.contains(r#"[plugins."gmail@openai-curated"]"#));
-    assert!(config.contains(r#"[plugins."calendar@openai-curated"]"#));
-    assert!(config.contains("enabled = true"));
-}
-
-#[tokio::test]
-async fn sync_plugins_from_remote_ignores_unknown_remote_plugins() {
-    let tmp = tempfile::tempdir().unwrap();
-    let curated_root = curated_plugins_repo_path(tmp.path());
-    write_openai_curated_marketplace(&curated_root, &["linear"]);
-    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = true
-
-[plugins."linear@openai-curated"]
-enabled = false
-"#,
-    );
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-            .and(path("/backend-api/plugins/list"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"[
-  {"id":"1","name":"plugin-one","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
-]"#,
-            ))
-            .mount(&server)
-            .await;
-
-    let mut config = load_config(tmp.path(), tmp.path()).await;
-    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let result = manager
-        .sync_plugins_from_remote(
-            &config,
-            Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-            /*additive_only*/ false,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        RemotePluginSyncResult {
-            installed_plugin_ids: Vec::new(),
-            enabled_plugin_ids: Vec::new(),
-            disabled_plugin_ids: Vec::new(),
-            uninstalled_plugin_ids: vec!["linear@openai-curated".to_string()],
-        }
-    );
-    let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(!config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(
-        !tmp.path()
-            .join("plugins/cache/openai-curated/linear")
-            .exists()
-    );
-}
-
-#[tokio::test]
-async fn sync_plugins_from_remote_keeps_existing_plugins_when_install_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let curated_root = curated_plugins_repo_path(tmp.path());
-    write_openai_curated_marketplace(&curated_root, &["linear", "gmail"]);
-    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
-    fs::remove_dir_all(curated_root.join("plugins/gmail")).unwrap();
-    write_plugin(
-        &tmp.path().join("plugins/cache/openai-curated"),
-        "linear/local",
-        "linear",
-    );
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = true
-
-[plugins."linear@openai-curated"]
-enabled = false
-"#,
-    );
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/plugins/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"[
-  {"id":"1","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
-]"#,
-        ))
-        .mount(&server)
-        .await;
-
-    let mut config = load_config(tmp.path(), tmp.path()).await;
-    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let err = manager
-        .sync_plugins_from_remote(
-            &config,
-            Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-            /*additive_only*/ false,
-        )
-        .await
-        .unwrap_err();
-
-    assert!(matches!(
-        err,
-        PluginRemoteSyncError::Store(PluginStoreError::Invalid(ref message))
-            if message.contains("plugin source path is not a directory")
-    ));
-    assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/linear/local")
-            .is_dir()
-    );
-    assert!(
-        !tmp.path()
-            .join("plugins/cache/openai-curated/gmail")
-            .exists()
-    );
-
-    let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(!config.contains(r#"[plugins."gmail@openai-curated"]"#));
-    assert!(config.contains("enabled = false"));
-}
-
-#[tokio::test]
-async fn sync_plugins_from_remote_uses_first_duplicate_local_plugin_entry() {
-    let tmp = tempfile::tempdir().unwrap();
-    let curated_root = curated_plugins_repo_path(tmp.path());
-    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
-    fs::create_dir_all(curated_root.join(".agents/plugins")).unwrap();
-    fs::write(
-        curated_root.join(".agents/plugins/marketplace.json"),
-        r#"{
-  "name": "openai-curated",
-  "plugins": [
-    {
-      "name": "gmail",
-      "source": {
-        "source": "local",
-        "path": "./plugins/gmail-first"
-      }
-    },
-    {
-      "name": "gmail",
-      "source": {
-        "source": "local",
-        "path": "./plugins/gmail-second"
-      }
-    }
-  ]
-}"#,
-    )
-    .unwrap();
-    write_plugin(&curated_root, "plugins/gmail-first", "gmail");
-    write_plugin(&curated_root, "plugins/gmail-second", "gmail");
-    fs::write(curated_root.join("plugins/gmail-first/marker.txt"), "first").unwrap();
-    fs::write(
-        curated_root.join("plugins/gmail-second/marker.txt"),
-        "second",
-    )
-    .unwrap();
-    write_file(
-        &tmp.path().join(CONFIG_TOML_FILE),
-        r#"[features]
-plugins = true
-"#,
-    );
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/plugins/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"[
-  {"id":"1","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
-]"#,
-        ))
-        .mount(&server)
-        .await;
-
-    let mut config = load_config(tmp.path(), tmp.path()).await;
-    config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let result = manager
-        .sync_plugins_from_remote(
-            &config,
-            Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-            /*additive_only*/ false,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        RemotePluginSyncResult {
-            installed_plugin_ids: vec!["gmail@openai-curated".to_string()],
-            enabled_plugin_ids: vec!["gmail@openai-curated".to_string()],
-            disabled_plugin_ids: Vec::new(),
-            uninstalled_plugin_ids: Vec::new(),
-        }
-    );
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(format!(
-            "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_CACHE_VERSION}/marker.txt"
-        )))
-        .unwrap(),
-        "first"
     );
 }
 
@@ -3287,6 +3163,33 @@ fn refresh_curated_plugin_cache_reinstalls_missing_configured_plugin_with_curren
             ))
             .is_dir()
     );
+}
+
+#[test]
+fn refresh_curated_plugin_cache_removes_cache_for_plugin_removed_from_marketplace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+    write_openai_curated_marketplace(&curated_root, &[]);
+    let plugin_id = PluginId::new(
+        "google-sheets".to_string(),
+        OPENAI_CURATED_MARKETPLACE_NAME.to_string(),
+    )
+    .unwrap();
+    let plugin_cache_root = tmp
+        .path()
+        .join("plugins/cache/openai-curated/google-sheets");
+    write_plugin(
+        &tmp.path().join("plugins/cache/openai-curated"),
+        &format!("google-sheets/{TEST_CURATED_PLUGIN_CACHE_VERSION}"),
+        "google-sheets",
+    );
+
+    assert!(
+        refresh_curated_plugin_cache(tmp.path(), TEST_CURATED_PLUGIN_SHA, &[plugin_id])
+            .expect("cache refresh should remove stale configured plugin")
+    );
+
+    assert!(!plugin_cache_root.exists());
 }
 
 #[test]
@@ -3749,9 +3652,56 @@ async fn load_plugins_ignores_project_config_files() {
         std::collections::HashMap::new(),
         &PluginStore::new(codex_home.path().to_path_buf()),
         Some(Product::Codex),
-        /*plugin_hooks_enabled*/ false,
+        /*prefer_remote_curated_conflicts*/ false,
     )
     .await;
 
     assert_eq!(outcome, PluginLoadOutcome::default());
+}
+
+#[tokio::test]
+async fn plugin_hooks_for_layer_stack_loads_configured_plugin_hooks() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local");
+    write_plugin(
+        codex_home.path().join("plugins/cache/test").as_path(),
+        "sample/local",
+        "sample",
+    );
+    write_file(
+        &plugin_root.join("hooks/hooks.json"),
+        r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo startup"
+          }
+        ]
+      }
+    ]
+  }
+}"#,
+    );
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
+    );
+    let config = load_config(codex_home.path(), codex_home.path()).await;
+
+    let outcome = PluginsManager::new(codex_home.path().to_path_buf())
+        .plugin_hooks_for_layer_stack(&config.config_layer_stack, &config)
+        .await;
+
+    assert_eq!(outcome.hook_sources.len(), 1);
+    assert_eq!(
+        outcome.hook_sources[0].source_relative_path,
+        "hooks/hooks.json"
+    );
+    assert_eq!(outcome.hook_load_warnings, Vec::<String>::new());
 }

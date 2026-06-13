@@ -17,6 +17,7 @@ use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::adaptive_wrap_lines;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::TerminalWaitInfo;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_shell_command::bash::extract_bash_command;
 use codex_utils_elapsed::format_duration;
@@ -47,6 +48,7 @@ pub(crate) fn new_active_exec_command(
     parsed: Vec<ParsedCommand>,
     source: ExecCommandSource,
     interaction_input: Option<String>,
+    terminal_wait: Option<TerminalWaitInfo>,
     animations_enabled: bool,
 ) -> ExecCell {
     ExecCell::new(
@@ -59,6 +61,7 @@ pub(crate) fn new_active_exec_command(
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input,
+            terminal_wait,
         },
         animations_enabled,
     )
@@ -376,6 +379,8 @@ impl ExecCell {
         let is_interaction = call.is_unified_exec_interaction();
         let title = if is_interaction {
             ""
+        } else if call.terminal_wait.is_some() && self.is_active() {
+            "Waiting"
         } else if self.is_active() {
             "Running"
         } else if call.is_user_shell_command() {
@@ -391,7 +396,13 @@ impl ExecCell {
         };
         let header_prefix_width = header_line.width();
 
-        let cmd_display = if call.is_unified_exec_interaction() {
+        let cmd_display = if let Some(wait) = call.terminal_wait.as_ref() {
+            format!(
+                "primitive: {} · {}",
+                crate::history_cell::terminal_wait_primitive_label(&wait.primitive),
+                strip_bash_lc_and_escape(&call.command)
+            )
+        } else if call.is_unified_exec_interaction() {
             format_unified_exec_interaction(&call.command, call.interaction_input.as_deref())
         } else {
             strip_bash_lc_and_escape(&call.command)
@@ -787,6 +798,7 @@ mod tests {
             start_time: None,
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
@@ -936,6 +948,7 @@ mod tests {
             start_time: None,
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
@@ -968,6 +981,7 @@ mod tests {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
@@ -1002,6 +1016,7 @@ mod tests {
             start_time: None,
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
@@ -1043,6 +1058,7 @@ mod tests {
             start_time: None,
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
@@ -1080,6 +1096,7 @@ mod tests {
             start_time: None,
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
