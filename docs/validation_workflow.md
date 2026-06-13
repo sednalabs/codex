@@ -193,6 +193,13 @@ Every lane row in `.github/validation-lanes.json` is expected to define:
 - `needs_dotslash`
 - `needs_sccache`
 
+Explicit nextest archive pilot lanes may also define `nextest_archive` with a
+cohort name, uploaded artifact name, archive file name, and build script path.
+Those lanes must remain `explicit_only` and `pilot_only`; validation-lab builds
+the archive once, uploads it as a short-lived artifact, and passes the archive
+artifact into the matching archive-backed run lane. Ordinary Rust lanes do not
+silently join this path.
+
 When `needs_sccache` is true, the Rust-oriented reusable workflows first try the
 native GitHub Actions cache backend expected by current `sccache` releases.
 They only fall back to a workspace-local `.sccache` archive when the runner does

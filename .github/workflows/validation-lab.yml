@@ -202,6 +202,10 @@ jobs:
       selected_release_lane_count: ${{ steps.meta.outputs.selected_release_lane_count }}
       selected_rust_minimal_batch_count: ${{ steps.meta.outputs.selected_rust_minimal_batch_count }}
       selected_rust_integration_batch_count: ${{ steps.meta.outputs.selected_rust_integration_batch_count }}
+      selected_nextest_archive_matrix: ${{ steps.meta.outputs.selected_nextest_archive_matrix }}
+      selected_nextest_archive_count: ${{ steps.meta.outputs.selected_nextest_archive_count }}
+      selected_rust_integration_archive_matrix: ${{ steps.meta.outputs.selected_rust_integration_archive_matrix }}
+      selected_rust_integration_archive_lane_count: ${{ steps.meta.outputs.selected_rust_integration_archive_lane_count }}
       workflow_max_parallel: ${{ steps.meta.outputs.workflow_max_parallel }}
       node_max_parallel: ${{ steps.meta.outputs.node_max_parallel }}
       rust_minimal_max_parallel: ${{ steps.meta.outputs.rust_minimal_max_parallel }}
@@ -221,12 +225,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: Check out validation target
         uses: actions/checkout@v6
         with:
           fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
+          persist-credentials: false
           # This input is consumed by actions/checkout as a branch-or-tag selector.
           # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
           # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
@@ -352,6 +358,10 @@ jobs:
           selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
           selected_rust_minimal_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_count")"
           selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
+          selected_nextest_archive_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_nextest_archive_matrix")"
+          selected_nextest_archive_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_nextest_archive_count")"
+          selected_rust_integration_archive_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_archive_matrix")"
+          selected_rust_integration_archive_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_archive_lane_count")"
           workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
           node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
           rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
@@ -418,6 +428,10 @@ jobs:
             echo "selected_release_lane_count=${selected_release_lane_count}"
             echo "selected_rust_minimal_batch_count=${selected_rust_minimal_batch_count}"
             echo "selected_rust_integration_batch_count=${selected_rust_integration_batch_count}"
+            echo "selected_nextest_archive_matrix=${selected_nextest_archive_matrix}"
+            echo "selected_nextest_archive_count=${selected_nextest_archive_count}"
+            echo "selected_rust_integration_archive_matrix=${selected_rust_integration_archive_matrix}"
+            echo "selected_rust_integration_archive_lane_count=${selected_rust_integration_archive_lane_count}"
             echo "workflow_max_parallel=${workflow_max_parallel}"
             echo "node_max_parallel=${node_max_parallel}"
             echo "rust_minimal_max_parallel=${rust_minimal_max_parallel}"
@@ -485,6 +499,7 @@ jobs:
             echo "- Setup classes: \`${{ steps.meta.outputs.selected_setup_classes || '[]' }}\`"
             echo "- Planned jobs: \`${{ steps.meta.outputs.planned_job_count }}\`"
             echo "- Rust batching: \`${{ steps.meta.outputs.rust_batching_mode }}\` (${{ steps.meta.outputs.rust_batching_reason }})"
+            echo "- Nextest archive builders: \`${{ steps.meta.outputs.selected_nextest_archive_count }}\`"
             echo "- Artifact build: \`${{ inputs.artifact_build && 'true' || 'false' }}\`"
             echo "- Plan fingerprint: \`${{ steps.meta.outputs.planner_fingerprint }}\`"
             echo "- Exact-plan reuse: \`${{ steps.dedupe.outputs.reason }}\`"
@@ -833,6 +848,266 @@ jobs:
       needs_sccache: ${{ matrix.needs_sccache }}
       cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
+  nextest_archives:
+    name: Validation-lab nextest archive (${{ matrix.archive_cohort }})
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.dedupe_should_skip != 'true' &&
+        fromJson(needs.metadata.outputs.selected_nextest_archive_count) > 0
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_IDLE_TIMEOUT: "0"
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_nextest_archive_matrix) }}
+    steps:
+      # Validation-target checkout runs with read-only permissions and no persisted credentials.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ matrix.checkout_fetch_depth }}
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+
+      - name: Check out workflow helpers
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          before_bytes="$(available_bytes)"
+          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
+            echo "::warning title=Low runner disk before archive setup::Available disk is $(numfmt --to=iec "${before_bytes}") before dependency setup; reclaiming headroom."
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get clean || true
+            sudo rm -rf /var/lib/apt/lists/* || true
+          fi
+
+          after_bytes="$(available_bytes)"
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for validation lanes."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        if: ${{ matrix.needs_node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Bind js_repl Node runtime
+        if: ${{ matrix.needs_node }}
+        shell: bash
+        run: echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "$GITHUB_ENV"
+
+      - name: Install Linux build dependencies
+        if: ${{ matrix.needs_linux_build_deps }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Install DotSlash
+        if: ${{ matrix.needs_dotslash }}
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum codex-rs/Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum codex-rs/rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Install sccache
+        if: ${{ matrix.needs_sccache }}
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+        with:
+          tool: sccache
+
+      - name: Configure sccache backend
+        id: sccache_backend
+        if: ${{ matrix.needs_sccache }}
+        shell: bash
+        run: bash .workflow-src/.github/scripts/configure_sccache_backend.sh "${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}"
+
+      - name: Enable sccache wrapper and reset stats
+        if: ${{ matrix.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper="$(command -v sccache)"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Restore sccache cache (fallback)
+        if: ${{ matrix.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' }}
+        id: cache_sccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+
+      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+        with:
+          tool: nextest@0.9.103
+
+      - name: Build nextest archive
+        shell: bash
+        env:
+          WORKING_DIRECTORY: ${{ matrix.working_directory }}
+          BUILD_SCRIPT_PATH: ${{ matrix.build_script_path }}
+          VALIDATION_LAB_NEXTEST_ARCHIVE_FILE: ${{ runner.temp }}/validation-lab-nextest-archives/${{ matrix.archive_file_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${VALIDATION_LAB_NEXTEST_ARCHIVE_FILE}")"
+          if [[ '${{ matrix.needs_sccache }}' == 'true' && '${{ steps.sccache_backend.outputs.backend }}' != 'off' ]]; then
+            export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(command -v sccache)}"
+          fi
+          python3 .workflow-src/.github/scripts/run_validation_lane.py \
+            --repo-root "${GITHUB_WORKSPACE}" \
+            --working-directory "${WORKING_DIRECTORY}" \
+            --script-path "${BUILD_SCRIPT_PATH}" \
+            --script-args-json '[]'
+
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ runner.temp }}/validation-lab-nextest-archives/${{ matrix.archive_file_name }}
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Check post-archive disk headroom
+        if: ${{ always() && !cancelled() && runner.os == 'Linux' }}
+        id: disk_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          save_floor_bytes=$((8 * 1024 * 1024 * 1024))
+          available_bytes="$(df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]')"
+          {
+            echo "available_bytes=${available_bytes}"
+            if [[ "${available_bytes}" -lt "${save_floor_bytes}" ]]; then
+              echo "skip_cache_save=true"
+            else
+              echo "skip_cache_save=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Save cargo home cache
+        if: ${{ always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache (fallback)
+        if: ${{ always() && !cancelled() && matrix.needs_sccache && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
+      - name: sccache stats
+        if: ${{ always() && matrix.needs_sccache && steps.sccache_backend.outputs.backend != 'off' }}
+        continue-on-error: true
+        shell: bash
+        run: sccache --show-stats || true
+
+  rust_integration_archive_lanes:
+    name: Validation-lab archive-backed rust integration
+    needs:
+      - metadata
+      - nextest_archives
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.dedupe_should_skip != 'true' &&
+        needs.nextest_archives.result == 'success' &&
+        fromJson(needs.metadata.outputs.selected_rust_integration_archive_lane_count) > 0
+      }}
+    strategy:
+      fail-fast: ${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}
+      max-parallel: ${{ fromJson(needs.metadata.outputs.rust_integration_max_parallel) }}
+      matrix: ${{ fromJson(needs.metadata.outputs.selected_rust_integration_archive_matrix) }}
+    uses: ./.github/workflows/_validation-lane-rust-integration.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      checkout_fetch_depth: ${{ matrix.checkout_fetch_depth }}
+      lane_id: ${{ matrix.lane_id }}
+      lane_phase: downstream_lanes
+      summary_title: ${{ matrix.lane_id }}
+      status_class: ${{ matrix.status_class }}
+      frontier_default: ${{ matrix.frontier_default }}
+      setup_class: ${{ matrix.setup_class }}
+      frontier_role: ${{ matrix.frontier_role }}
+      summary_family: ${{ matrix.summary_family }}
+      cost_class: ${{ matrix.cost_class }}
+      working_directory: ${{ matrix.working_directory }}
+      script_path: ${{ matrix.script_path }}
+      script_args_json: ${{ toJson(matrix.script_args) }}
+      needs_just: ${{ matrix.needs_just }}
+      needs_node: ${{ matrix.needs_node }}
+      needs_nextest: ${{ matrix.needs_nextest }}
+      needs_linux_build_deps: ${{ matrix.needs_linux_build_deps }}
+      needs_dotslash: ${{ matrix.needs_dotslash }}
+      needs_sccache: ${{ matrix.needs_sccache }}
+      cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
+      nextest_archive_artifact_name: ${{ matrix.nextest_archive_artifact_name }}
+      nextest_archive_file_name: ${{ matrix.nextest_archive_file_name }}
+
   rust_integration_lanes:
     needs:
       - metadata
@@ -948,6 +1223,8 @@ jobs:
       - node_lanes
       - rust_minimal_lanes
       - rust_minimal_batches
+      - nextest_archives
+      - rust_integration_archive_lanes
       - rust_integration_lanes
       - rust_integration_batches
       - release_lanes
@@ -966,6 +1243,8 @@ jobs:
         (needs.node_lanes.result == 'success' || needs.node_lanes.result == 'skipped') &&
         (needs.rust_minimal_lanes.result == 'success' || needs.rust_minimal_lanes.result == 'skipped') &&
         (needs.rust_minimal_batches.result == 'success' || needs.rust_minimal_batches.result == 'skipped') &&
+        (needs.nextest_archives.result == 'success' || needs.nextest_archives.result == 'skipped') &&
+        (needs.rust_integration_archive_lanes.result == 'success' || needs.rust_integration_archive_lanes.result == 'skipped') &&
         (needs.rust_integration_lanes.result == 'success' || needs.rust_integration_lanes.result == 'skipped') &&
         (needs.rust_integration_batches.result == 'success' || needs.rust_integration_batches.result == 'skipped') &&
         (needs.release_lanes.result == 'success' || needs.release_lanes.result == 'skipped')
@@ -1004,6 +1283,8 @@ jobs:
       - node_lanes
       - rust_minimal_lanes
       - rust_minimal_batches
+      - nextest_archives
+      - rust_integration_archive_lanes
       - rust_integration_lanes
       - rust_integration_batches
       - release_lanes
@@ -1017,6 +1298,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: Download lane summary artifacts
@@ -1047,6 +1329,8 @@ jobs:
         env:
           RUST_MINIMAL_RESULT: ${{ needs.rust_minimal_lanes.result || 'skipped' }}
           RUST_MINIMAL_BATCH_RESULT: ${{ needs.rust_minimal_batches.result || 'skipped' }}
+          NEXTEST_ARCHIVE_RESULT: ${{ needs.nextest_archives.result || 'skipped' }}
+          RUST_INTEGRATION_ARCHIVE_RESULT: ${{ needs.rust_integration_archive_lanes.result || 'skipped' }}
           RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
           RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
         run: |
@@ -1076,7 +1360,7 @@ jobs:
             fi
           }
           rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
-          rust_integration_result="$(combined_result "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
+          rust_integration_result="$(combined_result "${NEXTEST_ARCHIVE_RESULT}" "${RUST_INTEGRATION_ARCHIVE_RESULT}" "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ needs.metadata.outputs.host_ref }}" \
