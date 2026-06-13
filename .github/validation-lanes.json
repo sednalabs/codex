@@ -675,7 +675,7 @@
       "needs_sccache": true
     },
     {
-      "lane_id": "codex.blocking-waits-targeted",
+      "lane_id": "codex.blocking-waits-core-targeted",
       "groups": [
         "core",
         "ui_protocol"
@@ -693,10 +693,107 @@
         "core-carry"
       ],
       "setup_class": "rust_integration",
+      "batch_weight_seconds": 720,
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
       "script_args": [
-        "blocking-waits-targeted"
+        "blocking-waits-core-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.blocking-waits-unified-exec-targeted",
+      "groups": [
+        "core",
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "batch_weight_seconds": 720,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "blocking-waits-unified-exec-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.blocking-waits-app-server-targeted",
+      "groups": [
+        "core",
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "batch_weight_seconds": 720,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "blocking-waits-app-server-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.blocking-waits-mcp-targeted",
+      "groups": [
+        "core",
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "batch_weight_seconds": 720,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "blocking-waits-mcp-targeted"
       ],
       "needs_just": true,
       "needs_node": false,
@@ -1746,7 +1843,10 @@
     {
       "route_id": "blocking-waits",
       "lane_ids": [
-        "codex.blocking-waits-targeted"
+        "codex.blocking-waits-core-targeted",
+        "codex.blocking-waits-unified-exec-targeted",
+        "codex.blocking-waits-app-server-targeted",
+        "codex.blocking-waits-mcp-targeted"
       ],
       "allowed_paths": [
         "codex-rs/codex-api/src/sse/responses.rs",
@@ -2026,7 +2126,7 @@
       "lane_ids": [
         "codex.app-server-protocol-test",
         "codex.app-server-thread-cwd-targeted",
-        "codex.blocking-waits-targeted"
+        "codex.blocking-waits-app-server-targeted"
       ],
       "allowed_paths": [
         "codex-rs/app-server/src/**",

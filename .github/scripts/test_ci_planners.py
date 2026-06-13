@@ -717,7 +717,7 @@ class RouteSelectionTests(unittest.TestCase):
             [
                 "codex.app-server-protocol-test",
                 "codex.app-server-thread-cwd-targeted",
-                "codex.blocking-waits-targeted",
+                "codex.blocking-waits-app-server-targeted",
             ],
         )
 
@@ -1041,7 +1041,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["profile"], "targeted")
         self.assertEqual(payload["lane_set"], "core-carry")
         self.assertEqual(payload["source"], "followup_route")
-        self.assertEqual(payload["lane_ids"], ["codex.blocking-waits-targeted"])
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.blocking-waits-core-targeted",
+                "codex.blocking-waits-unified-exec-targeted",
+                "codex.blocking-waits-app-server-targeted",
+                "codex.blocking-waits-mcp-targeted",
+            ],
+        )
 
     def test_recommend_lab_ui_protocol_path_uses_exact_route(self) -> None:
         payload = self.recommend_lab_for_files(
@@ -1056,7 +1064,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [
                 "codex.app-server-protocol-test",
                 "codex.app-server-thread-cwd-targeted",
-                "codex.blocking-waits-targeted",
+                "codex.blocking-waits-app-server-targeted",
             ],
         )
 
@@ -1145,15 +1153,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(len(payload["selected_matrix"]["include"]), 21)
-        self.assertEqual(payload["planned_job_count"], 11)
+        self.assertEqual(len(payload["selected_matrix"]["include"]), 24)
+        self.assertEqual(payload["planned_job_count"], 14)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 8)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 2)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 6)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         for batch in (
             payload["selected_rust_minimal_batch_matrix"]["include"]
@@ -1168,7 +1176,26 @@ class ValidationPlanScriptTests(unittest.TestCase):
             )
         )
         self.assertIn("codex.app-server-protocol-test", payload["selected_lane_ids"])
-        self.assertIn("codex.blocking-waits-targeted", payload["selected_lane_ids"])
+        blocking_wait_lanes = {
+            "codex.blocking-waits-app-server-targeted",
+            "codex.blocking-waits-core-targeted",
+            "codex.blocking-waits-mcp-targeted",
+            "codex.blocking-waits-unified-exec-targeted",
+        }
+        selected_lane_ids = set(payload["selected_lane_ids"])
+        self.assertTrue(
+            blocking_wait_lanes.issubset(selected_lane_ids),
+            f"missing blocking wait lanes: {blocking_wait_lanes - selected_lane_ids}",
+        )
+        blocking_wait_batches = {}
+        for batch in payload["selected_rust_integration_batch_matrix"]["include"]:
+            lane_ids = batch["lane_ids"]
+            if len(lane_ids) == 1 and lane_ids[0] in blocking_wait_lanes:
+                blocking_wait_batches[lane_ids[0]] = batch
+        self.assertEqual(set(blocking_wait_batches), blocking_wait_lanes)
+        for batch in blocking_wait_batches.values():
+            self.assertEqual(batch["batch_lane_count"], 1)
+            self.assertEqual(batch["estimated_weight_seconds"], 720)
 
     def test_lab_targeted_ui_protocol_can_disable_rust_batching(self) -> None:
         payload = run_script(
@@ -1184,12 +1211,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             str(REPO_ROOT / ".github/validation-lanes.json"),
         )
 
-        self.assertEqual(payload["planned_job_count"], 21)
+        self.assertEqual(payload["planned_job_count"], 24)
         self.assertEqual(payload["rust_batching_mode"], "off")
         self.assertEqual(payload["rust_batching_reason"], "disabled by workflow input")
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 8)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
 
     def test_lab_product_surface_lane_set_returns_first_wave_lanes(self) -> None:
@@ -1426,8 +1453,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
         self.assertEqual(payload["smoke_release_lane_count"], 1)
@@ -3277,7 +3304,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "--script-path",
                     ".github/scripts/validation-lanes/run-just-recipe.sh",
                     "--script-args-json",
-                    '["blocking-waits-targeted"]',
+                    '["blocking-waits-core-targeted"]',
                     "--cache-policy",
                     "restore-only",
                     "--cache-backend",
@@ -3301,7 +3328,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             summary["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
         )
-        self.assertEqual(summary["script_args"], ["blocking-waits-targeted"])
+        self.assertEqual(summary["script_args"], ["blocking-waits-core-targeted"])
         self.assertEqual(summary["cache_policy"], "restore-only")
         self.assertEqual(summary["cache_backend"], "gha")
         self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
@@ -3446,18 +3473,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 34)
+        self.assertEqual(payload["planned_job_count"], 37)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "21")
-        self.assertEqual(payload["rust_integration_max_parallel"], "20")
+        self.assertEqual(payload["rust_integration_max_parallel"], "23")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -3480,16 +3507,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 37)
+        self.assertEqual(payload["planned_job_count"], 40)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 8)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "23")
-        self.assertEqual(payload["rust_integration_max_parallel"], "21")
+        self.assertEqual(payload["rust_integration_max_parallel"], "24")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -5778,6 +5805,91 @@ class ValidationLaneRunnerTests(unittest.TestCase):
             self.assertIn(
                 "must not contain '..' path segments",
                 traversal_cwd.stderr,
+            )
+
+
+class ValidationLaneBatchRunnerTests(unittest.TestCase):
+    def test_batch_runner_loads_catalog_from_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo_root = root / "repo"
+            output_dir = root / "out"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            script_dir.mkdir(parents=True)
+
+            (script_dir / "branch-only.sh").write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "echo branch-only-lane-ran",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (repo_root / ".github/validation-lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "lane_id": "codex.branch-only-targeted",
+                                "groups": ["core"],
+                                "lane_sets": ["all"],
+                                "status_class": "active",
+                                "setup_class": "rust_integration",
+                                "frontier_default": True,
+                                "frontier_role": "sentinel",
+                                "summary_family": "branch-only",
+                                "cost_class": "high",
+                                "checkout_fetch_depth": 1,
+                                "timeout_minutes": 30,
+                                "working_directory": ".",
+                                "script_path": ".github/scripts/validation-lanes/branch-only.sh",
+                                "script_args": [],
+                                "needs_just": False,
+                                "needs_node": False,
+                                "needs_nextest": False,
+                                "needs_linux_build_deps": False,
+                                "needs_dotslash": False,
+                                "needs_sccache": False,
+                                "needs_bazel": False,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane_batch.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--workflow-src",
+                    str(REPO_ROOT),
+                    "--setup-class",
+                    "rust_integration",
+                    "--batch-id",
+                    "rust_integration-01",
+                    "--lane-ids-json",
+                    '["codex.branch-only-targeted"]',
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("branch-only-lane-ran", proc.stdout)
+            results = json.loads((output_dir / "batch-results.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                results["results"][0]["lane_id"],
+                "codex.branch-only-targeted",
             )
 
 
