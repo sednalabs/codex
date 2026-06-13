@@ -10,7 +10,6 @@ use ratatui::style::Styled as _;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
-use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER_COMPACT_BREAKPOINT: u16 = 120;

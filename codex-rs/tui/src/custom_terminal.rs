@@ -599,7 +599,7 @@ where
 
     /// Queries the real size of the backend.
     pub fn size(&self) -> io::Result<Size> {
-        self.backend.size()
+        self.backend.size().map_err(backend_error_to_io)
     }
 }
 

@@ -280,7 +280,7 @@ impl PagerView {
         } else {
             format!(" {} ", self.title)
         };
-        title.dim().render_ref(header, buf);
+        title.dim().render(header, buf);
     }
 
     fn render_content(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1190,8 +1190,8 @@ impl TranscriptOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
-        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
-        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
+        Line::from(" ".repeat(line1.width as usize)).render(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render(line2, buf);
         let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
             .into_iter()
             .chain(first_or_empty(&self.view.keymap.scroll_down))
@@ -1305,7 +1305,7 @@ impl TranscriptOverlay {
                 /*priority*/ 8,
             ));
         }
-        footer_hint_line_for_row(&action_hints, area.width).render_ref(line2, buf);
+        footer_hint_line_for_row(&action_hints, area.width).render(line2, buf);
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1431,8 +1431,8 @@ impl StaticOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
-        Line::from(" ".repeat(line1.width as usize)).render_ref(line1, buf);
-        Line::from(" ".repeat(line2.width as usize)).render_ref(line2, buf);
+        Line::from(" ".repeat(line1.width as usize)).render(line1, buf);
+        Line::from(" ".repeat(line2.width as usize)).render(line2, buf);
         let scroll_keys = first_or_empty(&self.view.keymap.scroll_up)
             .into_iter()
             .chain(first_or_empty(&self.view.keymap.scroll_down))
@@ -1455,7 +1455,7 @@ impl StaticOverlay {
             FooterHint::new(key_label(&page_keys), "page", "page", /*priority*/ 6),
             FooterHint::new(key_label(&jump_keys), "jump", "jump", /*priority*/ 7),
         ];
-        footer_hint_line_for_row(&navigation_hints, area.width).render_ref(line1, buf);
+        footer_hint_line_for_row(&navigation_hints, area.width).render(line1, buf);
 
         let action_hints = vec![FooterHint::new(
             key_label(&first_or_empty(&self.view.keymap.close)),
@@ -1463,7 +1463,7 @@ impl StaticOverlay {
             "quit",
             /*priority*/ 0,
         )];
-        footer_hint_line_for_row(&action_hints, area.width).render_ref(line2, buf);
+        footer_hint_line_for_row(&action_hints, area.width).render(line2, buf);
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
