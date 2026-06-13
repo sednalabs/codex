@@ -97,6 +97,14 @@ on:
         required: false
         type: string
         default: ""
+      nextest_archive_artifact_name:
+        required: false
+        type: string
+        default: ""
+      nextest_archive_file_name:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -250,6 +258,26 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      - name: Download nextest archive
+        if: ${{ inputs.nextest_archive_artifact_name != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.nextest_archive_artifact_name }}
+          path: ${{ runner.temp }}/validation-lab-nextest-archive
+
+      - name: Export nextest archive path
+        if: ${{ inputs.nextest_archive_artifact_name != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_file="${RUNNER_TEMP}/validation-lab-nextest-archive/${{ inputs.nextest_archive_file_name }}"
+          if [[ ! -f "${archive_file}" ]]; then
+            echo "::error title=Missing nextest archive::Expected ${archive_file} from artifact '${{ inputs.nextest_archive_artifact_name }}'."
+            exit 1
+          fi
+          echo "VALIDATION_LAB_NEXTEST_ARCHIVE_FILE=${archive_file}" >> "$GITHUB_ENV"
+          echo "VALIDATION_LAB_NEXTEST_ARCHIVE_ARTIFACT=${{ inputs.nextest_archive_artifact_name }}" >> "$GITHUB_ENV"
+
       - name: Mark setup complete
         id: setup_complete
         shell: bash
@@ -369,6 +397,9 @@ jobs:
           CACHE_POLICY: ${{ inputs.cache_policy }}
           CACHE_BACKEND: ${{ steps.sccache_backend.outputs.backend }}
           SCCACHE_CACHE_HIT: ${{ steps.cache_sccache_restore.outputs.cache-hit }}
+          NEXTEST_ARCHIVE_ARTIFACT_NAME: ${{ inputs.nextest_archive_artifact_name }}
+          NEXTEST_ARCHIVE_FILE_NAME: ${{ inputs.nextest_archive_file_name }}
+          NEXTEST_ARCHIVE_MODE: ${{ inputs.nextest_archive_artifact_name != '' && 'downloaded' || 'not-applicable' }}
         run: |
           set -euo pipefail
           lane_slug="$(printf '%s' "${LANE_ID}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | cut -c1-48)"
@@ -419,6 +450,9 @@ jobs:
             --cache-backend "${cache_backend}" \
             --sccache-restore-mode "${sccache_restore_mode}" \
             --artifact-name "${ARTIFACT_NAME}" \
+            --nextest-archive-artifact-name "${NEXTEST_ARCHIVE_ARTIFACT_NAME}" \
+            --nextest-archive-file-name "${NEXTEST_ARCHIVE_FILE_NAME}" \
+            --nextest-archive-mode "${NEXTEST_ARCHIVE_MODE}" \
             --output "${summary_file}"
           echo "lane_slug=${lane_slug}" >> "$GITHUB_OUTPUT"
           echo "summary_file=${summary_file}" >> "$GITHUB_OUTPUT"
