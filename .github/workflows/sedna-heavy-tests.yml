@@ -48,18 +48,29 @@ on:
           - codex.blocking-waits-targeted
           - codex.custom-prompts-targeted
           - codex.mcp-safety-targeted
+          - codex.mcp-device-login-targeted
           - codex.core-subagent-model-pinning-targeted
           - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
           - codex.core-context-serialization-targeted
           - codex.core-attestation-targeted
           - codex.state-spawn-lineage-contract-targeted
+          - codex.state-migration-repair-targeted
           - codex.code-mode-declaration-targeted
           - codex.app-server-protocol-test
           - codex.app-server-computer-use-targeted
           - codex.tui-native-computer-use-targeted
+          - codex.exec-native-computer-use-targeted
           - codex.native-computer-use-tool-registry-targeted
+          - codex.native-computer-use-doctor-targeted
           - codex.app-server-thread-cwd-targeted
+          - codex.app-server-v2-contract-targeted
+          - codex.mcp-server-contract-targeted
+          - codex.exec-server-targeted
+          - codex.cli-surface-targeted
+          - codex.workflow-security-targeted
+          - codex.sdk-python-targeted
+          - codex.sdk-typescript-targeted
           - codex.agent-workflow-sanity
           - codex.shell-tool-mcp-ci
           - codex.build-policy-sanity
@@ -231,7 +242,7 @@ jobs:
                 run_core_family=true
                 run_ui_protocol_family=true
                 ;;
-              codex-rs/core/src/memories/phase2.rs|codex-rs/core/src/memories/phase2_attestation_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0024_phase2_attestation_roots.sql)
+              codex-rs/memories/write/src/phase2.rs|codex-rs/memories/write/src/phase2_attestation.rs|codex-rs/memories/write/src/phase2_attestation_tests.rs|codex-rs/memories/write/src/startup_tests.rs|codex-rs/state/src/runtime/phase2_attestation.rs|codex-rs/state/migrations/0024_phase2_attestation_roots.sql|codex-rs/state/migrations/0038_phase2_attested_baselines.sql)
                 run_core_family=true
                 run_attestation_family=true
                 ;;
@@ -318,21 +329,46 @@ jobs:
           run_selected_lanes="true"
 
           if [[ '${{ github.event_name }}' == 'pull_request' && '${{ github.event.action }}' == 'ready_for_review' ]]; then
-            duplicate_run="$(
+            mkdir -p "${RUNNER_TEMP}/ready-for-review-proof"
+            duplicate_run_id="$(
               gh api \
                 -H 'Accept: application/vnd.github+json' \
-                "/repos/${GITHUB_REPOSITORY}/actions/workflows/sedna-heavy-tests.yml/runs?event=pull_request&per_page=100" \
+                "/repos/${GITHUB_REPOSITORY}/actions/workflows/sedna-heavy-tests.yml/runs?event=pull_request&status=success&per_page=100" \
                 --jq '
                   first(
                     .workflow_runs[]
                     | select(.id != ('"${GITHUB_RUN_ID}"' | tonumber))
                     | select(.head_sha == "'"${checkout_sha}"'")
                     | select(any(.pull_requests[]?; .number == ('"${{ github.event.pull_request.number }}"' | tonumber)))
-                    | select((.status == "queued") or (.status == "in_progress") or (.conclusion == "success"))
-                    | .html_url
+                    | select(.status == "completed" and .conclusion == "success")
+                    | .id
                   ) // ""
-                '
+                ' 2>/dev/null || true
             )"
+            duplicate_run=""
+            if [[ -n "${duplicate_run_id}" ]] && gh run download "${duplicate_run_id}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --name validation-summary \
+                --dir "${RUNNER_TEMP}/ready-for-review-proof" >/dev/null 2>&1; then
+              duplicate_summary="$(
+                find "${RUNNER_TEMP}/ready-for-review-proof" -type f -name '*.json' | sort | head -n 1
+              )"
+              if [[ -n "${duplicate_summary}" ]]; then
+                duplicate_run="$(
+                  jq -r \
+                    --arg sha "${checkout_sha}" \
+                    --arg lane "${{ inputs.lane || 'all' }}" \
+                    --arg planner "${planner_fingerprint}" '
+                    select(.ci_proof_v1.schema_version == "ci-proof-v1")
+                    | select(.ci_proof_v1.head_sha == $sha)
+                    | select(.ci_proof_v1.lane == $lane)
+                    | select(.ci_proof_v1.planner_fingerprint == $planner)
+                    | select(.ci_proof_v1.conclusion == "success")
+                    | .ci_proof_v1.run_url // ""
+                    ' "${duplicate_summary}" 2>/dev/null || true
+                )"
+              fi
+            fi
             if [[ -n "${duplicate_run}" ]]; then
               dedupe_reason="ready_for_review duplicate skipped; equivalent heavy evidence already exists for ${checkout_sha} (${duplicate_run})"
               run_smoke_gate="false"
@@ -463,6 +499,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}
@@ -666,6 +703,7 @@ jobs:
       frontier_role: ${{ matrix.frontier_role }}
       summary_family: ${{ matrix.summary_family }}
       cost_class: ${{ matrix.cost_class }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
       working_directory: ${{ matrix.working_directory }}
       script_path: ${{ matrix.script_path }}
       script_args_json: ${{ toJson(matrix.script_args) }}
@@ -1134,11 +1172,13 @@ jobs:
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
+            --latest-head-sha "${{ needs.metadata.outputs.checkout_sha }}" \
             --profile "heavy" \
             --lane-set "${lane_set}" \
             --profile-intent "heavy downstream validation" \
             --profile-notes "sedna-heavy-tests workflow summary" \
             --lane-summary "${lane_summary}" \
+            --planner-fingerprint "${{ needs.metadata.outputs.planner_fingerprint }}" \
             --planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}' \
             --selected-lane-ids-json '${{ needs.metadata.outputs.selected_lane_ids }}' \
             --explicit-lanes "${explicit_lanes}" \
@@ -1148,6 +1188,8 @@ jobs:
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --workflow-file "sedna-heavy-tests.yml" \
+            --event-policy "pull_request_exact_head_lane_fingerprint" \
             --run-selected-lanes "${RUN_SELECTED_LANES}" \
             --run-smoke-gate "${RUN_SMOKE_GATE}" \
             --smoke-gate-kind "${SMOKE_GATE_KIND}" \
@@ -1204,6 +1246,13 @@ jobs:
           print(f"- Rust batching: `{payload['selection'].get('rust_batching_mode') or 'off'}`")
           print(f"- Primary blocker families: `{len(primary_blockers)}`")
           print(f"- Additional failing lanes: `{len(secondary_findings)}`")
+          head_freshness = summary.get("head_freshness") or {}
+          if head_freshness:
+              print(f"- Failed-lane freshness: `{head_freshness.get('failed_lane_classification', 'unknown')}`")
+              rerun = head_freshness.get("recommended_rerun") or {}
+              if rerun.get("needed"):
+                  lanes = ", ".join(rerun.get("lane_ids") or []) or "selected lane"
+                  print(f"- Latest-head proof: `{rerun.get('profile', 'targeted')}` lanes `{lanes}`")
           if setup_rows:
               print(f"- Setup classes exercised: `{len(setup_rows)}`")
           if first_failure:

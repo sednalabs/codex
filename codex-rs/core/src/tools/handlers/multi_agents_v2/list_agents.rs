@@ -5,17 +5,22 @@ use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("list_agents")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_list_agents_tool())
+    fn spec(&self) -> ToolSpec {
+        create_list_agents_tool()
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl Handler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -30,7 +35,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
         session
             .services
             .agent_control
-            .register_session_root(session.conversation_id, &turn.session_source);
+            .register_session_root(session.thread_id, turn.parent_thread_id);
         let agents = session
             .services
             .agent_control

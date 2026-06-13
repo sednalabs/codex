@@ -13,17 +13,22 @@ use super::*;
 
 pub struct ReportAgentJobResultHandler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ReportAgentJobResultHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("report_agent_job_result")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_report_agent_job_result_tool())
+    fn spec(&self) -> ToolSpec {
+        create_report_agent_job_result_tool()
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ReportAgentJobResultHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -61,7 +66,7 @@ pub async fn handle(
         ));
     }
     let db = required_state_db(&session)?;
-    let reporting_thread_id = session.conversation_id.to_string();
+    let reporting_thread_id = session.thread_id.to_string();
     let accepted = db
         .report_agent_job_item_result(
             args.job_id.as_str(),

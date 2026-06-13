@@ -24,6 +24,7 @@ use core_test_support::responses::ResponseMock;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -62,7 +63,7 @@ async fn review_op_emits_lifecycle_and_review_output() {
         "overall_confidence_score": 0.8
     })
     .to_string();
-    let (server, _request_log) = start_responses_server_with_sse(
+    let (server, request_log) = start_responses_server_with_sse(
         assistant_message_sse(&review_json),
         /*expected_requests*/ 1,
     )
@@ -112,11 +113,39 @@ async fn review_op_emits_lifecycle_and_review_output() {
     assert_eq!(expected, review);
     let _complete = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    // Also verify that a user message with the header and a formatted finding
-    // was recorded back in the parent session's rollout.
     let path = codex.rollout_path().expect("rollout path");
     let text = std::fs::read_to_string(&path).expect("read rollout file");
+    let parent_thread_id = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .find_map(|line| {
+            let rollout_line: RolloutLine = serde_json::from_str(line).expect("rollout line");
+            match rollout_line.item {
+                RolloutItem::SessionMeta(session_meta) => Some(session_meta.meta.id.to_string()),
+                _ => None,
+            }
+        })
+        .expect("parent session meta");
 
+    let request = request_log.single_request();
+    assert_eq!(
+        request.header("x-openai-subagent").as_deref(),
+        Some("review")
+    );
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        &request
+            .header("x-codex-turn-metadata")
+            .expect("review request turn metadata"),
+    )
+    .expect("review request turn metadata json");
+    assert!(turn_metadata.get("forked_from_thread_id").is_none());
+    assert_eq!(
+        turn_metadata["parent_thread_id"].as_str(),
+        Some(parent_thread_id.as_str())
+    );
+
+    // Also verify that a user message with the header and a formatted finding
+    // was recorded back in the parent session's rollout.
     let mut saw_header = false;
     let mut saw_finding_line = false;
     let expected_assistant_text = render_review_output_text(&expected);
@@ -467,11 +496,8 @@ async fn review_uses_session_model_when_review_model_unset() {
 async fn review_uses_runtime_effort_after_model_override() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -480,23 +506,16 @@ async fn review_uses_runtime_effort_after_model_override() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.1-codex-mini".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {
@@ -539,11 +558,8 @@ async fn review_uses_runtime_effort_after_model_override() {
 async fn review_uses_runtime_effort_with_explicit_review_model() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -552,23 +568,16 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {
@@ -612,11 +621,8 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
 async fn review_clamps_runtime_effort_with_explicit_review_model() {
     skip_if_no_network!();
 
-    let sse_raw = r#"[
-        {"type":"response.completed", "response": {"id": "__ID__"}}
-    ]"#;
     let (server, request_log) =
-        start_responses_server_with_sse(sse_raw, /*expected_requests*/ 1).await;
+        start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-5.3-codex-spark".to_string());
@@ -625,23 +631,16 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
     })
     .await;
 
-    codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            permission_profile: None,
-            windows_sandbox_level: None,
+    core_test_support::submit_thread_settings(
+        &codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some("gpt-5.3-codex-spark".to_string()),
             effort: Some(Some(ReasoningEffort::XHigh)),
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await
-        .unwrap();
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     codex
         .submit(Op::Review {
@@ -899,13 +898,13 @@ async fn review_history_surfaces_in_parent_session() {
     let followup = "back to parent".to_string();
     codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: followup.clone(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await
@@ -1014,7 +1013,7 @@ async fn review_uses_overridden_cwd_for_base_branch_merge_base() {
     core_test_support::submit_thread_settings(
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
-            cwd: Some(repo_path.to_path_buf()),
+            environments: Some(local_selections(repo_path.to_path_buf().abs())),
             ..Default::default()
         },
     )

@@ -329,8 +329,8 @@ pub struct ActivePermissionProfile {
     /// Identifier from `default_permissions` or the implicit built-in default,
     /// such as `:workspace` or a user-defined `[permissions.<id>]` profile.
     pub id: String,
-    /// Parent profile identifier once permissions profiles support
-    /// inheritance. This is currently always `null`.
+    /// Parent profile identifier from the selected permissions profile's
+    /// `extends` setting, when present.
     #[serde(default)]
     pub extends: Option<String>,
 }
@@ -663,6 +663,8 @@ pub struct PermissionsRequestApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    #[serde(default)]
+    pub environment_id: Option<String>,
     /// Unix timestamp (in milliseconds) when this approval request started.
     #[ts(type = "number")]
     pub started_at_ms: i64,

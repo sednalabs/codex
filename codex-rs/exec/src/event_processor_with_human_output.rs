@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
@@ -12,9 +13,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_utils_absolute_path::canonicalize_preserving_symlinks;
 use codex_utils_sandbox_summary::summarize_permission_profile;
-use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
@@ -82,6 +81,14 @@ impl EventProcessorWithHumanOutput {
                     "mcp:".style(self.bold),
                     format!("{server}/{tool}").style(self.cyan),
                     "started".style(self.dimmed)
+                );
+            }
+            ThreadItem::ComputerUseCall { adapter, tool, .. } => {
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, ComputerUseCallStatus::InProgress)
+                        .style(self.bold),
+                    tool.style(self.dimmed)
                 );
             }
             ThreadItem::WebSearch { query, .. } => {
@@ -199,6 +206,27 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                error,
+                ..
+            } => {
+                let status_style = match &status {
+                    ComputerUseCallStatus::Completed => self.green,
+                    ComputerUseCallStatus::Failed => self.red,
+                    ComputerUseCallStatus::InProgress => self.dimmed,
+                };
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, status).style(status_style),
+                    tool.style(self.dimmed)
+                );
+                if let Some(error) = error {
+                    eprintln!("{}", error.style(self.red));
+                }
+            }
             ThreadItem::WebSearch { query, .. } => {
                 eprintln!("{} {}", "web search:".style(self.bold), query);
             }
@@ -207,6 +235,20 @@ impl EventProcessorWithHumanOutput {
             }
             _ => {}
         }
+    }
+}
+
+fn computer_use_human_label(adapter: &str, status: ComputerUseCallStatus) -> String {
+    let surface = match adapter {
+        "android" | "android_emulator" | "android-emulator" => "Android emulator".to_string(),
+        "browser" => "browser".to_string(),
+        "desktop" | "computer" => "computer".to_string(),
+        other => other.replace(['_', '-'], " "),
+    };
+    match status {
+        ComputerUseCallStatus::InProgress => format!("Using {surface}"),
+        ComputerUseCallStatus::Completed => format!("Used {surface}"),
+        ComputerUseCallStatus::Failed => format!("Failed using {surface}"),
     }
 }
 
@@ -448,7 +490,8 @@ fn config_summary_entries(
             "reasoning effort",
             config
                 .model_reasoning_effort
-                .map(|effort| effort.to_string())
+                .as_ref()
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "none".to_string()),
         ));
         entries.push((
@@ -521,6 +564,10 @@ fn should_print_final_message_to_tty(
 ) -> bool {
     final_message.is_some() && !final_message_rendered && stdout_is_terminal && stderr_is_terminal
 }
+
+#[cfg(test)]
+#[path = "event_processor_with_human_output_tests.rs"]
+mod event_processor_with_human_output_tests;
 
 #[cfg(test)]
 mod tests {
@@ -697,6 +744,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -745,6 +794,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -789,6 +840,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -833,6 +886,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -878,6 +933,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 

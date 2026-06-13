@@ -11,71 +11,24 @@ use codex_app_server_protocol::FsWatchParams;
 use codex_app_server_protocol::FsWatchResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
+use codex_file_watcher::DebouncedWatchReceiver;
 use codex_file_watcher::FileWatcher;
-use codex_file_watcher::FileWatcherEvent;
 use codex_file_watcher::FileWatcherSubscriber;
-use codex_file_watcher::Receiver;
 use codex_file_watcher::WatchRegistration;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::time::Instant;
 use tracing::warn;
 
 const FS_CHANGED_NOTIFICATION_DEBOUNCE: Duration = Duration::from_millis(200);
-
-struct DebouncedReceiver {
-    rx: Receiver,
-    interval: Duration,
-    changed_paths: HashSet<PathBuf>,
-    next_allowance: Option<Instant>,
-}
-
-impl DebouncedReceiver {
-    fn new(rx: Receiver, interval: Duration) -> Self {
-        Self {
-            rx,
-            interval,
-            changed_paths: HashSet::new(),
-            next_allowance: None,
-        }
-    }
-
-    async fn recv(&mut self) -> Option<FileWatcherEvent> {
-        while self.changed_paths.is_empty() {
-            self.changed_paths.extend(self.rx.recv().await?.paths);
-        }
-        let next_allowance = *self
-            .next_allowance
-            .get_or_insert_with(|| Instant::now() + self.interval);
-        self.next_allowance = None;
-
-        loop {
-            tokio::select! {
-                event = self.rx.recv() => match event {
-                    Some(event) => self.changed_paths.extend(event.paths),
-                    None => break,
-                },
-                _ = tokio::time::sleep_until(next_allowance) => break,
-            }
-        }
-
-        if self.changed_paths.is_empty() {
-            return None;
-        }
-        Some(FileWatcherEvent {
-            paths: self.changed_paths.drain().collect(),
-        })
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct FsWatchManager {
@@ -158,7 +111,7 @@ impl FsWatchManager {
 
         let task_watch_id = watch_id.clone();
         tokio::spawn(async move {
-            let mut rx = DebouncedReceiver::new(rx, FS_CHANGED_NOTIFICATION_DEBOUNCE);
+            let mut rx = DebouncedWatchReceiver::new(rx, FS_CHANGED_NOTIFICATION_DEBOUNCE);
             tokio::pin!(terminate_rx);
             loop {
                 let event = tokio::select! {
@@ -240,6 +193,8 @@ mod tests {
     use codex_file_watcher::WatchPath;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::time::timeout;
 
@@ -501,7 +456,7 @@ mod tests {
         let (subscriber, raw_rx) = file_watcher.add_subscriber();
         let _subscription =
             subscriber.register_paths(app_server_hooks().fs_watch_paths_for_target(&watched_file));
-        let mut rx = DebouncedReceiver::new(raw_rx, Duration::from_millis(20));
+        let mut rx = DebouncedWatchReceiver::new(raw_rx, Duration::from_millis(20));
 
         file_watcher
             .send_paths_for_test(vec![watched_file.to_path_buf()])

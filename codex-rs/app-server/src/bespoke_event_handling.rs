@@ -4,6 +4,7 @@ use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
+use crate::request_processors::thread_settings_from_core_snapshot;
 use crate::server_request_error::is_turn_transition_server_request_error;
 use crate::thread_state::ThreadState;
 use crate::thread_state::TurnSummary;
@@ -19,6 +20,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::DeprecationNoticeNotification;
@@ -62,6 +64,7 @@ use codex_app_server_protocol::ThreadRealtimeStartedNotification;
 use codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification;
 use codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification;
 use codex_app_server_protocol::ThreadRollbackResponse;
+use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
@@ -75,6 +78,7 @@ use codex_app_server_protocol::TurnDiffUpdatedNotification;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnModerationMetadataNotification;
 use codex_app_server_protocol::TurnPlanStep;
 use codex_app_server_protocol::TurnPlanUpdatedNotification;
 use codex_app_server_protocol::TurnStartedNotification;
@@ -99,6 +103,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -211,6 +216,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 }
             };
             let notification = McpServerStatusUpdatedNotification {
+                thread_id: Some(conversation_id.to_string()),
                 name: update.server,
                 status,
                 error,
@@ -335,6 +341,16 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::ModelVerification(notification))
+                .await;
+        }
+        EventMsg::TurnModerationMetadata(event) => {
+            let notification = TurnModerationMetadataNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.clone(),
+                metadata: event.metadata,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::TurnModerationMetadata(notification))
                 .await;
         }
         EventMsg::RealtimeConversationStarted(event) => {
@@ -755,12 +771,13 @@ pub(crate) async fn apply_bespoke_event_handling(
             let requested_permissions = request.permissions.clone();
             let request_cwd = match request.cwd.clone() {
                 Some(cwd) => cwd,
-                None => conversation.config_snapshot().await.cwd,
+                None => conversation.config_snapshot().await.cwd().clone(),
             };
             let params = PermissionsRequestApprovalParams {
                 thread_id: conversation_id.to_string(),
                 turn_id: request.turn_id.clone(),
                 item_id: request.call_id.clone(),
+                environment_id: request.environment_id.clone(),
                 started_at_ms: request.started_at_ms,
                 cwd: request_cwd.clone(),
                 reason: request.reason,
@@ -822,6 +839,85 @@ pub(crate) async fn apply_bespoke_event_handling(
                 crate::dynamic_tools::on_call_response(call_id, rx, conversation).await;
             });
         }
+        EventMsg::ComputerUseCallRequest(request) => {
+            let call_id = request.call_id;
+            let turn_id = request.turn_id;
+            let environment_id = request.environment_id;
+            let adapter = request.adapter;
+            let tool = request.tool;
+            let arguments = request.arguments;
+            let item = ThreadItem::ComputerUseCall {
+                id: call_id.clone(),
+                environment_id: environment_id.clone(),
+                adapter: adapter.clone(),
+                tool: tool.clone(),
+                arguments: arguments.clone(),
+                status: ComputerUseCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                error: None,
+                duration_ms: None,
+            };
+            let notification = ItemStartedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: turn_id.clone(),
+                started_at_ms: now_unix_timestamp_ms(),
+                item,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemStarted(notification))
+                .await;
+            let params = ComputerUseCallParams {
+                thread_id: conversation_id.to_string(),
+                turn_id,
+                call_id: call_id.clone(),
+                environment_id,
+                adapter,
+                tool,
+                arguments,
+            };
+            let (_pending_request_id, rx) = outgoing
+                .send_request(ServerRequestPayload::ComputerUseCall(params))
+                .await;
+            tokio::spawn(async move {
+                crate::computer_use::on_call_response(call_id, rx, conversation).await;
+            });
+        }
+        EventMsg::ComputerUseCallResponse(response) => {
+            let status = if response.success {
+                ComputerUseCallStatus::Completed
+            } else {
+                ComputerUseCallStatus::Failed
+            };
+            let duration_ms = i64::try_from(response.duration.as_millis()).ok();
+            let item = ThreadItem::ComputerUseCall {
+                id: response.call_id,
+                environment_id: response.environment_id,
+                adapter: response.adapter,
+                tool: response.tool,
+                arguments: response.arguments,
+                status,
+                content_items: Some(
+                    response
+                        .content_items
+                        .into_iter()
+                        .map(ComputerUseCallOutputContentItem::from)
+                        .collect(),
+                ),
+                success: Some(response.success),
+                error: response.error,
+                duration_ms,
+            };
+            let notification = ItemCompletedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: response.turn_id,
+                completed_at_ms: now_unix_timestamp_ms(),
+                item,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemCompleted(notification))
+                .await;
+        }
         EventMsg::McpToolCallBegin(_) | EventMsg::McpToolCallEnd(_) => {
             // Deprecated MCP tool-call events are still fanned out for legacy clients.
             // App-server v2 receives the canonical TurnItem::McpToolCall lifecycle instead.
@@ -844,6 +940,26 @@ pub(crate) async fn apply_bespoke_event_handling(
             if let Some(notification) =
                 item_event_to_server_notification(msg, &conversation_id.to_string(), &event_turn_id)
             {
+                outgoing.send_server_notification(notification).await;
+            }
+        }
+        EventMsg::SubAgentActivity(activity) => {
+            if activity.kind == SubAgentActivityKind::Interrupted
+                && thread_manager
+                    .get_thread(activity.agent_thread_id)
+                    .await
+                    .is_err()
+            {
+                thread_watch_manager
+                    .remove_thread(&activity.agent_thread_id.to_string())
+                    .await;
+            }
+            let notification = item_event_to_server_notification(
+                EventMsg::SubAgentActivity(activity),
+                &conversation_id.to_string(),
+                &event_turn_id,
+            );
+            if let Some(notification) = notification {
                 outgoing.send_server_notification(notification).await;
             }
         }
@@ -1151,7 +1267,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                         return;
                     }
                 };
-                let fallback_cwd = conversation.config_snapshot().await.cwd;
+                let fallback_cwd = conversation.config_snapshot().await.cwd().clone();
                 let stored_thread = match conversation
                     .read_thread(
                         /*include_archived*/ true, /*include_history*/ true,
@@ -1204,6 +1320,24 @@ pub(crate) async fn apply_bespoke_event_handling(
                     notification,
                 ))
                 .await;
+        }
+        EventMsg::ThreadSettingsApplied(thread_settings_event) => {
+            let thread_settings =
+                thread_settings_from_core_snapshot(thread_settings_event.thread_settings);
+            let changed = {
+                let mut state = thread_state.lock().await;
+                state.note_thread_settings(thread_settings.clone())
+            };
+            if changed {
+                outgoing
+                    .send_server_notification(ServerNotification::ThreadSettingsUpdated(
+                        ThreadSettingsUpdatedNotification {
+                            thread_id: conversation_id.to_string(),
+                            thread_settings,
+                        },
+                    ))
+                    .await;
+            }
         }
         EventMsg::TurnDiff(turn_diff_event) => {
             handle_turn_diff(conversation_id, &event_turn_id, turn_diff_event, &outgoing).await;
@@ -1271,6 +1405,8 @@ struct TurnCompletionMetadata {
     started_at: Option<i64>,
     completed_at: Option<i64>,
     duration_ms: Option<i64>,
+    final_model: Option<String>,
+    model_snapshot: Option<String>,
 }
 
 async fn emit_turn_completed_with_status(
@@ -1291,6 +1427,8 @@ async fn emit_turn_completed_with_status(
             completed_at: turn_completion_metadata.completed_at,
             duration_ms: turn_completion_metadata.duration_ms,
         },
+        final_model: turn_completion_metadata.final_model,
+        model_snapshot: turn_completion_metadata.model_snapshot,
     };
     outgoing
         .send_server_notification(ServerNotification::TurnCompleted(notification))
@@ -1326,6 +1464,7 @@ async fn start_command_execution_item(
                 command,
                 cwd,
                 process_id: None,
+                terminal_wait: None,
                 source,
                 status: CommandExecutionStatus::InProgress,
                 command_actions,
@@ -1370,6 +1509,7 @@ async fn complete_command_execution_item(
         command,
         cwd,
         process_id,
+        terminal_wait: None,
         source,
         status,
         command_actions,
@@ -1472,8 +1612,10 @@ async fn handle_turn_complete(
             status,
             error,
             started_at: turn_summary.started_at,
-            completed_at: None,
-            duration_ms: None,
+            completed_at: turn_complete_event.completed_at,
+            duration_ms: turn_complete_event.duration_ms,
+            final_model: turn_complete_event.final_model,
+            model_snapshot: turn_complete_event.model_snapshot,
         },
         outgoing,
     )
@@ -1483,7 +1625,7 @@ async fn handle_turn_complete(
 async fn handle_turn_interrupted(
     conversation_id: ThreadId,
     event_turn_id: String,
-    turn_aborted_event: TurnAbortedEvent,
+    _turn_aborted_event: TurnAbortedEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1498,6 +1640,8 @@ async fn handle_turn_interrupted(
             started_at: turn_summary.started_at,
             completed_at: None,
             duration_ms: None,
+            final_model: None,
+            model_snapshot: None,
         },
         outgoing,
     )
@@ -2081,10 +2225,12 @@ mod tests {
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_login::CodexAuth;
+    use codex_protocol::AgentPath;
     use codex_protocol::items::HookPromptFragment;
     use codex_protocol::items::build_hook_prompt_message;
     use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
     use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -2100,8 +2246,8 @@ mod tests {
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::RolloutItem;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentActivityEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::UserMessageEvent;
@@ -2143,6 +2289,7 @@ mod tests {
         let created_at = Utc::now();
         let history_items = vec![
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "before rollback".to_string(),
                 images: None,
                 local_images: Vec::new(),
@@ -2157,8 +2304,10 @@ mod tests {
         ];
         let stored_thread = StoredThread {
             thread_id,
+            extra_config: None,
             rollout_path: None,
             forked_from_id: None,
+            parent_thread_id: None,
             preview: "fallback preview".to_string(),
             name: Some("Rollback thread".to_string()),
             model_provider: "openai".to_string(),
@@ -2176,7 +2325,7 @@ mod tests {
             agent_path: None,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             token_usage: None,
             first_user_message: Some("before rollback".to_string()),
             history: Some(StoredThreadHistory {
@@ -2210,6 +2359,8 @@ mod tests {
             turn_id: turn_id.to_string(),
             last_agent_message: None,
             compaction_events_in_turn: 0,
+            final_model: None,
+            model_snapshot: None,
             completed_at: Some(TEST_TURN_COMPLETED_AT),
             duration_ms: Some(TEST_TURN_DURATION_MS),
             time_to_first_token_ms: None,
@@ -2494,6 +2645,7 @@ mod tests {
                         command: completion_item.command.clone(),
                         cwd: completion_item.cwd.clone(),
                         process_id: None,
+                        terminal_wait: None,
                         source: CommandExecutionSource::Agent,
                         status: CommandExecutionStatus::InProgress,
                         command_actions: completion_item.command_actions.clone(),
@@ -3174,6 +3326,7 @@ mod tests {
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: "turn-1".to_string(),
+                    trace_id: None,
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
@@ -3182,6 +3335,7 @@ mod tests {
             state.track_current_turn_event(
                 "turn-1",
                 &EventMsg::UserMessage(codex_protocol::protocol::UserMessageEvent {
+                    client_id: None,
                     message: "already tracked".to_string(),
                     images: None,
                     local_images: Vec::new(),
@@ -3207,6 +3361,7 @@ mod tests {
                 id: "turn-1".to_string(),
                 msg: EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: "turn-1".to_string(),
+                    trace_id: None,
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
@@ -3236,6 +3391,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager.start_thread(config).await?;
+        let child_thread_id = ThreadId::new();
+        let child_thread_id_string = child_thread_id.to_string();
+        let thread_watch_manager = ThreadWatchManager::new();
+        thread_watch_manager
+            .note_turn_started(&child_thread_id_string)
+            .await;
+        assert_eq!(thread_watch_manager.running_turn_count().await, 1);
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    event_id: "activity-1".to_string(),
+                    occurred_at_ms: 42,
+                    agent_thread_id: child_thread_id,
+                    agent_path: AgentPath::try_from("/root/worker")
+                        .expect("agent path should parse"),
+                    kind: SubAgentActivityKind::Interrupted,
+                }),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            new_thread_state(),
+            thread_watch_manager.clone(),
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        assert_eq!(
+            thread_watch_manager
+                .loaded_status_for_thread(&child_thread_id_string)
+                .await,
+            ThreadStatus::NotLoaded
+        );
+        assert_eq!(thread_watch_manager.running_turn_count().await, 0);
+        let message = recv_broadcast_message(&mut rx).await?;
+        let OutgoingMessage::AppServerNotification(ServerNotification::ItemCompleted(payload)) =
+            message
+        else {
+            bail!("unexpected message: {message:?}");
+        };
+        assert_eq!(
+            payload,
+            ItemCompletedNotification {
+                item: ThreadItem::SubAgentActivity {
+                    id: "activity-1".to_string(),
+                    kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                    agent_thread_id: child_thread_id_string,
+                    agent_path: "/root/worker".to_string(),
+                },
+                thread_id: conversation_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 42,
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_handle_turn_complete_emits_completed_without_error() -> Result<()> {
         let conversation_id = ThreadId::new();
         let event_turn_id = "complete1".to_string();
@@ -3250,27 +3493,33 @@ mod tests {
             ThreadId::new(),
         );
         let thread_state = new_thread_state();
+        let turn_complete = TurnCompleteEvent {
+            final_model: Some("codex-route-orchid-7319".to_string()),
+            model_snapshot: Some("codex-snapshot-northstar-4404".to_string()),
+            ..turn_complete_event(&event_turn_id)
+        };
         {
             let mut state = thread_state.lock().await;
             state.track_current_turn_event(
                 &event_turn_id,
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: event_turn_id.clone(),
-                    started_at: None,
+                    trace_id: None,
+                    started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
                 }),
             );
             state.track_current_turn_event(
                 &event_turn_id,
-                &EventMsg::TurnComplete(turn_complete_event(&event_turn_id)),
+                &EventMsg::TurnComplete(turn_complete.clone()),
             );
         }
 
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
-            turn_complete_event(&event_turn_id),
+            turn_complete,
             &outgoing,
             &thread_state,
         )
@@ -3284,9 +3533,14 @@ mod tests {
                 assert_eq!(n.turn.items_view, TurnItemsView::NotLoaded);
                 assert!(n.turn.items.is_empty());
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.started_at, None);
-                assert_eq!(n.turn.completed_at, None);
-                assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.turn.started_at, Some(42));
+                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
+                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.final_model.as_deref(), Some("codex-route-orchid-7319"));
+                assert_eq!(
+                    n.model_snapshot.as_deref(),
+                    Some("codex-snapshot-northstar-4404")
+                );
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3337,6 +3591,8 @@ mod tests {
                 assert_eq!(n.turn.error, None);
                 assert_eq!(n.turn.completed_at, None);
                 assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.final_model, None);
+                assert_eq!(n.model_snapshot, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3495,6 +3751,7 @@ mod tests {
                 unlimited: false,
                 balance: Some("5".to_string()),
             }),
+            individual_limit: None,
             plan_type: None,
             rate_limit_reached_type: None,
         };

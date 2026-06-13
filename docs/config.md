@@ -13,3 +13,9 @@ Admins can set top-level `allow_managed_hooks_only = true` in
 still allowing managed hooks from requirements and managed config layers. This
 setting is only supported in `requirements.toml`; putting it in `config.toml`
 does not enable managed-hooks-only mode.
+
+## Prompt stack
+
+For how configuration-supplied instructions, realtime transition messages, and
+project-doc instructions fit into the assembled prompt stack, see
+[Prompt Stack Deep Dive](prompt-stack-deep-dive.md).

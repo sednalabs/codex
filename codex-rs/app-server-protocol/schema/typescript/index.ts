@@ -1,6 +1,7 @@
 // GENERATED CODE! DO NOT MODIFY BY HAND!
 
 export type { AbsolutePathBuf } from "./AbsolutePathBuf";
+export type { AgentMessageInputContent } from "./AgentMessageInputContent";
 export type { AgentPath } from "./AgentPath";
 export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
 export type { ApplyPatchApprovalResponse } from "./ApplyPatchApprovalResponse";
@@ -13,6 +14,7 @@ export type { CollaborationMode } from "./CollaborationMode";
 export type { ContentItem } from "./ContentItem";
 export type { ConversationGitInfo } from "./ConversationGitInfo";
 export type { ConversationSummary } from "./ConversationSummary";
+export type { DynamicToolCapability } from "./DynamicToolCapability";
 export type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
 export type { ExecCommandApprovalResponse } from "./ExecCommandApprovalResponse";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
@@ -42,6 +44,7 @@ export type { InternalSessionSource } from "./InternalSessionSource";
 export type { LocalShellAction } from "./LocalShellAction";
 export type { LocalShellExecAction } from "./LocalShellExecAction";
 export type { LocalShellStatus } from "./LocalShellStatus";
+export type { McpServerInfo } from "./McpServerInfo";
 export type { MessagePhase } from "./MessagePhase";
 export type { ModeKind } from "./ModeKind";
 export type { NetworkPolicyAmendment } from "./NetworkPolicyAmendment";

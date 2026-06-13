@@ -8,13 +8,17 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use chrono::Utc;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionMeta;
+use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::ThreadMemoryMode;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::CreateThreadParams;
+use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
@@ -106,11 +110,13 @@ pub struct InMemoryThreadStoreCalls {
     pub discard_thread: usize,
     pub load_history: usize,
     pub read_thread: usize,
+    pub read_thread_with_history: usize,
     pub read_thread_by_rollout_path: usize,
     pub list_threads: usize,
     pub update_thread_metadata: usize,
     pub archive_thread: usize,
     pub unarchive_thread: usize,
+    pub delete_thread: usize,
 }
 
 /// In-memory [`ThreadStore`] implementation for tests and debug configs.
@@ -164,7 +170,32 @@ impl ThreadStore for InMemoryThreadStore {
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
         let mut state = self.state.lock().await;
         state.calls.create_thread += 1;
-        state.histories.entry(params.thread_id).or_default();
+        let session_meta = SessionMeta {
+            id: params.thread_id,
+            forked_from_id: params.forked_from_id,
+            parent_thread_id: params.parent_thread_id,
+            cwd: params.metadata.cwd.clone().unwrap_or_default(),
+            agent_nickname: params.source.get_nickname(),
+            agent_role: params.source.get_agent_role(),
+            agent_path: params.source.get_agent_path().map(Into::into),
+            source: params.source.clone(),
+            thread_source: params.thread_source.clone(),
+            model_provider: Some(params.metadata.model_provider.clone()),
+            base_instructions: Some(params.base_instructions.clone()),
+            dynamic_tools: (!params.dynamic_tools.is_empty()).then(|| params.dynamic_tools.clone()),
+            memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)
+                .then_some("disabled".to_string()),
+            multi_agent_version: params.multi_agent_version,
+            ..SessionMeta::default()
+        };
+        state
+            .histories
+            .entry(params.thread_id)
+            .or_default()
+            .push(RolloutItem::SessionMeta(SessionMetaLine {
+                meta: session_meta,
+                git: None,
+            }));
         state.created_threads.insert(params.thread_id, params);
         Ok(())
     }
@@ -172,7 +203,11 @@ impl ThreadStore for InMemoryThreadStore {
     async fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreResult<()> {
         let mut state = self.state.lock().await;
         state.calls.resume_thread += 1;
-        state.histories.entry(params.thread_id).or_default();
+        if let Some(history) = params.history {
+            state.histories.insert(params.thread_id, history);
+        } else {
+            state.histories.entry(params.thread_id).or_default();
+        }
         if let Some(rollout_path) = params.rollout_path {
             state.rollout_paths.insert(rollout_path, params.thread_id);
         }
@@ -230,6 +265,9 @@ impl ThreadStore for InMemoryThreadStore {
     async fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreResult<StoredThread> {
         let mut state = self.state.lock().await;
         state.calls.read_thread += 1;
+        if params.include_history {
+            state.calls.read_thread_with_history += 1;
+        }
         stored_thread_from_state(&state, params.thread_id, params.include_history)
     }
 
@@ -297,6 +335,25 @@ impl ThreadStore for InMemoryThreadStore {
         state.calls.unarchive_thread += 1;
         stored_thread_from_state(&state, params.thread_id, /*include_history*/ false)
     }
+
+    async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()> {
+        let mut state = self.state.lock().await;
+        state.calls.delete_thread += 1;
+        let existed = state.histories.remove(&params.thread_id).is_some();
+        state.created_threads.remove(&params.thread_id);
+        state.names.remove(&params.thread_id);
+        state.metadata_updates.remove(&params.thread_id);
+        state
+            .rollout_paths
+            .retain(|_, thread_id| *thread_id != params.thread_id);
+        if existed {
+            Ok(())
+        } else {
+            Err(ThreadStoreError::ThreadNotFound {
+                thread_id: params.thread_id,
+            })
+        }
+    }
 }
 
 fn stored_thread_from_state(
@@ -324,10 +381,12 @@ fn stored_thread_from_state(
 
     Ok(StoredThread {
         thread_id,
+        extra_config: created.extra_config.clone(),
         rollout_path: metadata
             .and_then(|metadata| metadata.rollout_path.clone())
             .or(rollout_path),
         forked_from_id: created.forked_from_id,
+        parent_thread_id: created.parent_thread_id,
         preview: metadata
             .and_then(|metadata| metadata.preview.clone())
             .unwrap_or_default(),
@@ -336,7 +395,7 @@ fn stored_thread_from_state(
             .and_then(|metadata| metadata.model_provider.clone())
             .unwrap_or_else(|| "test".to_string()),
         model: metadata.and_then(|metadata| metadata.model.clone()),
-        reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort),
+        reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone()),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
             .unwrap_or_else(Utc::now),
@@ -354,8 +413,8 @@ fn stored_thread_from_state(
             .and_then(|metadata| metadata.source.clone())
             .unwrap_or_else(|| created.source.clone()),
         thread_source: metadata
-            .and_then(|metadata| metadata.thread_source)
-            .unwrap_or(created.thread_source),
+            .and_then(|metadata| metadata.thread_source.clone())
+            .unwrap_or_else(|| created.thread_source.clone()),
         agent_nickname: metadata.and_then(|metadata| metadata.agent_nickname.clone().flatten()),
         agent_role: metadata.and_then(|metadata| metadata.agent_role.clone().flatten()),
         agent_path: metadata.and_then(|metadata| metadata.agent_path.clone().flatten()),
@@ -363,9 +422,9 @@ fn stored_thread_from_state(
         approval_mode: metadata
             .and_then(|metadata| metadata.approval_mode)
             .unwrap_or(AskForApproval::Never),
-        sandbox_policy: metadata
-            .and_then(|metadata| metadata.sandbox_policy.clone())
-            .unwrap_or_else(SandboxPolicy::new_read_only_policy),
+        permission_profile: metadata
+            .and_then(|metadata| metadata.permission_profile.clone())
+            .unwrap_or_else(PermissionProfile::read_only),
         token_usage: metadata.and_then(|metadata| metadata.token_usage.clone()),
         first_user_message: metadata.and_then(|metadata| metadata.first_user_message.clone()),
         history,

@@ -30,6 +30,8 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
         codex_app_server_protocol::TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
@@ -72,6 +74,7 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
                 status: McpToolCallStatus::Completed,
                 arguments: json!({"search_query": [{"q": "OpenAI Codex CLI documentation"}]}),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
                     content: vec![json!({"type": "text", "text": "search result"})],
                     structured_content: None,
@@ -89,7 +92,7 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
     assert_eq!(collected.status, CodexStatus::Running);
     assert_eq!(collected.events.len(), 1);
 
-    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item }) = &collected.events[0] else {
+    let ThreadEvent::ItemCompleted(ItemCompletedEvent { item, .. }) = &collected.events[0] else {
         panic!("expected item.completed event");
     };
     let ThreadItemDetails::McpToolCall(item) = &item.details else {

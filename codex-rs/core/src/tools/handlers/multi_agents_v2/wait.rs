@@ -2,15 +2,20 @@ use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
 use crate::session::session::Session;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -69,17 +74,22 @@ impl CompletionRule {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("wait_agent")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_wait_agent_tool_v2(self.options))
+    fn spec(&self) -> ToolSpec {
+        create_wait_agent_tool_v2(self.options)
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl Handler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -151,7 +161,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                 &turn,
                 CollabWaitingBeginEvent {
                     started_at_ms: now_unix_timestamp_ms(),
-                    sender_thread_id: session.conversation_id,
+                    sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
                     call_id: call_id.clone(),
@@ -197,12 +207,18 @@ impl ToolExecutor<ToolInvocation> for Handler {
             }
         }
 
-        let completion_rule = CompletionRule::new(args.return_when);
+        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
+        let return_when = wait_capability
+            .filter(|capability| capability.return_when)
+            .map_or(ReturnWhen::Any, |_| args.return_when);
+        let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
+        let completion_rule = CompletionRule::new(return_when);
         let wake_source = if let Some(wake_source) = ready_wake_source(
             session.as_ref(),
             completion_rule,
             &final_statuses,
             &receiver_thread_ids,
+            wake_on_mailbox,
         )
         .await
         {
@@ -215,6 +231,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                 &receiver_thread_ids,
                 completion_rule,
                 &mut final_statuses,
+                wake_on_mailbox,
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
             )
             .await
@@ -300,10 +317,11 @@ async fn ready_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
+    wake_on_mailbox: bool,
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
-    } else if session.input_queue.has_pending_mailbox_items().await {
+    } else if wake_on_mailbox && session.input_queue.has_pending_mailbox_items().await {
         Some(WakeSource::Mailbox)
     } else {
         None
@@ -329,6 +347,29 @@ impl WaitAgentResult {
             timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
         }
     }
+
+    fn output_value(&self, capabilities: ToolRuntimeCapabilities) -> JsonValue {
+        let wait_capability = capabilities.wait_agent;
+        let mut output = serde_json::Map::from_iter([
+            ("message".to_string(), json!(self.message)),
+            ("requested_ids".to_string(), json!(self.requested_ids)),
+            ("timed_out".to_string(), json!(self.timed_out)),
+        ]);
+        if wait_capability.is_some_and(|capability| capability.pending_ids) {
+            output.insert("pending_ids".to_string(), json!(self.pending_ids));
+        }
+        if wait_capability.is_some_and(|capability| capability.completion_reason) {
+            output.insert(
+                "completion_reason".to_string(),
+                json!(self.completion_reason),
+            );
+        }
+        JsonValue::Object(output)
+    }
+
+    fn output_json_text(&self, capabilities: ToolRuntimeCapabilities) -> String {
+        self.output_value(capabilities).to_string()
+    }
 }
 
 fn merge_wait_end_statuses<I>(
@@ -346,7 +387,7 @@ where
 
 impl ToolOutput for WaitAgentResult {
     fn log_preview(&self) -> String {
-        tool_output_json_text(self, "wait_agent")
+        self.output_json_text(registered_tool_runtime_capabilities())
     }
 
     fn success_for_logging(&self) -> bool {
@@ -354,11 +395,15 @@ impl ToolOutput for WaitAgentResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
+        FunctionToolOutput::from_text(
+            self.output_json_text(registered_tool_runtime_capabilities()),
+            /*success*/ None,
+        )
+        .to_response_item(call_id, payload)
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "wait_agent")
+        self.output_value(registered_tool_runtime_capabilities())
     }
 }
 
@@ -391,6 +436,7 @@ async fn wait_for_wake_source(
     receiver_thread_ids: &[ThreadId],
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
+    wake_on_mailbox: bool,
     deadline: Instant,
 ) -> WakeSource {
     let mut futures = FuturesUnordered::new();
@@ -417,7 +463,7 @@ async fn wait_for_wake_source(
                     None => {}
                 }
             }
-            mailbox_changed = mailbox_rx.changed() => {
+            mailbox_changed = mailbox_rx.changed(), if wake_on_mailbox => {
                 if mailbox_changed.is_ok() {
                     return WakeSource::Mailbox;
                 }
@@ -482,6 +528,35 @@ mod tests {
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
         assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
+    }
+
+    #[test]
+    fn wait_agent_output_omits_capability_owned_fields_without_provider() {
+        let requested_id = ThreadId::new();
+        let pending_id = ThreadId::new();
+        let result = WaitAgentResult::new(
+            vec![requested_id],
+            vec![pending_id],
+            CollabWaitingCompletionReason::Timeout,
+        );
+
+        let output = result.output_value(ToolRuntimeCapabilities::upstream_default());
+
+        assert_eq!(output["message"], json!("Wait timed out."));
+        assert_eq!(output["requested_ids"], json!([requested_id]));
+        assert_eq!(output["timed_out"], json!(true));
+        assert!(
+            !output
+                .as_object()
+                .expect("output should be object")
+                .contains_key("pending_ids")
+        );
+        assert!(
+            !output
+                .as_object()
+                .expect("output should be object")
+                .contains_key("completion_reason")
+        );
     }
 
     #[test]

@@ -8,15 +8,15 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via the configured npm package.
+    /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
-    /// Update via the configured Bun package.
+    /// Update via `bun install -g @openai/codex@latest`.
     BunGlobalLatest,
-    /// Update via the configured Homebrew cask.
+    /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | sh`.
+    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
     StandaloneUnix,
-    /// Update via `irm https://chatgpt.com/codex/install.ps1|iex`.
+    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
 }
 
@@ -36,18 +36,26 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, Vec<&'static str>) {
+    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", vec!["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", vec!["install", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", vec!["upgrade", "--cask", "codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
-                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+                &[
+                    "-c",
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+                ],
             ),
             UpdateAction::StandaloneWindows => (
                 "powershell",
-                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                ],
             ),
         }
     }
@@ -135,14 +143,22 @@ mod tests {
             UpdateAction::StandaloneUnix.command_args(),
             (
                 "sh",
-                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+                &[
+                    "-c",
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
+                ][..],
             )
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
                 "powershell",
-                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                ][..],
             )
         );
     }

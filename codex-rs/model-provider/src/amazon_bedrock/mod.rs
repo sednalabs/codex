@@ -24,6 +24,7 @@ use crate::provider::ProviderAccountState;
 use crate::provider::ProviderCapabilities;
 use auth::resolve_provider_auth;
 pub(crate) use catalog::static_model_catalog;
+use catalog::with_default_only_service_tier;
 use mantle::runtime_base_url;
 
 /// Runtime provider for Amazon Bedrock's OpenAI-compatible Mantle endpoint.
@@ -57,13 +58,21 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            namespace_tools: false,
+            namespace_tools: true,
             image_generation: false,
             web_search: false,
         }
     }
 
     fn approval_review_preferred_model(&self) -> &'static str {
+        AMAZON_BEDROCK_GPT_5_4_MODEL_ID
+    }
+
+    fn memory_extraction_preferred_model(&self) -> &'static str {
+        AMAZON_BEDROCK_GPT_5_4_MODEL_ID
+    }
+
+    fn memory_consolidation_preferred_model(&self) -> &'static str {
         AMAZON_BEDROCK_GPT_5_4_MODEL_ID
     }
 
@@ -103,7 +112,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
     ) -> SharedModelsManager {
         Arc::new(StaticModelsManager::new(
             /*auth_manager*/ None,
-            config_model_catalog.unwrap_or_else(static_model_catalog),
+            config_model_catalog.map_or_else(static_model_catalog, with_default_only_service_tier),
         ))
     }
 }
@@ -131,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_disable_unsupported_launch_features() {
+    fn capabilities_disable_unsupported_hosted_tools() {
         let provider = AmazonBedrockModelProvider::new(
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
         );
@@ -139,7 +148,7 @@ mod tests {
         assert_eq!(
             provider.capabilities(),
             ProviderCapabilities {
-                namespace_tools: false,
+                namespace_tools: true,
                 image_generation: false,
                 web_search: false,
             }

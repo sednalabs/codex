@@ -77,6 +77,44 @@ fn apply_patch_freeform_is_removed_and_disabled_by_default() {
 }
 
 #[test]
+fn plugin_hooks_is_removed_and_disabled_by_default() {
+    assert_eq!(Feature::PluginHooks.stage(), Stage::Removed);
+    assert_eq!(Feature::PluginHooks.default_enabled(), false);
+    assert_eq!(feature_for_key("plugin_hooks"), Some(Feature::PluginHooks));
+}
+
+#[test]
+fn external_migration_is_removed_and_disabled_by_default() {
+    assert_eq!(Feature::ExternalMigration.stage(), Stage::Removed);
+    assert_eq!(Feature::ExternalMigration.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("external_migration"),
+        Some(Feature::ExternalMigration)
+    );
+}
+
+#[test]
+fn removed_apps_mcp_path_override_shapes_are_ignored() {
+    let features = [
+        toml::from_str::<FeaturesToml>("apps_mcp_path_override = true")
+            .expect("boolean compatibility form should deserialize"),
+        toml::from_str::<FeaturesToml>(
+            r#"
+[apps_mcp_path_override]
+enabled = true
+path = "/custom/mcp"
+"#,
+        )
+        .expect("structured compatibility form should deserialize"),
+    ];
+
+    assert_eq!(
+        features.map(|features| features.entries()),
+        [BTreeMap::new(), BTreeMap::new()]
+    );
+}
+
+#[test]
 fn code_mode_only_requires_code_mode() {
     let mut features = Features::with_defaults();
     features.enable(Feature::CodeModeOnly);
@@ -95,23 +133,6 @@ fn guardian_approval_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn external_migration_is_experimental_and_disabled_by_default() {
-    let spec = Feature::ExternalMigration.info();
-    let stage = spec.stage;
-
-    assert!(matches!(stage, Stage::Experimental { .. }));
-    assert_eq!(stage.experimental_menu_name(), Some("External migration"));
-    assert_eq!(
-        stage.experimental_menu_description(),
-        Some(
-            "Show a startup prompt when Codex detects migratable external agent config for this machine or project."
-        )
-    );
-    assert_eq!(stage.experimental_announcement(), None);
-    assert_eq!(Feature::ExternalMigration.default_enabled(), false);
-}
-
-#[test]
 fn request_permissions_is_under_development() {
     assert_eq!(
         Feature::ExecPermissionApprovals.stage(),
@@ -127,32 +148,6 @@ fn request_permissions_tool_is_under_development() {
         Stage::UnderDevelopment
     );
     assert_eq!(Feature::RequestPermissionsTool.default_enabled(), false);
-}
-
-#[test]
-fn remote_compaction_v2_is_under_development() {
-    assert_eq!(Feature::RemoteCompactionV2.stage(), Stage::UnderDevelopment);
-    assert_eq!(Feature::RemoteCompactionV2.default_enabled(), false);
-    assert_eq!(
-        feature_for_key("remote_compaction_v2"),
-        Some(Feature::RemoteCompactionV2)
-    );
-}
-
-#[test]
-fn responses_websocket_response_processed_is_under_development() {
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.stage(),
-        Stage::UnderDevelopment
-    );
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.default_enabled(),
-        false
-    );
-    assert_eq!(
-        feature_for_key("responses_websocket_response_processed"),
-        Some(Feature::ResponsesWebsocketResponseProcessed)
-    );
 }
 
 #[test]
@@ -192,18 +187,6 @@ fn tool_search_is_removed_and_disabled_by_default() {
     assert_eq!(Feature::ToolSearch.stage(), Stage::Removed);
     assert_eq!(Feature::ToolSearch.default_enabled(), false);
     assert_eq!(feature_for_key("tool_search"), Some(Feature::ToolSearch));
-}
-
-#[test]
-fn plugin_hooks_are_stable_and_enabled_by_default() {
-    assert_eq!(Feature::PluginHooks.stage(), Stage::Stable);
-    assert_eq!(Feature::PluginHooks.default_enabled(), true);
-}
-
-#[test]
-fn unavailable_dummy_tools_is_stable_and_enabled_by_default() {
-    assert_eq!(Feature::UnavailableDummyTools.stage(), Stage::Stable);
-    assert_eq!(Feature::UnavailableDummyTools.default_enabled(), true);
 }
 
 #[test]
@@ -247,6 +230,13 @@ fn use_linux_sandbox_bwrap_is_a_removed_feature_key() {
 fn image_generation_is_stable_and_enabled_by_default() {
     assert_eq!(Feature::ImageGeneration.stage(), Stage::Stable);
     assert_eq!(Feature::ImageGeneration.default_enabled(), true);
+}
+
+#[test]
+fn image_generation_extension_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::ImageGenExt.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::ImageGenExt.default_enabled(), false);
+    assert_eq!(feature_for_key("imagegenext"), Some(Feature::ImageGenExt));
 }
 
 #[test]
@@ -307,6 +297,13 @@ fn auth_elicitation_is_under_development() {
         feature_for_key("auth_elicitation"),
         Some(Feature::AuthElicitation)
     );
+}
+
+#[test]
+fn mentions_v2_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::MentionsV2.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::MentionsV2.default_enabled(), false);
+    assert_eq!(feature_for_key("mentions_v2"), Some(Feature::MentionsV2));
 }
 
 #[test]
@@ -492,6 +489,22 @@ fn from_sources_ignores_removed_js_repl_feature_keys() {
 fn from_sources_ignores_removed_apply_patch_freeform_feature_key() {
     let features_toml =
         FeaturesToml::from(BTreeMap::from([("apply_patch_freeform".to_string(), true)]));
+
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+
+    assert_eq!(features, Features::with_defaults());
+}
+
+#[test]
+fn from_sources_ignores_removed_plugin_hooks_feature_key() {
+    let features_toml = FeaturesToml::from(BTreeMap::from([("plugin_hooks".to_string(), true)]));
 
     let features = Features::from_sources(
         FeatureConfigSource {

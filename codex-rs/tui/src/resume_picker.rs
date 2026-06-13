@@ -4,11 +4,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-mod transcript;
-
 use crate::app_server_session::AppServerSession;
+use crate::clipboard_paste::normalize_pasted_search_query;
 use crate::color::blend;
 use crate::color::is_light;
+use crate::footer_hints::FooterHint;
+use crate::footer_hints::first_fitting_right_label;
+use crate::footer_hints::footer_hint_line_for_row;
+use crate::footer_hints::render_footer_separator;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::is_plain_text_key_event;
@@ -24,6 +27,9 @@ use crate::status::format_directory_display;
 use crate::terminal_palette::best_color;
 use crate::terminal_palette::default_bg;
 use crate::text_formatting::truncate_text;
+use crate::thread_transcript::RawReasoningVisibility;
+use crate::thread_transcript::TranscriptCells;
+use crate::thread_transcript::load_session_transcript;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
@@ -36,7 +42,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey;
-use codex_app_server_protocol::ThreadSourceKind;
+use codex_app_server_protocol::ThreadSource;
 use codex_config::types::SessionPickerViewMode;
 use codex_protocol::ThreadId;
 use codex_utils_path as path_utils;
@@ -60,9 +66,6 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::warn;
-use transcript::RawReasoningVisibility;
-use transcript::TranscriptCells;
-use transcript::load_session_transcript;
 use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 25;
@@ -74,9 +77,6 @@ const SESSION_META_MIN_CWD_WIDTH: usize = 30;
 const SESSION_META_MAX_CWD_WIDTH: usize = 72;
 const SESSION_META_BRANCH_ICON: &str = "";
 const SESSION_META_CWD_ICON: &str = "⌁";
-const FOOTER_COMPACT_BREAKPOINT: u16 = 120;
-const FOOTER_HINT_LEFT_PADDING: usize = 1;
-const FOOTER_HINT_GAP: usize = 3;
 const PICKER_CHROME_HEIGHT: u16 = 8;
 const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 
@@ -113,6 +113,21 @@ pub enum SessionPickerAction {
 pub enum SessionPickerLaunchContext {
     Startup,
     ExistingSession,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionThreadSourceFilter {
+    Default,
+    SideOnly,
+}
+
+impl SessionThreadSourceFilter {
+    fn thread_sources(self) -> Option<Vec<ThreadSource>> {
+        match self {
+            Self::Default => None,
+            Self::SideOnly => Some(vec![ThreadSource::Side]),
+        }
+    }
 }
 
 impl SessionPickerAction {
@@ -272,7 +287,6 @@ struct PickerPage {
 #[derive(Clone)]
 struct SessionPickerViewPersistence {
     codex_home: PathBuf,
-    active_profile: Option<String>,
 }
 
 struct SessionPickerRunOptions {
@@ -318,6 +332,7 @@ pub async fn run_resume_picker_with_app_server(
         include_non_interactive,
         app_server,
         SessionPickerLaunchContext::Startup,
+        SessionThreadSourceFilter::Default,
     )
     .await
 }
@@ -336,6 +351,26 @@ pub async fn run_resume_picker_from_existing_session_with_app_server(
         include_non_interactive,
         app_server,
         SessionPickerLaunchContext::ExistingSession,
+        SessionThreadSourceFilter::Default,
+    )
+    .await
+}
+
+pub async fn run_side_resume_picker_from_existing_session_with_app_server(
+    tui: &mut Tui,
+    config: &Config,
+    show_all: bool,
+    include_non_interactive: bool,
+    app_server: AppServerSession,
+) -> Result<SessionSelection> {
+    run_resume_picker_with_launch_context(
+        tui,
+        config,
+        show_all,
+        include_non_interactive,
+        app_server,
+        SessionPickerLaunchContext::ExistingSession,
+        SessionThreadSourceFilter::SideOnly,
     )
     .await
 }
@@ -347,6 +382,7 @@ async fn run_resume_picker_with_launch_context(
     include_non_interactive: bool,
     app_server: AppServerSession,
     launch_context: SessionPickerLaunchContext,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> Result<SessionSelection> {
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
     let uses_remote_workspace = app_server.uses_remote_workspace();
@@ -369,7 +405,6 @@ async fn run_resume_picker_with_launch_context(
         initial_density: SessionListDensity::from(config.tui_session_picker_view),
         view_persistence: Some(SessionPickerViewPersistence {
             codex_home: config.codex_home.to_path_buf(),
-            active_profile: config.active_profile.clone(),
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
@@ -380,6 +415,7 @@ async fn run_resume_picker_with_launch_context(
         spawn_app_server_page_loader(
             app_server,
             include_non_interactive,
+            thread_source_filter,
             raw_reasoning_visibility(config),
             bg_tx,
         ),
@@ -415,7 +451,6 @@ pub async fn run_fork_picker_with_app_server(
         initial_density: SessionListDensity::from(config.tui_session_picker_view),
         view_persistence: Some(SessionPickerViewPersistence {
             codex_home: config.codex_home.to_path_buf(),
-            active_profile: config.active_profile.clone(),
         }),
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
@@ -426,6 +461,7 @@ pub async fn run_fork_picker_with_app_server(
         spawn_app_server_page_loader(
             app_server,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
             raw_reasoning_visibility(config),
             bg_tx,
         ),
@@ -552,14 +588,10 @@ fn picker_cwd_filter(
     }
 }
 
-fn normalize_pasted_query(pasted: &str) -> Option<String> {
-    let normalized = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!normalized.is_empty()).then_some(normalized)
-}
-
 fn spawn_app_server_page_loader(
     app_server: AppServerSession,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
     raw_reasoning_visibility: RawReasoningVisibility,
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
 ) -> PickerLoader {
@@ -578,6 +610,7 @@ fn spawn_app_server_page_loader(
                         request.provider_filter,
                         request.sort_key,
                         include_non_interactive,
+                        thread_source_filter,
                     )
                     .await;
                     let _ = bg_tx.send(BackgroundEvent::Page {
@@ -747,6 +780,7 @@ async fn load_app_server_page(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> std::io::Result<PickerPage> {
     let response = app_server
         .thread_list(thread_list_params(
@@ -755,6 +789,7 @@ async fn load_app_server_page(
             provider_filter,
             sort_key,
             include_non_interactive,
+            thread_source_filter,
         ))
         .await
         .map_err(std::io::Error::other)?;
@@ -782,6 +817,7 @@ async fn load_transcript_preview(
         .thread_read(thread_id, /*include_turns*/ true)
         .await
         .map_err(std::io::Error::other)?;
+    let cwd = thread.cwd.as_path();
     let mut lines = thread
         .turns
         .iter()
@@ -802,7 +838,7 @@ async fn load_transcript_preview(
             }),
             ThreadItem::AgentMessage { text, .. } => Some(TranscriptPreviewLine {
                 speaker: TranscriptPreviewSpeaker::Assistant,
-                text: parse_assistant_markdown(text).visible_markdown,
+                text: parse_assistant_markdown(text, cwd).visible_markdown,
             }),
             _ => None,
         })
@@ -984,6 +1020,12 @@ impl PickerState {
         self.overlay = Some(Overlay::new_transcript(
             cells.clone(),
             self.pager_keymap.clone(),
+            Vec::new(),
+            Vec::new(),
+            crate::pager_overlay::TranscriptOverlayState::new(
+                crate::history_cell::HistoryRenderMode::Rich,
+                crate::history_cell::TranscriptDetailMode::Verbose,
+            ),
         ));
         self.pending_transcript_open = None;
         self.transcript_loading_frame_shown = false;
@@ -1163,23 +1205,21 @@ impl PickerState {
                     self.request_frame();
                 }
             }
-            _ if allow_plain_char_navigation && self.list_keymap.jump_top.is_pressed(key) => {
-                if !self.filtered_rows.is_empty() {
+            _ if allow_plain_char_navigation && self.list_keymap.jump_top.is_pressed(key)
+                && !self.filtered_rows.is_empty() => {
                     self.selected = 0;
                     self.ensure_selected_visible();
                     self.request_frame();
                 }
-            }
-            _ if allow_plain_char_navigation && self.list_keymap.jump_bottom.is_pressed(key) => {
-                if !self.filtered_rows.is_empty() {
+            _ if allow_plain_char_navigation && self.list_keymap.jump_bottom.is_pressed(key)
+                && !self.filtered_rows.is_empty() => {
                     self.selected = self.filtered_rows.len().saturating_sub(1);
                     self.ensure_selected_visible();
                     self.maybe_load_more_for_scroll();
                     self.request_frame();
                 }
-            }
-            _ if allow_plain_char_navigation && self.list_keymap.page_down.is_pressed(key) => {
-                if !self.filtered_rows.is_empty() {
+            _ if allow_plain_char_navigation && self.list_keymap.page_down.is_pressed(key)
+                && !self.filtered_rows.is_empty() => {
                     let step = self.view_rows.unwrap_or(10).max(1);
                     let target = self.selected.saturating_add(step);
                     let max_index = self.filtered_rows.len().saturating_sub(1);
@@ -1193,7 +1233,6 @@ impl PickerState {
                     }
                     self.request_frame();
                 }
-            }
             KeyEvent {
                 code: KeyCode::Tab, ..
             } => {
@@ -1226,16 +1265,15 @@ impl PickerState {
                 code: KeyCode::Char(c),
                 modifiers,
                 ..
-            } => {
+            }
                 // basic text input for search
                 if !modifiers.contains(KeyModifiers::CONTROL)
                     && !modifiers.contains(KeyModifiers::ALT)
-                {
+                => {
                     let mut new_query = self.query.clone();
                     new_query.push(c);
                     self.set_query(new_query);
                 }
-            }
             _ => {}
         }
         Ok(None)
@@ -1245,7 +1283,7 @@ impl PickerState {
         if self.is_transcript_loading() {
             return;
         }
-        let Some(pasted) = normalize_pasted_query(&pasted) else {
+        let Some(pasted) = normalize_pasted_search_query(&pasted) else {
             return;
         };
         let mut new_query = self.query.clone();
@@ -1679,7 +1717,6 @@ impl PickerState {
         };
 
         ConfigEditsBuilder::new(&persistence.codex_home)
-            .with_profile(persistence.active_profile.as_deref())
             .set_session_picker_view(SessionPickerViewMode::from(self.density))
             .apply()
             .await
@@ -1823,6 +1860,7 @@ fn thread_list_params(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    thread_source_filter: SessionThreadSourceFilter,
 ) -> ThreadListParams {
     ThreadListParams {
         cursor,
@@ -1833,8 +1871,8 @@ fn thread_list_params(
             ProviderFilter::Any => None,
             ProviderFilter::MatchDefault(default_provider) => Some(vec![default_provider]),
         },
-        source_kinds: (!include_non_interactive)
-            .then_some(vec![ThreadSourceKind::Cli, ThreadSourceKind::VsCode]),
+        source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
+        thread_sources: thread_source_filter.thread_sources(),
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
         use_state_db_only: false,
@@ -2028,13 +2066,6 @@ fn filter_mode_label(filter_mode: SessionFilterMode) -> &'static str {
     }
 }
 
-struct PickerFooterHint {
-    key: &'static str,
-    wide_label: String,
-    compact_label: String,
-    priority: u8,
-}
-
 fn render_picker_footer(
     frame: &mut crate::custom_terminal::Frame,
     area: Rect,
@@ -2046,11 +2077,8 @@ fn render_picker_footer(
     }
 
     let separator = Rect::new(area.x, area.y, area.width, 1);
-    render_picker_footer_separator(
-        frame,
-        separator,
-        picker_footer_progress_label(state, list_height, area.width),
-    );
+    let progress_label = picker_footer_progress_label(state, list_height, area.width);
+    render_footer_separator(separator, frame.buffer, progress_label.as_str());
 
     let lines = footer_hint_lines(state, area.width);
     for (idx, line) in lines.into_iter().enumerate() {
@@ -2059,30 +2087,6 @@ fn render_picker_footer(
             break;
         }
         frame.render_widget_ref(line, Rect::new(area.x, y, area.width, 1));
-    }
-}
-
-fn render_picker_footer_separator(
-    frame: &mut crate::custom_terminal::Frame,
-    area: Rect,
-    progress_label: String,
-) {
-    if area.width == 0 {
-        return;
-    }
-
-    let separator = "─".repeat(area.width as usize);
-    frame.render_widget_ref(Line::from(separator.dim()), area);
-
-    let progress_width = UnicodeWidthStr::width(progress_label.as_str()) as u16;
-    if progress_width < area.width {
-        let percent_area = Rect::new(
-            area.x + area.width - progress_width - 1,
-            area.y,
-            progress_width,
-            1,
-        );
-        frame.render_widget_ref(Line::from(progress_label.dim()), percent_area);
     }
 }
 
@@ -2103,10 +2107,7 @@ fn picker_footer_progress_label(state: &PickerState, list_height: u16, width: u1
         format!(" {position}/{total} · {percent}% "),
         format!(" {percent}% "),
     ];
-    labels
-        .into_iter()
-        .find(|label| UnicodeWidthStr::width(label.as_str()) < width as usize)
-        .unwrap_or_default()
+    first_fitting_right_label(width, &labels)
 }
 
 fn picker_footer_percent(state: &PickerState, list_height: u16) -> u8 {
@@ -2152,23 +2153,10 @@ fn picker_footer_scroll_percent(state: &PickerState, list_height: u16) -> u8 {
 fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
     if state.is_transcript_loading() {
         let hints = [
-            PickerFooterHint {
-                key: "loading",
-                wide_label: String::from("transcript"),
-                compact_label: String::from("transcript"),
-                priority: 0,
-            },
-            PickerFooterHint {
-                key: "ctrl+c",
-                wide_label: String::from("quit"),
-                compact_label: String::from("quit"),
-                priority: 1,
-            },
+            FooterHint::new("loading", "transcript", "transcript", /*priority*/ 0),
+            FooterHint::new("ctrl+c", "quit", "quit", /*priority*/ 1),
         ];
-        let line = fit_footer_hints(&hints, FooterHintLabelMode::Wide, width)
-            .or_else(|| fit_footer_hints(&hints, FooterHintLabelMode::Compact, width))
-            .or_else(|| fit_footer_hints(&hints, FooterHintLabelMode::KeyOnly, width))
-            .unwrap_or_default();
+        let line = own_line(footer_hint_line_for_row(&hints, width));
         return vec![line, Line::default()];
     }
 
@@ -2194,97 +2182,44 @@ fn footer_hint_lines(state: &PickerState, width: u16) -> Vec<Line<'static>> {
         SessionListDensity::Dense => "comfy",
     };
     let first_row_hints = vec![
-        PickerFooterHint {
-            key: "enter",
-            wide_label: action_label.to_string(),
-            compact_label: action_label.to_string(),
-            priority: 0,
-        },
-        PickerFooterHint {
-            key: "esc",
-            wide_label: esc_label.to_string(),
-            compact_label: esc_compact_label.to_string(),
-            priority: 1,
-        },
-        PickerFooterHint {
-            key: "ctrl+c",
-            wide_label: ctrl_c_label.to_string(),
-            compact_label: ctrl_c_label.to_string(),
-            priority: 2,
-        },
-        PickerFooterHint {
-            key: "tab",
-            wide_label: String::from("focus sort/filter"),
-            compact_label: String::from("focus"),
-            priority: 7,
-        },
-        PickerFooterHint {
-            key: "←/→",
-            wide_label: String::from("change option"),
-            compact_label: String::from("option"),
-            priority: 8,
-        },
+        FooterHint::new("enter", action_label, action_label, /*priority*/ 0),
+        FooterHint::new("esc", esc_label, esc_compact_label, /*priority*/ 1),
+        FooterHint::new("ctrl+c", ctrl_c_label, ctrl_c_label, /*priority*/ 2),
+        FooterHint::new("tab", "focus sort/filter", "focus", /*priority*/ 7),
+        FooterHint::new("←/→", "change option", "option", /*priority*/ 8),
     ];
     let second_row_hints = vec![
-        PickerFooterHint {
-            key: "ctrl+o",
-            wide_label: density_label.to_string(),
-            compact_label: density_compact_label.to_string(),
-            priority: 3,
-        },
-        PickerFooterHint {
-            key: "ctrl+t",
-            wide_label: String::from("transcript"),
-            compact_label: String::from("preview"),
-            priority: 4,
-        },
-        PickerFooterHint {
-            key: "ctrl+e",
-            wide_label: String::from("expand"),
-            compact_label: String::from("exp"),
-            priority: 6,
-        },
-        PickerFooterHint {
-            key: "↑/↓",
-            wide_label: String::from("browse"),
-            compact_label: String::from("browse"),
-            priority: 5,
-        },
+        FooterHint::new(
+            "ctrl+o",
+            density_label,
+            density_compact_label,
+            /*priority*/ 3,
+        ),
+        FooterHint::new("ctrl+t", "transcript", "preview", /*priority*/ 4),
+        FooterHint::new("ctrl+e", "expand", "exp", /*priority*/ 6),
+        FooterHint::new("↑/↓", "browse", "browse", /*priority*/ 5),
     ];
 
     vec![
-        hint_line_for_row(&first_row_hints, width),
-        hint_line_for_row(&second_row_hints, width),
+        own_line(footer_hint_line_for_row(&first_row_hints, width)),
+        own_line(footer_hint_line_for_row(&second_row_hints, width)),
     ]
 }
 
-fn hint_line_for_row(hints: &[PickerFooterHint], width: u16) -> Line<'static> {
-    if width >= FOOTER_COMPACT_BREAKPOINT
-        && let Some(line) = fit_footer_hints(hints, FooterHintLabelMode::Wide, width)
-    {
-        return line;
+fn own_line(line: Line<'_>) -> Line<'static> {
+    let Line {
+        style,
+        alignment,
+        spans,
+    } = line;
+    Line {
+        style,
+        alignment,
+        spans: spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.into_owned(), span.style))
+            .collect(),
     }
-    if let Some(line) = fit_footer_hints(hints, FooterHintLabelMode::Compact, width) {
-        return line;
-    }
-    if let Some(line) = fit_footer_hints(hints, FooterHintLabelMode::KeyOnly, width) {
-        return line;
-    }
-
-    let mut retained = (0..hints.len()).collect::<Vec<_>>();
-    retained.sort_by_key(|idx| hints[*idx].priority);
-    for retain_count in (1..=retained.len()).rev() {
-        let mut candidate_indices = retained[..retain_count].to_vec();
-        candidate_indices.sort_unstable();
-        let candidate = candidate_indices
-            .iter()
-            .map(|idx| &hints[*idx])
-            .collect::<Vec<_>>();
-        if let Some(line) = fit_footer_hint_refs(&candidate, FooterHintLabelMode::KeyOnly, width) {
-            return line;
-        }
-    }
-    Line::default()
 }
 
 fn render_transcript_loading_overlay(frame: &mut crate::custom_terminal::Frame, area: Rect) {
@@ -2334,99 +2269,6 @@ fn transcript_loading_overlay_style() -> Style {
         ((255, 255, 255), 0.14)
     };
     Style::default().bg(best_color(blend(overlay, bg, alpha)))
-}
-
-#[derive(Clone, Copy)]
-enum FooterHintLabelMode {
-    Wide,
-    Compact,
-    KeyOnly,
-}
-
-fn fit_footer_hints(
-    hints: &[PickerFooterHint],
-    mode: FooterHintLabelMode,
-    width: u16,
-) -> Option<Line<'static>> {
-    let hint_refs = hints.iter().collect::<Vec<_>>();
-    fit_footer_hint_refs(&hint_refs, mode, width)
-}
-
-fn fit_footer_hint_refs(
-    hints: &[&PickerFooterHint],
-    mode: FooterHintLabelMode,
-    width: u16,
-) -> Option<Line<'static>> {
-    let gap_width = FOOTER_HINT_GAP;
-    if footer_hints_width(hints, mode, gap_width) > width as usize {
-        return None;
-    }
-
-    let mut spans = vec![
-        " ".repeat(FOOTER_HINT_LEFT_PADDING)
-            .set_style(footer_hint_label_style()),
-    ];
-    for (idx, hint) in hints.iter().enumerate() {
-        if idx > 0 {
-            spans.push(" ".repeat(gap_width).set_style(footer_hint_label_style()));
-        }
-        spans.push(hint.key.set_style(footer_hint_key_style()));
-        let label = match mode {
-            FooterHintLabelMode::Wide => Some(hint.wide_label.as_str()),
-            FooterHintLabelMode::Compact => Some(hint.compact_label.as_str()),
-            FooterHintLabelMode::KeyOnly => None,
-        };
-        if let Some(label) = label {
-            spans.push(" ".set_style(footer_hint_label_style()));
-            spans.push(label.to_string().set_style(footer_hint_label_style()));
-        }
-    }
-    Some(spans.into())
-}
-
-fn footer_hint_key_style() -> Style {
-    if default_bg().is_some_and(is_light) {
-        Style::default().fg(Color::Black)
-    } else {
-        Style::default()
-    }
-}
-
-fn footer_hint_label_style() -> Style {
-    if default_bg().is_some_and(is_light) {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().dim()
-    }
-}
-
-fn footer_hints_width(
-    hints: &[&PickerFooterHint],
-    mode: FooterHintLabelMode,
-    gap_width: usize,
-) -> usize {
-    FOOTER_HINT_LEFT_PADDING
-        + hints
-            .iter()
-            .enumerate()
-            .map(|(idx, hint)| {
-                let label_width = match mode {
-                    FooterHintLabelMode::Wide => {
-                        1 + UnicodeWidthStr::width(hint.wide_label.as_str())
-                    }
-                    FooterHintLabelMode::Compact => {
-                        1 + UnicodeWidthStr::width(hint.compact_label.as_str())
-                    }
-                    FooterHintLabelMode::KeyOnly => 0,
-                };
-                let hint_width = UnicodeWidthStr::width(hint.key) + label_width;
-                if idx == 0 {
-                    hint_width
-                } else {
-                    hint_width + gap_width
-                }
-            })
-            .sum::<usize>()
 }
 
 fn render_list(frame: &mut crate::custom_terminal::Frame, area: Rect, state: &PickerState) {
@@ -3211,6 +3053,7 @@ fn render_empty_state_line(state: &PickerState) -> Line<'static> {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use codex_app_server_protocol::ThreadSourceKind;
     use codex_config::CONFIG_TOML_FILE;
     use codex_protocol::ThreadId;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -3325,12 +3168,28 @@ mod tests {
             ProviderFilter::MatchDefault(String::from("openai")),
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
+        assert_eq!(params.thread_sources, None);
+    }
+
+    #[test]
+    fn side_picker_thread_list_params_request_side_threads() {
+        let params = thread_list_params(
+            Some(String::from("cursor-1")),
+            /*cwd_filter*/ None,
+            ProviderFilter::Any,
+            ThreadSortKey::UpdatedAt,
+            /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::SideOnly,
+        );
+
+        assert_eq!(params.thread_sources, Some(vec![ThreadSource::Side]));
     }
 
     #[test]
@@ -3550,6 +3409,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3572,11 +3432,13 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ true,
+            SessionThreadSourceFilter::Default,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
         assert_eq!(params.model_providers, None);
-        assert_eq!(params.source_kinds, None);
+        let source_kinds = crate::resume_source_kinds(/*include_non_interactive*/ true);
+        assert_eq!(params.source_kinds, Some(source_kinds));
     }
 
     #[test]
@@ -4444,7 +4306,6 @@ mod tests {
         );
         state.view_persistence = Some(SessionPickerViewPersistence {
             codex_home: tmp.path().to_path_buf(),
-            active_profile: None,
         });
 
         state
@@ -4458,39 +4319,6 @@ mod tests {
         assert_eq!(
             contents,
             r#"[tui]
-session_picker_view = "dense"
-"#
-        );
-    }
-
-    #[tokio::test]
-    async fn ctrl_o_persists_density_preference_for_active_profile() {
-        let tmp = tempdir().expect("tmpdir");
-        let loader = page_only_loader(|_| {});
-        let mut state = PickerState::new(
-            FrameRequester::test_dummy(),
-            loader,
-            ProviderFilter::MatchDefault(String::from("openai")),
-            /*show_all*/ true,
-            /*filter_cwd*/ None,
-            SessionPickerAction::Resume,
-        );
-        state.view_persistence = Some(SessionPickerViewPersistence {
-            codex_home: tmp.path().to_path_buf(),
-            active_profile: Some(String::from("work")),
-        });
-
-        state
-            .handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
-            .await
-            .unwrap();
-
-        assert_eq!(state.density, SessionListDensity::Dense);
-        let contents =
-            std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).expect("read config");
-        assert_eq!(
-            contents,
-            r#"[profiles.work.tui]
 session_picker_view = "dense"
 "#
         );
@@ -4512,7 +4340,6 @@ session_picker_view = "dense"
         );
         state.view_persistence = Some(SessionPickerViewPersistence {
             codex_home: codex_home_file,
-            active_profile: None,
         });
 
         state
@@ -5769,9 +5596,12 @@ session_picker_view = "dense"
             id: thread_id.to_string(),
             session_id: thread_id.to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::from("remote thread"),
             ephemeral: false,
             model_provider: String::from("openai"),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 2,
             status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -5796,16 +5626,19 @@ session_picker_view = "dense"
 
     #[test]
     fn thread_to_transcript_cells_renders_core_message_types() {
-        use transcript::thread_to_transcript_cells;
+        use crate::thread_transcript::thread_to_transcript_cells;
 
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
             session_id: thread_id.to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
             model_provider: String::from("openai"),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 2,
             status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -5824,6 +5657,7 @@ session_picker_view = "dense"
                 items: vec![
                     ThreadItem::UserMessage {
                         id: String::from("user-1"),
+                        client_id: None,
                         content: vec![codex_app_server_protocol::UserInput::Text {
                             text: String::from("hello from user"),
                             text_elements: Vec::new(),
@@ -5863,16 +5697,19 @@ session_picker_view = "dense"
 
     #[test]
     fn thread_to_transcript_cells_hides_raw_reasoning_when_not_enabled() {
-        use transcript::thread_to_transcript_cells;
+        use crate::thread_transcript::thread_to_transcript_cells;
 
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
             session_id: thread_id.to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
             model_provider: String::from("openai"),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 2,
             status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -5920,16 +5757,19 @@ session_picker_view = "dense"
 
     #[test]
     fn thread_to_transcript_cells_shows_raw_reasoning_over_summary_when_enabled() {
-        use transcript::thread_to_transcript_cells;
+        use crate::thread_transcript::thread_to_transcript_cells;
 
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
             session_id: thread_id.to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
             model_provider: String::from("openai"),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 2,
             status: codex_app_server_protocol::ThreadStatus::Idle,
@@ -6264,14 +6104,6 @@ session_picker_view = "dense"
         state.handle_paste(String::from("results"));
 
         assert_eq!(state.query, "resize results");
-    }
-
-    #[test]
-    fn normalize_pasted_query_collapses_whitespace() {
-        assert_eq!(
-            normalize_pasted_query("  alpha\n\tbeta\r\n gamma  "),
-            Some(String::from("alpha beta gamma"))
-        );
     }
 
     #[tokio::test]

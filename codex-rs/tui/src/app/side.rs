@@ -1,18 +1,20 @@
-//! Transient side-conversation threads.
+//! Side-conversation threads.
 //!
-//! A side conversation is an ephemeral fork used for a quick /side question while keeping the
+//! A side conversation is a persisted fork used for a quick /side question while keeping the
 //! primary thread focused. This module owns the app-level lifecycle for those forks: switching into
-//! them, returning to their parent, and discarding them when normal thread navigation moves
+//! them, returning to their parent, and detaching them when normal thread navigation moves
 //! elsewhere. The fork receives hidden developer instructions that make inherited history reference
 //! material only and steer the agent away from mutations unless the side conversation explicitly asks
 //! for them.
 
 use super::*;
 use crate::chatwidget::InterruptedTurnNoticeMode;
+use codex_app_server_protocol::ThreadSource;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 
-const SIDE_RENAME_BLOCK_MESSAGE: &str = "Side conversations are ephemeral and cannot be renamed.";
+const SIDE_RENAME_BLOCK_MESSAGE: &str =
+    "Active side conversations cannot be renamed while they are attached to a parent thread.";
 const SIDE_MAIN_THREAD_UNAVAILABLE_MESSAGE: &str =
     "'/side' is unavailable until the main thread is ready.";
 const SIDE_NO_STARTED_CONVERSATION_MESSAGE: &str = concat!(
@@ -341,6 +343,21 @@ impl App {
         }
     }
 
+    pub(super) async fn exit_active_side_conversation(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+    ) -> Result<()> {
+        let Some(parent_thread_id) = self.active_side_parent_thread_id() else {
+            self.chat_widget
+                .add_error_message("No active side conversation to close.".to_string());
+            return Ok(());
+        };
+
+        self.select_agent_thread_and_discard_side(tui, app_server, parent_thread_id)
+            .await
+    }
+
     pub(super) fn side_thread_to_discard_after_switch(
         &self,
         target_thread_id: ThreadId,
@@ -370,15 +387,15 @@ impl App {
             self.chat_widget.add_error_message(message);
             return false;
         }
-        self.discard_side_thread_local(thread_id).await;
+        self.discard_thread_local_state(thread_id).await;
         true
     }
 
     pub(super) async fn discard_closed_side_thread(&mut self, thread_id: ThreadId) {
-        self.discard_side_thread_local(thread_id).await;
+        self.discard_thread_local_state(thread_id).await;
     }
 
-    async fn discard_side_thread_local(&mut self, thread_id: ThreadId) {
+    pub(super) async fn discard_thread_local_state(&mut self, thread_id: ThreadId) {
         self.abort_thread_event_listener(thread_id);
         self.thread_event_channels.remove(&thread_id);
         self.side_threads.remove(&thread_id);
@@ -465,8 +482,7 @@ impl App {
         }
         fork_config.model_reasoning_effort = self.chat_widget.current_reasoning_effort();
         fork_config.service_tier = self.chat_widget.configured_service_tier();
-        fork_config.notices.fast_default_opt_out = self.chat_widget.fast_default_opt_out();
-        fork_config.ephemeral = true;
+        fork_config.ephemeral = false;
         fork_config.developer_instructions = Some(Self::side_developer_instructions(
             fork_config.developer_instructions.as_deref(),
         ));
@@ -566,7 +582,10 @@ impl App {
             .await;
 
         let fork_config = self.side_fork_config();
-        match app_server.fork_thread(fork_config, parent_thread_id).await {
+        match app_server
+            .fork_thread_with_source(fork_config, parent_thread_id, ThreadSource::Side)
+            .await
+        {
             Ok(forked) => {
                 let child_thread_id = forked.session.thread_id;
                 let channel = self.ensure_thread_channel(child_thread_id);

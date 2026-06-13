@@ -2,13 +2,17 @@ use super::CodexErrorInfo;
 use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::ThreadSource as CoreThreadSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::path::PathBuf;
 use thiserror::Error;
 use ts_rs::TS;
@@ -61,13 +65,40 @@ impl From<SessionSource> for CoreSessionSource {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case", export_to = "v2/")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+#[ts(export_to = "v2/")]
 pub enum ThreadSource {
     User,
     Subagent,
+    Feature(String),
     MemoryConsolidation,
+    Side,
+}
+
+impl JsonSchema for ThreadSource {
+    fn schema_name() -> Cow<'static, str> {
+        "ThreadSource".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        String::json_schema(generator)
+    }
+}
+
+impl TryFrom<String> for ThreadSource {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse::<CoreThreadSource>().map(Into::into)
+    }
+}
+
+impl From<ThreadSource> for String {
+    fn from(value: ThreadSource) -> Self {
+        CoreThreadSource::from(value).into()
+    }
 }
 
 impl From<CoreThreadSource> for ThreadSource {
@@ -75,7 +106,9 @@ impl From<CoreThreadSource> for ThreadSource {
         match value {
             CoreThreadSource::User => ThreadSource::User,
             CoreThreadSource::Subagent => ThreadSource::Subagent,
+            CoreThreadSource::Feature(feature) => ThreadSource::Feature(feature),
             CoreThreadSource::MemoryConsolidation => ThreadSource::MemoryConsolidation,
+            CoreThreadSource::Side => ThreadSource::Side,
         }
     }
 }
@@ -85,7 +118,9 @@ impl From<ThreadSource> for CoreThreadSource {
         match value {
             ThreadSource::User => CoreThreadSource::User,
             ThreadSource::Subagent => CoreThreadSource::Subagent,
+            ThreadSource::Feature(feature) => CoreThreadSource::Feature(feature),
             ThreadSource::MemoryConsolidation => CoreThreadSource::MemoryConsolidation,
+            ThreadSource::Side => CoreThreadSource::Side,
         }
     }
 }
@@ -108,12 +143,18 @@ pub struct Thread {
     pub session_id: String,
     /// Source thread id when this thread was created by forking another thread.
     pub forked_from_id: Option<String>,
+    /// The ID of the parent thread. This will only be set if this thread is a subagent.
+    pub parent_thread_id: Option<String>,
     /// Usually the first user message in the thread, if available.
     pub preview: String,
     /// Whether the thread is ephemeral and should not be materialized on disk.
     pub ephemeral: bool,
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
+    /// Latest observed model for this thread, if known.
+    pub model: Option<String>,
+    /// Latest observed reasoning effort for this thread, if known.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]
     pub created_at: i64,

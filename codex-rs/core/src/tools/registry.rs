@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::function_tool::FunctionCallError;
-use crate::goals::GoalRuntimeEvent;
 use crate::hook_runtime::PreToolUseHookResult;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::run_post_tool_use_hooks;
@@ -19,20 +18,22 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::flat_tool_name;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
-use crate::tools::tool_search_entry::ToolSearchInfo;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
+use codex_rollout::state_db;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
 use futures::future::BoxFuture;
 use serde_json::Value;
-use tracing::warn;
 
 pub(crate) type ToolTelemetryTags = Vec<(&'static str, String)>;
 
@@ -44,15 +45,17 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        None
-    }
-
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(
             payload,
             ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. }
         )
+    }
+
+    /// Whether cancellation should let the handler finish teardown before the
+    /// host returns an aborted tool response.
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        false
     }
 
     fn telemetry_tags<'a>(
@@ -64,14 +67,47 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
 
     fn post_tool_use_payload(
         &self,
-        _invocation: &ToolInvocation,
-        _result: &dyn ToolOutput,
+        invocation: &ToolInvocation,
+        result: &dyn ToolOutput,
     ) -> Option<PostToolUsePayload> {
-        None
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+
+        Some(PostToolUsePayload {
+            tool_name: function_hook_tool_name(invocation),
+            tool_use_id: result.post_tool_use_id(&invocation.call_id),
+            tool_input: result
+                .post_tool_use_input(&invocation.payload)
+                .unwrap_or_else(|| function_hook_tool_input(arguments)),
+            tool_response: result
+                .post_tool_use_response(&invocation.call_id, &invocation.payload)
+                .or_else(|| {
+                    // Most function tools can expose their model-facing output
+                    // as the hook response. Outputs with a more stable hook
+                    // contract should override post_tool_use_response above.
+                    let ResponseInputItem::FunctionCallOutput {
+                        output: FunctionCallOutputPayload { body, .. },
+                        ..
+                    } = result.to_response_item(&invocation.call_id, &invocation.payload)
+                    else {
+                        return None;
+                    };
+
+                    serde_json::to_value(body).ok()
+                })?,
+        })
     }
 
-    fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        None
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+
+        Some(PreToolUsePayload {
+            tool_name: function_hook_tool_name(invocation),
+            tool_input: function_hook_tool_input(arguments),
+        })
     }
 
     /// Rebuilds a tool invocation from hook-facing `tool_input`.
@@ -80,12 +116,25 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     /// hook contract they expose from `pre_tool_use_payload`.
     fn with_updated_hook_input(
         &self,
-        _invocation: ToolInvocation,
-        _updated_input: Value,
+        invocation: ToolInvocation,
+        updated_input: Value,
     ) -> Result<ToolInvocation, FunctionCallError> {
-        Err(FunctionCallError::RespondToModel(
-            "tool does not support hook input rewriting".to_string(),
-        ))
+        let ToolPayload::Function { .. } = &invocation.payload else {
+            return Err(FunctionCallError::RespondToModel(
+                "hook input rewrite received unsupported function tool payload".to_string(),
+            ));
+        };
+
+        let arguments = serde_json::to_string(&updated_input).map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to serialize rewritten {} arguments: {err}",
+                flat_tool_name(&invocation.tool_name)
+            ))
+        })?;
+        Ok(ToolInvocation {
+            payload: ToolPayload::Function { arguments },
+            ..invocation
+        })
     }
 
     /// Creates an optional consumer for streamed tool argument diffs.
@@ -130,6 +179,29 @@ impl AnyToolResult {
             payload, result, ..
         } = self;
         result.code_mode_result(&payload)
+    }
+}
+
+struct PostToolUseFeedbackOutput {
+    original: Box<dyn ToolOutput>,
+    model_visible: FunctionToolOutput,
+}
+
+impl ToolOutput for PostToolUseFeedbackOutput {
+    fn log_preview(&self) -> String {
+        self.original.log_preview()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.original.success_for_logging()
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.model_visible.to_response_item(call_id, payload)
+    }
+
+    fn code_mode_result(&self, payload: &ToolPayload) -> Value {
+        self.original.code_mode_result(payload)
     }
 }
 
@@ -178,13 +250,12 @@ struct ExposureOverride {
     exposure: ToolExposure,
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ExposureOverride {
     fn tool_name(&self) -> ToolName {
         self.handler.tool_name()
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
+    fn spec(&self) -> ToolSpec {
         self.handler.spec()
     }
 
@@ -193,24 +264,25 @@ impl ToolExecutor<ToolInvocation> for ExposureOverride {
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
-        self.handler.supports_parallel_tool_calls()
+        self.exposure != ToolExposure::Hidden && self.handler.supports_parallel_tool_calls()
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        self.handler.handle(invocation).await
-    }
-}
-
-impl CoreToolRuntime for ExposureOverride {
     fn search_info(&self) -> Option<ToolSearchInfo> {
         self.handler.search_info()
     }
 
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        self.handler.handle(invocation)
+    }
+}
+
+impl CoreToolRuntime for ExposureOverride {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         self.handler.matches_kind(payload)
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        self.handler.waits_for_runtime_cancellation()
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
@@ -308,6 +380,11 @@ impl ToolRegistry {
     pub(crate) fn supports_parallel_tool_calls(&self, name: &ToolName) -> Option<bool> {
         let tool = self.tool(name)?;
         Some(tool.supports_parallel_tool_calls())
+    }
+
+    pub(crate) fn waits_for_runtime_cancellation(&self, name: &ToolName) -> Option<bool> {
+        let tool = self.tool(name)?;
+        Some(tool.waits_for_runtime_cancellation())
     }
 
     #[allow(dead_code)]
@@ -426,10 +503,12 @@ impl ToolRegistry {
                 PreToolUseHookResult::Blocked(message) => {
                     let err = FunctionCallError::RespondToModel(message);
                     dispatch_trace.record_failed(&err);
-                    if let Some(terminal_outcome_reached) = &terminal_outcome_reached {
-                        terminal_outcome_reached.store(true, Ordering::Release);
-                    }
-                    notify_tool_finish(&invocation, ToolCallOutcome::Blocked).await;
+                    notify_tool_finish_if_unclaimed(
+                        &invocation,
+                        terminal_outcome_reached.as_deref(),
+                        ToolCallOutcome::Blocked,
+                    )
+                    .await;
                     return Err(err);
                 }
                 PreToolUseHookResult::Continue {
@@ -440,11 +519,9 @@ impl ToolRegistry {
                     }
                     Err(err) => {
                         dispatch_trace.record_failed(&err);
-                        if let Some(terminal_outcome_reached) = &terminal_outcome_reached {
-                            terminal_outcome_reached.store(true, Ordering::Release);
-                        }
-                        notify_tool_finish(
+                        notify_tool_finish_if_unclaimed(
                             &invocation,
+                            terminal_outcome_reached.as_deref(),
                             ToolCallOutcome::Failed {
                                 handler_executed: false,
                             },
@@ -538,11 +615,15 @@ impl ToolRegistry {
             };
             if let Some(replacement_text) = replacement_text {
                 let mut guard = response_cell.lock().await;
-                if let Some(result) = guard.as_mut() {
-                    result.result = Box::new(FunctionToolOutput::from_text(
-                        replacement_text,
-                        /*success*/ None,
-                    ));
+                if let Some(mut result) = guard.take() {
+                    result.result = Box::new(PostToolUseFeedbackOutput {
+                        original: result.result,
+                        model_visible: FunctionToolOutput::from_text(
+                            replacement_text,
+                            /*success*/ None,
+                        ),
+                    });
+                    *guard = Some(result);
                 }
             }
         }
@@ -563,21 +644,12 @@ impl ToolRegistry {
                 handler_executed: true,
             },
         };
-        if let Some(terminal_outcome_reached) = &terminal_outcome_reached {
-            terminal_outcome_reached.store(true, Ordering::Release);
-        }
-        notify_tool_finish(&invocation, lifecycle_outcome).await;
-
-        if let Err(err) = invocation
-            .session
-            .goal_runtime_apply(GoalRuntimeEvent::ToolCompleted {
-                turn_context: invocation.turn.as_ref(),
-                tool_name: tool_name.name.as_str(),
-            })
-            .await
-        {
-            warn!("failed to account thread goal progress after tool call: {err}");
-        }
+        notify_tool_finish_if_unclaimed(
+            &invocation,
+            terminal_outcome_reached.as_deref(),
+            lifecycle_outcome,
+        )
+        .await;
 
         match result {
             Ok(_) => {
@@ -601,6 +673,19 @@ impl ToolRegistry {
     }
 }
 
+async fn notify_tool_finish_if_unclaimed(
+    invocation: &ToolInvocation,
+    terminal_outcome_reached: Option<&AtomicBool>,
+    outcome: ToolCallOutcome,
+) -> bool {
+    if terminal_outcome_reached.is_some_and(|reached| reached.swap(true, Ordering::AcqRel)) {
+        return false;
+    }
+
+    notify_tool_finish(invocation, outcome).await;
+    true
+}
+
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
@@ -608,6 +693,16 @@ async fn handle_any_tool(
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
     let output = tool.handle(invocation.clone()).await?;
+    if output.contains_external_context()
+        && invocation.turn.config.memories.disable_on_external_context
+    {
+        state_db::mark_thread_memory_mode_polluted(
+            invocation.session.services.state_db.as_deref(),
+            invocation.session.thread_id,
+            "tool_output",
+        )
+        .await;
+    }
     let post_tool_use_payload =
         CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
     Ok(AnyToolResult {
@@ -616,6 +711,27 @@ async fn handle_any_tool(
         result: output,
         post_tool_use_payload,
     })
+}
+
+fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {
+    if invocation.tool_name.name == "spawn_agent"
+        && matches!(
+            invocation.tool_name.namespace.as_deref(),
+            None | Some(MULTI_AGENT_V1_NAMESPACE)
+        )
+    {
+        return HookToolName::spawn_agent();
+    }
+
+    HookToolName::new(flat_tool_name(&invocation.tool_name).into_owned())
+}
+
+fn function_hook_tool_input(arguments: &str) -> Value {
+    if arguments.trim().is_empty() {
+        return Value::Object(serde_json::Map::new());
+    }
+
+    serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.to_string()))
 }
 
 fn unsupported_tool_call_message(payload: &ToolPayload, tool_name: &ToolName) -> String {

@@ -17,6 +17,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use serde::Serialize;
@@ -25,7 +26,9 @@ use serde_json::Value;
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) enum AppCommand {
-    Interrupt,
+    Interrupt {
+        behavior: InterruptBehavior,
+    },
     CleanBackgroundTerminals,
     RealtimeConversationStart {
         transport: Option<ThreadRealtimeStartTransport>,
@@ -54,6 +57,7 @@ pub(crate) enum AppCommand {
         cwd: Option<PathBuf>,
         approval_policy: Option<AskForApproval>,
         approvals_reviewer: Option<ApprovalsReviewer>,
+        permission_profile: Option<PermissionProfile>,
         active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
@@ -108,9 +112,23 @@ pub(crate) enum AppCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum InterruptBehavior {
+    Default,
+    RestorePromptIfNoOutput,
+}
+
 impl AppCommand {
     pub(crate) fn interrupt() -> Self {
-        Self::Interrupt
+        Self::Interrupt {
+            behavior: InterruptBehavior::Default,
+        }
+    }
+
+    pub(crate) fn interrupt_and_restore_prompt_if_no_output() -> Self {
+        Self::Interrupt {
+            behavior: InterruptBehavior::RestorePromptIfNoOutput,
+        }
     }
 
     pub(crate) fn clean_background_terminals() -> Self {
@@ -172,6 +190,7 @@ impl AppCommand {
         cwd: Option<PathBuf>,
         approval_policy: Option<AskForApproval>,
         approvals_reviewer: Option<ApprovalsReviewer>,
+        permission_profile: Option<PermissionProfile>,
         active_permission_profile: Option<ActivePermissionProfile>,
         windows_sandbox_level: Option<WindowsSandboxLevel>,
         model: Option<String>,
@@ -185,6 +204,7 @@ impl AppCommand {
             cwd,
             approval_policy,
             approvals_reviewer,
+            permission_profile,
             active_permission_profile,
             windows_sandbox_level,
             model,

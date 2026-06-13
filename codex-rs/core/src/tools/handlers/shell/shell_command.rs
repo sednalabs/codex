@@ -39,7 +39,7 @@ enum ShellCommandBackend {
 
 pub struct ShellCommandHandler {
     backend: ShellCommandBackend,
-    options: Option<ShellCommandHandlerOptions>,
+    options: ShellCommandHandlerOptions,
 }
 
 #[derive(Clone, Copy)]
@@ -51,10 +51,11 @@ pub(crate) struct ShellCommandHandlerOptions {
 
 impl ShellCommandHandler {
     pub(crate) fn new(options: ShellCommandHandlerOptions) -> Self {
-        Self {
-            options: Some(options),
-            ..Self::from(options.backend_config)
-        }
+        let backend = match options.backend_config {
+            ShellCommandBackendConfig::Classic => ShellCommandBackend::Classic,
+            ShellCommandBackendConfig::ZshFork => ShellCommandBackend::ZshFork,
+        };
+        Self { backend, options }
     }
 
     fn shell_runtime_backend(&self) -> ShellRuntimeBackend {
@@ -114,44 +115,45 @@ impl ShellCommandHandler {
 }
 
 impl From<ShellCommandBackendConfig> for ShellCommandHandler {
-    fn from(config: ShellCommandBackendConfig) -> Self {
-        let backend = match config {
-            ShellCommandBackendConfig::Classic => ShellCommandBackend::Classic,
-            ShellCommandBackendConfig::ZshFork => ShellCommandBackend::ZshFork,
-        };
-        Self {
-            backend,
-            options: None,
-        }
+    fn from(backend_config: ShellCommandBackendConfig) -> Self {
+        Self::new(ShellCommandHandlerOptions {
+            backend_config,
+            allow_login_shell: false,
+            exec_permission_approvals_enabled: false,
+        })
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("shell_command")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        self.options.map(|options| {
-            create_shell_command_tool(CommandToolOptions {
-                allow_login_shell: options.allow_login_shell,
-                exec_permission_approvals_enabled: options.exec_permission_approvals_enabled,
-            })
+    fn spec(&self) -> ToolSpec {
+        create_shell_command_tool(CommandToolOptions {
+            allow_login_shell: self.options.allow_login_shell,
+            exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
         })
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
-        self.options.is_some()
+        true
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ShellCommandHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
+            cancellation_token,
             tracker,
             call_id,
             payload,
@@ -182,13 +184,14 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
             &params,
             session.as_ref(),
             turn.as_ref(),
-            session.conversation_id,
+            session.thread_id,
             turn.config.permissions.allow_login_shell,
         )?;
-        let shell_type = Some(session.user_shell().shell_type.clone());
+        let shell_type = Some(session.user_shell().shell_type);
         run_exec_like(RunExecLikeArgs {
             tool_name,
             exec_params,
+            cancellation_token,
             hook_command: params.command,
             shell_type,
             additional_permissions: params.additional_permissions.clone(),
@@ -207,6 +210,10 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
 impl CoreToolRuntime for ShellCommandHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {

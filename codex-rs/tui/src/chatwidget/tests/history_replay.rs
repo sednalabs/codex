@@ -1,4 +1,5 @@
 use super::*;
+use crate::app_event::HistoryLookupResponse;
 use codex_app_server_protocol::NetworkAccess;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_protocol::models::ManagedFileSystemPermissions;
@@ -31,6 +32,8 @@ async fn resumed_initial_messages_render_history() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -73,6 +76,120 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_user_messages_seed_composer_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_history_metadata(
+        ThreadId::new(),
+        /*log_id*/ 1,
+        /*entry_count*/ 3,
+    );
+
+    let mut replay_mention = |id: &str, text: &str, name: &str, path: &str| {
+        replay_user_message_inputs(
+            &mut chat,
+            id,
+            vec![
+                AppServerUserInput::Text {
+                    text: text.to_string(),
+                    text_elements: Vec::new(),
+                },
+                AppServerUserInput::Mention {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                },
+            ],
+            ReplayKind::ResumeInitialMessages,
+        );
+    };
+    replay_mention(
+        "user-1",
+        "use $sample",
+        "Sample Plugin",
+        "plugin://sample@test",
+    );
+    replay_mention(
+        "user-2",
+        "use $google-calendar",
+        "Google Calendar",
+        "app://google_calendar",
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "use $google-calendar");
+    assert_eq!(
+        chat.bottom_pane.take_mention_bindings(),
+        vec![MentionBinding {
+            sigil: '$',
+            mention: "google-calendar".to_string(),
+            path: "app://google_calendar".to_string(),
+        }]
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "use $sample");
+    assert_eq!(
+        chat.bottom_pane.take_mention_bindings(),
+        vec![MentionBinding {
+            sigil: '$',
+            mention: "sample".to_string(),
+            path: "plugin://sample@test".to_string(),
+        }]
+    );
+
+    let mut next_lookup_offset = || {
+        let AppEvent::LookupMessageHistoryEntry { offset, .. } =
+            rx.try_recv().expect("expected lookup")
+        else {
+            panic!("unexpected event variant");
+        };
+        offset
+    };
+    let response = |offset, entry: &str| HistoryLookupResponse {
+        offset,
+        log_id: 1,
+        entry: Some(entry.to_string()),
+    };
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    chat.handle_history_entry_response(response(
+        next_lookup_offset(),
+        "use [$google-calendar](app://google_calendar)",
+    ));
+
+    assert_eq!(next_lookup_offset(), 1);
+    chat.handle_history_entry_response(response(1, "use [$sample](plugin://sample@test)"));
+
+    assert_eq!(next_lookup_offset(), 0);
+    chat.handle_history_entry_response(response(0, "/rename smoke-1"));
+    assert_eq!(chat.bottom_pane.composer_text(), "/rename smoke-1");
+}
+
+#[tokio::test]
+async fn replayed_review_prompt_does_not_seed_composer_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.replay_thread_item(
+        AppServerThreadItem::EnteredReviewMode {
+            id: "review-start".to_string(),
+            review: "changes against main".to_string(),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    replay_user_message_text(
+        &mut chat,
+        "review-prompt",
+        "Review the code changes against the base branch 'main'.",
+        ReplayKind::ResumeInitialMessages,
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+}
+
+#[tokio::test]
 async fn replayed_user_message_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -102,6 +219,8 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -172,6 +291,8 @@ async fn replayed_user_message_preserves_remote_image_urls() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -272,6 +393,8 @@ async fn session_configured_syncs_widget_config_permissions_and_cwd() {
         runtime_workspace_roots: vec![expected_cwd.clone()],
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: None,
@@ -343,6 +466,8 @@ async fn session_configured_preserves_profile_workspace_roots() {
         runtime_workspace_roots: session_runtime_workspace_roots.clone(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: None,
@@ -388,6 +513,8 @@ async fn session_configured_external_sandbox_keeps_external_runtime_policy() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: None,
@@ -427,6 +554,8 @@ async fn replayed_user_message_with_only_remote_images_renders_history_cell() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -483,6 +612,8 @@ async fn replayed_user_message_with_only_local_images_renders_history_cell() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -765,6 +896,70 @@ async fn replayed_compaction_item_start_restores_compaction_status() {
 }
 
 #[tokio::test]
+async fn replayed_compaction_item_completion_restores_finished_status() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Context compacted");
+    assert_eq!(status.details(), None);
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Context compacted"),
+        "expected replayed completed compaction notice, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn replayed_thread_closed_notification_does_not_exit_tui() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -798,6 +993,8 @@ async fn replayed_reasoning_item_hides_raw_reasoning_when_disabled() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: None,
@@ -844,6 +1041,8 @@ async fn replayed_reasoning_item_shows_raw_reasoning_when_enabled() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: None,
@@ -882,6 +1081,7 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
             status: codex_app_server_protocol::McpToolCallStatus::InProgress,
             arguments: json!({"action": "wait"}),
             mcp_app_resource_uri: None,
+            plugin_id: None,
             result: None,
             error: None,
             duration_ms: None,
@@ -894,6 +1094,119 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
     let active = active_blob(&chat);
     assert!(active.contains("Calling"));
     assert!(!active.contains("MCP tool call completed without a result"));
+}
+
+#[tokio::test]
+async fn replayed_completed_computer_use_call_is_visible() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::ComputerUseCall {
+            id: "computer-use-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_observe".to_string(),
+            arguments: json!({"scope": "screen_and_ui"}),
+            status: codex_app_server_protocol::ComputerUseCallStatus::Completed,
+            content_items: Some(vec![
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                    text: "Android observation".to_string(),
+                },
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,abc".to_string(),
+                    detail: Some("high".to_string()),
+                },
+            ]),
+            success: Some(true),
+            error: None,
+            duration_ms: Some(42),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Used Android emulator"), "{rendered}");
+    assert!(rendered.contains("android_observe"), "{rendered}");
+    assert!(rendered.contains("<native screenshot>"), "{rendered}");
+}
+
+#[tokio::test]
+async fn live_computer_use_call_is_visible_while_active_and_after_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: codex_app_server_protocol::ComputerUseCallStatus::InProgress,
+                content_items: None,
+                success: None,
+                error: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    let active = active_blob(&chat);
+    assert!(active.contains("Using browser"), "{active}");
+    assert!(active.contains("browser_step"), "{active}");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ComputerUseCall {
+                id: "browser-1".to_string(),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: "browser_step".to_string(),
+                arguments: json!({"action": "click"}),
+                status: codex_app_server_protocol::ComputerUseCallStatus::Completed,
+                content_items: Some(vec![
+                    codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                        text: "Browser observation\nurl: https://example.test".to_string(),
+                    },
+                    codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,abc".to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ]),
+                success: Some(true),
+                error: None,
+                duration_ms: Some(64),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Used browser"), "{rendered}");
+    assert!(rendered.contains("browser_step"), "{rendered}");
+    assert!(rendered.contains("https://example.test"), "{rendered}");
+    assert!(rendered.contains("<native screenshot>"), "{rendered}");
 }
 
 #[tokio::test]

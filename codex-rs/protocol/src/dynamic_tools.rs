@@ -25,12 +25,16 @@ pub struct DynamicToolSpec {
 #[serde(rename_all = "camelCase")]
 pub struct DynamicToolCapability {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub capability_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub mutation_class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub lease_mode: Option<String>,
 }
 
