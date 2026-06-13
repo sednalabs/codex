@@ -569,6 +569,12 @@ browser-provider, or Solar Gravity Lab validation only when the question is the
 runtime provider or a consumer app, not the generic Codex computer-use
 contract.
 
+The built-in Playwright browser provider owns browser profile launch hygiene:
+before opening a persistent context, it clears Chromium tab-session restore
+artifacts so stale restored tabs cannot navigate to old localhost targets ahead
+of an explicit `browser_observe` or `browser_step` URL. Provider-managed
+`state.json`, cookies, local storage, and other profile data remain intact.
+
 ## Primary Files
 
 - `codex-rs/protocol/src/computer_use.rs`

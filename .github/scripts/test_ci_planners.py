@@ -3634,6 +3634,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_sedna_heavy_metadata_exposes_planner_fingerprint_and_dedupe_reason(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         metadata_outputs = (((payload.get("jobs") or {}).get("metadata") or {}).get("outputs") or {})
+        metadata_steps = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])
+        metadata_run = next(
+            step for step in metadata_steps if step.get("name") == "Compute checkout ref"
+        ).get("run") or ""
 
         self.assertEqual(
             metadata_outputs.get("planner_fingerprint"),
@@ -3643,6 +3647,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             metadata_outputs.get("dedupe_reason"),
             "${{ steps.meta.outputs.dedupe_reason }}",
         )
+        self.assertIn(".ci_proof_v1.schema_version == \"ci-proof-v1\"", metadata_run)
+        self.assertIn(".ci_proof_v1.planner_fingerprint == $planner", metadata_run)
+        self.assertIn(".ci_proof_v1.conclusion == \"success\"", metadata_run)
     def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -3708,6 +3715,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn(
             '--latest-head-sha "${{ needs.metadata.outputs.checkout_sha }}"',
             report_step.get("run") or "",
+        )
+        self.assertIn(
+            '--workflow-file "sedna-heavy-tests.yml"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
+            '--event-policy "pull_request_exact_head_lane_fingerprint"',
+            report_step.get("run") or "",
+        )
+        self.assertIn(
+            '--planner-fingerprint "${{ needs.metadata.outputs.planner_fingerprint }}"',
+            (steps[3] or {}).get("run") or "",
         )
         self.assertIn(
             '--workflow-result "${WORKFLOW_RESULT}"',
@@ -4272,11 +4291,16 @@ class HelperScriptTests(unittest.TestCase):
             {
                 "should_skip": "true",
                 "should_run": "false",
+                "proof_found": "true",
                 "reason": "equivalent_success_found",
+                "proof_reason": "equivalent_success_found",
                 "matched_run_id": "11",
                 "matched_run_url": "https://example.test/runs/11",
                 "matched_run_event": "workflow_dispatch",
                 "matched_run_created_at": "",
+                "proof_run_id": "11",
+                "proof_run_url": "https://example.test/runs/11",
+                "evidence_key": "main:abc123",
             },
         )
 

@@ -343,6 +343,21 @@ impl App {
         }
     }
 
+    pub(super) async fn exit_active_side_conversation(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+    ) -> Result<()> {
+        let Some(parent_thread_id) = self.active_side_parent_thread_id() else {
+            self.chat_widget
+                .add_error_message("No active side conversation to close.".to_string());
+            return Ok(());
+        };
+
+        self.select_agent_thread_and_discard_side(tui, app_server, parent_thread_id)
+            .await
+    }
+
     pub(super) fn side_thread_to_discard_after_switch(
         &self,
         target_thread_id: ThreadId,

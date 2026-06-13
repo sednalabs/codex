@@ -83,11 +83,13 @@
       "category": "usage-ledger",
       "surface": [
         "usage event log",
-        "spawn and quota metadata"
+        "spawn and quota metadata",
+        "provider model identity display evidence"
       ],
       "files": [
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/state/service.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/state/src/lib.rs",
@@ -95,9 +97,12 @@
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
-        "codex-rs/state/usage_migrations/0001_usage_tables.sql"
+        "codex-rs/state/usage_migrations/0001_usage_tables.sql",
+        "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, and spawn metadata through the usage-ledger extension storage namespace for downstream audit workflows.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -106,10 +111,12 @@
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
-        "usage_logger_* focused table-contract tests"
+        "usage_logger_* focused table-contract tests",
+        "usage_logger_records_provider_final_model_identity",
+        "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -892,7 +899,7 @@
         "docs/native-computer-use-cleanroom.md",
         "codex-rs/browser-computer-use/"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -931,6 +938,7 @@
         "configured_desktop_tools_are_session_scoped_native_tools",
         "playwright_provider_exports_real_browser_environment",
         "playwright_provider_carries_artifact_and_service_profile_config",
+        "provider clears Chromium tab session restore without deleting saved browser state",
         "node --test codex-rs/browser-computer-use/src/browser_playwright_review_test.mjs",
         "thread_lifecycle_params_include_configured_native_dynamic_tools",
         "exec_computer_use_provider_registry_declares_supported_exec_adapters",
@@ -1255,12 +1263,16 @@
       ],
       "files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, and marks usage_threads.thread_source as \"side\" for resume filtering.",
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1273,6 +1285,8 @@
         "thread_fork_side_source_persists_and_uses_side_filter",
         "thread_list_hides_side_threads_until_side_filter_requested",
         "side_fork_config_is_persistent_and_appends_developer_guardrails",
+        "slash_quit_in_side_conversation_requests_side_exit",
+        "slash_exit_in_side_conversation_requests_side_exit",
         "bash -n scripts/codex-resume-recent.sh"
       ],
       "owner": "downstream",
@@ -1281,6 +1295,9 @@
       "boundary_type": "interactive-history-and-ledger",
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/*.sql",
