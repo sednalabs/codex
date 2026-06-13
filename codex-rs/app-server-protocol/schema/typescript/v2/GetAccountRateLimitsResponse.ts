@@ -11,4 +11,4 @@ rateLimits: RateLimitSnapshot,
 /**
  * Multi-bucket view keyed by metered `limit_id` (for example, `codex`).
  */
-rateLimitsByLimitId: { [key in string]?: RateLimitSnapshot } | null, };
+rateLimitsByLimitId: { [key in string]: RateLimitSnapshot } | null, };

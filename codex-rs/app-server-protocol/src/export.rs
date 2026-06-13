@@ -116,13 +116,15 @@ pub fn generate_ts_with_options(
     ensure_dir(out_dir)?;
     ensure_dir(&v2_out_dir)?;
 
-    ClientRequest::export_all_to(out_dir)?;
-    export_client_responses(out_dir)?;
-    ClientNotification::export_all_to(out_dir)?;
+    let ts_config = ts_rs::Config::new().with_out_dir(out_dir);
 
-    ServerRequest::export_all_to(out_dir)?;
+    ClientRequest::export_all(&ts_config)?;
+    export_client_responses(out_dir)?;
+    ClientNotification::export_all(&ts_config)?;
+
+    ServerRequest::export_all(&ts_config)?;
     export_server_responses(out_dir)?;
-    ServerNotification::export_all_to(out_dir)?;
+    ServerNotification::export_all(&ts_config)?;
 
     if !options.experimental_api {
         filter_experimental_ts(out_dir)?;
@@ -2397,27 +2399,28 @@ mod tests {
 
     #[test]
     fn generate_ts_with_experimental_api_retains_experimental_entries() -> Result<()> {
-        let client_request_ts = ClientRequest::export_to_string()?;
+        let ts_config = ts_rs::Config::default();
+        let client_request_ts = ClientRequest::export_to_string(&ts_config)?;
         assert_eq!(client_request_ts.contains("mock/experimentalMethod"), true);
         assert_eq!(
             client_request_ts.contains("MockExperimentalMethodParams"),
             true
         );
         assert_eq!(
-            v2::MockExperimentalMethodParams::export_to_string()?
+            v2::MockExperimentalMethodParams::export_to_string(&ts_config)?
                 .contains("MockExperimentalMethodParams"),
             true
         );
         assert_eq!(
-            v2::MockExperimentalMethodResponse::export_to_string()?
+            v2::MockExperimentalMethodResponse::export_to_string(&ts_config)?
                 .contains("MockExperimentalMethodResponse"),
             true
         );
 
-        let thread_start_ts = v2::ThreadStartParams::export_to_string()?;
+        let thread_start_ts = v2::ThreadStartParams::export_to_string(&ts_config)?;
         assert_eq!(thread_start_ts.contains("mockExperimentalField"), true);
         let command_execution_request_approval_ts =
-            v2::CommandExecutionRequestApprovalParams::export_to_string()?;
+            v2::CommandExecutionRequestApprovalParams::export_to_string(&ts_config)?;
         assert_eq!(
             command_execution_request_approval_ts.contains("additionalPermissions"),
             true

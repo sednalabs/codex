@@ -104,8 +104,8 @@ async fn unified_exec_disabled_windows_sandbox_rejects_managed_read_only_command
             .features
             .disable(Feature::WindowsSandboxElevated)
             .expect("test config should allow feature update");
-        config.set_windows_sandbox_enabled(false);
-        config.set_windows_elevated_sandbox_enabled(false);
+        config.set_windows_sandbox_enabled(/*value*/ false);
+        config.set_windows_elevated_sandbox_enabled(/*value*/ false);
     });
     let test = builder.build(&server).await?;
     let call_id = "unified-exec-disabled-windows-sandbox-read-only";
@@ -137,7 +137,7 @@ async fn unified_exec_disabled_windows_sandbox_rejects_managed_read_only_command
         "run unified exec with disabled Windows sandbox",
         AskForApproval::Never,
         PermissionProfile::read_only(),
-        None,
+        /*collaboration_mode*/ None,
     )
     .await?;
 
