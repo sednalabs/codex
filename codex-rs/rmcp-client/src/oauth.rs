@@ -708,9 +708,20 @@ fn sha_256_prefix(value: &Value) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(serialized.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:x}");
+    let hex = digest_hex(digest);
     let truncated = &hex[..16];
     Ok(truncated.to_string())
+}
+
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    let digest = digest.as_ref();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut hex, "{:02x}", *byte).expect("writing to a String cannot fail");
+    }
+    hex
 }
 
 #[cfg(test)]

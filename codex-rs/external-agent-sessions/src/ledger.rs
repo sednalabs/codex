@@ -209,7 +209,7 @@ fn session_content_sha256(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     let digest = hasher.finalize();
-    Ok(format!("{digest:x}"))
+    Ok(crate::digest_hex(digest))
 }
 
 fn session_modified_at(path: &Path) -> io::Result<Option<i64>> {

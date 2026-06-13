@@ -157,7 +157,7 @@ pub fn environment_id_from_cwd(cwd: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:x}");
+    let hex = digest_hex(digest);
     let short = hex.get(..12).unwrap_or(hex.as_str());
     format!("cwd-{short}")
 }
@@ -171,9 +171,20 @@ pub(crate) fn compute_keyring_account(codex_home: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:x}");
+    let hex = digest_hex(digest);
     let short = hex.get(..16).unwrap_or(hex.as_str());
     format!("secrets|{short}")
+}
+
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    let digest = digest.as_ref();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut hex, "{:02x}", *byte).expect("writing to a String cannot fail");
+    }
+    hex
 }
 
 pub(crate) fn keyring_service() -> &'static str {
@@ -199,7 +210,7 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(canonical.as_bytes());
         let digest = hasher.finalize();
-        let hex = format!("{digest:x}");
+        let hex = digest_hex(digest);
         let short = hex.get(..12).expect("digest has at least 12 chars");
         assert_eq!(env_id, format!("cwd-{short}"));
     }
