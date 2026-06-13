@@ -245,13 +245,19 @@ gh workflow run validation-lab.yml \
   --ref main \
   -f ref=<branch-under-test> \
   -f profile=targeted \
-  -f lanes=codex.blocking-waits-targeted,codex.app-server-protocol-test
+  -f lanes=codex.blocking-waits-app-server-targeted,codex.app-server-protocol-test
 ```
 
 That narrow rerun is the recommended blocker-fix loop. The point of
 `validation-lab` is not just remote proof; it is also to let us answer the
 next question with the smallest credible hosted slice instead of burning
 runner minutes and human wait time on already-known green lanes.
+The broader blocking-waits guardrail is split across four hosted lanes
+(`codex.blocking-waits-core-targeted`,
+`codex.blocking-waits-unified-exec-targeted`,
+`codex.blocking-waits-app-server-targeted`, and
+`codex.blocking-waits-mcp-targeted`) so a full rerun can still be requested
+without forcing every compile surface into one runner workspace.
 
 Do not assume `gh workflow run validation-lab --ref <feature-branch> ...` will work. Some downstream
 branches intentionally do not carry the latest workflow file, so GitHub may resolve the workflow on

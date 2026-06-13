@@ -258,23 +258,27 @@ core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
 
-# Focused blocking-wait slice covering direct unified-exec waits, agent waits,
-# app-server command execution completion ordering, and MCP task completion.
-blocking-waits-targeted:
+# Focused blocking-wait slices split by compile surface so hosted validation
+# does not accumulate every target artifact in one runner workspace.
+blocking-waits-core-targeted:
     cargo test -p codex-core capacity_retry::tests --lib -- --test-threads=1
     cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::auto_remote_compact_retries_server_overloaded -- --exact --test-threads=1
-    cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
+
+blocking-waits-unified-exec-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
-    # The hosted frontier lane runs this after several core/tui checks; clear the
-    # shared target dir before the late cross-crate app-server/mcp checks.
-    cargo clean
+
+blocking-waits-app-server-targeted:
+    cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
     cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
-    cargo clean
+
+blocking-waits-mcp-targeted:
     cargo nextest run -j 1 -p codex-mcp-server --test all -- suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response --exact
+
+blocking-waits-targeted: blocking-waits-core-targeted blocking-waits-unified-exec-targeted blocking-waits-app-server-targeted blocking-waits-mcp-targeted
 
 # Focused custom-prompt discovery and review-flow slice.
 custom-prompts-targeted:

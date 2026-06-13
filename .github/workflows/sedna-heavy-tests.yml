@@ -45,7 +45,10 @@ on:
           - codex.tui-agent-usage-totals-targeted
           - codex.tui-weekly-pacing-status-line-targeted
           - codex.core-multi-agent-orchestration-targeted
-          - codex.blocking-waits-targeted
+          - codex.blocking-waits-core-targeted
+          - codex.blocking-waits-unified-exec-targeted
+          - codex.blocking-waits-app-server-targeted
+          - codex.blocking-waits-mcp-targeted
           - codex.custom-prompts-targeted
           - codex.mcp-safety-targeted
           - codex.mcp-device-login-targeted
