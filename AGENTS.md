@@ -15,6 +15,7 @@ Recommended commands:
 - use the `sedna-sync-upstream` workflow (or an equivalent fast-forward push) to update `upstream-main` from `upstream/main`.
 - downstream syncs are merge-based (`upstream-main` -> `main`), not shared-branch rebases.
 - avoid force-push on `main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
+- Finished feature, bugfix, docs, or cleanup work on a branch must be committed, pushed, and raised as a pull request targeting `origin/main` before handoff. Do not leave completed branch work as local-only changes.
 
 Branch tracking should remain:
 
@@ -38,6 +39,26 @@ Branch tracking should remain:
 - Do not invent broad dynamic plugin systems during conflict resolution unless explicitly requested. Prefer small, static, upstream-shaped seams that let downstream behavior plug in without changing public contracts.
 - Preserve important downstream product behavior intentionally. For this fork, do not casually drop realtime, voice, or realtime-text behavior during sync just to make merges easier.
 
+## Downstream Carry Documentation
+
+- Any change that introduces, preserves, or materially reshapes intentional
+  downstream carry must update the carry documentation in the same branch
+  before it is considered ready to land.
+- At minimum, update `docs/divergences/index.yaml` with the carry id, behavior,
+  primary files, owner, upstream-equivalence status, guardrail lane, tests, and
+  the rule for preserving or dropping the carry during future upstream syncs.
+- For live carries, also update the human-readable
+  `docs/carry-divergence-ledger.md` section and map the expected validation
+  surface in `docs/downstream-regression-matrix.md`.
+- If the carry changes a public or agent-facing surface, update the relevant
+  domain document as well, such as `docs/downstream.md`,
+  `docs/downstream-tool-surface-matrix.md`, `docs/native-computer-use.md`, or
+  another focused downstream doc.
+- Treat missing carry docs as incomplete work, not as optional follow-up. If an
+  intentional carry is accidentally landed without those docs, make the
+  docs-only follow-up immediately and keep it tied to the merge commit that
+  introduced the carry.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -55,11 +76,27 @@ In the codex-rs folder where the rust code lives:
   - Do not add these comments for string or char literals unless the comment adds real clarity; those literals are intentionally exempt from the lint.
   - If you add one of these comments, the parameter name must exactly match the callee signature.
 - When possible, make `match` statements exhaustive and avoid wildcard arms.
+- Newly added traits should include doc comments that explain their role and how implementations are expected to use them.
+- Discourage both `#[async_trait]` and `#[allow(async_fn_in_trait)]` in Rust traits.
+  - Prefer native RPITIT trait methods with explicit `Send` bounds on the returned future, as in `3c7f013f9735` / `#16630`.
+  - Preferred trait shape:
+    `fn foo(&self, ...) -> impl std::future::Future<Output = T> + Send;`
+  - Implementations may still use `async fn foo(&self, ...) -> T` when they satisfy that contract.
+  - Do not use `#[allow(async_fn_in_trait)]` as a shortcut around spelling the future contract explicitly.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
-- When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
+- Do not add tests for values that are statically defined.
+- Do not add negative tests for logic that was removed.
+- Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
 - Prefer private modules and explicitly exported public crate API.
+- Keep native computer-use runtime work behind provider seams:
+  - Codex owns the canonical tool schema, protocol events, app-server bridge, TUI projection, rollout, and native image-output contract.
+  - Runtime backends own Android sessions, browser sessions, screenshots or viewport capture, UI digests, and input execution.
+  - Route TUI browser backend work through `codex-rs/tui/src/browser_computer_use_provider.rs`, `codex-rs/tui/src/browser_playwright_provider.mjs`, or the command-provider interface. Do not add provider-specific browser automation to hot app-server/core dispatch paths.
+  - Successful visual observe/step responses must include native `inputImage` content. Text-only summaries, local artifact paths, or provider diagnostics are not a substitute for model-visible pixels.
+  - When changing native computer-use behavior, update `docs/native-computer-use.md`, `docs/downstream-tool-surface-matrix.md`, `docs/downstream-regression-matrix.md`, `docs/divergences/index.yaml`, and the focused just recipes when their scope changes.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
+- Do not call `reset_client_session` unnecessarily; let the incremental check logic decide whether to reuse the previous request.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the
   repo root to refresh `MODULE.bazel.lock`, and include that lockfile update in the same change.
 - After dependency changes, run `just bazel-lock-check` from the repo root so lockfile drift is caught
@@ -82,14 +119,17 @@ In the codex-rs folder where the rust code lives:
     the new implementation so the invariants stay close to the code that owns them.
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
-- When running Rust commands (e.g. `just fix` or `cargo test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
+- When any Rust command is already running because the user explicitly approved local compute or a closer downstream instruction file required it, be patient with the command and never try to kill it using the PID. Rust lock can make execution slow; this is expected.
 
-Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, use this validation ladder:
+## Compute and Validation Policy
 
-1. Run the smallest relevant local check first. Prefer configured helper presets or project-scoped tests over workspace-wide `cargo` commands.
-2. If you changed Rust behavior in a specific crate, run the narrowest crate-level validation that covers it.
-3. Heavy validation, release-mode builds, workspace-wide tests, and expensive `nextest` sweeps should go to GitHub Actions after the branch is committed and pushed unless the user explicitly asks for a local run.
-4. If any changes were made in common, core, or protocol and you still need a complete local test suite, ask the user before running it.
+- Treat all build, test, check, lint, format, snapshot-update, codegen, schema-generation, release, and other CPU-heavy validation work as remote by default.
+- Do not run local compute for validation or cleanup unless the user specifically asks for local execution in the current conversation, or a closer downstream `AGENTS.md`, `GEMINI.md`, `CONTRIBUTING.md`, or equivalent file explicitly overrides this section for the paths being touched.
+- This default applies even to commands that may look small, targeted, already-warm, or useful for a quick sanity check. Examples that still require explicit user approval or downstream override before local execution include `cargo check`, `cargo test`, `cargo build`, `cargo clippy`, `cargo fmt`, `just fmt`, `just fix`, `just test`, `just argument-comment-lint`, `cargo insta`, `just write-config-schema`, `just bazel-lock-update`, and `just bazel-lock-check`.
+- Lightweight non-compute inspection is allowed without approval: reading files, `rg`, `sed`, `ls`, `git status`, `git diff`, `git diff --check`, `git diff --stat`, `git log`, `git show`, `git rev-parse`, `git fetch`, conflict-marker scans, committing, and pushing requested changes.
+- When validation is needed, commit and push the relevant work, then use GitHub Actions, branch-build workflows, validation-lab, or another configured hosted runner. Report the remote workflow, run id, artifact, or log that proves the result.
+- If local compute would materially help, ask the user first with the exact command and reason. Do not start the command until the user explicitly authorizes local compute.
+- If a downstream instruction file overrides this section, follow that closer instruction only for its scope and state that override when reporting validation.
 
 ## Bug Investigation Workflow
 
@@ -115,6 +155,49 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 - Heavy remote CI only starts after the relevant work is committed and pushed.
 - Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
 - Preview artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
+
+## Code Review Rules
+
+### Model visible context
+
+Codex maintains a context (history of messages) that is sent to the model in inference requests.
+
+1. No history rewrite - the context must be built up incrementally.
+2. Avoid frequent changes to context that cause cache misses.
+3. No unbounded items - everything injected in the model context must have a bounded size and a hard cap.
+4. No items larger than 10K tokens.
+5. Highlight new individual items that can cross >1k tokens as P0. These need an additional manual review.
+6. All injected fragments must be defined as structs in `core/context` and implement ContextualUserFragment trait
+
+### Breaking changes
+
+Search for breaking changes in external integration surfaces:
+
+- app-server APIs
+- CLI parameters
+- configuration loading
+- resuming sessions from existing rollouts
+
+### Test authoring guidance
+
+For agent changes prefer integration tests over unit tests. Integration tests are under `core/suite` and use `test_codex` to set up a test instance of codex.
+
+Features that change the agent logic MUST add an integration test:
+
+- Provide a list of major logic changes and user-facing behaviors that need to be tested.
+
+If unit tests are needed, put them in a dedicated test file (\*\_tests.rs).
+Avoid test-only functions in the main implementation.
+
+Check whether there are existing helpers to make tests more streamlined and readable.
+
+### Change size guidance (800 lines)
+
+Unless the change is mechanical the total number of changed lines should not exceed 800 lines.
+For complex logic changes the size should be under 500 lines.
+
+If the change is larger, explore whether it can be split into reviewable stages and identify the smallest coherent stage to land first.
+Base the staging suggestion on the actual diff, dependencies, and affected call sites.
 
 ## TUI style conventions
 
@@ -152,6 +235,19 @@ See `codex-rs/tui/styles.md`.
 
 ## Tests
 
+### Test module organization
+
+- When adding a new test module, define its contents in a separate sibling file rather than inline in the implementation file.
+- Use an explicit `#[path = "..._tests.rs"]` attribute so the test filename is descriptive and easy to locate:
+
+  ```rust
+  #[cfg(test)]
+  #[path = "parser_tests.rs"]
+  mod tests;
+  ```
+
+- This applies only when introducing a new test module. Do not move or rewrite existing inline `#[cfg(test)] mod tests { ... }` modules solely to follow this convention.
+
 ### Snapshot tests
 
 This repo uses snapshot tests (via `insta`), especially in `codex-rs/tui`, to validate rendered output.
@@ -164,7 +260,7 @@ is easy to review and future diffs stay visual.
 When UI or text output changes intentionally, update the snapshots as follows:
 
 - Run tests to generate any updated snapshots:
-  - `cargo test -p codex-tui`
+  - `just test -p codex-tui`
 - Check what’s pending:
   - `cargo insta pending-snapshots -p codex-tui`
 - Review changes by reading the generated `*.snap.new` files directly in the repo, or preview a specific file:
@@ -174,7 +270,13 @@ When UI or text output changes intentionally, update the snapshots as follows:
 
 If you don’t have the tool:
 
-- `cargo install cargo-insta`
+- `cargo install --locked cargo-insta`
+
+### Benchmarks
+
+cargo benchmarks can be run with `just bench`, use the divan crate to write new ones.
+
+Use `just bench-smoke` to dry-run the benchmark for a single iteration to ensure it works.
 
 ### Test assertions
 
@@ -254,10 +356,19 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 ### Development Workflow
 
-- Update docs/examples when API behavior changes (at minimum `app-server/README.md`).
+- Update app-server docs/examples when API behavior changes (at minimum `app-server/README.md`).
 - Regenerate schema fixtures when API shapes change:
   `just write-app-server-schema`
   (and `just write-app-server-schema --experimental` when experimental API fixtures are affected).
-- Validate with `cargo test -p codex-app-server-protocol`.
+- Validate with `just test -p codex-app-server-protocol`.
 - Avoid boilerplate tests that only assert experimental field markers for individual
   request fields in `common.rs`; rely on schema generation/tests and behavioral coverage instead.
+
+## Python Development Best Practices
+
+### Ignore Python 2 compatibility
+
+This project uses Python 3+. You should not use the `__future__` module.
+
+If you need to worry about feature compatibility between different 3.xx point releases, check the
+closest `pyproject.toml`'s `requires-python` field to see what minimum runtime version is supported.

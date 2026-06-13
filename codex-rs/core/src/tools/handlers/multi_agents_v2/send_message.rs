@@ -1,23 +1,31 @@
 use super::message_tool::MessageDeliveryMode;
-use super::message_tool::MessageToolResult;
 use super::message_tool::SendMessageArgs;
 use super::message_tool::handle_message_items_tool;
 use super::*;
+use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
+use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
-impl ToolHandler for Handler {
-    type Output = MessageToolResult;
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+impl ToolExecutor<ToolInvocation> for Handler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("send_message")
     }
 
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
+    fn spec(&self) -> ToolSpec {
+        create_send_message_tool()
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl Handler {
+    async fn handle_call(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendMessageArgs = parse_arguments(&arguments)?;
         handle_message_items_tool(
@@ -28,5 +36,12 @@ impl ToolHandler for Handler {
             args.interrupt,
         )
         .await
+        .map(boxed_tool_output)
+    }
+}
+
+impl CoreToolRuntime for Handler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }

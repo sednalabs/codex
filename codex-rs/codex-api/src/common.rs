@@ -6,6 +6,7 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnModerationMetadataEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use futures::Stream;
 use serde::Deserialize;
@@ -31,6 +32,10 @@ pub struct CompactionInput<'a> {
     pub parallel_tool_calls: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
 }
@@ -64,6 +69,12 @@ pub struct MemorySummarizeOutput {
     pub memory_summary: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResponseModelIdentity {
+    pub final_model: Option<String>,
+    pub model_snapshot: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum ResponseEvent {
     Created,
@@ -72,8 +83,12 @@ pub enum ResponseEvent {
     /// Emitted when the server includes `OpenAI-Model` on the stream response.
     /// This can differ from the requested model when backend safety routing applies.
     ServerModel(String),
+    /// Authoritative execution identity reported for this response.
+    ServerModelIdentity(ResponseModelIdentity),
     /// Emitted when the server recommends additional account verification.
     ModelVerifications(Vec<ModelVerification>),
+    /// Emitted when the server includes moderation metadata for first-party turn presentation.
+    TurnModerationMetadata(TurnModerationMetadataEvent),
     /// Emitted when `X-Reasoning-Included: true` is present on the response,
     /// meaning the server already accounted for past reasoning tokens and the
     /// client should not re-estimate them.
@@ -107,11 +122,21 @@ pub enum ResponseEvent {
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningContext {
+    Auto,
+    CurrentTurn,
+    AllTurns,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct Reasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<ReasoningSummaryConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<ReasoningContext>,
 }
 
 #[derive(Debug, Serialize, Default, Clone, PartialEq)]
@@ -287,6 +312,8 @@ pub fn create_text_param_for_request(
 
 pub struct ResponseStream {
     pub rx_event: mpsc::Receiver<Result<ResponseEvent, ApiError>>,
+    /// Server-assigned `x-request-id` response header, when present.
+    pub upstream_request_id: Option<String>,
 }
 
 impl Stream for ResponseStream {

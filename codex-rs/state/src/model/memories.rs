@@ -22,19 +22,19 @@ pub struct Stage1Output {
     pub generated_at: DateTime<Utc>,
 }
 
+/// Durable record proving a phase-2 output tree was produced from a known
+/// prepared input set by the configured consolidator path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stage1OutputRef {
-    pub thread_id: ThreadId,
-    pub source_updated_at: DateTime<Utc>,
-    pub rollout_slug: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Phase2InputSelection {
-    pub selected: Vec<Stage1Output>,
-    pub previous_selected: Vec<Stage1Output>,
-    pub retained_thread_ids: Vec<ThreadId>,
-    pub removed: Vec<Stage1OutputRef>,
+pub struct Phase2AttestedBaseline {
+    pub memory_root_key: String,
+    pub output_tree_sha256: String,
+    pub schema_version: i64,
+    pub selection_sha256: String,
+    pub prepared_inputs_sha256: String,
+    pub consolidator_sha256: String,
+    pub completion_watermark: i64,
+    pub selected_count: i64,
+    pub attested_at: i64,
 }
 
 #[derive(Debug)]
@@ -89,18 +89,6 @@ fn epoch_seconds_to_datetime(secs: i64) -> Result<DateTime<Utc>> {
         .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {secs}"))
 }
 
-pub(crate) fn stage1_output_ref_from_parts(
-    thread_id: String,
-    source_updated_at: i64,
-    rollout_slug: Option<String>,
-) -> Result<Stage1OutputRef> {
-    Ok(Stage1OutputRef {
-        thread_id: ThreadId::try_from(thread_id)?,
-        source_updated_at: epoch_seconds_to_datetime(source_updated_at)?,
-        rollout_slug,
-    })
-}
-
 /// Result of trying to claim a stage-1 memory extraction job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stage1JobClaimOutcome {
@@ -136,14 +124,16 @@ pub struct Stage1StartupClaimParams<'a> {
 /// Result of trying to claim a phase-2 consolidation job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase2JobClaimOutcome {
-    /// The caller owns the global lock and should spawn consolidation.
+    /// The caller owns the global lock and may inspect the memory workspace.
     Claimed {
         ownership_token: String,
         /// Snapshot of `input_watermark` at claim time.
         input_watermark: i64,
     },
-    /// The global job is not pending consolidation (or is already up to date).
-    SkippedNotDirty,
+    /// The global job is in retry backoff.
+    SkippedRetryUnavailable,
+    /// The global job completed recently enough that consolidation is cooling down.
+    SkippedCooldown,
     /// Another worker currently owns a fresh global consolidation lease.
     SkippedRunning,
 }

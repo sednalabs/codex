@@ -126,6 +126,18 @@ pub(crate) fn apply_default_headers(
     }
 }
 
+pub(crate) fn build_reqwest_client(
+    mut builder: ClientBuilder,
+    default_headers: &HeaderMap,
+) -> Result<reqwest::Client> {
+    codex_client::ensure_rustls_crypto_provider();
+    builder = apply_default_headers(builder, default_headers);
+    if let Some(tls_config) = codex_client::maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
+    Ok(builder.build()?)
+}
+
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",
@@ -142,35 +154,8 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ];
 
 #[cfg(windows)]
-pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
-    // Core path resolution
-    "PATH",
-    "PATHEXT",
-    // Shell and system roots
-    "COMSPEC",
-    "SYSTEMROOT",
-    "SYSTEMDRIVE",
-    // User context and profiles
-    "USERNAME",
-    "USERDOMAIN",
-    "USERPROFILE",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    // Program locations
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "PROGRAMDATA",
-    // App data and caches
-    "LOCALAPPDATA",
-    "APPDATA",
-    // Temp locations
-    "TEMP",
-    "TMP",
-    // Common shells/pwsh hints
-    "POWERSHELL",
-    "PWSH",
-];
+pub(crate) const DEFAULT_ENV_VARS: &[&str] =
+    codex_protocol::shell_environment::WINDOWS_CORE_ENV_VARS;
 
 #[cfg(test)]
 mod tests {

@@ -45,8 +45,8 @@ if [[ "${repository,,}" != "sednalabs/codex" ]]; then
   exit 1
 fi
 
-if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)*-sedna\.[0-9]+$ ]]; then
-  echo "error: release tag must look like v0.124.0-sedna.2, got ${release_tag@Q}" >&2
+if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
+  echo "error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got ${release_tag@Q}" >&2
   exit 1
 fi
 
@@ -213,6 +213,12 @@ for executable in codex codex-responses-api-proxy; do
   fi
 done
 
+staged_version_output="$("$staged/codex" --version 2>&1)"
+if [[ "$staged_version_output" != *"$release_version"* ]]; then
+  echo "error: staged codex --version did not report ${release_version@Q}: $staged_version_output" >&2
+  exit 1
+fi
+
 release_dir="${install_root}/releases/${release_tag}"
 if [[ -d "$release_dir" ]]; then
   python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" <<'PY'
@@ -234,6 +240,7 @@ fi
 
 if [[ "$dry_run" == "true" ]]; then
   echo "dry-run: verified sednalabs/codex@${release_tag} for ${target}"
+  echo "$staged_version_output"
   exit 0
 fi
 
@@ -265,11 +272,11 @@ codex_tmp="${bin_dir}/.codex.tmp.$$"
 ln -s "${release_dir}/codex" "$codex_tmp"
 mv -Tf "$codex_tmp" "$visible_codex"
 
-version_output="$("$visible_codex" --version 2>&1)"
-if [[ "$version_output" != *"$release_version"* ]]; then
-  echo "error: codex --version did not report ${release_version@Q}: $version_output" >&2
+visible_version_output="$("$visible_codex" --version 2>&1)"
+if [[ "$visible_version_output" != *"$release_version"* ]]; then
+  echo "error: codex --version did not report ${release_version@Q}: $visible_version_output" >&2
   exit 1
 fi
 
 echo "installed sednalabs/codex@${release_tag}"
-echo "$version_output"
+echo "$visible_version_output"

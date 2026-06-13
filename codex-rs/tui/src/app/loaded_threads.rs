@@ -29,8 +29,6 @@ pub(crate) struct LoadedSubagentThread {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) agent_path: Option<String>,
-    pub(crate) created_at: i64,
-    pub(crate) updated_at: i64,
 }
 
 /// Walks the spawn tree rooted at `primary_thread_id` and returns every descendant subagent.
@@ -66,15 +64,12 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
                 continue;
             }
 
-            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: source_parent_thread_id,
-                ..
-            }) = &thread.source
+            let Some(source_parent_thread_id) = thread_spawn_parent_thread_id(&thread.source)
             else {
                 continue;
             };
 
-            if *source_parent_thread_id != parent_thread_id {
+            if source_parent_thread_id != parent_thread_id {
                 continue;
             }
 
@@ -92,19 +87,30 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
                     thread_id,
                     agent_nickname: thread.agent_nickname,
                     agent_role: thread.agent_role,
-                    agent_path: match thread.source {
-                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                            agent_path, ..
-                        }) => agent_path.map(|path| path.to_string()),
-                        _ => None,
-                    },
-                    created_at: thread.created_at,
-                    updated_at: thread.updated_at,
+                    agent_path: thread_spawn_agent_path(&thread.source),
                 })
         })
         .collect();
     loaded_threads.sort_by_key(|thread| thread.thread_id.to_string());
     loaded_threads
+}
+
+fn thread_spawn_agent_path(source: &SessionSource) -> Option<String> {
+    match source {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
+            agent_path.clone().map(String::from)
+        }
+        _ => None,
+    }
+}
+
+fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
+    match source {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) => Some(*parent_thread_id),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -115,7 +121,6 @@ mod tests {
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStatus;
     use codex_protocol::ThreadId;
-    use codex_protocol::protocol::SubAgentSource;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -123,10 +128,14 @@ mod tests {
     fn test_thread(thread_id: ThreadId, source: SessionSource) -> Thread {
         Thread {
             id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
             status: ThreadStatus::Idle,
@@ -134,12 +143,32 @@ mod tests {
             cwd: test_path_buf("/tmp").abs(),
             cli_version: "0.0.0".to_string(),
             source,
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             git_info: None,
             name: None,
             turns: Vec::new(),
         }
+    }
+
+    fn thread_spawn_source(
+        parent_thread_id: ThreadId,
+        depth: i32,
+        agent_nickname: &str,
+        agent_role: &str,
+    ) -> SessionSource {
+        serde_json::from_value(serde_json::json!({
+            "subAgent": {
+                "thread_spawn": {
+                    "parent_thread_id": parent_thread_id.to_string(),
+                    "depth": depth,
+                    "agent_nickname": agent_nickname,
+                    "agent_role": agent_role,
+                }
+            }
+        }))
+        .expect("valid subagent source")
     }
 
     #[test]
@@ -157,39 +186,21 @@ mod tests {
 
         let mut child = test_thread(
             child_thread_id,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: primary_thread_id,
-                depth: 1,
-                agent_path: None,
-                agent_nickname: Some("Scout".to_string()),
-                agent_role: Some("explorer".to_string()),
-            }),
+            thread_spawn_source(primary_thread_id, /*depth*/ 1, "Scout", "explorer"),
         );
         child.agent_nickname = Some("Scout".to_string());
         child.agent_role = Some("explorer".to_string());
 
         let mut grandchild = test_thread(
             grandchild_thread_id,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: child_thread_id,
-                depth: 2,
-                agent_path: None,
-                agent_nickname: Some("Atlas".to_string()),
-                agent_role: Some("worker".to_string()),
-            }),
+            thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "worker"),
         );
         grandchild.agent_nickname = Some("Atlas".to_string());
         grandchild.agent_role = Some("worker".to_string());
 
         let unrelated_child = test_thread(
             unrelated_child_id,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: unrelated_parent_id,
-                depth: 1,
-                agent_path: None,
-                agent_nickname: Some("Other".to_string()),
-                agent_role: Some("researcher".to_string()),
-            }),
+            thread_spawn_source(unrelated_parent_id, /*depth*/ 1, "Other", "researcher"),
         );
 
         let loaded = find_loaded_subagent_threads_for_primary(
@@ -210,16 +221,12 @@ mod tests {
                     agent_nickname: Some("Scout".to_string()),
                     agent_role: Some("explorer".to_string()),
                     agent_path: None,
-                    created_at: 0,
-                    updated_at: 0,
                 },
                 LoadedSubagentThread {
                     thread_id: grandchild_thread_id,
                     agent_nickname: Some("Atlas".to_string()),
                     agent_role: Some("worker".to_string()),
                     agent_path: None,
-                    created_at: 0,
-                    updated_at: 0,
                 },
             ]
         );

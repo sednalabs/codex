@@ -61,7 +61,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -169,19 +169,6 @@
         {
           "properties": {
             "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
               "const": "project_roots",
               "type": "string"
             },
@@ -280,6 +267,13 @@
     "cwd": {
       "$ref": "#/$defs/AbsolutePathBuf"
     },
+    "environmentId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },
@@ -292,6 +286,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -303,6 +302,7 @@
     "threadId",
     "turnId",
     "itemId",
+    "startedAtMs",
     "cwd",
     "permissions"
   ],

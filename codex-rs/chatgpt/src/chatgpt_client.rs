@@ -6,6 +6,9 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
+const OAI_PRODUCT_SKU_HEADER: &str = "OAI-Product-Sku";
+const CODEX_PRODUCT_SKU: &str = "codex";
+
 /// Make a GET request to the ChatGPT backend API.
 pub(crate) async fn chatgpt_get_request<T: DeserializeOwned>(
     config: &Config,
@@ -21,7 +24,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
 ) -> anyhow::Result<T> {
     let chatgpt_base_url = &config.chatgpt_base_url;
     let auth_manager =
-        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false);
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await;
     let auth = auth_manager
         .auth()
         .await
@@ -46,6 +49,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
     let mut request = client
         .get(&url)
         .headers(codex_model_provider::auth_provider_from_auth(&auth).to_auth_headers())
+        .header(OAI_PRODUCT_SKU_HEADER, CODEX_PRODUCT_SKU)
         .header("Content-Type", "application/json");
 
     if let Some(timeout) = timeout {

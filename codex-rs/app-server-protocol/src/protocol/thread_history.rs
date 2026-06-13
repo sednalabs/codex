@@ -19,6 +19,7 @@ use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError as V2TurnError;
 use crate::protocol::v2::TurnError;
+use crate::protocol::v2::TurnItemsView;
 use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
@@ -69,8 +70,6 @@ use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::PatchApplyStatus;
 #[cfg(test)]
 use crate::protocol::v2::PatchChangeKind;
-#[cfg(test)]
-use codex_protocol::mcp::CallToolResult;
 #[cfg(test)]
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 #[cfg(test)]
@@ -214,6 +213,7 @@ impl ThreadHistoryBuilder {
             EventMsg::CollabAgentInteractionEnd(payload) => {
                 self.handle_collab_agent_interaction_end(payload)
             }
+            EventMsg::SubAgentActivity(payload) => self.handle_sub_agent_activity(payload),
             EventMsg::CollabWaitingBegin(payload) => self.handle_collab_waiting_begin(payload),
             EventMsg::CollabWaitingEnd(payload) => self.handle_collab_waiting_end(payload),
             EventMsg::CollabCloseBegin(payload) => self.handle_collab_close_begin(payload),
@@ -229,7 +229,6 @@ impl ThreadHistoryBuilder {
             EventMsg::Error(payload) => self.handle_error(payload),
             EventMsg::TokenCount(_) => {}
             EventMsg::ThreadRolledBack(payload) => self.handle_thread_rollback(payload),
-            EventMsg::UndoCompleted(_) => {}
             EventMsg::TurnAborted(payload) => self.handle_turn_aborted(payload),
             EventMsg::TurnStarted(payload) => self.handle_turn_started(payload),
             EventMsg::TurnComplete(payload) => self.handle_turn_complete(payload),
@@ -290,7 +289,11 @@ impl ThreadHistoryBuilder {
             .unwrap_or_else(|| self.new_turn(/*id*/ None));
         let id = self.next_item_id();
         let content = self.build_user_inputs(payload);
-        turn.items.push(ThreadItem::UserMessage { id, content });
+        turn.items.push(ThreadItem::UserMessage {
+            id,
+            client_id: payload.client_id.clone(),
+            content,
+        });
         self.current_turn = Some(turn);
     }
 
@@ -369,7 +372,10 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::AgentMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
             | codex_protocol::items::TurnItem::WebSearch(_)
+            | codex_protocol::items::TurnItem::ImageView(_)
             | codex_protocol::items::TurnItem::ImageGeneration(_)
+            | codex_protocol::items::TurnItem::FileChange(_)
+            | codex_protocol::items::TurnItem::McpToolCall(_)
             | codex_protocol::items::TurnItem::ContextCompaction(_) => {}
         }
     }
@@ -390,7 +396,10 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::AgentMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
             | codex_protocol::items::TurnItem::WebSearch(_)
+            | codex_protocol::items::TurnItem::ImageView(_)
             | codex_protocol::items::TurnItem::ImageGeneration(_)
+            | codex_protocol::items::TurnItem::FileChange(_)
+            | codex_protocol::items::TurnItem::McpToolCall(_)
             | codex_protocol::items::TurnItem::ContextCompaction(_) => {}
         }
     }
@@ -580,6 +589,7 @@ impl ThreadHistoryBuilder {
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
+            plugin_id: payload.plugin_id.clone(),
             result: None,
             error: None,
             duration_ms: None,
@@ -599,6 +609,7 @@ impl ThreadHistoryBuilder {
                 Some(Box::new(McpToolCallResult {
                     content: value.content.clone(),
                     structured_content: value.structured_content.clone(),
+                    meta: value.meta.clone(),
                 })),
                 None,
             ),
@@ -620,6 +631,7 @@ impl ThreadHistoryBuilder {
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
+            plugin_id: payload.plugin_id.clone(),
             result,
             error,
             duration_ms,
@@ -669,7 +681,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states: HashMap::new(),
         };
@@ -705,7 +717,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort),
+            reasoning_effort: Some(payload.reasoning_effort.clone()),
             timed_out: false,
             agents_states,
         });
@@ -751,6 +763,18 @@ impl ThreadHistoryBuilder {
             reasoning_effort: None,
             timed_out: false,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
+        });
+    }
+
+    fn handle_sub_agent_activity(
+        &mut self,
+        payload: &codex_protocol::protocol::SubAgentActivityEvent,
+    ) {
+        self.upsert_item_in_current_turn(ThreadItem::SubAgentActivity {
+            id: payload.event_id.clone(),
+            kind: payload.kind.into(),
+            agent_thread_id: payload.agent_thread_id.to_string(),
+            agent_path: String::from(payload.agent_path.clone()),
         });
     }
 
@@ -1138,12 +1162,18 @@ impl ThreadHistoryBuilder {
             });
         }
         if let Some(images) = &payload.images {
-            for image in images {
-                content.push(UserInput::Image { url: image.clone() });
+            for (idx, image) in images.iter().enumerate() {
+                content.push(UserInput::Image {
+                    url: image.clone(),
+                    detail: payload.image_details.get(idx).copied().flatten(),
+                });
             }
         }
-        for path in &payload.local_images {
-            content.push(UserInput::LocalImage { path: path.clone() });
+        for (idx, path) in payload.local_images.iter().enumerate() {
+            content.push(UserInput::LocalImage {
+                path: path.clone(),
+                detail: payload.local_image_details.get(idx).copied().flatten(),
+            });
         }
         content
     }
@@ -1234,6 +1264,7 @@ impl From<PendingTurn> for Turn {
         Self {
             id: value.id,
             items: value.items,
+            items_view: TurnItemsView::Full,
             error: value.error,
             status: value.status,
             started_at: value.started_at,
@@ -1248,6 +1279,7 @@ impl From<&PendingTurn> for Turn {
         Self {
             id: value.id.clone(),
             items: value.items.clone(),
+            items_view: TurnItemsView::Full,
             error: value.error.clone(),
             status: value.status.clone(),
             started_at: value.started_at,
@@ -1268,6 +1300,8 @@ mod tests {
     use codex_protocol::items::TurnItem as CoreTurnItem;
     use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
     use codex_protocol::items::build_hook_prompt_message;
+    use codex_protocol::mcp::CallToolResult;
+    use codex_protocol::models::ImageDetail;
     use codex_protocol::models::MessagePhase as CoreMessagePhase;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::parse_command::ParsedCommand;
@@ -1302,10 +1336,12 @@ mod tests {
     fn builds_multiple_turns_with_reasoning_items() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "First turn".into(),
                 images: Some(vec!["https://example.com/one.png".into()]),
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Hi there".into(),
@@ -1319,10 +1355,12 @@ mod tests {
                 text: "full reasoning".into(),
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Second turn".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Reply two".into(),
@@ -1346,6 +1384,7 @@ mod tests {
             first.items[0],
             ThreadItem::UserMessage {
                 id: "item-1".into(),
+                client_id: None,
                 content: vec![
                     UserInput::Text {
                         text: "First turn".into(),
@@ -1353,6 +1392,7 @@ mod tests {
                     },
                     UserInput::Image {
                         url: "https://example.com/one.png".into(),
+                        detail: None,
                     }
                 ],
             }
@@ -1383,6 +1423,7 @@ mod tests {
             second.items[0],
             ThreadItem::UserMessage {
                 id: "item-4".into(),
+                client_id: None,
                 content: vec![UserInput::Text {
                     text: "Second turn".into(),
                     text_elements: Vec::new(),
@@ -1401,34 +1442,82 @@ mod tests {
     }
 
     #[test]
+    fn rebuilds_user_message_image_details_from_legacy_events() {
+        let local_path = PathBuf::from("/tmp/local.png");
+        let events = vec![RolloutItem::EventMsg(EventMsg::UserMessage(
+            UserMessageEvent {
+                client_id: None,
+                message: "inspect these".into(),
+                images: Some(vec!["https://example.com/image.png".into()]),
+                image_details: vec![Some(ImageDetail::Original)],
+                local_images: vec![local_path.clone()],
+                local_image_details: vec![Some(ImageDetail::Original)],
+                text_elements: Vec::new(),
+            },
+        ))];
+
+        let turns = build_turns_from_rollout_items(&events);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::UserMessage {
+                id: "item-1".into(),
+                client_id: None,
+                content: vec![
+                    UserInput::Text {
+                        text: "inspect these".into(),
+                        text_elements: Vec::new(),
+                    },
+                    UserInput::Image {
+                        url: "https://example.com/image.png".into(),
+                        detail: Some(ImageDetail::Original),
+                    },
+                    UserInput::LocalImage {
+                        path: local_path,
+                        detail: Some(ImageDetail::Original),
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn ignores_non_plan_item_lifecycle_events() {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.to_string(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "hello".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::ItemStarted(ItemStartedEvent {
                 thread_id,
                 turn_id: turn_id.to_string(),
                 item: CoreTurnItem::UserMessage(CoreUserMessageItem {
                     id: "user-item-id".to_string(),
+                    client_id: None,
                     content: Vec::new(),
                 }),
+                started_at_ms: 0,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1446,11 +1535,76 @@ mod tests {
             turns[0].items[0],
             ThreadItem::UserMessage {
                 id: "item-1".into(),
+                client_id: None,
                 content: vec![UserInput::Text {
                     text: "hello".into(),
                     text_elements: Vec::new(),
                 }],
             }
+        );
+    }
+
+    #[test]
+    fn preserves_user_message_client_id_from_legacy_event() {
+        let turn_id = "turn-1";
+        let thread_id = ThreadId::new();
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::UserMessage(CoreUserMessageItem {
+                    id: "user-item-id".to_string(),
+                    client_id: Some("client-message-1".to_string()),
+                    content: vec![codex_protocol::user_input::UserInput::Text {
+                        text: "hello".into(),
+                        text_elements: Vec::new(),
+                    }],
+                }),
+                started_at_ms: 0,
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: Some("client-message-1".to_string()),
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::UserMessage {
+                id: "item-1".into(),
+                client_id: Some("client-message-1".to_string()),
+                content: vec![UserInput::Text {
+                    text: "hello".into(),
+                    text_elements: Vec::new(),
+                }],
+            }]
         );
     }
 
@@ -1484,15 +1638,18 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-image".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "generate an image".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             })),
             RolloutItem::EventMsg(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
                 call_id: "ig_123".into(),
@@ -1505,6 +1662,8 @@ mod tests {
                 turn_id: "turn-image".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1522,9 +1681,11 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: vec![
                     ThreadItem::UserMessage {
                         id: "item-1".into(),
+                        client_id: None,
                         content: vec![UserInput::Text {
                             text: "generate an image".into(),
                             text_elements: Vec::new(),
@@ -1546,10 +1707,12 @@ mod tests {
     fn splits_reasoning_when_interleaved() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Turn start".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentReasoning(AgentReasoningEvent {
                 text: "first summary".into(),
@@ -1598,10 +1761,12 @@ mod tests {
     fn marks_turn_as_interrupted_when_aborted() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Please do the thing".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Working...".into(),
@@ -1613,10 +1778,12 @@ mod tests {
                 reason: TurnAbortReason::Replaced,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Let's try again".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Second attempt complete.".into(),
@@ -1639,6 +1806,7 @@ mod tests {
             first_turn.items[0],
             ThreadItem::UserMessage {
                 id: "item-1".into(),
+                client_id: None,
                 content: vec![UserInput::Text {
                     text: "Please do the thing".into(),
                     text_elements: Vec::new(),
@@ -1662,6 +1830,7 @@ mod tests {
             second_turn.items[0],
             ThreadItem::UserMessage {
                 id: "item-3".into(),
+                client_id: None,
                 content: vec![UserInput::Text {
                     text: "Let's try again".into(),
                     text_elements: Vec::new(),
@@ -1683,10 +1852,12 @@ mod tests {
     fn drops_last_turns_on_thread_rollback() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "First".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
@@ -1694,10 +1865,12 @@ mod tests {
                 memory_citation: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Second".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
@@ -1706,10 +1879,12 @@ mod tests {
             }),
             EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Third".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A3".into(),
@@ -1734,6 +1909,7 @@ mod tests {
             vec![
                 ThreadItem::UserMessage {
                     id: "item-1".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "First".into(),
                         text_elements: Vec::new(),
@@ -1752,6 +1928,7 @@ mod tests {
             vec![
                 ThreadItem::UserMessage {
                     id: "item-3".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "Third".into(),
                         text_elements: Vec::new(),
@@ -1771,10 +1948,12 @@ mod tests {
     fn thread_rollback_clears_all_turns_when_num_turns_exceeds_history() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "One".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
@@ -1782,10 +1961,12 @@ mod tests {
                 memory_citation: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Two".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
@@ -1808,26 +1989,33 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Start".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "Steer".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1846,6 +2034,7 @@ mod tests {
             vec![
                 ThreadItem::UserMessage {
                     id: "item-1".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "Start".into(),
                         text_elements: Vec::new(),
@@ -1853,6 +2042,7 @@ mod tests {
                 },
                 ThreadItem::UserMessage {
                     id: "item-2".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "Steer".into(),
                         text_elements: Vec::new(),
@@ -1867,15 +2057,18 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "run tools".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::WebSearchEnd(WebSearchEndEvent {
                 call_id: "search-1".into(),
@@ -1889,6 +2082,7 @@ mod tests {
                 call_id: "exec-1".into(),
                 process_id: Some("pid-1".into()),
                 turn_id: "turn-1".into(),
+                completed_at_ms: 0,
                 command: vec!["echo".into(), "hello world".into()],
                 cwd: test_path_buf("/tmp").abs(),
                 parsed_cmd: vec![ParsedCommand::Unknown {
@@ -1896,6 +2090,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: String::new(),
                 aggregated_output: "hello world\n".into(),
@@ -1912,6 +2107,7 @@ mod tests {
                     arguments: Some(serde_json::json!({"id":"123"})),
                 },
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
             }),
@@ -1942,6 +2138,7 @@ mod tests {
                 command: "echo 'hello world'".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-1".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -1961,6 +2158,7 @@ mod tests {
                 status: McpToolCallStatus::Failed,
                 arguments: serde_json::json!({"id":"123"}),
                 mcp_app_resource_uri: None,
+                plugin_id: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "boom".into(),
@@ -1975,6 +2173,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -1987,6 +2186,7 @@ mod tests {
                     arguments: Some(serde_json::json!({"id":"123"})),
                 },
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
+                plugin_id: Some("sample@test".into()),
                 duration: Duration::from_millis(8),
                 result: Ok(CallToolResult {
                     content: vec![serde_json::json!({
@@ -2017,12 +2217,16 @@ mod tests {
                 status: McpToolCallStatus::Completed,
                 arguments: serde_json::json!({"id":"123"}),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
+                plugin_id: Some("sample@test".into()),
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![serde_json::json!({
                         "type": "text",
                         "text": "result"
                     })],
                     structured_content: Some(serde_json::json!({"id":"123"})),
+                    meta: Some(serde_json::json!({
+                        "ui/resourceUri": "ui://widget/lookup.html"
+                    })),
                 })),
                 error: None,
                 duration_ms: Some(8),
@@ -2035,20 +2239,24 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "run dynamic tool".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::DynamicToolCallRequest(
                 codex_protocol::dynamic_tools::DynamicToolCallRequest {
                     call_id: "dyn-1".into(),
                     turn_id: "turn-1".into(),
+                    started_at_ms: 0,
                     namespace: Some("codex_app".into()),
                     tool: "lookup_ticket".into(),
                     arguments: serde_json::json!({"id":"ABC-123"}),
@@ -2057,6 +2265,7 @@ mod tests {
             EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
                 call_id: "dyn-1".into(),
                 turn_id: "turn-1".into(),
+                completed_at_ms: 0,
                 namespace: Some("codex_app".into()),
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
@@ -2100,6 +2309,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                trace_id: None,
                 started_at: None,
             }),
             EventMsg::ComputerUseCallRequest(
@@ -2159,25 +2369,30 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "run tools".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-declined".into(),
                 process_id: Some("pid-2".into()),
                 turn_id: "turn-1".into(),
+                completed_at_ms: 0,
                 command: vec!["ls".into()],
                 cwd: test_path_buf("/tmp").abs(),
                 parsed_cmd: vec![ParsedCommand::Unknown { cmd: "ls".into() }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: "exec command rejected by user".into(),
                 aggregated_output: "exec command rejected by user".into(),
@@ -2218,6 +2433,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-2".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2247,20 +2463,25 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "review this command".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
                 turn_id: "turn-1".into(),
+                started_at_ms: 1_000,
+                completed_at_ms: None,
                 status: GuardianAssessmentStatus::InProgress,
                 risk_level: None,
                 user_authorization: None,
@@ -2278,6 +2499,8 @@ mod tests {
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
                 turn_id: "turn-1".into(),
+                started_at_ms: 1_000,
+                completed_at_ms: Some(1_042),
                 status: GuardianAssessmentStatus::Denied,
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
                 user_authorization: Some(codex_protocol::approvals::GuardianUserAuthorization::Low),
@@ -2309,6 +2532,7 @@ mod tests {
                 command: "rm -rf /tmp/guardian".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2326,20 +2550,25 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-1".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "run a subcommand".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "review-guardian-execve".into(),
                 target_item_id: Some("guardian-execve".into()),
                 turn_id: "turn-1".into(),
+                started_at_ms: 2_000,
+                completed_at_ms: None,
                 status: GuardianAssessmentStatus::InProgress,
                 risk_level: None,
                 user_authorization: None,
@@ -2370,6 +2599,7 @@ mod tests {
                 command: "/bin/rm -f /tmp/file.sqlite".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
                 command_actions: vec![CommandAction::Unknown {
@@ -2387,40 +2617,49 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "first".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "second".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-late".into(),
                 process_id: Some("pid-42".into()),
                 turn_id: "turn-a".into(),
+                completed_at_ms: 0,
                 command: vec!["echo".into(), "done".into()],
                 cwd: test_path_buf("/tmp").abs(),
                 parsed_cmd: vec![ParsedCommand::Unknown {
@@ -2428,6 +2667,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -2440,6 +2680,8 @@ mod tests {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2463,6 +2705,7 @@ mod tests {
                 command: "echo done".into(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: Some("pid-42".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -2480,40 +2723,49 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "first".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "second".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-unknown-turn".into(),
                 process_id: Some("pid-42".into()),
                 turn_id: "turn-missing".into(),
+                completed_at_ms: 0,
                 command: vec!["echo".into(), "done".into()],
                 cwd: test_path_buf("/tmp").abs(),
                 parsed_cmd: vec![ParsedCommand::Unknown {
@@ -2521,6 +2773,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -2533,6 +2786,8 @@ mod tests {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2553,6 +2808,7 @@ mod tests {
             turns[1].items[0],
             ThreadItem::UserMessage {
                 id: "item-2".into(),
+                client_id: None,
                 content: vec![UserInput::Text {
                     text: "second".into(),
                     text_elements: Vec::new(),
@@ -2568,15 +2824,18 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.to_string(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "apply patch".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
                 call_id: "patch-call".into(),
@@ -2607,6 +2866,7 @@ mod tests {
             vec![
                 ThreadItem::UserMessage {
                     id: "item-1".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "apply patch".into(),
                         text_elements: Vec::new(),
@@ -2632,19 +2892,23 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.to_string(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "apply patch".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
                 call_id: "patch-call".into(),
                 turn_id: turn_id.to_string(),
+                started_at_ms: 0,
                 changes: [(
                     PathBuf::from("README.md"),
                     codex_protocol::protocol::FileChange::Add {
@@ -2672,6 +2936,7 @@ mod tests {
             vec![
                 ThreadItem::UserMessage {
                     id: "item-1".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "apply patch".into(),
                         text_elements: Vec::new(),
@@ -2695,40 +2960,50 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "first".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "second".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2742,6 +3017,8 @@ mod tests {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2764,35 +3041,43 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "first".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "second".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-a".into()),
@@ -2822,6 +3107,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-compact".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
@@ -2829,11 +3115,14 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                window_id: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2850,6 +3139,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: Vec::new(),
             }]
         );
@@ -2859,13 +3149,16 @@ mod tests {
     fn reconstructs_collab_resume_end_item() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "resume agent".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::CollabResumeEnd(codex_protocol::protocol::CollabResumeEndEvent {
                 call_id: "resume-1".into(),
+                completed_at_ms: 0,
                 sender_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
                     .expect("valid sender thread id"),
                 receiver_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000002")
@@ -2916,13 +3209,16 @@ mod tests {
             .expect("valid receiver thread id");
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "spawn agent".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-1".into(),
+                completed_at_ms: 0,
                 sender_thread_id,
                 new_thread_id: Some(spawned_thread_id),
                 new_agent_nickname: Some("Scout".into()),
@@ -2977,14 +3273,17 @@ mod tests {
             .expect("valid receiver thread id");
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "redirect".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::CollabAgentInteractionBegin(
                 codex_protocol::protocol::CollabAgentInteractionBeginEvent {
                     call_id: "send-1".into(),
+                    started_at_ms: 0,
                     sender_thread_id: sender,
                     receiver_thread_id: receiver,
                     prompt: "new task".into(),
@@ -2993,6 +3292,7 @@ mod tests {
             EventMsg::CollabAgentInteractionEnd(
                 codex_protocol::protocol::CollabAgentInteractionEndEvent {
                     call_id: "send-1".into(),
+                    completed_at_ms: 0,
                     sender_thread_id: sender,
                     receiver_thread_id: receiver,
                     receiver_agent_nickname: None,
@@ -3039,10 +3339,12 @@ mod tests {
     fn rollback_failed_error_does_not_mark_turn_failed() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "hello".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "done".into(),
@@ -3070,20 +3372,25 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "hello".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3109,8 +3416,10 @@ mod tests {
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
+                items_view: TurnItemsView::Full,
                 items: vec![ThreadItem::UserMessage {
                     id: "item-1".into(),
+                    client_id: None,
                     content: vec![UserInput::Text {
                         text: "hello".into(),
                         text_elements: Vec::new(),
@@ -3125,15 +3434,18 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "hello".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             }),
             EventMsg::Error(ErrorEvent {
                 message: "stream failure".into(),
@@ -3145,6 +3457,8 @@ mod tests {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3183,21 +3497,26 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
                 message: "hello".into(),
                 images: None,
                 text_elements: Vec::new(),
                 local_images: Vec::new(),
+                ..Default::default()
             })),
             RolloutItem::ResponseItem(hook_prompt),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3231,6 +3550,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-a".into(),
+                trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 started_at: None,
@@ -3247,6 +3567,8 @@ mod tests {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,

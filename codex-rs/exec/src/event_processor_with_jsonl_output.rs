@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
@@ -31,6 +33,8 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+use crate::exec_events::ComputerUseCallItem;
+use crate::exec_events::ComputerUseCallStatus as ExecComputerUseCallStatus;
 use crate::exec_events::DynamicToolCallItem;
 use crate::exec_events::DynamicToolCallStatus as ExecDynamicToolCallStatus;
 use crate::exec_events::ErrorItem;
@@ -227,6 +231,7 @@ impl EventProcessorWithJsonOutput {
                     arguments,
                     result: result.map(|result| McpToolCallItemResult {
                         content: result.content,
+                        meta: result.meta,
                         structured_content: result.structured_content,
                     }),
                     error: error.map(|error| McpToolCallItemError {
@@ -254,6 +259,35 @@ impl EventProcessorWithJsonOutput {
                     },
                     preview: dynamic_tool_preview(content_items.as_deref().unwrap_or_default()),
                     success,
+                    duration_ms,
+                }),
+            }),
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                arguments,
+                content_items,
+                success,
+                error,
+                duration_ms,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
+                    adapter,
+                    tool,
+                    arguments,
+                    status: match status {
+                        ComputerUseCallStatus::InProgress => {
+                            ExecComputerUseCallStatus::InProgress
+                        }
+                        ComputerUseCallStatus::Completed => ExecComputerUseCallStatus::Completed,
+                        ComputerUseCallStatus::Failed => ExecComputerUseCallStatus::Failed,
+                    },
+                    preview: computer_use_preview(content_items.as_deref().unwrap_or_default()),
+                    success,
+                    error,
                     duration_ms,
                 }),
             }),
@@ -427,7 +461,7 @@ impl EventProcessorWithJsonOutput {
 
     pub fn thread_started_event(session_configured: &SessionConfiguredEvent) -> ThreadEvent {
         ThreadEvent::ThreadStarted(ThreadStartedEvent {
-            thread_id: session_configured.session_id.to_string(),
+            thread_id: session_configured.thread_id.to_string(),
         })
     }
 
@@ -713,6 +747,27 @@ fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<St
     (!preview.is_empty()).then_some(preview)
 }
 
+fn computer_use_preview(items: &[ComputerUseCallOutputContentItem]) -> Option<String> {
+    let mut parts = Vec::new();
+    for item in items {
+        match item {
+            ComputerUseCallOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+            ComputerUseCallOutputContentItem::InputImage { .. } => {
+                parts.push("<native screenshot>".to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 impl EventProcessor for EventProcessorWithJsonOutput {
     fn print_config_summary(
         &mut self,
@@ -749,6 +804,10 @@ impl EventProcessor for EventProcessorWithJsonOutput {
 }
 
 #[cfg(test)]
+#[path = "event_processor_with_jsonl_output_tests.rs"]
+mod event_processor_with_jsonl_output_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
@@ -772,6 +831,7 @@ mod tests {
                 },
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
             },
         ));
 
@@ -783,6 +843,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: codex_app_server_protocol::Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Failed,
                     error: Some(codex_app_server_protocol::TurnError {
@@ -794,6 +855,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 

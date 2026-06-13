@@ -19,6 +19,16 @@ artifacts.
   - trigger: pushes and PRs that touch `README.md`, `docs/**`, or its own checker wiring
   - purpose: cheap markdown-link proof whenever documentation moves, without widening into validation-lab
   - retention: ordinary workflow logs only
+- `cancel-pr-runs`
+  - trigger: closed pull requests
+  - purpose: cancel stale PR-scoped workflow runs after a PR is merged or
+    closed so long-running checks such as Rust CodeQL do not keep spending
+    minutes after their pre-merge decision point has passed
+  - protected branch handoff: the cleanup leaves `main` and `upstream-main`
+    push runs alone; after a merge, the `main` push run is the authoritative
+    branch-tip proof and surfaces CodeQL findings through repository code
+    scanning rather than as live PR feedback
+  - retention: ordinary workflow logs only
 - `codeql`
   - trigger: PRs, protected branch pushes, schedule, and manual dispatch
   - purpose: authoritative CodeQL code scanning through the checked-in advanced
@@ -86,6 +96,8 @@ artifacts.
   - trigger: Sedna release tags or manual dispatch
   - purpose: official public Linux `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
+  - public boundary: builds, signs, publishes, and verifies public release assets only; host-local
+    installation is intentionally left to external deployment automation
 - `sedna-sync-upstream`
   - trigger: manual dispatch and scheduled sync
   - purpose: fast-forward `upstream-main` from `upstream/main` and run the
@@ -106,11 +118,12 @@ artifacts.
 1. Edit locally.
 2. Run the smallest relevant local smoke check.
 3. Commit and push.
-4. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
+4. Open a pull request to `origin/main` for completed branch work; a pushed branch without a PR is not a handoff.
+5. Use `validation-lab` for ordinary remote-first validation on `validation/*`, `integration/*`,
    or other non-PR refs.
-5. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
+6. Let `docs-sanity` answer documentation-only changes first instead of manually dispatching
    `validation-lab`.
-6. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
+7. Let `rust-ci` handle routine PR gating; tiny initial PRs and already-green
    PR follow-up pushes may route to incremental targeted validation
    automatically when the relevant diff is small and maps cleanly to one
    guarded seam (a pre-mapped, narrow change boundary the planner can verify
@@ -147,6 +160,22 @@ artifacts.
 - Parked but unsupported for now: macOS, Windows, Linux arm64, and other historical upstream targets
 - Scheduled and routine heavyweight CI should stay Linux `x86_64` only until Sedna deliberately
   re-enables another platform with matching docs, workflow, and release-policy updates
+
+## Public/operator boundary
+
+Tracked GitHub workflows are public architecture and release-governance
+surfaces. They may build artifacts, publish GitHub Releases, verify already
+published assets, and run upstreamability or validation checks.
+
+Tracked workflows must not become the host-local deployment surface. Keep
+hostnames, tunnel details, runner labels, service managers, installation paths,
+and operator machine routing out of public workflow files, public logs, public
+docs, branch names, and release notes. Use generalized wording such as
+external deployment automation when public docs need to name the boundary.
+
+The workflow policy checker enforces the high-risk parts of this boundary:
+public workflows may not use self-hosted runners, and release-install
+verification must stay dry-run-only from the public Actions surface.
 
 ## Validation ladder
 
@@ -312,6 +341,11 @@ The important fields are:
 - validation-lab also keeps the target checkout shallow for ordinary
   smoke/targeted/frontier runs; it only fetches full target history when
   artifact mode needs merged Sedna tags for preview-version derivation
+- validation-lab exposes `fanout_tier=balanced|enterprise|soak`; `enterprise`
+  is the default hosted-runner tier, while `soak` is reserved for explicit
+  capacity probes, and the planner rejects plans above 256 matrix/artifact jobs
+- validation-lab exposes `rust_batching=auto|off|force` so selected Rust lanes
+  can use the shared Rust batch workflow and report batch-aware summaries
 - reusable validation-lane workflows also resolve shared helper scripts from a
   separate `.workflow-src` checkout at the workflow ref, so older PR heads can
   keep running under newer lane-helper contracts without carrying helper copies

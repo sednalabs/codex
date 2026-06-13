@@ -19,7 +19,7 @@ pub(super) struct ThreadEventSnapshot {
 pub(super) enum ThreadBufferedEvent {
     Notification(ServerNotification),
     Request(ServerRequest),
-    HistoryEntryResponse(GetHistoryEntryResponseEvent),
+    HistoryEntryResponse(HistoryLookupResponse),
     FeedbackSubmission(FeedbackThreadEvent),
 }
 
@@ -29,6 +29,12 @@ pub(super) struct FeedbackThreadEvent {
     pub(super) include_logs: bool,
     pub(super) feedback_audience: FeedbackAudience,
     pub(super) result: Result<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ThreadEventAttachment {
+    Live,
+    ReplayOnly,
 }
 
 #[derive(Debug)]
@@ -50,6 +56,7 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -104,10 +111,10 @@ impl ThreadEventStore {
             ServerNotification::TurnStarted(turn) => {
                 self.active_turn_id = Some(turn.turn.id.clone());
             }
-            ServerNotification::TurnCompleted(turn) => {
-                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
-                    self.active_turn_id = None;
-                }
+            ServerNotification::TurnCompleted(turn)
+                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) =>
+            {
+                self.active_turn_id = None;
             }
             ServerNotification::ThreadClosed(_) => {
                 self.active_turn_id = None;
@@ -155,6 +162,40 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .collect()
+    }
+
+    pub(super) fn file_change_changes(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Option<Vec<codex_app_server_protocol::FileUpdateChange>> {
+        self.buffer
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ThreadBufferedEvent::Notification(ServerNotification::ItemStarted(
+                    notification,
+                )) if turn_id_matches(turn_id, &notification.turn_id) => {
+                    file_change_item_changes(&notification.item, item_id)
+                }
+                ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(
+                    notification,
+                )) if turn_id_matches(turn_id, &notification.turn_id) => {
+                    file_change_item_changes(&notification.item, item_id)
+                }
+                ThreadBufferedEvent::Request(_)
+                | ThreadBufferedEvent::Notification(_)
+                | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::FeedbackSubmission(_) => None,
+            })
+            .or_else(|| {
+                self.turns
+                    .iter()
+                    .rev()
+                    .filter(|turn| turn_id_matches(turn_id, &turn.id))
+                    .flat_map(|turn| turn.items.iter().rev())
+                    .find_map(|item| file_change_item_changes(item, item_id))
+            })
     }
 
     pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
@@ -231,11 +272,26 @@ impl ThreadEventStore {
     }
 }
 
+fn turn_id_matches(request_turn_id: &str, candidate_turn_id: &str) -> bool {
+    request_turn_id.is_empty() || request_turn_id == candidate_turn_id
+}
+
+fn file_change_item_changes(
+    item: &ThreadItem,
+    item_id: &str,
+) -> Option<Vec<codex_app_server_protocol::FileUpdateChange>> {
+    match item {
+        ThreadItem::FileChange { id, changes, .. } if id == item_id => Some(changes.clone()),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
     pub(super) receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     pub(super) store: Arc<Mutex<ThreadEventStore>>,
+    attachment: ThreadEventAttachment,
 }
 
 impl ThreadEventChannel {
@@ -245,7 +301,16 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
+            attachment: ThreadEventAttachment::Live,
         }
+    }
+
+    pub(super) fn mark_replay_only(&mut self) {
+        self.attachment = ThreadEventAttachment::ReplayOnly;
+    }
+
+    pub(super) fn attachment(&self) -> ThreadEventAttachment {
+        self.attachment
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -261,6 +326,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
+            attachment: ThreadEventAttachment::Live,
         }
     }
 }
@@ -270,6 +336,7 @@ mod tests {
     use super::*;
     use crate::test_support::PathBufExt;
     use crate::test_support::test_path_buf;
+    use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::HookCompletedNotification;
     use codex_app_server_protocol::HookEventName as AppServerHookEventName;
@@ -286,8 +353,6 @@ mod tests {
     use codex_app_server_protocol::TurnStartedNotification;
     use codex_config::types::ApprovalsReviewer;
     use codex_protocol::models::PermissionProfile;
-    use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -302,13 +367,15 @@ mod tests {
             service_tier: None,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: Some(PermissionProfile::read_only()),
+            permission_profile: PermissionProfile::read_only(),
+            active_permission_profile: None,
             cwd: cwd.abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            collaboration_mode: None,
+            personality: None,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         }
@@ -317,6 +384,7 @@ mod tests {
     fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
             items,
             status,
             error: None,
@@ -348,6 +416,8 @@ mod tests {
                 duration_ms: Some(1),
                 ..test_turn(turn_id, status, Vec::new())
             },
+            final_model: None,
+            model_snapshot: None,
         })
     }
 
@@ -418,6 +488,7 @@ mod tests {
                 thread_id: thread_id.to_string(),
                 turn_id: turn_id.to_string(),
                 item_id: item_id.to_string(),
+                started_at_ms: 0,
                 approval_id: approval_id.map(str::to_string),
                 reason: Some("needs approval".to_string()),
                 network_approval_context: None,
@@ -537,6 +608,33 @@ mod tests {
                 serde_json::to_value(hook_completed_notification(thread_id, "turn-hook"))
                     .expect("hook notification should serialize"),
             ]
+        );
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_mcp_startup_notifications() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::McpServerStatusUpdated(
+            codex_app_server_protocol::McpServerStatusUpdatedNotification {
+                thread_id: Some(thread_id.to_string()),
+                name: "sentry".to_string(),
+                status: codex_app_server_protocol::McpServerStartupState::Failed,
+                error: Some("sentry is not logged in".to_string()),
+            },
+        );
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(notification.clone());
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let actual = match snapshot.events.as_slice() {
+            [ThreadBufferedEvent::Notification(actual)] => actual,
+            other => panic!("expected one buffered MCP notification, saw: {other:?}"),
+        };
+        assert_eq!(
+            serde_json::to_value(actual).expect("MCP notification should serialize"),
+            serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
     }
 }

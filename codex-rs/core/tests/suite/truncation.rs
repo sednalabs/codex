@@ -5,11 +5,12 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
+use core_test_support::TempDirExt;
 use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
@@ -21,8 +22,10 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_mcp_server;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -82,7 +85,10 @@ async fn tool_call_output_configured_limit_chars_type() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("trigger big shell output", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile(
+            "trigger big shell output",
+            PermissionProfile::Disabled,
+        )
         .await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
@@ -156,7 +162,10 @@ async fn tool_call_output_exceeds_limit_truncated_chars_limit() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("trigger big shell output", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile(
+            "trigger big shell output",
+            PermissionProfile::Disabled,
+        )
         .await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
@@ -229,7 +238,10 @@ async fn tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("trigger big shell output", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile(
+            "trigger big shell output",
+            PermissionProfile::Disabled,
+        )
         .await?;
 
     // Inspect what we sent back to the model; it should contain a truncated
@@ -303,7 +315,10 @@ async fn tool_call_output_truncated_only_once() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("trigger big shell output", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile(
+            "trigger big shell output",
+            PermissionProfile::Disabled,
+        )
         .await?;
 
     let output = mock2
@@ -331,7 +346,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
 
     let call_id = "rmcp-truncated";
     let server_name = "rmcp";
-    let namespace = format!("mcp__{server_name}__");
+    let namespace = format!("mcp__{server_name}");
 
     // Build a very large message to exceed 10KiB once serialized.
     let large_msg = "long-message-with-newlines-".repeat(6000);
@@ -375,7 +390,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
                     env_vars: Vec::new(),
                     cwd: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -385,11 +400,12 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
-                scopes: None,
                 enable_elicitation: false,
                 read_only: false,
                 strict_tool_classification: false,
                 require_approval_for_mutating: false,
+                scopes: None,
+                oauth: None,
                 oauth_resource: None,
                 tools: HashMap::new(),
             },
@@ -401,11 +417,12 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
         config.tool_output_token_limit = Some(500);
     });
     let fixture = builder.build(&server).await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .submit_turn_with_policy(
+        .submit_turn_with_permission_profile(
             "call the rmcp echo tool with a very large message",
-            SandboxPolicy::new_read_only_policy(),
+            PermissionProfile::read_only(),
         )
         .await?;
 
@@ -437,7 +454,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
 
     let call_id = "rmcp-image-no-trunc";
     let server_name = "rmcp";
-    let namespace = format!("mcp__{server_name}__");
+    let namespace = format!("mcp__{server_name}");
 
     mount_sse_once(
         &server,
@@ -478,7 +495,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
                     env_vars: Vec::new(),
                     cwd: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -488,11 +505,12 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
-                scopes: None,
                 enable_elicitation: false,
                 read_only: false,
                 strict_tool_classification: false,
                 require_approval_for_mutating: false,
+                scopes: None,
+                oauth: None,
                 oauth_resource: None,
                 tools: HashMap::new(),
             },
@@ -503,28 +521,36 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
             .expect("test mcp servers should accept any configuration");
     });
     let fixture = builder.build(&server).await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
     let session_model = fixture.session_configured.model.clone();
+    let permission_profile = PermissionProfile::read_only();
+    let sandbox_policy = permission_profile.to_legacy_sandbox_policy(fixture.cwd.path())?;
 
     fixture
         .codex
-        .submit(Op::UserTurn {
-            environments: None,
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "call the rmcp image tool".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: fixture.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(local_selections(fixture.cwd.abs())),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile: Some(permission_profile),
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: session_model,
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
         })
         .await?;
 
@@ -585,7 +611,7 @@ async fn token_policy_marker_reports_tokens() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("run the shell tool", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile("run the shell tool", PermissionProfile::Disabled)
         .await?;
 
     let output = done_mock
@@ -636,7 +662,7 @@ async fn byte_policy_marker_reports_bytes() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy("run the shell tool", SandboxPolicy::DangerFullAccess)
+        .submit_turn_with_permission_profile("run the shell tool", PermissionProfile::Disabled)
         .await?;
 
     let output = done_mock
@@ -688,9 +714,9 @@ async fn shell_command_output_not_truncated_with_custom_limit() -> Result<()> {
     .await;
 
     fixture
-        .submit_turn_with_policy(
+        .submit_turn_with_permission_profile(
             "run big output without truncation",
-            SandboxPolicy::DangerFullAccess,
+            PermissionProfile::Disabled,
         )
         .await?;
 
@@ -720,7 +746,7 @@ async fn mcp_tool_call_output_not_truncated_with_custom_limit() -> Result<()> {
 
     let call_id = "rmcp-untruncated";
     let server_name = "rmcp";
-    let namespace = format!("mcp__{server_name}__");
+    let namespace = format!("mcp__{server_name}");
     let large_msg = "a".repeat(80_000);
     let args_json = serde_json::json!({ "message": large_msg });
 
@@ -762,7 +788,7 @@ async fn mcp_tool_call_output_not_truncated_with_custom_limit() -> Result<()> {
                     env_vars: Vec::new(),
                     cwd: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -772,11 +798,12 @@ async fn mcp_tool_call_output_not_truncated_with_custom_limit() -> Result<()> {
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
-                scopes: None,
                 enable_elicitation: false,
                 read_only: false,
                 strict_tool_classification: false,
                 require_approval_for_mutating: false,
+                scopes: None,
+                oauth: None,
                 oauth_resource: None,
                 tools: HashMap::new(),
             },
@@ -787,11 +814,12 @@ async fn mcp_tool_call_output_not_truncated_with_custom_limit() -> Result<()> {
             .expect("test mcp servers should accept any configuration");
     });
     let fixture = builder.build(&server).await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .submit_turn_with_policy(
+        .submit_turn_with_permission_profile(
             "call the rmcp echo tool with a very large message",
-            SandboxPolicy::new_read_only_policy(),
+            PermissionProfile::read_only(),
         )
         .await?;
 

@@ -1,17 +1,12 @@
 #![cfg(not(target_os = "windows"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashMap;
 use std::fs;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
-use codex_config::Constrained;
-use codex_config::types::McpServerConfig;
-use codex_config::types::McpServerTransportConfig;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
@@ -21,8 +16,6 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::SandboxPolicy;
-use codex_protocol::protocol::TurnEnvironmentSelection;
 use core_test_support::assert_regex_match;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -35,13 +28,11 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_sandbox;
-use core_test_support::stdio_server_bin;
+use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
 use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
-use serial_test::serial;
-use tempfile::TempDir;
 
 fn tool_names(body: &Value) -> Vec<String> {
     body.get("tools")
@@ -58,24 +49,6 @@ fn tool_names(body: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn ev_namespaced_function_call(
-    call_id: &str,
-    namespace: &str,
-    name: &str,
-    arguments: &str,
-) -> Value {
-    json!({
-        "type": "response.output_item.done",
-        "item": {
-            "type": "function_call",
-            "call_id": call_id,
-            "namespace": namespace,
-            "name": name,
-            "arguments": arguments,
-        }
-    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -98,7 +71,6 @@ async fn empty_turn_environments_omits_environment_backed_tools() -> Result<()> 
             .features
             .enable(Feature::UnifiedExec)
             .expect("unified exec should enable for test");
-        config.include_apply_patch_tool = true;
     });
     let test = builder.build(&server).await?;
 
@@ -145,10 +117,7 @@ async fn turn_environment_selection_keeps_environment_backed_tools() -> Result<(
 
     test.submit_turn_with_environments(
         "which tools are available?",
-        Some(vec![TurnEnvironmentSelection {
-            environment_id: "local".to_string(),
-            cwd: test.config.cwd.clone(),
-        }]),
+        Some(vec![local(test.config.cwd.clone())]),
     )
     .await?;
 
@@ -190,10 +159,10 @@ async fn custom_tool_unknown_returns_custom_output_error() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "invoke custom tool",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -209,171 +178,26 @@ async fn custom_tool_unknown_returns_custom_output_error() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(mcp_test_value)]
-async fn historical_unavailable_mcp_call_is_exposed_as_placeholder_tool() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let historical_call_id = "historical-mcp-call";
-    let retry_call_id = "retry-mcp-call";
-    let server_name = "rmcp";
-    let unavailable_tool_namespace = "mcp__rmcp__";
-    let unavailable_tool_name = "echo";
-    let unavailable_tool_display_name = "mcp__rmcp__echo";
-    let server = start_mock_server().await;
-    let rmcp_test_server_bin = match stdio_server_bin() {
-        Ok(bin) => bin,
-        Err(err) => {
-            eprintln!("test_stdio_server binary not available, skipping test: {err}");
-            return Ok(());
-        }
-    };
-    let codex_home = Arc::new(TempDir::new()?);
-    let mut builder = test_codex()
-        .with_model("gpt-5.4")
-        .with_home(Arc::clone(&codex_home))
-        .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::UnavailableDummyTools)
-                .expect("unavailable dummy tools should be enabled for this test");
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                server_name.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: Some(HashMap::new()),
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    experimental_environment: None,
-                    enabled: true,
-                    required: false,
-                    enable_elicitation: false,
-                    read_only: false,
-                    strict_tool_classification: false,
-                    require_approval_for_mutating: false,
-                    supports_parallel_tool_calls: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    default_tools_approval_mode: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                    oauth_resource: None,
-                    tools: HashMap::new(),
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-        });
-    let test = builder.build(&server).await?;
-
-    let first_turn_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                ev_namespaced_function_call(
-                    historical_call_id,
-                    unavailable_tool_namespace,
-                    unavailable_tool_name,
-                    r#"{"message":"ping"}"#,
-                ),
-                ev_completed("resp-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-1", "rmcp echo tool completed"),
-                ev_completed("resp-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    test.submit_turn("call the rmcp echo tool").await?;
-    let rollout_path = test.codex.rollout_path().context("rollout path")?;
-    assert_eq!(first_turn_mock.requests().len(), 2);
-    drop(test);
-
-    let retry_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-3"),
-                ev_namespaced_function_call(
-                    retry_call_id,
-                    unavailable_tool_namespace,
-                    unavailable_tool_name,
-                    r#"{"message":"ping again"}"#,
-                ),
-                ev_completed("resp-3"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-4"),
-                ev_assistant_message("msg-2", "done"),
-                ev_completed("resp-4"),
-            ]),
-        ],
-    )
-    .await;
-
-    let mut resume_builder = test_codex().with_model("gpt-5.4").with_config(|config| {
-        config
-            .features
-            .enable(Feature::UnavailableDummyTools)
-            .expect("unavailable dummy tools should be enabled for this test");
-    });
-    let test = resume_builder
-        .resume(&server, codex_home, rollout_path)
-        .await?;
-
-    test.submit_turn("retry the rmcp echo tool").await?;
-
-    let requests = retry_mock.requests();
-    assert_eq!(requests.len(), 2);
-    let first_request_tools = tool_names(&requests[0].body_json());
-    assert!(
-        first_request_tools
-            .iter()
-            .any(|name| name == unavailable_tool_display_name),
-        "historical unavailable MCP call should add a placeholder tool; got {first_request_tools:?}"
-    );
-    let output_text = requests[1]
-        .function_call_output_text(retry_call_id)
-        .context("placeholder tool output present")?;
-    assert!(output_text.contains("not currently available"));
-    assert!(
-        !output_text.contains("unsupported call"),
-        "placeholder handler should answer instead of falling back to unsupported call: {output_text}"
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
+async fn shell_command_escalated_permissions_rejected_then_ok() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("test-shell-json");
+    let mut builder = test_codex().with_model("test-gpt-5-codex");
     let test = builder.build(&server).await?;
 
-    let command = ["/bin/echo", "shell ok"];
-    let call_id_blocked = "shell-blocked";
-    let call_id_success = "shell-success";
+    let command = "echo shell ok";
+    let call_id_blocked = "shell-command-blocked";
+    let call_id_success = "shell-command-success";
 
     let first_args = json!({
         "command": command,
+        "login": false,
         "timeout_ms": 1_000,
         "sandbox_permissions": SandboxPermissions::RequireEscalated,
     });
     let second_args = json!({
         "command": command,
+        "login": false,
         "timeout_ms": 1_000,
     });
 
@@ -383,7 +207,7 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
             ev_response_created("resp-1"),
             ev_function_call(
                 call_id_blocked,
-                "shell",
+                "shell_command",
                 &serde_json::to_string(&first_args)?,
             ),
             ev_completed("resp-1"),
@@ -396,7 +220,7 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
             ev_response_created("resp-2"),
             ev_function_call(
                 call_id_success,
-                "shell",
+                "shell_command",
                 &serde_json::to_string(&second_args)?,
             ),
             ev_completed("resp-2"),
@@ -412,10 +236,10 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
-        "run the shell command",
+    test.submit_turn_with_approval_and_permission_profile(
+        "run the shell_command script",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -439,49 +263,41 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
         .function_call_output_content_and_success(call_id_success)
         .and_then(|(content, _)| content)
         .expect("success output string");
-    let output_json: Value = serde_json::from_str(&success_output)?;
-    assert_eq!(
-        output_json["metadata"]["exit_code"].as_i64(),
-        Some(0),
-        "expected exit code 0 after rerunning without escalation",
+    assert_regex_match(
+        r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\nshell ok\n?$",
+        &success_output,
     );
-    let stdout = output_json["output"].as_str().unwrap_or_default();
-    let stdout_pattern = r"(?s)^shell ok\n?$";
-    assert_regex_match(stdout_pattern, stdout);
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
+async fn sandbox_denied_shell_command_returns_original_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("gpt-5.4");
     let fixture = builder.build(&server).await?;
 
-    let call_id = "sandbox-denied-shell";
+    let call_id = "sandbox-denied-shell-command";
     let target_path = fixture.workspace_path("sandbox-denied.txt");
     let sentinel = "sandbox-denied sentinel output";
-    let command = vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "printf {sentinel:?}; printf {content:?} > {path:?}",
-            sentinel = format!("{sentinel}\n"),
-            content = "sandbox denied",
-            path = &target_path
-        ),
-    ];
+    let command = format!(
+        "printf {sentinel:?}; printf {content:?} > {path:?}",
+        sentinel = format!("{sentinel}\n"),
+        content = "sandbox denied",
+        path = &target_path
+    );
     let args = json!({
         "command": command,
+        "login": false,
         "timeout_ms": 5_000,
     });
 
     let responses = vec![
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
         sse(vec![
@@ -492,9 +308,9 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
     let mock = mount_sse_sequence(&server, responses).await;
 
     fixture
-        .submit_turn_with_policy(
+        .submit_turn_with_permission_profile(
             "run a command that should be denied by the read-only sandbox",
-            SandboxPolicy::new_read_only_policy(),
+            PermissionProfile::read_only(),
         )
         .await?;
 
@@ -546,19 +362,14 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
+async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let read_only_policy = SandboxPolicy::new_read_only_policy();
-    let read_only_policy_for_config = read_only_policy.clone();
     let mut builder = test_codex()
         .with_model("gpt-5.4")
         .with_config(move |config| {
-            config
-                .set_legacy_sandbox_policy(read_only_policy_for_config)
-                .expect("set sandbox policy");
             let mut file_system_sandbox_policy = FileSystemSandboxPolicy::default();
             file_system_sandbox_policy
                 .entries
@@ -566,13 +377,15 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
                     path: FileSystemPath::GlobPattern {
                         pattern: format!("{}/**/*.env", config.cwd.as_path().display()),
                     },
-                    access: FileSystemAccessMode::None,
+                    access: FileSystemAccessMode::Deny,
                 });
-            config.permissions.permission_profile =
-                Constrained::allow_any(PermissionProfile::from_runtime_permissions(
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::from_runtime_permissions(
                     &file_system_sandbox_policy,
                     NetworkSandboxPolicy::Restricted,
-                ));
+                ))
+                .expect("set permission profile");
         });
     let fixture = builder.build(&server).await?;
 
@@ -585,24 +398,22 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
     fs::write(&denied_path, format!("{secret}\n")).context("write denied fixture")?;
     fs::write(&allowed_path, format!("{allowed}\n")).context("write allowed fixture")?;
 
-    let call_id = "shell-glob-deny-read";
-    let command = vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        "status=0; cat \"$1\" || status=$?; cat \"$2\"; exit \"$status\"".to_string(),
-        "sh".to_string(),
-        denied_path.to_string_lossy().into_owned(),
-        allowed_path.to_string_lossy().into_owned(),
-    ];
+    let call_id = "shell-command-glob-deny-read";
+    let command = format!(
+        "rc=0; cat {denied_path:?} || rc=$?; cat {allowed_path:?}; exit \"$rc\"",
+        denied_path = denied_path.to_string_lossy(),
+        allowed_path = allowed_path.to_string_lossy(),
+    );
     let args = json!({
         "command": command,
+        "login": false,
         "timeout_ms": 1_000,
     });
 
     let responses = vec![
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
         sse(vec![
@@ -612,8 +423,9 @@ async fn shell_enforces_glob_deny_read_policy() -> Result<()> {
     ];
     let mock = mount_sse_sequence(&server, responses).await;
 
+    let permission_profile = fixture.session_configured.permission_profile.clone();
     fixture
-        .submit_turn_with_policy("read the fixture files", read_only_policy)
+        .submit_turn_with_permission_profile("read the fixture files", permission_profile)
         .await?;
 
     let output_text = mock
@@ -679,10 +491,10 @@ async fn collect_tools(use_unified_exec: bool) -> Result<Vec<String>> {
     });
     let test = builder.build(&server).await?;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "list tools",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -718,17 +530,18 @@ async fn unified_exec_spec_toggle_end_to_end() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
+async fn shell_command_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("test-shell-json");
+    let mut builder = test_codex().with_model("test-gpt-5-codex");
     let test = builder.build(&server).await?;
 
-    let call_id = "shell-timeout";
+    let call_id = "shell-command-timeout";
     let timeout_ms = 50u64;
     let args = json!({
-        "command": ["/bin/sh", "-c", "yes line | head -n 400; sleep 1"],
+        "command": "yes line | head -n 400; sleep 1",
+        "login": false,
         "timeout_ms": timeout_ms,
     });
 
@@ -736,7 +549,7 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
     )
@@ -750,10 +563,10 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
     )
     .await;
 
-    test.submit_turn_with_policies(
+    test.submit_turn_with_approval_and_permission_profile(
         "run a long command",
         AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
+        PermissionProfile::Disabled,
     )
     .await?;
 
@@ -780,6 +593,20 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
             "timeout output missing `command timed out`: {stdout}"
         );
     } else {
+        let normalized_output = output_str
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .trim_end_matches('\n')
+            .to_string();
+
+        let shell_output_pattern = r"(?s)^Exit code: 124\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\ncommand timed out after [0-9]+ milliseconds\n(?:.*)?$";
+        if Regex::new(shell_output_pattern)
+            .expect("shell timeout output regex should compile")
+            .is_match(&normalized_output)
+        {
+            return Ok(());
+        }
+
         // Fallback: accept the signal classification path to deflake the test.
         let signal_pattern = r"(?is)^execution error:.*signal.*$";
         assert_regex_match(signal_pattern, output_str);
@@ -789,18 +616,19 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_timeout_handles_background_grandchild_stdout() -> Result<()> {
+async fn shell_command_timeout_handles_background_grandchild_stdout() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
         config
-            .set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess)
-            .expect("set sandbox policy");
+            .permissions
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("set permission profile");
     });
     let test = builder.build(&server).await?;
 
-    let call_id = "shell-grandchild-timeout";
+    let call_id = "shell-command-grandchild-timeout";
     let pid_path = test.cwd.path().join("grandchild_pid.txt");
     let script_path = test.cwd.path().join("spawn_detached.py");
     let script = format!(
@@ -817,7 +645,8 @@ time.sleep(60)
     fs::write(&script_path, script)?;
 
     let args = json!({
-        "command": ["python3", script_path.to_string_lossy()],
+        "command": format!("python3 {:?}", script_path.to_string_lossy()),
+        "login": false,
         "timeout_ms": 200,
     });
 
@@ -825,7 +654,7 @@ time.sleep(60)
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
     )
@@ -841,10 +670,10 @@ time.sleep(60)
 
     let start = Instant::now();
     let output_str = tokio::time::timeout(Duration::from_secs(10), async {
-        test.submit_turn_with_policies(
+        test.submit_turn_with_approval_and_permission_profile(
             "run a command with a detached grandchild",
             AskForApproval::Never,
-            SandboxPolicy::DangerFullAccess,
+            PermissionProfile::Disabled,
         )
         .await?;
         let timeout_item = second_mock.single_request().function_call_output(call_id);
@@ -879,84 +708,6 @@ time.sleep(60)
     {
         unsafe { libc::kill(pid, libc::SIGKILL) };
     }
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(|cfg| {
-        cfg.set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess)
-            .expect("set sandbox policy");
-    });
-    let test = builder.build(&server).await?;
-
-    let call_id = "shell-spawn-failure";
-    let bogus_component = "missing-bin-".repeat(700);
-    let bogus_exe = test
-        .cwd
-        .path()
-        .join(bogus_component)
-        .to_string_lossy()
-        .into_owned();
-
-    let args = json!({
-        "command": [bogus_exe],
-        "timeout_ms": 1_000,
-    });
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    let second_mock = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
-    )
-    .await;
-
-    test.submit_turn_with_policies(
-        "spawn a missing binary",
-        AskForApproval::Never,
-        SandboxPolicy::DangerFullAccess,
-    )
-    .await?;
-
-    let failure_item = second_mock.single_request().function_call_output(call_id);
-
-    let output = failure_item
-        .get("output")
-        .and_then(Value::as_str)
-        .expect("spawn failure output string");
-
-    let spawn_error_pattern = r#"(?s)^Exit code: -?\d+
-Wall time: [0-9]+(?:\.[0-9]+)? seconds
-Output:
-execution error: .*$"#;
-    let spawn_truncated_pattern = r#"(?s)^Exit code: -?\d+
-Wall time: [0-9]+(?:\.[0-9]+)? seconds
-Total output lines: \d+
-Output:
-
-execution error: .*$"#;
-    let spawn_error_regex = Regex::new(spawn_error_pattern)?;
-    let spawn_truncated_regex = Regex::new(spawn_truncated_pattern)?;
-    if !spawn_error_regex.is_match(output) && !spawn_truncated_regex.is_match(output) {
-        let fallback_pattern = r"(?s)^execution error: .*$";
-        assert_regex_match(fallback_pattern, output);
-    }
-    assert!(output.len() <= 10 * 1024);
 
     Ok(())
 }

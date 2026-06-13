@@ -20,7 +20,6 @@ use tokio::process::Command;
 
 use crate::ExecServerRuntimePaths;
 use crate::FileSystemSandboxContext;
-use crate::file_system::file_system_policy_has_cwd_dependent_entries;
 use crate::fs_helper::CODEX_FS_HELPER_ARG1;
 use crate::fs_helper::FsHelperPayload;
 use crate::fs_helper::FsHelperRequest;
@@ -30,6 +29,15 @@ use crate::rpc::internal_error;
 use crate::rpc::invalid_request;
 
 const FS_HELPER_ENV_ALLOWLIST: &[&str] = &["PATH", "TMPDIR", "TMP", "TEMP"];
+#[cfg(debug_assertions)]
+const FS_HELPER_BAZEL_BWRAP_ENV_ALLOWLIST: &[&str] = &[
+    "CARGO_BIN_EXE_bwrap",
+    "RUNFILES_DIR",
+    "RUNFILES_MANIFEST_FILE",
+    "RUNFILES_MANIFEST_ONLY",
+    "TEST_SRCDIR",
+    "TEST_WORKSPACE",
+];
 
 #[derive(Clone, Debug)]
 pub(crate) struct FileSystemSandboxRunner {
@@ -115,10 +123,9 @@ fn sandbox_cwd(sandbox: &FileSystemSandboxContext) -> Result<AbsolutePathBuf, JS
         return Ok(cwd.clone());
     }
 
-    let file_system_policy = sandbox.permissions.file_system_sandbox_policy();
-    if file_system_policy_has_cwd_dependent_entries(&file_system_policy) {
+    if sandbox.has_cwd_dependent_permissions() {
         return Err(invalid_request(
-            "file system sandbox context with cwd-relative permissions requires cwd".to_string(),
+            "file system sandbox context with dynamic permissions requires cwd".to_string(),
         ));
     }
 
@@ -130,7 +137,7 @@ fn sandbox_cwd(sandbox: &FileSystemSandboxContext) -> Result<AbsolutePathBuf, JS
 fn helper_read_roots(runtime_paths: &ExecServerRuntimePaths) -> Vec<AbsolutePathBuf> {
     let mut roots = Vec::new();
     for path in std::iter::once(runtime_paths.codex_self_exe.as_path())
-        .chain(runtime_paths.codex_linux_sandbox_exe.as_deref().into_iter())
+        .chain(runtime_paths.codex_linux_sandbox_exe.as_deref())
     {
         if let Some(parent) = path.parent()
             && let Ok(root) = AbsolutePathBuf::from_absolute_path(parent)
@@ -222,7 +229,21 @@ fn helper_env_from_vars(
 }
 
 fn helper_env_key_is_allowed(key: &str) -> bool {
-    FS_HELPER_ENV_ALLOWLIST.contains(&key) || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+    FS_HELPER_ENV_ALLOWLIST.contains(&key)
+        // CoreFoundation consults this before falling back to user lookup during helper startup.
+        || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
+        || bazel_bwrap_env_key_is_allowed(key)
+        || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+}
+
+#[cfg(debug_assertions)]
+fn bazel_bwrap_env_key_is_allowed(key: &str) -> bool {
+    option_env!("BAZEL_PACKAGE").is_some() && FS_HELPER_BAZEL_BWRAP_ENV_ALLOWLIST.contains(&key)
+}
+
+#[cfg(not(debug_assertions))]
+fn bazel_bwrap_env_key_is_allowed(_key: &str) -> bool {
+    false
 }
 
 async fn run_command(
@@ -279,6 +300,7 @@ fn spawn_command(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.kill_on_drop(true);
     command.spawn().map_err(io_error)
 }
 
@@ -414,6 +436,26 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_env_preserves_corefoundation_text_encoding() {
+        let env = helper_env_from_vars(
+            [
+                ("__CF_USER_TEXT_ENCODING", "0x1F6:0x0:0x0"),
+                ("HOME", "/Users/test"),
+            ]
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
+
+        assert_eq!(
+            env,
+            HashMap::from([(
+                "__CF_USER_TEXT_ENCODING".to_string(),
+                "0x1F6:0x0:0x0".to_string(),
+            )])
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn helper_env_preserves_windows_path_key_for_system_bwrap_discovery() {
@@ -467,7 +509,7 @@ mod tests {
         let cwd = AbsolutePathBuf::from_absolute_path(std::env::temp_dir().as_path())
             .expect("absolute cwd");
         let policy = restricted_policy(vec![special_entry(
-            FileSystemSpecialPath::CurrentWorkingDirectory,
+            FileSystemSpecialPath::project_roots(/*subpath*/ None),
             FileSystemAccessMode::Write,
         )]);
         let sandbox_context = sandbox_context_with_cwd(&policy, cwd.clone());
@@ -479,7 +521,7 @@ mod tests {
     fn sandbox_cwd_rejects_cwd_dependent_profile_without_context_cwd() {
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Special {
-                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
         }]);
@@ -491,7 +533,7 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "file system sandbox context with cwd-relative permissions requires cwd"
+            "file system sandbox context with dynamic permissions requires cwd"
         );
     }
 

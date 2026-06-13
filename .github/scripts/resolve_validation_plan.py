@@ -30,9 +30,113 @@ ORDERED_SETUP_CLASSES = [
 RUST_BATCH_SETUP_CLASSES = {"rust_minimal", "rust_integration"}
 RUST_BATCH_AUTO_MIN_LANES = 3
 RUST_BATCH_FORCE_MIN_LANES = 2
-RUST_BATCH_MAX_LANES = 3
-RUST_BATCH_TARGET_WEIGHT_SECONDS = 1200
+# Keep auto batches small enough that link-heavy Rust recipes do not compete
+# for too much runner-local disk or memory in one job.
+RUST_BATCH_MAX_LANES = 2
+RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
+LAB_MATRIX_JOB_LIMIT = 256
+VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
+RECOMMENDATION_DOMAIN_ORDER = [
+    "workflow",
+    "docs",
+    "release",
+    "ui_protocol",
+    "core",
+]
+RECOMMENDATION_DOMAIN_LANE_SETS = {
+    "workflow": "docs",
+    "docs": "docs",
+    "release": "release",
+    "ui_protocol": "ui-protocol",
+    "core": "core-carry",
+}
+RECOMMENDATION_DOMAIN_LANES = {
+    "workflow": ["codex.workflow-ci-sanity", "codex.downstream-docs-check"],
+    "docs": ["codex.downstream-docs-check"],
+}
+RELEASE_RECOMMENDATION_PATTERNS = (
+    ".github/workflows/sedna-branch-build.yml",
+    ".github/workflows/sedna-release.yml",
+    ".github/workflows/release*.yml",
+    ".github/workflows/release*.yaml",
+    "codex-rs/cli/src/version.rs",
+    "codex-rs/cli/src/version/**",
+    "scripts/install/**",
+    "scripts/resolve_sedna_release_version",
+    "scripts/resolve_sedna_release_version/**",
+)
+LAB_FANOUT_CAPS = {
+    "balanced": {
+        "targeted": {
+            "workflow": 12,
+            "node": 6,
+            "rust_minimal": 12,
+            "rust_integration": 6,
+            "release": 1,
+        },
+        "frontier": {
+            "workflow": 24,
+            "node": 8,
+            "rust_minimal": 40,
+            "rust_integration": 24,
+            "release": 2,
+        },
+        "checkpoint": {
+            "workflow": 16,
+            "node": 6,
+            "rust_minimal": 24,
+            "rust_integration": 12,
+            "release": 1,
+        },
+    },
+    "enterprise": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 64,
+            "node": 24,
+            "rust_minimal": 128,
+            "rust_integration": 96,
+            "release": 4,
+        },
+        "checkpoint": {
+            "workflow": 48,
+            "node": 16,
+            "rust_minimal": 96,
+            "rust_integration": 64,
+            "release": 2,
+        },
+    },
+    "soak": {
+        "targeted": {
+            "workflow": 24,
+            "node": 12,
+            "rust_minimal": 32,
+            "rust_integration": 16,
+            "release": 2,
+        },
+        "frontier": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 6,
+        },
+        "checkpoint": {
+            "workflow": 96,
+            "node": 32,
+            "rust_minimal": 160,
+            "rust_integration": 128,
+            "release": 4,
+        },
+    },
+}
 
 
 def catalog_path() -> Path:
@@ -45,6 +149,10 @@ def load_catalog(path: Path | None = None) -> dict:
     if not isinstance(payload, dict) or "lanes" not in payload:
         raise SystemExit(f"invalid validation catalog at {catalog_file}")
     return payload
+
+
+def catalog_repo_root(catalog_file: Path) -> Path:
+    return catalog_file.resolve().parent.parent
 
 
 def derive_summary_family(lane: dict) -> str:
@@ -94,6 +202,39 @@ def family_key_for_lane(lane: dict) -> tuple[str, str]:
         ) from exc
 
 
+def resolve_repo_relative_path(
+    repo_root: Path,
+    raw_path: str,
+    *,
+    label: str,
+    must_exist: bool = False,
+    must_be_file: bool = False,
+    must_be_dir: bool = False,
+) -> Path:
+    if not raw_path:
+        raise SystemExit(f"{label} must be a non-empty relative path within the repository root")
+    path = Path(raw_path)
+    if path.is_absolute():
+        raise SystemExit(f"{label} must be a relative path within the repository root")
+    if any(part == ".." for part in path.parts):
+        raise SystemExit(f"{label} must not contain '..' path segments")
+
+    repo_root = repo_root.resolve()
+    candidate = (repo_root / path).resolve()
+    try:
+        candidate.relative_to(repo_root)
+    except ValueError as exc:
+        raise SystemExit(f"{label} must stay within the repository root") from exc
+
+    if must_exist and not candidate.exists():
+        raise SystemExit(f"{label} not found: {candidate}")
+    if must_be_file and not candidate.is_file():
+        raise SystemExit(f"{label} must point to a file: {candidate}")
+    if must_be_dir and not candidate.is_dir():
+        raise SystemExit(f"{label} must point to a directory: {candidate}")
+    return candidate
+
+
 def normalize_catalog(catalog: dict) -> dict:
     """Backfill non-execution metadata for the current catalog."""
 
@@ -106,13 +247,10 @@ def normalize_catalog(catalog: dict) -> dict:
         lane.setdefault("summary_family", derive_summary_family(lane))
         lane.setdefault("cost_class", derive_cost_class(lane["setup_class"]))
         lane.setdefault("checkout_fetch_depth", 1)
+        lane.setdefault("timeout_minutes", 30)
         lane.setdefault("frontier_default", False)
         lane.setdefault("needs_bazel", False)
-        lane.setdefault(
-            "smoke_gate_only",
-            bool(lane.get("smoke_gate_kinds"))
-            and str(lane.get("lane_id") or "").endswith("-smoke"),
-        )
+        lane.setdefault("smoke_gate_only", False)
         if "frontier_lane_sets" not in lane:
             if lane.get("status_class") == "active" and not lane.get("explicit_only"):
                 lane["frontier_lane_sets"] = (
@@ -145,7 +283,8 @@ def normalize_catalog(catalog: dict) -> dict:
     return normalized
 
 
-def validate_catalog(catalog: dict) -> None:
+def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
+    repo_root = repo_root or catalog_path().resolve().parent.parent
     seen_lane_ids: set[str] = set()
     for lane in catalog["lanes"]:
         lane_id = lane["lane_id"]
@@ -176,10 +315,20 @@ def validate_catalog(catalog: dict) -> None:
         working_directory = lane.get("working_directory")
         if not isinstance(working_directory, str) or not working_directory:
             raise SystemExit(f"lane {lane_id} must set working_directory")
+        resolve_repo_relative_path(
+            repo_root,
+            working_directory,
+            label=f"lane {lane_id} working_directory",
+        )
 
         script_path = lane.get("script_path")
         if not isinstance(script_path, str) or not script_path:
             raise SystemExit(f"lane {lane_id} must set script_path")
+        resolve_repo_relative_path(
+            repo_root,
+            script_path,
+            label=f"lane {lane_id} script_path",
+        )
 
         script_args = lane.get("script_args")
         if not isinstance(script_args, list) or not all(
@@ -203,6 +352,7 @@ def validate_catalog(catalog: dict) -> None:
             raise SystemExit(f"lane {lane_id} must set pilot_only to true or false")
 
         resolve_checkout_fetch_depth(lane)
+        resolve_timeout_minutes(lane)
 
 
 def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> int:
@@ -221,6 +371,16 @@ def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> i
     return checkout_fetch_depth
 
 
+def resolve_timeout_minutes(lane: dict, *, default: int | None = None) -> int:
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    timeout_minutes = lane.get("timeout_minutes", default)
+    if isinstance(timeout_minutes, bool) or not isinstance(timeout_minutes, int):
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    if timeout_minutes <= 0:
+        raise SystemExit(f"lane {lane_id} must set timeout_minutes to a positive integer")
+    return timeout_minutes
+
+
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
     return {
         "lane_id": spec["lane_id"],
@@ -233,6 +393,7 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "summary_family": spec["summary_family"],
         "cost_class": spec["cost_class"],
         "checkout_fetch_depth": resolve_checkout_fetch_depth(spec, default=1),
+        "timeout_minutes": resolve_timeout_minutes(spec, default=30),
         "working_directory": spec["working_directory"],
         "script_path": spec["script_path"],
         "script_args": spec.get("script_args") or [],
@@ -306,6 +467,218 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     return list(matching_routes[0].get("lane_ids", []))
 
 
+def parse_changed_files(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("changed-files-json must be a JSON array of strings") from exc
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        raise SystemExit("changed-files-json must be a JSON array of strings")
+    return [item.strip() for item in payload if item.strip()]
+
+
+def parse_recommendation_changed_files(raw: str) -> tuple[list[str], str]:
+    if not raw.strip():
+        return [], "changed-file metadata was empty"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return [], "changed-file metadata was not valid JSON"
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        return [], "changed-file metadata was not a JSON array of strings"
+    changed_files = [item.strip() for item in payload if item.strip()]
+    if not changed_files:
+        return [], "changed-file metadata was empty"
+    return changed_files, ""
+
+
+def recommendation_domain(path: str) -> str:
+    if any(path_matches(path, pattern) for pattern in RELEASE_RECOMMENDATION_PATTERNS):
+        return "release"
+    if path.startswith("docs/") or path == "README.md":
+        return "docs"
+    if path.startswith(".github/") or path.startswith(".codex/skills/"):
+        return "workflow"
+    if path.startswith("codex-rs/app-server") or path.startswith("codex-rs/tui/"):
+        return "ui_protocol"
+    if path.startswith("codex-rs/protocol/"):
+        return "ui_protocol"
+    if (
+        path.startswith("codex-rs/core/")
+        or path.startswith("codex-rs/exec/")
+        or path.startswith("codex-rs/cli/")
+    ):
+        return "core"
+    return "unknown"
+
+
+def ordered_recommendation_domains(domains: list[str]) -> list[str]:
+    return sorted(
+        set(domains),
+        key=lambda item: (
+            RECOMMENDATION_DOMAIN_ORDER.index(item)
+            if item in RECOMMENDATION_DOMAIN_ORDER
+            else 99
+        ),
+    )
+
+
+def infer_lane_set_for_lanes(
+    catalog_by_id: dict[str, dict], lane_ids: list[str], changed_files: list[str]
+) -> str:
+    path_domains = ordered_recommendation_domains(
+        [recommendation_domain(path) for path in changed_files]
+    )
+    known_path_domains = [domain for domain in path_domains if domain != "unknown"]
+    if len(known_path_domains) == 1 and "unknown" not in path_domains:
+        return RECOMMENDATION_DOMAIN_LANE_SETS[known_path_domains[0]]
+
+    groups = {
+        group
+        for lane_id in lane_ids
+        for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+    }
+    if groups <= {"workflow", "docs"}:
+        return "docs"
+    if "release" in groups:
+        return "release"
+    if "ui_protocol" in groups:
+        return "ui-protocol"
+    if "attestation" in groups:
+        return "attestation"
+    if "core" in groups:
+        return "core-carry"
+    return "all"
+
+
+def require_known_route_lanes(catalog_by_id: dict[str, dict], lane_ids: list[str]) -> None:
+    missing_lanes = [lane_id for lane_id in lane_ids if lane_id not in catalog_by_id]
+    if missing_lanes:
+        raise SystemExit(
+            "matched follow-up route contains unknown lane IDs: "
+            + ", ".join(missing_lanes)
+        )
+
+
+def recommendation_payload(
+    *,
+    profile: str,
+    lane_set: str,
+    lane_ids: list[str],
+    reason: str,
+    confidence: str,
+    source: str,
+    domains: list[str],
+    changed_files: list[str],
+    include_explicit_lanes: bool = False,
+) -> dict:
+    return {
+        "profile": profile,
+        "lane_set": lane_set,
+        "lane_ids": lane_ids,
+        "lanes": ",".join(lane_ids),
+        "lanes_csv": ",".join(lane_ids),
+        "reason": reason,
+        "confidence": confidence,
+        "source": source,
+        "domains": domains,
+        "changed_file_count": len(changed_files),
+        "include_explicit_lanes": include_explicit_lanes,
+        "dispatch_inputs": {
+            "profile": profile,
+            "lane_set": lane_set,
+            "lanes": ",".join(lane_ids),
+            "include_explicit_lanes": "true" if include_explicit_lanes else "false",
+        },
+        "advisory": True,
+    }
+
+
+def recommend_lab_plan(args: argparse.Namespace) -> None:
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
+    catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
+    changed_files, metadata_issue = parse_recommendation_changed_files(
+        args.changed_files_json
+    )
+
+    def emit_fallback(reason: str, domains: list[str] | None = None) -> None:
+        emit(
+            recommendation_payload(
+                profile="frontier",
+                lane_set="all",
+                lane_ids=[],
+                reason=reason,
+                confidence="low",
+                source="conservative_fallback",
+                domains=domains or ["unknown"],
+                changed_files=changed_files,
+            )
+        )
+
+    if metadata_issue:
+        emit_fallback(metadata_issue)
+        return
+
+    route_lanes = select_followup_lanes(changed_files, catalog.get("followup_routes", []))
+    if route_lanes:
+        require_known_route_lanes(catalog_by_id, route_lanes)
+        route_domains = sorted(
+            {
+                group
+                for lane_id in route_lanes
+                for group in (catalog_by_id.get(lane_id, {}).get("groups") or [])
+            }
+        )
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=infer_lane_set_for_lanes(
+                    catalog_by_id, route_lanes, changed_files
+                ),
+                lane_ids=route_lanes,
+                reason="changed files matched one exact validation follow-up route",
+                confidence="high",
+                source="followup_route",
+                domains=route_domains,
+                changed_files=changed_files,
+                include_explicit_lanes=any(
+                    bool(catalog_by_id.get(lane_id, {}).get("explicit_only"))
+                    for lane_id in route_lanes
+                ),
+            )
+        )
+        return
+
+    domains = [recommendation_domain(path) for path in changed_files]
+    unique_domains = ordered_recommendation_domains(domains)
+    known_domains = [domain for domain in unique_domains if domain != "unknown"]
+    if len(known_domains) == 1 and "unknown" not in unique_domains:
+        domain = known_domains[0]
+        lane_ids = RECOMMENDATION_DOMAIN_LANES.get(domain, [])
+        emit(
+            recommendation_payload(
+                profile="targeted",
+                lane_set=RECOMMENDATION_DOMAIN_LANE_SETS[domain],
+                lane_ids=lane_ids,
+                reason=f"changed files stayed within the {domain} validation domain",
+                confidence="medium",
+                source="domain_rules",
+                domains=[domain],
+                changed_files=changed_files,
+            )
+        )
+        return
+
+    emit_fallback(
+        "changed files crossed domains or did not match a known validation route",
+        unique_domains or ["unknown"],
+    )
+
+
 def select_for_lane_set(
     catalog: dict,
     target_lane_set: str,
@@ -325,10 +698,7 @@ def select_for_lane_set(
 
 
 def is_smoke_gate_lane(spec: dict) -> bool:
-    return bool(spec.get("smoke_gate_only")) or (
-        bool(spec.get("smoke_gate_kinds"))
-        and str(spec.get("lane_id") or "").endswith("-smoke")
-    )
+    return bool(spec.get("smoke_gate_only"))
 
 
 def select_frontier_all(catalog: dict, *, include_explicit_only: bool = False) -> list[dict]:
@@ -396,7 +766,17 @@ def normalize_rust_batching_mode(raw: str) -> str:
     return mode
 
 
-def effective_rust_batching_mode(requested: str, repo_override: str) -> tuple[str, str]:
+def normalize_lab_fanout_tier(raw: str) -> str:
+    tier = (raw or "enterprise").strip().lower()
+    if tier not in VALID_LAB_FANOUT_TIERS:
+        valid = ", ".join(sorted(VALID_LAB_FANOUT_TIERS))
+        raise SystemExit(f"validation-lab fanout tier must be one of: {valid}")
+    return tier
+
+
+def effective_rust_batching_mode(
+    requested: str, repo_override: str, *, override_label: str
+) -> tuple[str, str]:
     requested_mode = normalize_rust_batching_mode(requested)
     override = (repo_override or "").strip().lower()
     if override and override not in {"auto", "off", "force"}:
@@ -404,9 +784,9 @@ def effective_rust_batching_mode(requested: str, repo_override: str) -> tuple[st
     if requested_mode == "force":
         return "force", "forced by workflow input"
     if override == "off":
-        return "off", "disabled by SEDNA_HEAVY_RUST_BATCHING"
+        return "off", f"disabled by {override_label}"
     if override == "force":
-        return "force", "forced by SEDNA_HEAVY_RUST_BATCHING"
+        return "force", f"forced by {override_label}"
     if requested_mode == "off":
         return "off", "disabled by workflow input"
     return "auto", "auto"
@@ -524,8 +904,32 @@ def batch_lane_matrix(lanes: list[dict], *, setup_class: str) -> list[dict]:
     return sorted(batches, key=lambda batch: batch["batch_index"])
 
 
-def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> dict[str, int]:
+def cap_parallel_limits(counts: Counter[str], caps: dict[str, int]) -> dict[str, int]:
+    return {
+        setup_class: max(1, min(counts.get(setup_class, 0), cap))
+        for setup_class, cap in caps.items()
+    }
+
+
+def lab_fanout_band(profile: str) -> str:
+    if profile == "frontier":
+        return "frontier"
+    if profile in {"broad", "full"}:
+        return "checkpoint"
+    return "targeted"
+
+
+def setup_parallel_limits(
+    profile: str,
+    selected: list[dict] | None = None,
+    *,
+    fanout_tier: str = "legacy",
+) -> dict[str, int]:
     counts = Counter(lane["setup_class"] for lane in (selected or []))
+    if fanout_tier != "legacy" and profile != "smoke":
+        tier = normalize_lab_fanout_tier(fanout_tier)
+        return cap_parallel_limits(counts, LAB_FANOUT_CAPS[tier][lab_fanout_band(profile)])
+
     if profile == "frontier":
         return {
             "workflow": max(1, min(counts.get("workflow", 0), 12)),
@@ -559,9 +963,11 @@ def setup_parallel_limits(profile: str, selected: list[dict] | None = None) -> d
     }
 
 
-def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str, str, dict[str, int]]:
+def determine_lab_matrix_policy(
+    profile: str, selected: list[dict], *, fanout_tier: str
+) -> tuple[str, str, dict[str, int]]:
     fail_fast = "false" if profile == "frontier" else "true"
-    parallel_limits = setup_parallel_limits(profile, selected)
+    parallel_limits = setup_parallel_limits(profile, selected, fanout_tier=fanout_tier)
     active_limits = [
         parallel_limits[lane["setup_class"]]
         for lane in selected
@@ -569,6 +975,33 @@ def determine_lab_matrix_policy(profile: str, selected: list[dict]) -> tuple[str
     ]
     max_parallel = str(max(active_limits) if active_limits else 1)
     return fail_fast, max_parallel, parallel_limits
+
+
+def enforce_lab_matrix_job_limit(
+    *,
+    smoke_matrix: list[dict],
+    execution_selected: list[dict],
+    rust_minimal_batch_matrix: list[dict],
+    rust_integration_batch_matrix: list[dict],
+    run_artifact: bool,
+    fanout_tier: str,
+    profile: str,
+) -> int:
+    planned_job_count = (
+        len(smoke_matrix)
+        + len(execution_selected)
+        + len(rust_minimal_batch_matrix)
+        + len(rust_integration_batch_matrix)
+        + (1 if run_artifact else 0)
+    )
+    if planned_job_count > LAB_MATRIX_JOB_LIMIT:
+        raise SystemExit(
+            "validation-lab plan would create "
+            f"{planned_job_count} matrix/artifact jobs, above the {LAB_MATRIX_JOB_LIMIT} "
+            f"job cap for profile={profile} fanout_tier={fanout_tier}; "
+            "choose a narrower lane_set, pass explicit lanes, or lower the fanout tier"
+        )
+    return planned_job_count
 
 
 def profile_metadata(profile: str) -> tuple[str, str]:
@@ -628,14 +1061,14 @@ def summarize_lab_selection(
 
 
 def lab_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(
-        load_catalog(Path(args.catalog_path) if args.catalog_path else None)
-    )
-    validate_catalog(catalog)
+    catalog_file = Path(args.catalog_path) if args.catalog_path else catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     requested_lanes = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
     run_artifact = args.profile == "artifact" or parse_bool(args.artifact_build)
     include_explicit_lanes = parse_bool(args.include_explicit_lanes)
+    fanout_tier = normalize_lab_fanout_tier(args.fanout_tier)
 
     smoke_matrix: list[dict] = []
 
@@ -712,8 +1145,43 @@ def lab_plan(args: argparse.Namespace) -> None:
     else:
         raise SystemExit(f"unsupported profile: {args.profile}")
 
+    rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="VALIDATION_LAB_RUST_BATCHING",
+    )
+    execution_selected, batched_by_setup_class, rust_batching_reasons = (
+        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+    )
+    rust_minimal_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
+    )
+    rust_integration_batch_matrix = batch_lane_matrix(
+        batched_by_setup_class["rust_integration"], setup_class="rust_integration"
+    )
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
+        rust_batching_reason = "; ".join(
+            [
+                rust_batching_reason,
+                rust_batching_reasons["rust_minimal"],
+                rust_batching_reasons["rust_integration"],
+            ]
+        )
+    planned_job_count = enforce_lab_matrix_job_limit(
+        smoke_matrix=smoke_matrix,
+        execution_selected=execution_selected,
+        rust_minimal_batch_matrix=rust_minimal_batch_matrix,
+        rust_integration_batch_matrix=rust_integration_batch_matrix,
+        run_artifact=run_artifact,
+        fanout_tier=fanout_tier,
+        profile=args.profile,
+    )
     matrix_fail_fast, matrix_max_parallel, parallel_limits = determine_lab_matrix_policy(
-        args.profile, selected
+        args.profile, selected, fanout_tier=fanout_tier
     )
     grouped = group_lanes_by_setup_class(selected)
     selected_setup_classes = [
@@ -745,6 +1213,14 @@ def lab_plan(args: argparse.Namespace) -> None:
         "run_artifact": "true" if run_artifact else "false",
         "matrix_fail_fast": matrix_fail_fast,
         "matrix_max_parallel": matrix_max_parallel,
+        "fanout_tier": fanout_tier,
+        "planned_job_count": planned_job_count,
+        "rust_batching_mode": rust_batching_mode,
+        "rust_batching_reason": rust_batching_reason,
+        "selected_rust_minimal_batch_matrix": {"include": rust_minimal_batch_matrix},
+        "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
+        "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
+        "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
         "selected_setup_classes": selected_setup_classes,
         "workflow_max_parallel": str(parallel_limits["workflow"]),
         "node_max_parallel": str(parallel_limits["node"]),
@@ -753,13 +1229,14 @@ def lab_plan(args: argparse.Namespace) -> None:
         "release_max_parallel": str(parallel_limits["release"]),
     }
     emit_grouped_setup_class_payload(payload, smoke_matrix, key_prefix="smoke")
-    emit_grouped_setup_class_payload(payload, selected, key_prefix="selected")
+    emit_grouped_setup_class_payload(payload, execution_selected, key_prefix="selected")
     emit(payload)
 
 
 def heavy_plan(args: argparse.Namespace) -> None:
-    catalog = normalize_catalog(load_catalog())
-    validate_catalog(catalog)
+    catalog_file = catalog_path()
+    catalog = normalize_catalog(load_catalog(catalog_file))
+    validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
     changed_files = json.loads(args.changed_files_json) if args.changed_files_json else []
     route_lanes = (
@@ -837,7 +1314,9 @@ def heavy_plan(args: argparse.Namespace) -> None:
         "frontier" if full_heavy_harvest else "targeted", [*smoke_matrix, *selected]
     )
     rust_batching_mode, rust_batching_reason = effective_rust_batching_mode(
-        args.rust_batching, args.rust_batching_override
+        args.rust_batching,
+        args.rust_batching_override,
+        override_label="SEDNA_HEAVY_RUST_BATCHING",
     )
     execution_selected, batched_by_setup_class, rust_batching_reasons = (
         split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
@@ -848,7 +1327,11 @@ def heavy_plan(args: argparse.Namespace) -> None:
     rust_integration_batch_matrix = batch_lane_matrix(
         batched_by_setup_class["rust_integration"], setup_class="rust_integration"
     )
-    if not rust_minimal_batch_matrix and not rust_integration_batch_matrix:
+    if (
+        rust_batching_mode != "off"
+        and not rust_minimal_batch_matrix
+        and not rust_integration_batch_matrix
+    ):
         rust_batching_reason = "; ".join(
             [
                 rust_batching_reason,
@@ -896,8 +1379,16 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--lanes", default="")
     lab.add_argument("--artifact-build", default="false")
     lab.add_argument("--include-explicit-lanes", default="false")
+    lab.add_argument("--rust-batching", default="auto")
+    lab.add_argument("--rust-batching-override", default="")
+    lab.add_argument("--fanout-tier", default="enterprise")
     lab.add_argument("--catalog-path", default="")
     lab.set_defaults(func=lab_plan)
+
+    recommend = subparsers.add_parser("recommend-lab")
+    recommend.add_argument("--changed-files-json", default="")
+    recommend.add_argument("--catalog-path", default="")
+    recommend.set_defaults(func=recommend_lab_plan)
 
     heavy = subparsers.add_parser("heavy")
     heavy.add_argument("--event-name", required=True)

@@ -5,25 +5,45 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
-use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
-
-pub(crate) fn request_permissions_tool_description() -> String {
-    "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Granted permissions apply automatically to later shell-like commands in the current turn, or for the rest of the session if the client approves them at session scope."
-        .to_string()
-}
+use crate::tools::handlers::resolve_tool_environment;
+use crate::tools::handlers::shell_spec::create_request_permissions_tool;
+use crate::tools::handlers::shell_spec::request_permissions_tool_description;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
+use serde::Deserialize;
 
 pub struct RequestPermissionsHandler;
 
-impl ToolHandler for RequestPermissionsHandler {
-    type Output = FunctionToolOutput;
+#[derive(Deserialize)]
+struct RequestPermissionsEnvironmentArgs {
+    #[serde(default, rename = "environment_id", alias = "environmentId")]
+    environment_id: Option<String>,
+}
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+impl ToolExecutor<ToolInvocation> for RequestPermissionsHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("request_permissions")
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    fn spec(&self) -> ToolSpec {
+        create_request_permissions_tool(request_permissions_tool_description())
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl RequestPermissionsHandler {
+    async fn handle_call(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -42,8 +62,16 @@ impl ToolHandler for RequestPermissionsHandler {
             }
         };
 
+        let environment_args: RequestPermissionsEnvironmentArgs = parse_arguments(&arguments)?;
+        let Some(turn_environment) =
+            resolve_tool_environment(turn.as_ref(), environment_args.environment_id.as_deref())?
+        else {
+            return Err(FunctionCallError::RespondToModel(
+                "request_permissions requires a primary environment".to_string(),
+            ));
+        };
         let mut args: RequestPermissionsArgs =
-            parse_arguments_with_base_path(&arguments, &turn.cwd)?;
+            parse_arguments_with_base_path(&arguments, &turn_environment.cwd)?;
         args.permissions = normalize_additional_permissions(args.permissions.into())
             .map(codex_protocol::request_permissions::RequestPermissionProfile::from)
             .map_err(FunctionCallError::RespondToModel)?;
@@ -54,7 +82,13 @@ impl ToolHandler for RequestPermissionsHandler {
         }
 
         let response = session
-            .request_permissions(&turn, call_id, args, cancellation_token)
+            .request_permissions_for_environment(
+                &turn,
+                call_id,
+                args,
+                turn_environment.selection(),
+                cancellation_token,
+            )
             .await
             .ok_or_else(|| {
                 FunctionCallError::RespondToModel(
@@ -68,51 +102,11 @@ impl ToolHandler for RequestPermissionsHandler {
             ))
         })?;
 
-        Ok(FunctionToolOutput::from_text(content, Some(true)))
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            content,
+            Some(true),
+        )))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use codex_protocol::models::FileSystemPermissions;
-    use codex_protocol::request_permissions::RequestPermissionProfile;
-    use codex_utils_absolute_path::AbsolutePathBuf;
-    use pretty_assertions::assert_eq;
-    use tempfile::tempdir;
-
-    #[test]
-    fn request_permissions_handler_resolves_relative_permissions_against_workdir()
-    -> anyhow::Result<()> {
-        let cwd = tempdir()?;
-        let workdir = cwd.path().join("nested");
-        std::fs::create_dir_all(&workdir)?;
-        let expected_write = workdir.join("relative-write.txt");
-        let json = r#"{
-            "workdir": "nested",
-            "permissions": {
-                "file_system": {
-                    "write": ["./relative-write.txt"]
-                }
-            }
-        }"#;
-
-        let base_path = AbsolutePathBuf::try_from(cwd.path().to_path_buf())?;
-        let mut args: RequestPermissionsArgs = parse_arguments_with_base_path(json, &base_path)?;
-        args.permissions = normalize_additional_permissions(args.permissions.into())
-            .map_err(anyhow::Error::msg)?
-            .into();
-
-        assert_eq!(
-            args.permissions,
-            RequestPermissionProfile {
-                file_system: Some(FileSystemPermissions::from_read_write_roots(
-                    /*read*/ None,
-                    Some(vec![AbsolutePathBuf::try_from(expected_write)?]),
-                )),
-                ..Default::default()
-            }
-        );
-        Ok(())
-    }
-}
+impl CoreToolRuntime for RequestPermissionsHandler {}

@@ -121,6 +121,7 @@
           ]
         },
         "persistOnResume": {
+          "default": true,
           "type": "boolean"
         }
       },
@@ -128,316 +129,6 @@
         "name",
         "description",
         "inputSchema"
-      ],
-      "type": "object"
-    },
-    "FileSystemAccessMode": {
-      "enum": [
-        "read",
-        "write",
-        "none"
-      ],
-      "type": "string"
-    },
-    "FileSystemPath": {
-      "oneOf": [
-        {
-          "properties": {
-            "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
-            },
-            "type": {
-              "const": "path",
-              "title": "PathFileSystemPathType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path"
-          ],
-          "title": "PathFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "pattern": {
-              "type": "string"
-            },
-            "type": {
-              "const": "glob_pattern",
-              "title": "GlobPatternFileSystemPathType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "pattern"
-          ],
-          "title": "GlobPatternFileSystemPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "special",
-              "title": "SpecialFileSystemPathType",
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "title": "SpecialFileSystemPath",
-          "type": "object"
-        }
-      ]
-    },
-    "FileSystemSandboxEntry": {
-      "properties": {
-        "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
-        },
-        "path": {
-          "$ref": "#/$defs/FileSystemPath"
-        }
-      },
-      "required": [
-        "path",
-        "access"
-      ],
-      "type": "object"
-    },
-    "FileSystemSpecialPath": {
-      "oneOf": [
-        {
-          "properties": {
-            "kind": {
-              "const": "root",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "RootFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "minimal",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "MinimalFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "project_roots",
-              "type": "string"
-            },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "KindFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "tmpdir",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "TmpdirFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "slash_tmp",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "SlashTmpFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "unknown",
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "subpath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind",
-            "path"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfile": {
-      "oneOf": [
-        {
-          "description": "Codex owns sandbox construction for this profile.",
-          "properties": {
-            "fileSystem": {
-              "$ref": "#/$defs/PermissionProfileFileSystemPermissions"
-            },
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
-            },
-            "type": {
-              "const": "managed",
-              "title": "ManagedPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "network",
-            "fileSystem"
-          ],
-          "title": "ManagedPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Do not apply an outer sandbox.",
-          "properties": {
-            "type": {
-              "const": "disabled",
-              "title": "DisabledPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "DisabledPermissionProfile",
-          "type": "object"
-        },
-        {
-          "description": "Filesystem isolation is enforced by an external caller.",
-          "properties": {
-            "network": {
-              "$ref": "#/$defs/PermissionProfileNetworkPermissions"
-            },
-            "type": {
-              "const": "external",
-              "title": "ExternalPermissionProfileType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "network"
-          ],
-          "title": "ExternalPermissionProfile",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileFileSystemPermissions": {
-      "oneOf": [
-        {
-          "properties": {
-            "entries": {
-              "items": {
-                "$ref": "#/$defs/FileSystemSandboxEntry"
-              },
-              "type": "array"
-            },
-            "globScanMaxDepth": {
-              "format": "uint",
-              "minimum": 1,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "restricted",
-              "title": "RestrictedPermissionProfileFileSystemPermissionsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "entries"
-          ],
-          "title": "RestrictedPermissionProfileFileSystemPermissions",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "unrestricted",
-              "title": "UnrestrictedPermissionProfileFileSystemPermissionsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "UnrestrictedPermissionProfileFileSystemPermissions",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileNetworkPermissions": {
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "enabled"
       ],
       "type": "object"
     },
@@ -449,16 +140,12 @@
       ],
       "type": "string"
     },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
+    "ThreadSource": {
       "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "There are two ways to fork a thread:\n1. By thread_id: load the thread from disk by thread_id and fork it into a new thread.\n2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using path, the thread_id param will be ignored.\n\nPrefer using thread_id whenever possible.",
+  "description": "There are two ways to fork a thread:\n1. By thread_id: load the thread from disk by thread_id and fork it into a new thread.\n2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored.\nEmpty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
   "properties": {
     "approvalPolicy": {
       "anyOf": [
@@ -509,10 +196,6 @@
     "ephemeral": {
       "type": "boolean"
     },
-    "excludeTurns": {
-      "description": "When true, return only thread metadata and live fork state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after forking.",
-      "type": "boolean"
-    },
     "model": {
       "description": "Configuration overrides for the forked thread, if any.",
       "type": [
@@ -526,17 +209,6 @@
         "null"
       ]
     },
-    "permissionProfile": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PermissionProfile"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Full permissions override for the forked thread. Cannot be combined\nwith `sandbox`."
-    },
     "sandbox": {
       "anyOf": [
         {
@@ -548,17 +220,24 @@
       ]
     },
     "serviceTier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ServiceTier"
-        },
-        {
-          "type": "null"
-        }
+      "type": [
+        "string",
+        "null"
       ]
     },
     "threadId": {
       "type": "string"
+    },
+    "threadSource": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional client-supplied analytics source classification for this forked thread."
     }
   },
   "required": [

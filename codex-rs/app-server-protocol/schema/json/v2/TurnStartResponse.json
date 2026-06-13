@@ -473,6 +473,15 @@
       ],
       "type": "object"
     },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
     "McpToolCallError": {
       "properties": {
         "message": {
@@ -486,6 +495,7 @@
     },
     "McpToolCallResult": {
       "properties": {
+        "_meta": true,
         "content": {
           "items": true,
           "type": "array"
@@ -637,14 +647,50 @@
       ]
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "SubAgentActivityKind": {
       "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
+        "started",
+        "interacted",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
       ],
       "type": "string"
     },
@@ -671,6 +717,12 @@
       "oneOf": [
         {
           "properties": {
+            "clientId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "content": {
               "items": {
                 "$ref": "#/$defs/UserInput"
@@ -875,6 +927,17 @@
             "status": {
               "$ref": "#/$defs/CommandExecutionStatus"
             },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
+            },
             "type": {
               "const": "commandExecution",
               "title": "CommandExecutionThreadItemType",
@@ -946,6 +1009,12 @@
               "type": "string"
             },
             "mcpAppResourceUri": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pluginId": {
               "type": [
                 "string",
                 "null"
@@ -1193,6 +1262,36 @@
         },
         {
           "properties": {
+            "agentPath": {
+              "type": "string"
+            },
+            "agentThreadId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SubAgentActivityKind"
+            },
+            "type": {
+              "const": "subAgentActivity",
+              "title": "SubAgentActivityThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "agentThreadId",
+            "agentPath"
+          ],
+          "title": "SubAgentActivityThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -1384,11 +1483,16 @@
           "type": "string"
         },
         "items": {
-          "description": "Only populated on a `thread/resume` or `thread/fork` response.\nFor all other responses and notifications returning a Turn,\nthe items field will be an empty list.",
+          "description": "Thread items currently included in this turn payload.",
           "items": {
             "$ref": "#/$defs/ThreadItem"
           },
           "type": "array"
+        },
+        "itemsView": {
+          "$ref": "#/$defs/TurnItemsView",
+          "default": "full",
+          "description": "Describes how much of `items` has been loaded for this turn."
         },
         "startedAt": {
           "description": "Unix timestamp (in seconds) when the turn started.",
@@ -1437,6 +1541,25 @@
       ],
       "type": "object"
     },
+    "TurnItemsView": {
+      "oneOf": [
+        {
+          "const": "notLoaded",
+          "description": "`items` was not loaded for this turn. The field is intentionally empty.",
+          "type": "string"
+        },
+        {
+          "const": "summary",
+          "description": "`items` contains only a display summary for this turn.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+          "type": "string"
+        }
+      ]
+    },
     "TurnStatus": {
       "enum": [
         "completed",
@@ -1476,6 +1599,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "type": {
               "const": "image",
               "title": "ImageUserInputType",
@@ -1494,6 +1628,17 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "path": {
               "type": "string"
             },

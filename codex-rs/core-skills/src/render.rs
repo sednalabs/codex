@@ -16,27 +16,28 @@ use codex_utils_output_truncation::approx_token_count;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
 const SKILL_METADATA_CONTEXT_WINDOW_PERCENT: usize = 2;
-const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 10;
+const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 100;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
-pub const SKILL_DESCRIPTION_TRUNCATED_WARNING_PREFIX: &str = "Warning: Exceeded skills context budget. Loaded skill descriptions were truncated by an average of";
+pub const SKILL_DESCRIPTION_TRUNCATED_WARNING: &str = "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.";
+pub const SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT: &str = "Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.";
 pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
-    "Warning: Exceeded skills context budget. All skill descriptions were removed and";
-pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
+    "Exceeded skills context budget. All skill descriptions were removed and";
+pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `environment resource` locators are owned by an execution environment, `orchestrator resource` locators are opaque non-filesystem resources, and `custom resource` locators use their provider's access mechanism.";
 pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
-pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
+pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The list above is the skills available in this session (name + description + source locator). `file` entries live on the host filesystem, `environment resource` entries are owned by their execution environment, `orchestrator resource` entries must be accessed through `skills.list` and `skills.read`, and `custom resource` entries use their provider's access mechanism.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
+- Missing/blocked: If a named skill isn't in the list or its source can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
-  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
-  2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
-  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
-  4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
-  5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
+  1) After deciding to use a skill, the main agent must read its `SKILL.md` completely before taking task actions. For a `file` entry, open the listed path. For an `environment resource`, use the filesystem of the owning environment. For an `orchestrator resource`, call `skills.list` with `{"authority":{"kind":"orchestrator"}}`, select the matching package, and pass its `main_resource` to `skills.read`. If a read is truncated or paginated, continue until EOF.
+  2) When `SKILL.md` references another resource, use the same access mechanism. Resolve relative paths against a filesystem-backed skill directory. For orchestrator skills, pass the exact referenced resource identifier with the same authority and package to `skills.read`; do not treat `skill://` identifiers as filesystem paths.
+  3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the resources required for the task. The main agent must read each required instruction or reference file itself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
+  4) For filesystem-backed skills, prefer running or patching provided scripts instead of retyping large code blocks. For orchestrator skills, use `skills.read` and the available tools; do not invent a local path.
+  5) Reuse provided assets or templates through the same source access mechanism instead of recreating them.
 - Coordination and sequencing:
   - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
   - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
 - Context hygiene:
-  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.
+  - Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Do not load unrelated references, scripts, or assets.
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
@@ -44,16 +45,16 @@ pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The list abov
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
-  1) After deciding to use a skill, expand the listed short `path` with the matching alias from `### Skill roots`, then open its `SKILL.md`. Read only enough to follow the workflow.
+  1) After deciding to use a skill, the main agent must expand the listed short `path` with the matching alias from `### Skill roots`, then open and read its `SKILL.md` completely before taking task actions. If a read is truncated or paginated, continue until EOF.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the directory containing that expanded `SKILL.md` first, and only consider other paths if needed.
-  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
+  3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the files required for the task. The main agent must read each required instruction or reference file itself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
   4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
 - Coordination and sequencing:
   - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
   - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
 - Context hygiene:
-  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.
+  - Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Do not load unrelated references, scripts, or assets.
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
@@ -230,11 +231,13 @@ fn build_available_skills_from_lines(
     } else if report.average_truncated_description_chars()
         > SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS
     {
-        Some(format!(
-            "{} {} characters per skill.",
-            budget_warning_prefix(budget, SKILL_DESCRIPTION_TRUNCATED_WARNING_PREFIX),
-            report.average_truncated_description_chars()
-        ))
+        Some(
+            match budget {
+                SkillMetadataBudget::Tokens(_) => SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT,
+                SkillMetadataBudget::Characters(_) => SKILL_DESCRIPTION_TRUNCATED_WARNING,
+            }
+            .to_string(),
+        )
     } else {
         None
     };
@@ -431,13 +434,13 @@ fn skill_render_report(
 
 impl SkillRenderReport {
     fn average_truncated_description_chars(&self) -> usize {
-        if self.truncated_description_count == 0 {
+        if self.total_count == 0 || self.truncated_description_chars == 0 {
             return 0;
         }
 
         self.truncated_description_chars
-            .saturating_add(self.truncated_description_count.saturating_sub(1))
-            / self.truncated_description_count
+            .saturating_add(self.total_count.saturating_sub(1))
+            / self.total_count
     }
 }
 
@@ -919,6 +922,7 @@ mod tests {
             policy: None,
             path_to_skills_md: test_path_buf(&format!("/tmp/{name}/SKILL.md")).abs(),
             scope,
+            plugin_id: None,
         }
     }
 
@@ -976,6 +980,30 @@ mod tests {
             budget,
             SkillPathAliases::default(),
         )
+    }
+
+    #[test]
+    fn skill_usage_instructions_require_complete_main_agent_reads() {
+        for instructions in [
+            SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS,
+            SKILLS_HOW_TO_USE_WITH_ALIASES,
+        ] {
+            assert!(instructions.contains("read its `SKILL.md` completely"));
+            assert!(instructions.contains("continue until EOF"));
+            assert!(instructions.contains(
+                "The main agent must read each required instruction or reference file itself"
+            ));
+            assert!(instructions.contains(
+                "Do not delegate reading, summarizing, or interpreting skill instructions"
+            ));
+            assert!(instructions.contains(
+                "Subagents may still perform task work when the selected skill allows it"
+            ));
+            assert!(instructions.contains(
+                "Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file"
+            ));
+            assert!(!instructions.contains("Read only enough to follow the workflow"));
+        }
     }
 
     #[test]
@@ -1048,27 +1076,48 @@ mod tests {
 
     #[test]
     fn budgeted_rendering_warns_when_average_description_truncation_exceeds_threshold() {
-        let alpha =
-            make_skill_with_description("alpha-skill", SkillScope::Repo, "abcdefghijklmnop");
-        let beta = make_skill_with_description("beta-skill", SkillScope::Repo, "uvwxyzabcdefghij");
-        let minimum_cost = SkillLine::new(&alpha)
+        let long_description = "a".repeat(250);
+        let long_skill =
+            make_skill_with_description("long-skill", SkillScope::Repo, &long_description);
+        let empty_skill = make_skill_with_description("empty-skill", SkillScope::Repo, "");
+        let minimum_cost = SkillLine::new(&long_skill)
             .minimum_cost(SkillMetadataBudget::Characters(usize::MAX))
-            + SkillLine::new(&beta).minimum_cost(SkillMetadataBudget::Characters(usize::MAX));
-        let budget = SkillMetadataBudget::Characters(minimum_cost + 6);
+            + SkillLine::new(&empty_skill)
+                .minimum_cost(SkillMetadataBudget::Characters(usize::MAX));
+        let budget = SkillMetadataBudget::Characters(minimum_cost + 49);
 
-        let rendered = build_available_skills_from_metadata(&[alpha, beta], budget)
+        let rendered = build_available_skills_from_metadata(&[long_skill, empty_skill], budget)
             .expect("skills should render");
 
+        assert_eq!(rendered.report.total_count, 2);
         assert_eq!(rendered.report.included_count, 2);
         assert_eq!(rendered.report.omitted_count, 0);
-        assert_eq!(rendered.report.truncated_description_chars, 28);
-        assert_eq!(rendered.report.truncated_description_count, 2);
+        assert_eq!(rendered.report.truncated_description_chars, 202);
+        assert_eq!(rendered.report.truncated_description_count, 1);
         assert_eq!(
             rendered.warning_message,
             Some(
-                "Warning: Exceeded skills context budget. Loaded skill descriptions were truncated by an average of 14 characters per skill."
+                "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn budgeted_rendering_token_budget_truncation_warning_mentions_two_percent() {
+        let long_description = "a".repeat(1000);
+        let long_skill =
+            make_skill_with_description("long-skill", SkillScope::Repo, &long_description);
+        let minimum_cost =
+            SkillLine::new(&long_skill).minimum_cost(SkillMetadataBudget::Tokens(usize::MAX));
+        let budget = SkillMetadataBudget::Tokens(minimum_cost + 1);
+
+        let rendered = build_available_skills_from_metadata(&[long_skill], budget)
+            .expect("skills should render");
+
+        assert_eq!(
+            rendered.warning_message,
+            Some(SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT.to_string())
         );
     }
 
@@ -1116,7 +1165,7 @@ mod tests {
         assert_eq!(
             rendered.warning_message,
             Some(
-                "Warning: Exceeded skills context budget. All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list."
+                "Exceeded skills context budget. All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list."
                     .to_string()
             )
         );
@@ -1145,7 +1194,7 @@ mod tests {
         assert_eq!(
             rendered.warning_message,
             Some(
-                "Warning: Exceeded skills context budget. All skill descriptions were removed and 1 additional skill was not included in the model-visible skills list."
+                "Exceeded skills context budget. All skill descriptions were removed and 1 additional skill was not included in the model-visible skills list."
                     .to_string()
             )
         );

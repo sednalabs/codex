@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -19,11 +20,14 @@ use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app_event_sender::AppEventSender;
-use crate::exec_cell::spinner;
 use crate::key_hint;
+use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
+use crate::motion::MotionMode;
+use crate::motion::ReducedMotionIndicator;
+use crate::motion::activity_indicator;
+use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
-use crate::shimmer::shimmer_spans;
 use crate::text_formatting::capitalize_first;
 use crate::tui::FrameRequester;
 use crate::wrapping::RtOptions;
@@ -49,6 +53,7 @@ pub(crate) struct StatusIndicatorWidget {
     show_interrupt_hint: bool,
     interrupt_requires_double_press: bool,
     interrupt_confirmation_deadline: Option<Instant>,
+    interrupt_binding: Option<KeyBinding>,
 
     elapsed_running: Duration,
     last_resume_at: Instant,
@@ -75,6 +80,11 @@ pub fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
+fn is_plain_esc_binding(binding: KeyBinding) -> bool {
+    let (key, modifiers) = binding.parts();
+    key == KeyCode::Esc && modifiers == KeyModifiers::NONE
+}
+
 impl StatusIndicatorWidget {
     pub(crate) fn new(
         app_event_tx: AppEventSender,
@@ -90,6 +100,7 @@ impl StatusIndicatorWidget {
             show_interrupt_hint: true,
             interrupt_requires_double_press,
             interrupt_confirmation_deadline: None,
+            interrupt_binding: Some(key_hint::plain(KeyCode::Esc)),
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
             is_paused: false,
@@ -101,7 +112,8 @@ impl StatusIndicatorWidget {
     }
 
     pub(crate) fn interrupt(&self) {
-        self.app_event_tx.interrupt();
+        self.app_event_tx
+            .interrupt_and_restore_prompt_if_no_output();
     }
 
     /// Update the animated header label (left of the brackets).
@@ -153,22 +165,16 @@ impl StatusIndicatorWidget {
         self.show_interrupt_hint = visible;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         self.interrupt_requires_double_press = requires_double_press;
-        if !requires_double_press {
-            self.interrupt_confirmation_deadline = None;
-        }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_interrupt_confirmation_deadline(&mut self, deadline: Option<Instant>) {
         self.interrupt_confirmation_deadline = deadline;
     }
 
-    #[cfg(test)]
-    pub(crate) fn interrupt_hint_visible(&self) -> bool {
-        self.show_interrupt_hint
+    pub(crate) fn set_interrupt_binding(&mut self, binding: Option<KeyBinding>) {
+        self.interrupt_binding = binding;
     }
 
     pub(crate) fn pause_timer(&mut self) {
@@ -263,29 +269,36 @@ impl Renderable for StatusIndicatorWidget {
         let now = Instant::now();
         let elapsed_duration = self.elapsed_duration_at(now);
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
-        let interrupt_confirmation_pending = self
-            .interrupt_confirmation_deadline
-            .is_some_and(|deadline| deadline > now);
+        let motion_mode = MotionMode::from_animations_enabled(self.animations_enabled);
 
         let mut spans = Vec::with_capacity(5);
-        spans.push(spinner(Some(self.last_resume_at), self.animations_enabled));
-        spans.push(" ".into());
-        if self.animations_enabled {
-            spans.extend(shimmer_spans(&self.header));
-        } else if !self.header.is_empty() {
-            spans.push(self.header.clone().into());
+        if let Some(indicator) = activity_indicator(
+            Some(self.last_resume_at),
+            motion_mode,
+            ReducedMotionIndicator::Hidden,
+        ) {
+            spans.push(indicator);
+            spans.push(" ".into());
         }
-        spans.push(" ".into());
-        if self.show_interrupt_hint {
+        spans.extend(shimmer_text(&self.header, motion_mode));
+        if !spans.is_empty() {
+            spans.push(" ".into());
+        }
+        if self.show_interrupt_hint
+            && let Some(interrupt_binding) = self.interrupt_binding
+        {
             spans.push(format!("({pretty_elapsed} • ").dim());
-            if interrupt_confirmation_pending {
-                spans.push(key_hint::plain(KeyCode::Esc).into());
+            if self
+                .interrupt_confirmation_deadline
+                .is_some_and(|deadline| deadline > now)
+            {
+                spans.push(interrupt_binding.into());
                 spans.push(" again to interrupt)".dim());
             } else {
-                spans.push(key_hint::plain(KeyCode::Esc).into());
-                if self.interrupt_requires_double_press {
+                spans.push(interrupt_binding.into());
+                if self.interrupt_requires_double_press && is_plain_esc_binding(interrupt_binding) {
                     spans.push(" ".into());
-                    spans.push(key_hint::plain(KeyCode::Esc).into());
+                    spans.push(interrupt_binding.into());
                 }
                 spans.push(" to interrupt)".dim());
             }
@@ -404,6 +417,52 @@ mod tests {
         // Prefix is 4 columns, so a width of 30 yields a content width of 26: one column
         // short of fitting the whole phrase (27 cols), forcing exactly one wrap without ellipsis.
         let mut terminal = Terminal::new(TestBackend::new(30, 3)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn renders_without_spinner_when_animations_disabled() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
+        );
+        w.is_paused = true;
+        w.elapsed_running = Duration::ZERO;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(line.starts_with("Working (0s • esc to interrupt)"));
+    }
+
+    #[test]
+    fn renders_remapped_interrupt_hint() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
+        );
+        w.set_interrupt_binding(Some(key_hint::plain(KeyCode::F(12))));
+        w.is_paused = true;
+        w.elapsed_running = Duration::ZERO;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
         terminal
             .draw(|f| w.render(f.area(), f.buffer_mut()))
             .expect("draw");

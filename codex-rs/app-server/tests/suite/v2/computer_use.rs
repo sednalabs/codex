@@ -25,6 +25,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_protocol::dynamic_tools::DynamicToolCapability;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -81,7 +82,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         }),
         defer_loading: false,
         persist_on_resume: true,
-        capability: None,
+        capability: Some(android_capability("read_only", "shared_read")),
     };
 
     let thread_req = mcp
@@ -260,7 +261,6 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
         content: vec![ContentItem::InputText {
             text: "Resume this thread".to_string(),
         }],
-        end_turn: None,
         phase: None,
     }];
 
@@ -528,7 +528,7 @@ fn android_observe_tool() -> DynamicToolSpec {
         }),
         defer_loading: false,
         persist_on_resume: true,
-        capability: None,
+        capability: Some(android_capability("read_only", "shared_read")),
     }
 }
 
@@ -546,7 +546,16 @@ fn android_step_tool() -> DynamicToolSpec {
         }),
         defer_loading: false,
         persist_on_resume: true,
-        capability: None,
+        capability: Some(android_capability("mutating", "exclusive_write")),
+    }
+}
+
+fn android_capability(mutation_class: &str, lease_mode: &str) -> DynamicToolCapability {
+    DynamicToolCapability {
+        family: Some("android".to_string()),
+        capability_scope: Some("environment".to_string()),
+        mutation_class: Some(mutation_class.to_string()),
+        lease_mode: Some(lease_mode.to_string()),
     }
 }
 

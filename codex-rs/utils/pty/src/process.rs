@@ -2,6 +2,7 @@ use core::fmt;
 use std::io;
 #[cfg(unix)]
 use std::os::fd::RawFd;
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +18,39 @@ use tokio::sync::watch;
 use tokio::task::AbortHandle;
 use tokio::task::JoinHandle;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessSignal {
+    Interrupt,
+}
+
+pub(crate) fn unsupported_signal(signal: ProcessSignal) -> io::Error {
+    match signal {
+        ProcessSignal::Interrupt => io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process interrupt is not supported by this process backend",
+        ),
+    }
+}
+
+pub(crate) fn exit_code_from_status(status: ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+
+    -1
+}
+
 pub(crate) trait ChildTerminator: Send + Sync {
+    fn signal(&mut self, signal: ProcessSignal) -> io::Result<()>;
+
     fn kill(&mut self) -> io::Result<()>;
 }
 
@@ -193,6 +226,17 @@ impl ProcessHandle {
         }
     }
 
+    pub fn signal(&self, signal: ProcessSignal) -> io::Result<()> {
+        let Ok(mut killer_opt) = self.killer.lock() else {
+            return Ok(());
+        };
+        let Some(killer) = killer_opt.as_mut() else {
+            return Ok(());
+        };
+
+        killer.signal(signal)
+    }
+
     /// Attempts to kill the child and abort helper tasks.
     pub fn terminate(&self) {
         self.request_terminate();
@@ -232,6 +276,10 @@ struct ClosureTerminator {
 }
 
 impl ChildTerminator for ClosureTerminator {
+    fn signal(&mut self, signal: ProcessSignal) -> io::Result<()> {
+        Err(unsupported_signal(signal))
+    }
+
     fn kill(&mut self) -> io::Result<()> {
         if let Some(inner) = self.inner.as_mut() {
             (inner)();
@@ -330,22 +378,20 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
          output_tx: mpsc::Sender<Vec<u8>>,
          mut exit_seen_rx: watch::Receiver<bool>| {
             tokio::spawn(async move {
-                let mut process_exited = false;
                 loop {
-                    let recv_result = if process_exited {
-                        match tokio::time::timeout(
-                            std::time::Duration::from_millis(200),
-                            output_rx.recv(),
-                        )
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => break,
-                        }
+                    let recv_result = if *exit_seen_rx.borrow() {
+                        // Once exit has been observed, we no longer want a timer here. Some
+                        // backends publish the exit code before their final stdout/stderr bytes
+                        // have been forwarded through the broadcast channel, so a fixed grace
+                        // period can still drop the tail of the stream under load.
+                        //
+                        // Instead, keep waiting until the driver closes the broadcast sender.
+                        // That makes the shutdown contract explicit: the backend is responsible
+                        // for dropping its sender when it has truly finished forwarding output.
+                        output_rx.recv().await
                     } else {
                         tokio::select! {
                             _ = exit_seen_rx.changed() => {
-                                process_exited = *exit_seen_rx.borrow();
                                 continue;
                             }
                             result = output_rx.recv() => result,

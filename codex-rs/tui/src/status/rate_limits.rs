@@ -5,7 +5,8 @@
 //!
 //! The key contract is that time-sensitive values are interpreted relative to a caller-provided
 //! capture timestamp so stale detection and reset labels remain coherent for a given draw cycle.
-use crate::chatwidget::get_limits_duration;
+use crate::chatwidget::fallback_limit_label;
+use crate::chatwidget::limit_label_for_window;
 use crate::text_formatting::capitalize_first;
 
 use super::helpers::format_reset_timestamp;
@@ -13,9 +14,11 @@ use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Local;
 use chrono::Utc;
-use codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
-use codex_protocol::protocol::RateLimitSnapshot;
-use codex_protocol::protocol::RateLimitWindow;
+use codex_app_server_protocol::CreditsSnapshot as CoreCreditsSnapshot;
+use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::RateLimitWindow;
+use codex_app_server_protocol::SpendControlLimitSnapshot as CoreSpendControlLimitSnapshot;
+use codex_protocol::num_format::format_with_separators;
 
 const STATUS_LIMIT_BAR_SEGMENTS: usize = 20;
 const STATUS_LIMIT_BAR_FILLED: &str = "█";
@@ -23,7 +26,7 @@ const STATUS_LIMIT_BAR_EMPTY: &str = "░";
 
 #[derive(Debug, Clone)]
 pub(crate) struct StatusRateLimitRow {
-    /// Human-readable row label, such as `"5h limit"` or `"Credits"`.
+    /// Human-readable row label, such as `"5h limit"`, `"Monthly limit"`, or `"Credits"`.
     pub label: String,
     /// Value payload for the row.
     pub value: StatusRateLimitValue,
@@ -38,6 +41,8 @@ pub(crate) enum StatusRateLimitValue {
         percent_used: f64,
         /// Localized reset string, or `None` when unknown.
         resets_at: Option<String>,
+        /// Optional detail line rendered beneath the progress bar.
+        details: Option<String>,
     },
     /// Plain text value used for non-window rows.
     Text(String),
@@ -58,15 +63,6 @@ pub(crate) enum StatusRateLimitData {
 
 /// Maximum age before a snapshot is considered stale in status output.
 pub(crate) const RATE_LIMIT_STALE_THRESHOLD_MINUTES: i64 = 15;
-/// Maximum tolerated future skew for snapshot capture timestamps.
-pub(crate) const RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS: i64 = 60;
-
-/// Returns true when a captured snapshot is stale or has excessive future skew.
-pub(crate) fn is_snapshot_stale(captured_at: DateTime<Local>, now: DateTime<Local>) -> bool {
-    let snapshot_age = now.signed_duration_since(captured_at);
-    snapshot_age > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
-        || snapshot_age < ChronoDuration::seconds(-RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS)
-}
 
 /// Display-friendly representation of one usage window from a snapshot.
 #[derive(Debug, Clone)]
@@ -75,8 +71,7 @@ pub(crate) struct RateLimitWindowDisplay {
     pub used_percent: f64,
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
-    /// Raw reset timestamp (Unix seconds) used for pacing math.
-    #[cfg_attr(debug_assertions, allow(dead_code))]
+    /// Raw reset timestamp for status-line pacing calculations.
     pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
@@ -91,10 +86,10 @@ impl RateLimitWindowDisplay {
         let resets_at = resets_at_utc.map(|dt| format_reset_timestamp(dt, captured_at));
 
         Self {
-            used_percent: window.used_percent,
+            used_percent: f64::from(window.used_percent),
             resets_at,
             resets_at_unix_seconds: window.resets_at,
-            window_minutes: window.window_minutes,
+            window_minutes: window.window_duration_mins,
         }
     }
 }
@@ -105,12 +100,14 @@ pub(crate) struct RateLimitSnapshotDisplay {
     pub limit_name: String,
     /// Local timestamp representing when this display snapshot was captured.
     pub captured_at: DateTime<Local>,
-    /// Primary usage window (typically short duration).
+    /// Primary usage window.
     pub primary: Option<RateLimitWindowDisplay>,
-    /// Secondary usage window (typically weekly).
+    /// Secondary usage window.
     pub secondary: Option<RateLimitWindowDisplay>,
     /// Optional credits metadata when available.
     pub credits: Option<CreditsSnapshotDisplay>,
+    /// Optional effective monthly credit limit from workspace spend controls.
+    pub individual_limit: Option<SpendControlLimitSnapshotDisplay>,
 }
 
 /// Display-ready credits state extracted from protocol snapshots.
@@ -122,6 +119,17 @@ pub(crate) struct CreditsSnapshotDisplay {
     pub unlimited: bool,
     /// Raw balance text as provided by the backend.
     pub balance: Option<String>,
+}
+
+/// Display-ready effective monthly limit extracted from spend controls.
+#[derive(Debug, Clone)]
+pub(crate) struct SpendControlLimitSnapshotDisplay {
+    /// Local timestamp representing when this monthly usage value was captured.
+    pub captured_at: DateTime<Local>,
+    pub percent_remaining: f64,
+    pub used: String,
+    pub limit: String,
+    pub resets_at: Option<String>,
 }
 
 /// Converts a protocol snapshot into UI-friendly display data.
@@ -153,6 +161,10 @@ pub(crate) fn rate_limit_snapshot_display_for_limit(
             .as_ref()
             .map(|window| RateLimitWindowDisplay::from_window(window, captured_at)),
         credits: snapshot.credits.as_ref().map(CreditsSnapshotDisplay::from),
+        individual_limit: snapshot
+            .individual_limit
+            .as_ref()
+            .and_then(|limit| SpendControlLimitSnapshotDisplay::from_limit(limit, captured_at)),
     }
 }
 
@@ -163,6 +175,22 @@ impl From<&CoreCreditsSnapshot> for CreditsSnapshotDisplay {
             unlimited: value.unlimited,
             balance: value.balance.clone(),
         }
+    }
+}
+
+impl SpendControlLimitSnapshotDisplay {
+    fn from_limit(
+        value: &CoreSpendControlLimitSnapshot,
+        captured_at: DateTime<Local>,
+    ) -> Option<Self> {
+        Some(Self {
+            captured_at,
+            percent_remaining: f64::from(value.remaining_percent.clamp(0, 100)),
+            used: format_credit_amount(&value.used)?,
+            limit: format_credit_amount(&value.limit)?,
+            resets_at: DateTime::<Utc>::from_timestamp(value.resets_at, 0)
+                .map(|dt| format_reset_timestamp(dt.with_timezone(&Local), captured_at)),
+        })
     }
 }
 
@@ -193,6 +221,11 @@ pub(crate) fn compose_rate_limit_data_many(
 
     for snapshot in snapshots {
         stale |= is_snapshot_stale(snapshot.captured_at, now);
+        stale |= snapshot
+            .individual_limit
+            .as_ref()
+            .map(|limit| is_snapshot_stale(limit.captured_at, now))
+            .unwrap_or(false);
 
         let limit_bucket_label = snapshot.limit_name.clone();
         let show_limit_prefix = !limit_bucket_label.eq_ignore_ascii_case("codex");
@@ -200,21 +233,13 @@ pub(crate) fn compose_rate_limit_data_many(
             .primary
             .as_ref()
             .map(|window| {
-                window
-                    .window_minutes
-                    .map(get_limits_duration)
-                    .unwrap_or_else(|| "5h".to_string())
+                limit_label_for_window(window.window_minutes, /*is_secondary*/ false)
             })
             .map(|label| capitalize_first(&label));
         let secondary_label = snapshot
             .secondary
             .as_ref()
-            .map(|window| {
-                window
-                    .window_minutes
-                    .map(get_limits_duration)
-                    .unwrap_or_else(|| "weekly".to_string())
-            })
+            .map(|window| limit_label_for_window(window.window_minutes, /*is_secondary*/ true))
             .map(|label| capitalize_first(&label));
         let window_count =
             usize::from(snapshot.primary.is_some()) + usize::from(snapshot.secondary.is_some());
@@ -232,12 +257,16 @@ pub(crate) fn compose_rate_limit_data_many(
                 format!(
                     "{} {} limit",
                     limit_bucket_label,
-                    primary_label.clone().unwrap_or_else(|| "5h".to_string())
+                    primary_label.clone().unwrap_or_else(|| capitalize_first(
+                        fallback_limit_label(/*is_secondary*/ false)
+                    ))
                 )
             } else {
                 format!(
                     "{} limit",
-                    primary_label.clone().unwrap_or_else(|| "5h".to_string())
+                    primary_label.clone().unwrap_or_else(|| capitalize_first(
+                        fallback_limit_label(/*is_secondary*/ false)
+                    ))
                 )
             };
             rows.push(StatusRateLimitRow {
@@ -245,6 +274,7 @@ pub(crate) fn compose_rate_limit_data_many(
                 value: StatusRateLimitValue::Window {
                     percent_used: primary.used_percent,
                     resets_at: primary.resets_at.clone(),
+                    details: None,
                 },
             });
         }
@@ -254,16 +284,16 @@ pub(crate) fn compose_rate_limit_data_many(
                 format!(
                     "{} {} limit",
                     limit_bucket_label,
-                    secondary_label
-                        .clone()
-                        .unwrap_or_else(|| "weekly".to_string())
+                    secondary_label.clone().unwrap_or_else(|| capitalize_first(
+                        fallback_limit_label(/*is_secondary*/ true)
+                    ))
                 )
             } else {
                 format!(
                     "{} limit",
-                    secondary_label
-                        .clone()
-                        .unwrap_or_else(|| "weekly".to_string())
+                    secondary_label.clone().unwrap_or_else(|| capitalize_first(
+                        fallback_limit_label(/*is_secondary*/ true)
+                    ))
                 )
             };
             rows.push(StatusRateLimitRow {
@@ -271,6 +301,7 @@ pub(crate) fn compose_rate_limit_data_many(
                 value: StatusRateLimitValue::Window {
                     percent_used: secondary.used_percent,
                     resets_at: secondary.resets_at.clone(),
+                    details: None,
                 },
             });
         }
@@ -279,6 +310,19 @@ pub(crate) fn compose_rate_limit_data_many(
             && let Some(row) = credit_status_row(credits)
         {
             rows.push(row);
+        }
+        if let Some(individual_limit) = snapshot.individual_limit.as_ref() {
+            rows.push(StatusRateLimitRow {
+                label: "Monthly credit limit".to_string(),
+                value: StatusRateLimitValue::Window {
+                    percent_used: 100.0 - individual_limit.percent_remaining,
+                    resets_at: individual_limit.resets_at.clone(),
+                    details: Some(format!(
+                        "{} of {} credits used",
+                        individual_limit.used, individual_limit.limit
+                    )),
+                },
+            });
         }
     }
 
@@ -289,6 +333,11 @@ pub(crate) fn compose_rate_limit_data_many(
     } else {
         StatusRateLimitData::Available(rows)
     }
+}
+
+pub(crate) fn is_snapshot_stale(captured_at: DateTime<Local>, now: DateTime<Local>) -> bool {
+    now.signed_duration_since(captured_at)
+        > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
 }
 
 /// Renders a fixed-width progress bar from remaining percentage.
@@ -356,17 +405,21 @@ fn format_credit_balance(raw: &str) -> Option<String> {
     None
 }
 
+fn format_credit_amount(raw: &str) -> Option<String> {
+    let value = raw.trim().parse::<f64>().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(format_with_separators(value.round() as i64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::CreditsSnapshotDisplay;
-    use super::RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS;
-    use super::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
     use super::RateLimitSnapshotDisplay;
     use super::RateLimitWindowDisplay;
     use super::StatusRateLimitData;
     use super::compose_rate_limit_data_many;
-    use super::is_snapshot_stale;
-    use chrono::Duration as ChronoDuration;
     use chrono::Local;
     use pretty_assertions::assert_eq;
 
@@ -374,7 +427,7 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: Some("soon".to_string()),
-            resets_at_unix_seconds: Some(0),
+            resets_at_unix_seconds: None,
             window_minutes: Some(300),
         }
     }
@@ -392,6 +445,7 @@ mod tests {
                 unlimited: false,
                 balance: Some("25".to_string()),
             }),
+            individual_limit: None,
         };
         let other = RateLimitSnapshotDisplay {
             limit_name: "codex-other".to_string(),
@@ -403,6 +457,7 @@ mod tests {
                 unlimited: false,
                 balance: Some("99".to_string()),
             }),
+            individual_limit: None,
         };
 
         let rows = match compose_rate_limit_data_many(&[codex, other], now) {
@@ -432,16 +487,17 @@ mod tests {
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 20.0,
                 resets_at: Some("soon".to_string()),
-                resets_at_unix_seconds: Some(0),
+                resets_at_unix_seconds: None,
                 window_minutes: Some(60),
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 40.0,
                 resets_at: Some("later".to_string()),
-                resets_at_unix_seconds: Some(0),
-                window_minutes: None,
+                resets_at_unix_seconds: None,
+                window_minutes: Some(2 * 60),
             }),
             credits: None,
+            individual_limit: None,
         };
 
         let rows = match compose_rate_limit_data_many(&[other], now) {
@@ -453,44 +509,9 @@ mod tests {
             labels,
             vec![
                 "codex-other limit".to_string(),
-                "1h limit".to_string(),
-                "Weekly limit".to_string(),
+                "Usage limit".to_string(),
+                "Secondary usage limit".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn stale_threshold_boundary_is_not_stale() {
-        let now = Local::now();
-        let captured_at = now - ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
-
-        assert!(!is_snapshot_stale(captured_at, now));
-    }
-
-    #[test]
-    fn stale_threshold_plus_one_second_is_stale() {
-        let now = Local::now();
-        let captured_at = now
-            - ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
-            - ChronoDuration::seconds(1);
-
-        assert!(is_snapshot_stale(captured_at, now));
-    }
-
-    #[test]
-    fn future_skew_tolerance_boundary_is_not_stale() {
-        let now = Local::now();
-        let captured_at = now + ChronoDuration::seconds(RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS);
-
-        assert!(!is_snapshot_stale(captured_at, now));
-    }
-
-    #[test]
-    fn future_skew_plus_one_second_is_stale() {
-        let now = Local::now();
-        let captured_at =
-            now + ChronoDuration::seconds(RATE_LIMIT_FUTURE_SKEW_TOLERANCE_SECONDS + 1);
-
-        assert!(is_snapshot_stale(captured_at, now));
     }
 }

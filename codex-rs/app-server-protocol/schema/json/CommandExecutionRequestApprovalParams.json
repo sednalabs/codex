@@ -260,7 +260,7 @@
       "enum": [
         "read",
         "write",
-        "none"
+        "deny"
       ],
       "type": "string"
     },
@@ -363,19 +363,6 @@
             "kind"
           ],
           "title": "MinimalFileSystemSpecialPath",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "current_working_directory",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "title": "CurrentWorkingDirectoryFileSystemSpecialPath",
           "type": "object"
         },
         {
@@ -572,6 +559,11 @@
         "null"
       ]
     },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
     "threadId": {
       "type": "string"
     },
@@ -582,7 +574,8 @@
   "required": [
     "threadId",
     "turnId",
-    "itemId"
+    "itemId",
+    "startedAtMs"
   ],
   "title": "CommandExecutionRequestApprovalParams",
   "type": "object"

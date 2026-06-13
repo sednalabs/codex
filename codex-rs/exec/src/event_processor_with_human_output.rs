@@ -1,8 +1,8 @@
 use std::io::IsTerminal;
-use std::path::Path;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
@@ -11,12 +11,9 @@ use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::num_format::format_with_separators;
-use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
-use codex_utils_version::DISPLAY_VERSION;
-use codex_utils_absolute_path::canonicalize_preserving_symlinks;
+use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 
@@ -84,6 +81,14 @@ impl EventProcessorWithHumanOutput {
                     "mcp:".style(self.bold),
                     format!("{server}/{tool}").style(self.cyan),
                     "started".style(self.dimmed)
+                );
+            }
+            ThreadItem::ComputerUseCall { adapter, tool, .. } => {
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, ComputerUseCallStatus::InProgress)
+                        .style(self.bold),
+                    tool.style(self.dimmed)
                 );
             }
             ThreadItem::WebSearch { query, .. } => {
@@ -201,6 +206,27 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                error,
+                ..
+            } => {
+                let status_style = match &status {
+                    ComputerUseCallStatus::Completed => self.green,
+                    ComputerUseCallStatus::Failed => self.red,
+                    ComputerUseCallStatus::InProgress => self.dimmed,
+                };
+                eprintln!(
+                    "{} {}",
+                    computer_use_human_label(&adapter, status).style(status_style),
+                    tool.style(self.dimmed)
+                );
+                if let Some(error) = error {
+                    eprintln!("{}", error.style(self.red));
+                }
+            }
             ThreadItem::WebSearch { query, .. } => {
                 eprintln!("{} {}", "web search:".style(self.bold), query);
             }
@@ -212,6 +238,20 @@ impl EventProcessorWithHumanOutput {
     }
 }
 
+fn computer_use_human_label(adapter: &str, status: ComputerUseCallStatus) -> String {
+    let surface = match adapter {
+        "android" | "android_emulator" | "android-emulator" => "Android emulator".to_string(),
+        "browser" => "browser".to_string(),
+        "desktop" | "computer" => "computer".to_string(),
+        other => other.replace(['_', '-'], " "),
+    };
+    match status {
+        ComputerUseCallStatus::InProgress => format!("Using {surface}"),
+        ComputerUseCallStatus::Completed => format!("Used {surface}"),
+        ComputerUseCallStatus::Failed => format!("Failed using {surface}"),
+    }
+}
+
 impl EventProcessor for EventProcessorWithHumanOutput {
     fn print_config_summary(
         &mut self,
@@ -219,7 +259,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         prompt: &str,
         session_configured_event: &SessionConfiguredEvent,
     ) {
-        eprintln!("OpenAI Codex v{DISPLAY_VERSION} (research preview)\n--------");
+        const VERSION: &str = env!("CARGO_PKG_VERSION");
+        eprintln!("OpenAI Codex v{VERSION}\n--------");
         for (key, value) in config_summary_entries(config, session_configured_event) {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }
@@ -423,6 +464,7 @@ fn config_summary_entries(
     config: &Config,
     session_configured_event: &SessionConfiguredEvent,
 ) -> Vec<(&'static str, String)> {
+    let permission_profile = config.permissions.effective_permission_profile();
     let mut entries = vec![
         ("workdir", config.cwd.display().to_string()),
         ("model", session_configured_event.model.clone()),
@@ -437,8 +479,9 @@ fn config_summary_entries(
         (
             "sandbox",
             summarize_permission_profile(
-                config.permissions.permission_profile.get(),
-                config.cwd.as_path(),
+                &permission_profile,
+                &config.cwd,
+                config.effective_workspace_roots().as_slice(),
             ),
         ),
     ];
@@ -447,7 +490,8 @@ fn config_summary_entries(
             "reasoning effort",
             config
                 .model_reasoning_effort
-                .map(|effort| effort.to_string())
+                .as_ref()
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "none".to_string()),
         ));
         entries.push((
@@ -463,83 +507,6 @@ fn config_summary_entries(
         session_configured_event.session_id.to_string(),
     ));
     entries
-}
-
-fn summarize_permission_profile(permission_profile: &PermissionProfile, cwd: &Path) -> String {
-    match permission_profile {
-        PermissionProfile::Disabled => "danger-full-access".to_string(),
-        PermissionProfile::External { network } => {
-            let mut summary = "external-sandbox".to_string();
-            append_network_summary(&mut summary, *network);
-            summary
-        }
-        PermissionProfile::Managed { .. } => {
-            let file_system_policy = permission_profile.file_system_sandbox_policy();
-            let network_policy = permission_profile.network_sandbox_policy();
-            if file_system_policy.has_full_disk_write_access() {
-                let mut summary = "workspace-write [/]".to_string();
-                append_network_summary(&mut summary, network_policy);
-                return summary;
-            }
-
-            let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd);
-            if writable_roots.is_empty() {
-                let mut summary = "read-only".to_string();
-                append_network_summary(&mut summary, network_policy);
-                return summary;
-            }
-
-            let mut summary = "workspace-write".to_string();
-            let writable_entries = writable_roots
-                .iter()
-                .map(|root| writable_root_label(root.root.as_path(), cwd))
-                .collect::<Vec<_>>();
-            summary.push_str(&format!(" [{}]", writable_entries.join(", ")));
-            append_network_summary(&mut summary, network_policy);
-            summary
-        }
-    }
-}
-
-fn append_network_summary(summary: &mut String, network_policy: NetworkSandboxPolicy) {
-    if network_policy.is_enabled() {
-        summary.push_str(" (network access enabled)");
-    }
-}
-
-fn writable_root_label(root: &Path, cwd: &Path) -> String {
-    if paths_match_after_canonicalization(root, cwd) {
-        return "workdir".to_string();
-    }
-    if paths_match_after_canonicalization(root, Path::new("/tmp")) {
-        return "/tmp".to_string();
-    }
-    if std::env::var_os("TMPDIR")
-        .filter(|tmpdir| !tmpdir.is_empty())
-        .is_some_and(|tmpdir| paths_match_after_canonicalization(root, Path::new(&tmpdir)))
-    {
-        return "$TMPDIR".to_string();
-    }
-    display_path_label(root)
-}
-
-fn paths_match_after_canonicalization(left: &Path, right: &Path) -> bool {
-    match (
-        canonicalize_preserving_symlinks(left),
-        canonicalize_preserving_symlinks(right),
-    ) {
-        (Ok(left), Ok(right)) if left == right => true,
-        _ => display_path_label(left) == display_path_label(right),
-    }
-}
-
-fn display_path_label(path: &Path) -> String {
-    path.strip_prefix("/private/tmp")
-        .ok()
-        .map(|suffix| Path::new("/tmp").join(suffix))
-        .unwrap_or_else(|| path.to_path_buf())
-        .to_string_lossy()
-        .to_string()
 }
 
 fn reasoning_text(
@@ -597,6 +564,10 @@ fn should_print_final_message_to_tty(
 ) -> bool {
     final_message.is_some() && !final_message_rendered && stdout_is_terminal && stderr_is_terminal
 }
+
+#[cfg(test)]
+#[path = "event_processor_with_human_output_tests.rs"]
+mod event_processor_with_human_output_tests;
 
 #[cfg(test)]
 mod tests {
@@ -760,6 +731,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
                         text: "final answer".to_string(),
@@ -772,6 +744,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -807,6 +781,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
                         text: "final answer".to_string(),
@@ -819,6 +794,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -855,6 +832,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
@@ -862,6 +840,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -898,6 +878,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Failed,
                     error: None,
@@ -905,6 +886,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 
@@ -942,6 +925,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,
@@ -949,6 +933,8 @@ mod tests {
                     completed_at: None,
                     duration_ms: None,
                 },
+                final_model: None,
+                model_snapshot: None,
             },
         ));
 

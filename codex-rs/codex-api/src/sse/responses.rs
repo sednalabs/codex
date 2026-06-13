@@ -1,60 +1,33 @@
 use crate::common::ResponseEvent;
+use crate::common::ResponseModelIdentity;
 use crate::common::ResponseStream;
 use crate::error::ApiError;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_client::TransportError;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnModerationMetadataEvent;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use futures::TryStreamExt;
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::BufRead;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tokio_util::io::ReaderStream;
 use tracing::debug;
 use tracing::trace;
 
 const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
+const OPENAI_MODEL_SNAPSHOT_HEADER: &str = "openai-model-snapshot";
+const REQUEST_ID_HEADER: &str = "x-request-id";
 const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
-
-/// Streams SSE events from an on-disk fixture for tests.
-pub fn stream_from_fixture(
-    path: impl AsRef<Path>,
-    idle_timeout: Duration,
-) -> Result<ResponseStream, ApiError> {
-    let file =
-        std::fs::File::open(path.as_ref()).map_err(|err| ApiError::Stream(err.to_string()))?;
-    let mut content = String::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(|err| ApiError::Stream(err.to_string()))?;
-        content.push_str(&line);
-        content.push_str("\n\n");
-    }
-
-    let reader = std::io::Cursor::new(content);
-    let stream = ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
-    let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(process_sse(
-        Box::pin(stream),
-        tx_event,
-        idle_timeout,
-        /*telemetry*/ None,
-    ));
-    Ok(ResponseStream { rx_event })
-}
 
 pub fn spawn_response_stream(
     stream_response: StreamResponse,
@@ -73,10 +46,20 @@ pub fn spawn_response_stream(
         .get(OPENAI_MODEL_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
+    let server_model_snapshot = stream_response
+        .headers
+        .get(OPENAI_MODEL_SNAPSHOT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
     let reasoning_included = stream_response
         .headers
         .get(X_REASONING_INCLUDED_HEADER)
         .is_some();
+    let upstream_request_id = stream_response
+        .headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     if let Some(turn_state) = turn_state.as_ref()
         && let Some(header_value) = stream_response
             .headers
@@ -87,8 +70,20 @@ pub fn spawn_response_stream(
     }
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
     tokio::spawn(async move {
-        if let Some(model) = server_model {
-            let _ = tx_event.send(Ok(ResponseEvent::ServerModel(model))).await;
+        if let Some(model) = server_model.as_ref() {
+            let _ = tx_event
+                .send(Ok(ResponseEvent::ServerModel(model.clone())))
+                .await;
+        }
+        if server_model.is_some() || server_model_snapshot.is_some() {
+            let _ = tx_event
+                .send(Ok(ResponseEvent::ServerModelIdentity(
+                    ResponseModelIdentity {
+                        final_model: server_model,
+                        model_snapshot: server_model_snapshot,
+                    },
+                )))
+                .await;
         }
         for snapshot in rate_limit_snapshots {
             let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
@@ -104,7 +99,10 @@ pub fn spawn_response_stream(
         process_sse(stream_response.bytes, tx_event, idle_timeout, telemetry).await;
     });
 
-    ResponseStream { rx_event }
+    ResponseStream {
+        rx_event,
+        upstream_request_id,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,29 +177,43 @@ pub struct ResponsesStreamEvent {
     content_index: Option<i64>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ResponseModelMetadata {
+    pub(crate) warning_model: Option<String>,
+    pub(crate) execution_identity: ResponseModelIdentity,
+}
+
 impl ResponsesStreamEvent {
     pub fn kind(&self) -> &str {
         &self.kind
     }
 
-    /// Returns the effective model reported by the server, if present.
-    ///
-    /// Precedence:
-    /// 1. `response.headers` for standard Responses stream events.
-    /// 2. top-level `headers` for websocket metadata events.
-    pub fn response_model(&self) -> Option<String> {
-        let response_headers_model = self
+    /// Parses model headers once while preserving their two selection rules.
+    pub(crate) fn response_model_metadata(&self) -> ResponseModelMetadata {
+        let response_identity = self
             .response
             .as_ref()
             .and_then(|response| response.get("headers"))
-            .and_then(header_openai_model_value_from_json);
+            .and_then(response_model_identity_from_json);
+        let top_level_identity = self
+            .headers
+            .as_ref()
+            .and_then(response_model_identity_from_json);
+        let warning_model = response_identity
+            .as_ref()
+            .and_then(|identity| identity.final_model.clone())
+            .or_else(|| {
+                top_level_identity
+                    .as_ref()
+                    .and_then(|identity| identity.final_model.clone())
+            });
+        // Keep the pair atomic: if `response.headers` exists, both identity
+        // fields come from it rather than being filled from top-level headers.
+        let execution_identity = response_identity.or(top_level_identity).unwrap_or_default();
 
-        match response_headers_model {
-            Some(model) => Some(model),
-            None => self
-                .headers
-                .as_ref()
-                .and_then(header_openai_model_value_from_json),
+        ResponseModelMetadata {
+            warning_model,
+            execution_identity,
         }
     }
 
@@ -215,18 +227,36 @@ impl ResponsesStreamEvent {
             .and_then(|metadata| metadata.get("openai_verification_recommendation"))
             .and_then(model_verifications_from_json_value)
     }
+
+    pub(crate) fn turn_moderation_metadata(&self) -> Option<TurnModerationMetadataEvent> {
+        if self.kind() != "response.metadata" {
+            return None;
+        }
+
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("openai_chatgpt_moderation_metadata"))
+            .cloned()
+            .map(|metadata| TurnModerationMetadataEvent { metadata })
+    }
 }
 
-fn header_openai_model_value_from_json(value: &Value) -> Option<String> {
+fn response_model_identity_from_json(value: &Value) -> Option<ResponseModelIdentity> {
     let headers = value.as_object()?;
-    headers.iter().find_map(|(name, value)| {
-        if name.eq_ignore_ascii_case("openai-model") || name.eq_ignore_ascii_case("x-openai-model")
+    let mut identity = ResponseModelIdentity::default();
+    for (name, value) in headers {
+        if identity.final_model.is_none()
+            && (name.eq_ignore_ascii_case("openai-model")
+                || name.eq_ignore_ascii_case("x-openai-model"))
         {
-            json_value_as_string(value)
-        } else {
-            None
+            identity.final_model = json_value_as_string(value);
+        } else if identity.model_snapshot.is_none()
+            && name.eq_ignore_ascii_case(OPENAI_MODEL_SNAPSHOT_HEADER)
+        {
+            identity.model_snapshot = json_value_as_string(value);
         }
-    })
+    }
+    Some(identity)
 }
 
 fn model_verifications_from_json_value(value: &Value) -> Option<Vec<ModelVerification>> {
@@ -427,6 +457,7 @@ pub async fn process_sse(
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let mut last_server_model_identity: Option<ResponseModelIdentity> = None;
 
     loop {
         let start = Instant::now();
@@ -466,8 +497,10 @@ pub async fn process_sse(
             }
         };
         let model_verifications = event.model_verifications();
+        let turn_moderation_metadata = event.turn_moderation_metadata();
 
-        if let Some(model) = event.response_model()
+        let model_metadata = event.response_model_metadata();
+        if let Some(model) = model_metadata.warning_model
             && last_server_model.as_deref() != Some(model.as_str())
         {
             if tx_event
@@ -479,9 +512,33 @@ pub async fn process_sse(
             }
             last_server_model = Some(model);
         }
+        let server_model_identity = model_metadata.execution_identity;
+        if (server_model_identity.final_model.is_some()
+            || server_model_identity.model_snapshot.is_some())
+            && last_server_model_identity.as_ref() != Some(&server_model_identity)
+        {
+            if tx_event
+                .send(Ok(ResponseEvent::ServerModelIdentity(
+                    server_model_identity.clone(),
+                )))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            last_server_model_identity = Some(server_model_identity);
+        }
         if let Some(verifications) = model_verifications
             && tx_event
                 .send(Ok(ResponseEvent::ModelVerifications(verifications)))
+                .await
+                .is_err()
+        {
+            return;
+        }
+        if let Some(metadata) = turn_moderation_metadata
+            && tx_event
+                .send(Ok(ResponseEvent::TurnModerationMetadata(metadata)))
                 .await
                 .is_err()
         {
@@ -581,8 +638,10 @@ mod tests {
     use assert_matches::assert_matches;
     use bytes::Bytes;
     use codex_client::StreamResponse;
+    use codex_client::TransportError;
     use codex_protocol::models::MessagePhase;
     use codex_protocol::models::ResponseItem;
+    use futures::TryStreamExt;
     use futures::stream;
     use http::HeaderMap;
     use http::HeaderValue;
@@ -591,6 +650,7 @@ mod tests {
     use serde_json::json;
     use tokio::sync::mpsc;
     use tokio_test::io::Builder as IoBuilder;
+    use tokio_util::io::ReaderStream;
 
     async fn collect_events(chunks: &[&[u8]]) -> Vec<Result<ResponseEvent, ApiError>> {
         let mut builder = IoBuilder::new();
@@ -881,6 +941,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_overloaded_error_is_retryable_by_turn_loop() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_capacity","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"server_is_overloaded","message":"Selected model is at capacity."}, "usage":null,"user":null,"metadata":{}}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Err(ApiError::ServerOverloaded)),
+            "unexpected event: {:?}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_down_error_is_retryable_by_turn_loop() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_slow_down","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"slow_down","message":"Selected model is temporarily busy."}, "usage":null,"user":null,"metadata":{}}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], Err(ApiError::ServerOverloaded)),
+            "unexpected event: {:?}",
+            events[0]
+        );
+    }
+
+    #[tokio::test]
     async fn context_window_error_is_fatal() {
         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_5c66275b97b9baef1ed95550adb3b7ec13b17aafd1d2f11b","object":"response","created_at":1759510079,"status":"failed","background":false,"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."},"usage":null,"user":null,"metadata":{}}}"#;
 
@@ -1058,11 +1150,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_response_stream_emits_server_model_header() {
+    async fn spawn_response_stream_emits_header_events() {
         let mut headers = HeaderMap::new();
+        headers.insert(REQUEST_ID_HEADER, HeaderValue::from_static("req-1"));
         headers.insert(
             OPENAI_MODEL_HEADER,
             HeaderValue::from_static(CYBER_RESTRICTED_MODEL_FOR_TESTS),
+        );
+        headers.insert(
+            OPENAI_MODEL_SNAPSHOT_HEADER,
+            HeaderValue::from_static(MODEL_SNAPSHOT_FOR_TESTS),
         );
         let bytes = stream::iter(Vec::<Result<Bytes, TransportError>>::new());
         let stream_response = StreamResponse {
@@ -1077,19 +1174,33 @@ mod tests {
             /*telemetry*/ None,
             /*turn_state*/ None,
         );
+        assert_eq!(stream.upstream_request_id.as_deref(), Some("req-1"));
         let event = stream
             .rx_event
             .recv()
             .await
             .expect("expected server model event")
             .expect("expected ok event");
-
         match event {
             ResponseEvent::ServerModel(model) => {
                 assert_eq!(model, CYBER_RESTRICTED_MODEL_FOR_TESTS);
             }
             other => panic!("expected server model event, got {other:?}"),
         }
+        let event = stream
+            .rx_event
+            .recv()
+            .await
+            .expect("expected server model identity event")
+            .expect("expected ok event");
+        assert_matches!(
+            event,
+            ResponseEvent::ServerModelIdentity(ResponseModelIdentity {
+                final_model: Some(final_model),
+                model_snapshot: Some(model_snapshot),
+            }) if final_model == CYBER_RESTRICTED_MODEL_FOR_TESTS
+                && model_snapshot == MODEL_SNAPSHOT_FOR_TESTS
+        );
     }
 
     #[tokio::test]
@@ -1127,6 +1238,18 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ResponseEvent::ModelVerifications(_)))
         );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::ServerModelIdentity(_)))
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::Completed {
+                response_id,
+                ..
+            } if response_id == "resp-1"
+        )));
     }
 
     #[tokio::test]
@@ -1169,7 +1292,8 @@ mod tests {
                 "response": {
                     "id": "resp-1",
                     "headers": {
-                        "OpenAI-Model": CYBER_RESTRICTED_MODEL_FOR_TESTS
+                        "OpenAI-Model": CYBER_RESTRICTED_MODEL_FOR_TESTS,
+                        "OpenAI-Model-Snapshot": MODEL_SNAPSHOT_FOR_TESTS
                     }
                 }
             }),
@@ -1182,14 +1306,22 @@ mod tests {
         ])
         .await;
 
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         assert_matches!(
             &events[0],
             ResponseEvent::ServerModel(model) if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
         );
-        assert_matches!(&events[1], ResponseEvent::Created);
         assert_matches!(
-            &events[2],
+            &events[1],
+            ResponseEvent::ServerModelIdentity(ResponseModelIdentity {
+                final_model: Some(final_model),
+                model_snapshot: Some(model_snapshot),
+            }) if final_model == CYBER_RESTRICTED_MODEL_FOR_TESTS
+                && model_snapshot == MODEL_SNAPSHOT_FOR_TESTS
+        );
+        assert_matches!(&events[2], ResponseEvent::Created);
+        assert_matches!(
+            &events[3],
             ResponseEvent::Completed {
                 response_id,
                 token_usage: None,
@@ -1233,19 +1365,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn process_sse_emits_turn_moderation_metadata_field() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.metadata",
+                "metadata": {
+                    "openai_chatgpt_moderation_metadata": {
+                        "presentation": "inline"
+                    }
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1"
+                }
+            }),
+        ])
+        .await;
+
+        assert_matches!(
+            &events[0],
+            ResponseEvent::TurnModerationMetadata(result)
+                if result.metadata == json!({"presentation": "inline"})
+        );
+        assert_matches!(
+            &events[1],
+            ResponseEvent::Completed {
+                response_id,
+                token_usage: None,
+                end_turn: None,
+            } if response_id == "resp-1"
+        );
+    }
+
     #[test]
     fn responses_stream_event_response_model_reads_top_level_headers() {
         let ev: ResponsesStreamEvent = serde_json::from_value(json!({
             "type": "response.metadata",
             "headers": {
                 "openai-model": CYBER_RESTRICTED_MODEL_FOR_TESTS,
+                "OPENAI-MODEL-SNAPSHOT": MODEL_SNAPSHOT_FOR_TESTS,
             }
         }))
         .expect("expected event to deserialize");
 
         assert_eq!(
-            ev.response_model().as_deref(),
-            Some(CYBER_RESTRICTED_MODEL_FOR_TESTS)
+            ev.response_model_metadata(),
+            ResponseModelMetadata {
+                warning_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                execution_identity: ResponseModelIdentity {
+                    final_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                    model_snapshot: Some(MODEL_SNAPSHOT_FOR_TESTS.to_string()),
+                },
+            }
         );
     }
 
@@ -1254,7 +1428,37 @@ mod tests {
         let ev: ResponsesStreamEvent = serde_json::from_value(json!({
             "type": "response.created",
             "headers": {
-                "openai-model": "top-level-model"
+                "openai-model": "top-level-model",
+                "openai-model-snapshot": "top-level-snapshot"
+            },
+            "response": {
+                "id": "resp-1",
+                "headers": {
+                    "openai-model": CYBER_RESTRICTED_MODEL_FOR_TESTS,
+                    "openai-model-snapshot": MODEL_SNAPSHOT_FOR_TESTS
+                }
+            }
+        }))
+        .expect("expected event to deserialize");
+
+        assert_eq!(
+            ev.response_model_metadata(),
+            ResponseModelMetadata {
+                warning_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                execution_identity: ResponseModelIdentity {
+                    final_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                    model_snapshot: Some(MODEL_SNAPSHOT_FOR_TESTS.to_string()),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn responses_stream_event_does_not_mix_header_containers() {
+        let ev: ResponsesStreamEvent = serde_json::from_value(json!({
+            "type": "response.created",
+            "headers": {
+                "openai-model-snapshot": "top-level-snapshot"
             },
             "response": {
                 "id": "resp-1",
@@ -1266,8 +1470,42 @@ mod tests {
         .expect("expected event to deserialize");
 
         assert_eq!(
-            ev.response_model().as_deref(),
-            Some(CYBER_RESTRICTED_MODEL_FOR_TESTS)
+            ev.response_model_metadata(),
+            ResponseModelMetadata {
+                warning_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                execution_identity: ResponseModelIdentity {
+                    final_model: Some(CYBER_RESTRICTED_MODEL_FOR_TESTS.to_string()),
+                    model_snapshot: None,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn responses_stream_event_preserves_legacy_model_fallback() {
+        let ev: ResponsesStreamEvent = serde_json::from_value(json!({
+            "type": "response.created",
+            "headers": {
+                "openai-model": "top-level-model"
+            },
+            "response": {
+                "id": "resp-1",
+                "headers": {
+                    "openai-model-snapshot": MODEL_SNAPSHOT_FOR_TESTS
+                }
+            }
+        }))
+        .expect("expected event to deserialize");
+
+        assert_eq!(
+            ev.response_model_metadata(),
+            ResponseModelMetadata {
+                warning_model: Some("top-level-model".to_string()),
+                execution_identity: ResponseModelIdentity {
+                    final_model: None,
+                    model_snapshot: Some(MODEL_SNAPSHOT_FOR_TESTS.to_string()),
+                },
+            }
         );
     }
 
@@ -1359,4 +1597,5 @@ mod tests {
     }
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";
+    const MODEL_SNAPSHOT_FOR_TESTS: &str = "gpt-5.3-codex-2026-06-10";
 }

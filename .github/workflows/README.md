@@ -55,25 +55,31 @@ contract today.
   Keep the checked-in workflow authoritative so language coverage, query
   selection, permissions, and scheduling remain reviewable with the rest of the
   workflow catalog.
-- Protected branch pushes, scheduled runs, and manual dispatch analyze Actions,
-  C/C++, JavaScript/TypeScript, Python, and Rust with `build-mode: none`. This
-  keeps coverage over the vendored C sandbox code and Rust sources without
-  relying on CodeQL autobuild, which has no useful build system to discover in
-  this repository.
-- Pull requests route the language matrix through
-  `.github/scripts/resolve_codeql_plan.py`. The planner checkout uses the base
-  commit and the PR diff comes from GitHub's pull-request files API, so the
-  privileged planning job does not fetch a contributor-controlled head
-  repository. The workflow still starts and ends in a required gate, but
-  docs-only or unrelated changes can skip analysis, and language-local changes
-  analyze only the relevant CodeQL languages. Unavailable PR metadata and edits
-  to the CodeQL workflow, config, router, or planner fixtures fall back to the
-  full matrix. If the trusted base checkout does not yet contain the planner,
-  the workflow bootstraps with a full matrix instead of reading planner code
-  from the PR head.
+- Protected branch pushes, pull requests, scheduled runs, and manual dispatch
+  analyze Actions, C/C++, JavaScript/TypeScript, Python, and Rust with
+  `build-mode: none`. This keeps coverage over the vendored C sandbox code and
+  Rust sources without relying on CodeQL autobuild, which has no useful build
+  system to discover in this repository.
+- Pull requests intentionally use the same static language matrix as protected
+  branch scans. Keep the workflow free of file-diff language routers so GitHub
+  code scanning receives the full configured category set for PR alert
+  comparison.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings. Add query packs or path filters there instead of duplicating
-  configuration across matrix entries.
+  settings, `.github/codeql/codeql-actions.yml` for Actions-only query
+  additions, and `.github/codeql/codeql-rust.yml` for Rust-specific contract
+  checks. The
+  Actions lane prepares a runtime config so same-repository pull requests can
+  validate checked-out query-pack changes, while fork pull requests use the
+  trusted-base copy of `.github/codeql/actions-workflow-security` when it is
+  available. Rust lanes add `.github/codeql/rust-computer-use-contract`
+  to catch native computer-use image-content regressions, including missing
+  native-image guards, advisory text-vs-image match handling smells, and
+  contradictory success-with-error response construction. The
+  `codeql-query-tests.yml` workflow compiles that Rust contract pack and runs
+  its fixtures when the pack changes; code-scanning still provides the
+  repository-wide analysis surface. Add Actions workflow policy queries to the
+  Actions pack, Rust semantic contract queries to the Rust pack, and
+  language-neutral CodeQL settings to the shared config.
 - The CodeQL config deliberately uses the broad `security-and-quality` suite
   and the local threat model. This is noisier than the default or
   `security-extended` suite, but it is the maintained built-in shape that gives
@@ -88,6 +94,15 @@ contract today.
   protected branch or scheduled runs. Do not cache Rust toolchain executables or
   pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
   they are compiled outputs, not the source extraction data CodeQL needs.
+- When a pull request closes, `cancel-pr-runs.yml` cancels active PR-scoped
+  workflow runs for that PR. Merged PRs still get the authoritative post-merge
+  CodeQL scan from the `main` push; the canceller deliberately leaves protected
+  branch push runs alone so the branch-tip result is not hidden by stale PR
+  evidence.
+- `codeql.yml` intentionally avoids workflow-level concurrency. Rapid PR
+  updates and protected-branch pushes can start their own CodeQL runs instead of
+  waiting behind an older same-ref run. Closed PR cleanup remains owned by
+  `cancel-pr-runs.yml`.
 - If GitHub creates a generated CodeQL/default setup workflow, disable that
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually
@@ -116,6 +131,10 @@ contract today.
   downstream divergence audit in separate jobs. That costs a second checkout,
   but it preserves a smaller credential boundary: the audit job does not
   receive the upstream mirror write token.
+- `cancel-pr-runs.yml` is the closed-PR cleanup hook. It cancels active
+  `pull_request` runs associated with the closed PR, plus same-repository
+  push runs for the PR head branch when that branch is not a protected branch.
+  It does not cancel post-merge `main` or `upstream-main` push runs.
 - CodeQL code scanning should run through the checked-in advanced workflow.
   Treat generated/default CodeQL workflows as duplicates once `codeql.yml` is
   enabled and green.

@@ -11,15 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-25`
-- `upstream/main`: `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- downstream integration branch (`origin/integration/upstream-main-sync-20260424-164627`): `a96c652a5becca0c6ed97d31c232d418e115b893`
-- downstream branch `main` (`origin/main`) before merge: `a06b1bdb08c0c863b0f499589f096cd3cdd0c9f1`
-- mirror branch `upstream-main` (`origin/upstream-main`): `a2db6f97fb9353edfbcb82ea4fbb89c8346d1222`
-- integration branch vs `upstream/main`: `790` ahead, `0` behind
-- pre-merge `main` vs `upstream/main`: `769` ahead, `57` behind
+- Audited on: `2026-04-28`
+- downstream branch `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- comparison basis: `mirror`
+- mirror branch `upstream-main` (`origin/upstream-main`): `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+- downstream branch vs `upstream/main`: `889` downstream ahead, `1` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `694` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `781` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -85,8 +84,18 @@ docs-only refresh commit that records this snapshot.
   `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
   tool invocation lifecycles, rate-limit snapshots, and parent/child thread
   relationships for spawn requests.
+- `usage_provider_calls` also stores provider-confirmed `final_model` and
+  `model_snapshot` values when turn completion reports them, preserving the
+  downstream distinction between requested/configured model, historical
+  `actual_model_used`, and final provider identity.
+- Completed thread/list/read and TUI status surfaces prefer thread-local
+  provider identity evidence from turn completion or the usage ledger before
+  falling back to configured session metadata; active/running threads keep the
+  live effective model first so sub-agent status does not regress to the
+  parent/session model.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/state/src/lib.rs`
@@ -94,16 +103,40 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
+  - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
+
+### Side Chat Persistence And Usage Ledger Tracking
+
+- `/side` conversations are persisted as side-tagged fork threads instead of
+  pathless ephemeral forks, so they keep rollout transcripts, remain resumable,
+  and can be forked by thread id or rollout path.
+- Default history/list/search surfaces hide side chats; explicit
+  `threadSources: ["side"]` requests expose the side-chat history class.
+- Usage-ledger lineage records side forks in `usage_threads` and
+  `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
+  writes normal provider-call rows for side turns.
+- `scripts/codex-resume-recent.sh` skips side chats by default, with
+  `--include-side` available when an operator deliberately wants side-chat
+  resume candidates.
+- Primary files:
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/app-server/src/request_processors/thread_processor.rs`
+  - `codex-rs/app-server/src/filters.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
+  - `scripts/codex-resume-recent.sh`
 
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
   support has been initialized for a memory root.
-- Consolidated memory artifacts are fingerprinted against the prepared immutable
-  input tree and the effective consolidator contract, then recorded in
-  attestation sidecars plus runtime state so unchanged selections can safely
-  reuse existing outputs while drifted or tampered artifacts are rejected.
+- Consolidated memory artifacts are fingerprinted against the prepared input
+  tree, the effective consolidator contract, and the output tree, then recorded
+  in runtime state so unchanged workspaces can safely reuse existing outputs
+  while drifted or tampered artifacts are rejected after bootstrap.
 - This is an intentional downstream carry, not derivative test churn: losing
   the attestation runtime while keeping the attestation tests is a regression.
 - Because these downstream state migrations occupy slots that upstream did not
@@ -115,11 +148,13 @@ docs-only refresh commit that records this snapshot.
   upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
   already-shipped downstream `0028` through `0031` migration versions.
 - Primary files:
-  - `codex-rs/core/src/memories/phase2.rs`
-  - `codex-rs/core/src/memories/phase2_attestation_tests.rs`
-  - `codex-rs/core/src/memories/tests.rs`
+  - `codex-rs/memories/write/src/phase2.rs`
+  - `codex-rs/memories/write/src/phase2_attestation.rs`
+  - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
+  - `codex-rs/memories/write/src/startup_tests.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
+  - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `docs/memories.md`
@@ -203,39 +238,88 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
-### Native Computer-Use And Android Observe/Step Bridge
+### Native Computer-Use Adapter Bridge
 
-- Downstream promotes bare `android_observe` and `android_step` dynamic tools
-  into first-party native computer-use function tools with Codex-owned schemas.
-- Namespaced Android-like tools remain ordinary dynamic tools so
-  app-specific providers can keep their own tool surfaces without taking over
-  the native Codex contract.
+- Downstream promotes bare `android_observe`, `android_step`,
+  `android_install_build_from_run`, `browser_observe`, `browser_step`,
+  `desktop_observe`, and `desktop_step` dynamic tools into first-party native
+  computer-use function tools with Codex-owned schemas.
+- Namespaced Android-like or browser-like tools remain ordinary dynamic tools
+  so app-specific providers can keep their own tool surfaces without taking
+  over the native Codex contract.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
-  cleanup, success/error projection, mutating classification, and hook payload
+  cleanup, success/error projection, adapter selection, mutating
+  classification, install-specific timeout selection, and hook payload
   formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
 - TUI and thread-history surfaces replay native computer-use items from
-  protocol events and snapshots.
+  protocol events and snapshots. The TUI provider registry handles Android and
+  routes browser calls to either a configured provider command or the built-in
+  Playwright provider for `backend=auto`; when that browser provider is
+  configured, CLI/TUI thread start, resume, and fork requests advertise
+  `browser_observe` and `browser_step` automatically. The Playwright bridge
+  supports accessibility-oriented selectors plus human-like mouse and keyboard
+  primitives, defaults to per-thread browser profile isolation for concurrent
+  sidecars, can return visible-control metadata and selector candidates for UX
+  loops, can save redacted audit artifacts, can use locally configured
+  service-account navigation headers for allowed hosts, and can still be
+  configured for shared, environment-scoped, or per-call profiles when that
+  lifecycle is intentional. Thread-spawned agents
+  inherit the parent thread's native dynamic tools, so browser-capable sidecars
+  receive the native browser surface rather than silently dropping to a
+  compatibility adapter.
+- The Android adapter is retained as the reference MCP-backed runtime provider:
+  reuse `android-emulator-mcp` or a successor when it exposes the current
+  Android MCP contract, and adapt harness-specific behavior provider-side
+  rather than in hot Codex core paths.
+- The desktop adapter is the cleanroom provider seam for macOS Screen
+  Recording/Accessibility-style runtimes and future native desktop providers.
+  TUI dispatch stays behind an operator-configured command provider.
+- `codex doctor` includes read-only native provider diagnostics for browser
+  provider configuration, headed display/Chrome fields, and Android provider
+  endpoint/credential shape without launching browsers, connecting to profiles,
+  or starting emulator sessions.
+- Android screenshots and browser viewport captures are expected to reach the
+  model as native image content items. Provider artifact paths are kept for
+  diagnostics, audit, or replay; they are not the normal model-facing visual
+  channel.
 - Rollout persistence keeps computer-use events in extended mode, and
   rollout-trace maps those events to tool-runtime start/end boundaries.
-- Runtime providers own Android sessions, screenshots, UI digests, and input
-  execution. Solar Gravity Lab is a proving and consumer app, not the generic
-  owner of Codex computer-use tooling.
+- Runtime providers own Android sessions, browser sessions, screenshots,
+  viewport capture, UI digests, input execution, and provider-side build
+  installation. Solar Gravity Lab is a proving and consumer app, not the
+  generic owner of Codex computer-use tooling.
+- The built-in Playwright browser provider clears Chromium tab-session restore
+  artifacts before opening a persistent browser context, so stale restored tabs
+  cannot hit an old localhost target before an explicit requested navigation.
+  Provider-managed `state.json`, cookies, local storage, and other profile data
+  are preserved.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/tools/src/android_tool.rs`
-  - `codex-rs/tools/src/tool_registry_plan.rs`
+  - `codex-rs/tools/src/browser_tool.rs`
+  - `codex-rs/tools/src/computer_use_tool.rs`
+  - `codex-rs/tools/src/desktop_tool.rs`
+  - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
-  - `codex-rs/core/src/tools/tool_search_entry.rs`
+  - `codex-rs/tools/src/tool_search.rs`
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/tui/src/android_computer_use_provider.rs`
+  - `codex-rs/browser-computer-use/src/lib.rs`
+  - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
+  - `codex-rs/tui/src/browser_computer_use_provider.rs`
+  - `codex-rs/tui/src/computer_use_provider.rs`
+  - `codex-rs/tui/src/desktop_computer_use_provider.rs`
+  - `codex-rs/exec/src/lib.rs`
   - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
   - `codex-rs/tui/src/history_cell.rs`
@@ -243,8 +327,10 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/rollout-trace/src/protocol_event.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
   - `codex-rs/tools/src/android_tool_tests.rs`
-  - `codex-rs/tools/src/tool_registry_plan_tests.rs`
+  - `codex-rs/tools/src/browser_tool_tests.rs`
+  - `codex-rs/tools/src/computer_use_tool_tests.rs`
   - `docs/native-computer-use.md`
+  - `docs/native-computer-use-cleanroom.md`
 
 ### Review And History Accounting Alignment
 
@@ -271,6 +357,42 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
+### MCP OAuth Device Login For Headless Servers
+
+- `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
+  login from SSH-only or browserless hosts through the OAuth Device
+  Authorization Grant instead of relying on a local browser callback.
+- Streamable HTTP OAuth discovery preserves `token_endpoint`,
+  `device_authorization_endpoint`, `registration_endpoint`, and
+  `grant_types_supported`, so the CLI can fail loudly when a server does not
+  actually advertise device-login support or lacks both configured client id
+  and dynamic registration support.
+- The device-login flow uses a configured public MCP OAuth `client_id` when one
+  is available. Otherwise, it performs standards-based dynamic client
+  registration using the device grant shape, a public-client token endpoint
+  auth method, optional requested scopes, and refresh-token registration only
+  when server grant metadata permits or omits grant support.
+- After client-id resolution, the flow uses PKCE, the identity-provider
+  verification URL/user code, token-endpoint polling, and the existing MCP
+  OAuth token cache.
+- This is an intentional downstream carry for headless MCP server login until
+  upstream ships an equivalent headless MCP OAuth login contract. During
+  upstream syncs, preserve this behavior unless the upstream replacement covers
+  the same discovery, grant-validation, dynamic-registration fallback,
+  configured-client-id fast path, PKCE, polling, and token-cache path.
+- Primary files:
+  - `codex-rs/cli/src/mcp_cmd.rs`
+  - `codex-rs/codex-mcp/src/mcp/auth.rs`
+  - `codex-rs/rmcp-client/src/auth_status.rs`
+  - `codex-rs/rmcp-client/src/perform_oauth_device_login.rs`
+  - `codex-rs/rmcp-client/src/lib.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `justfile`
+  - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
 ### TUI Session-State, Queue, Interrupt, And Usage Surfaces
 
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.
@@ -283,22 +405,86 @@ docs-only refresh commit that records this snapshot.
   totals.
 - Unavailable slash commands queue and replay after the current task instead of
   being rejected immediately.
+- Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
+  and model service-tier slash commands remain selectable while a task is
+  running so their chosen settings apply to queued follow-up turns.
 - Interrupt handling defaults to double-`Esc` confirmation and preserves queued
   follow-ups and queued model changes coherently.
+- Active-turn status labels preserve downstream operator cues, including
+  showing `Compacting context` while context compaction is running instead of
+  falling back to generic `Working`.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- `/quit` and `/exit` inside an active `/side` conversation close only that side
+  conversation and return to the parent session; the same commands in the main
+  conversation remain application exits.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+  - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
   - `docs/tui-weekly-usage-pacing-status-line.md`
   - `docs/downstream.md`
+  - `docs/downstream-regression-matrix.md`
+
+### TUI Transcript Compact Detail Mode
+
+- The `Ctrl+T` transcript overlay intentionally carries two detail modes:
+  verbose mode for the complete transcript and compact mode for prompt/agent
+  review without terminal/tool noise.
+- Verbose mode remains the default audit surface. Compact mode keeps user
+  prompts, assistant-facing responses, selected reasoning summaries, and
+  important warning/error/stop hook output visible while collapsing injected
+  session context, context-only hook entries, and other detail that belongs in
+  verbose transcript inspection.
+- The overlay footer exposes the active detail mode and the toggle key, and the
+  overlay state preserves scroll, selected prompt, raw/rich render mode, and
+  verbose/compact detail mode across close/reopen.
+- The transcript header now names the active mode (`Transcript: verbose` or
+  `Transcript: compact`), and the footer spells out the switch keys as
+  `raw render` / `rich render` and `compact view` / `verbose view` when there
+  is enough terminal width.
+- `[tui].transcript_default_detail_mode = "verbose" | "compact"` chooses the
+  default detail mode at startup and after active config refreshes; verbose
+  remains the default so the complete audit transcript is preserved unless the
+  user opts into quiet review. An already-open transcript keeps its current
+  mode until it is closed.
+- This is an intentional downstream TUI ergonomics carry. Preserve it during
+  upstream syncs unless upstream lands equivalent transcript detail-mode
+  behavior that keeps the same verbose audit fallback and compact prompt/agent
+  review path.
+- Primary files:
+  - `codex-rs/config/src/profile_toml.rs`
+  - `codex-rs/config/src/types.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/config.schema.json`
+  - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/hook_cell.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
+  - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/input.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
+  - `codex-rs/tui/src/footer_hints.rs`
+  - `codex-rs/tui/src/keymap.rs`
+  - `codex-rs/tui/src/keymap_setup.rs`
+  - `codex-rs/tui/src/resume_picker.rs`
+  - `codex-rs/config/src/tui_keymap.rs`
   - `docs/downstream-regression-matrix.md`
 
 ### Custom Prompt Discovery And Review Prompt Flow

@@ -754,6 +754,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.mcp-device-login-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-device-login-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-subagent-model-pinning-targeted",
       "groups": [
         "core"
@@ -922,6 +948,34 @@
       "needs_sccache": false
     },
     {
+      "lane_id": "codex.state-migration-repair-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry",
+        "startup-sync"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry",
+        "startup-sync"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "state-migration-repair-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
       "lane_id": "codex.code-mode-declaration-targeted",
       "groups": [
         "core"
@@ -1024,6 +1078,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.exec-native-computer-use-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "exec-native-computer-use-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.native-computer-use-tool-registry-targeted",
       "groups": [
         "ui_protocol"
@@ -1047,6 +1127,32 @@
       "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.native-computer-use-doctor-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "ui-protocol"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "native-computer-use-doctor-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
       "needs_sccache": true
     },
     {
@@ -1074,6 +1180,194 @@
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.app-server-v2-contract-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "app-server-v2-contract",
+      "setup_class": "rust_integration",
+      "batch_group": "app-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "app-server-v2-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.mcp-server-contract-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "mcp-server-contract",
+      "setup_class": "rust_integration",
+      "batch_group": "mcp-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-server-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.exec-server-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "exec-server",
+      "setup_class": "rust_integration",
+      "batch_group": "exec-server",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "exec-server-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.cli-surface-targeted",
+      "groups": [
+        "product_surface"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "cli-surface",
+      "setup_class": "rust_minimal",
+      "batch_group": "cli",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "cli-surface-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.workflow-security-targeted",
+      "groups": [
+        "product_surface",
+        "workflow"
+      ],
+      "lane_sets": [
+        "all",
+        "product-surfaces"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "product-surfaces"
+      ],
+      "summary_family": "workflow-security",
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/workflow-security-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
+      "lane_id": "codex.sdk-python-targeted",
+      "groups": [
+        "sdk"
+      ],
+      "lane_sets": [
+        "all",
+        "sdk"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "sdk"
+      ],
+      "summary_family": "sdk-python",
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/sdk-python-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
+      "lane_id": "codex.sdk-typescript-targeted",
+      "groups": [
+        "sdk"
+      ],
+      "lane_sets": [
+        "all",
+        "sdk"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "sdk"
+      ],
+      "summary_family": "sdk-typescript",
+      "setup_class": "node",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/sdk-typescript-targeted.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": true,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.agent-workflow-sanity",
@@ -1168,6 +1462,7 @@
       "frontier_default": false,
       "summary_family": "argument-comment-lint",
       "cost_class": "high",
+      "timeout_minutes": 120,
       "setup_class": "workflow",
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/argument-comment-lint.sh",
@@ -1198,9 +1493,35 @@
         "workflow_docs"
       ],
       "setup_class": "workflow",
-      "checkout_fetch_depth": 0,
+      "checkout_fetch_depth": 1,
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/downstream-docs-check.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
+      "lane_id": "codex.downstream-divergence-audit",
+      "groups": [
+        "workflow",
+        "docs"
+      ],
+      "lane_sets": [
+        "docs"
+      ],
+      "explicit_only": true,
+      "pilot_only": true,
+      "frontier_default": false,
+      "summary_family": "downstream-divergence-audit",
+      "cost_class": "low",
+      "setup_class": "workflow",
+      "checkout_fetch_depth": 0,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
       "script_args": [],
       "needs_just": false,
       "needs_node": false,
@@ -1216,6 +1537,9 @@
       ],
       "lane_sets": [
         "release"
+      ],
+      "smoke_gate_kinds": [
+        "runtime"
       ],
       "frontier_default": false,
       "frontier_lane_sets": [
@@ -1284,6 +1608,7 @@
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "docs/native-computer-use.md",
         "docs/downstream-regression-matrix.md",
@@ -1314,6 +1639,7 @@
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "scripts/downstream-divergence-audit.py",
         "scripts/resolve_sedna_release_version"
@@ -1414,6 +1740,16 @@
         "codex.blocking-waits-targeted"
       ],
       "allowed_paths": [
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/core/src/capacity_retry.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote.rs",
+        "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/tests/common/responses.rs",
+        "codex-rs/core/tests/suite/compact_remote.rs",
+        "codex-rs/core/tests/suite/client.rs",
         "codex-rs/core/tests/suite/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -1422,12 +1758,24 @@
         "codex-rs/app-server/tests/common/responses.rs",
         "codex-rs/app-server/tests/suite/v2/turn_start.rs",
         "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
         "docs/downstream-regression-matrix.md",
         "docs/downstream-divergence-tracking.md",
         "docs/divergences/index.yaml",
+        ".github/validation-lanes.json",
         "justfile"
       ],
       "required_any_paths": [
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/core/src/capacity_retry.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote.rs",
+        "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/lib.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/tests/common/responses.rs",
+        "codex-rs/core/tests/suite/compact_remote.rs",
+        "codex-rs/core/tests/suite/client.rs",
         "codex-rs/core/tests/suite/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -1435,7 +1783,8 @@
         "codex-rs/tools/src/local_tool_tests.rs",
         "codex-rs/app-server/tests/common/responses.rs",
         "codex-rs/app-server/tests/suite/v2/turn_start.rs",
-        "codex-rs/mcp-server/tests/suite/codex_tool.rs"
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs"
       ]
     },
     {
@@ -1492,6 +1841,34 @@
       ]
     },
     {
+      "route_id": "mcp-device-login",
+      "lane_ids": [
+        "codex.mcp-device-login-targeted"
+      ],
+      "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/cli/src/mcp_cmd.rs",
+        "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/rmcp-client/src/auth_status.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/lib.rs"
+      ]
+    },
+    {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
         "codex.spawn-agent-tool-model-surface-targeted",
@@ -1539,31 +1916,77 @@
       ]
     },
     {
+      "route_id": "app-server-protocol-schema-fixtures",
+      "lane_ids": [
+        "codex.app-server-protocol-test"
+      ],
+      "allowed_paths": [
+        "codex-rs/app-server-protocol/schema/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md"
+      ],
+      "required_any_paths": [
+        "codex-rs/app-server-protocol/schema/**"
+      ]
+    },
+    {
       "route_id": "app-server-computer-use",
       "lane_ids": [
         "codex.app-server-protocol-test",
         "codex.app-server-computer-use-targeted",
         "codex.tui-native-computer-use-targeted",
-        "codex.native-computer-use-tool-registry-targeted"
+        "codex.exec-native-computer-use-targeted",
+        "codex.native-computer-use-tool-registry-targeted",
+        "codex.native-computer-use-doctor-targeted"
       ],
       "allowed_paths": [
         "codex-rs/app-server/src/codex_message_processor.rs",
         "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/app-server-protocol/schema/**",
         "codex-rs/app-server-protocol/src/**",
         "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/handlers/tool_search.rs",
-        "codex-rs/core/src/tools/tool_search_entry.rs",
+        "codex-rs/tools/src/tool_search.rs",
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
+        "codex-rs/tools/src/browser_tool.rs",
+        "codex-rs/tools/src/browser_tool_tests.rs",
+        "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tools/src/computer_use_tool_tests.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
+        "codex-rs/tools/src/desktop_tool_tests.rs",
         "codex-rs/tools/src/lib.rs",
         "codex-rs/tools/src/tool_registry_plan_tests.rs",
+        "codex-rs/cli/src/doctor.rs",
+        "codex-rs/cli/src/doctor/computer_use.rs",
+        "codex-rs/cli/src/doctor/output.rs",
+        "codex-rs/browser-computer-use/**",
+        "codex-rs/browser-computer-use/BUILD.bazel",
+        "codex-rs/browser-computer-use/Cargo.toml",
+        "codex-rs/exec/Cargo.toml",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/exec/src/lib_tests.rs",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/lib.rs",
         "justfile",
+        "docs/downstream.md",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-tool-surface-matrix.md",
         "docs/native-computer-use.md",
+        "docs/native-computer-use-cleanroom.md",
         "docs/downstream-regression-matrix.md",
         "docs/validation_workflow.md",
         "docs/divergences/index.yaml",
@@ -1571,9 +1994,22 @@
       ],
       "required_any_paths": [
         "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
+        "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
-        "codex-rs/tools/src/android_tool.rs"
+        "codex-rs/tools/src/android_tool.rs",
+        "codex-rs/tools/src/browser_tool.rs",
+        "codex-rs/tools/src/computer_use_tool.rs",
+        "codex-rs/tools/src/desktop_tool.rs",
+        "codex-rs/browser-computer-use/src/lib.rs",
+        "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/cli/src/doctor/computer_use.rs"
       ]
     },
     {
@@ -1724,7 +2160,8 @@
     {
       "route_id": "downstream-docs",
       "lane_ids": [
-        "codex.downstream-docs-check"
+        "codex.downstream-docs-check",
+        "codex.downstream-divergence-audit"
       ],
       "allowed_paths": [
         "docs/downstream.md",
@@ -1733,7 +2170,8 @@
         "docs/downstream-regression-matrix.md",
         "docs/downstream-tool-surface-matrix.md",
         "docs/downstream-divergence-tracking.md",
-        "docs/divergences/index.yaml"
+        "docs/divergences/index.yaml",
+        "scripts/downstream-divergence-audit.py"
       ]
     }
   ]

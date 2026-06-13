@@ -121,7 +121,6 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
     started_at_ms = int(time.time() * 1000)
     attempt = 1
     max_attempts = 2
-    exit_code = 1
     while True:
         if attempt > 1:
             with log_path.open("a", encoding="utf-8") as log:

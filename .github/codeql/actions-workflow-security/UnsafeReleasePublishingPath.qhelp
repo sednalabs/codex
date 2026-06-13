@@ -1,0 +1,18 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Release, package, and container publication jobs mutate public artifacts.
+      They should stay in the repository-approved release workflow and should not
+      publish after checking out refs supplied directly by workflow inputs or
+      event payloads.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Keep official publication in the protected release workflow. Resolve
+      manual inputs to a validated commit before checkout, and keep preview
+      artifacts separate from GitHub Release publication.
+    </p>
+  </recommendation>
+</qhelp>

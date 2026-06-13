@@ -1,0 +1,11 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "browser-computer-use",
+    crate_name = "codex_browser_computer_use",
+    compile_data = [
+        "src/browser_playwright_provider.mjs",
+        "src/browser_playwright_review.mjs",
+        "src/browser_playwright_service_headers.mjs",
+    ],
+)

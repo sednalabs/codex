@@ -5,10 +5,11 @@ tracking.
 
 Phase 1 is now implemented as the CI-backed `scripts/downstream-divergence-audit.py`
 runner plus the checked-in `docs/divergences/index.yaml` registry. The
-`codex.downstream-docs-check` validation lane runs that audit against PR heads,
-while `sedna-sync-upstream` runs it after mirror refreshes on `main`. The later
-generation phases below remain the forward path for ledger and regression
-projection.
+`codex.downstream-docs-check` validation lane runs PR-local docs and registry
+sanity, while the explicit `codex.downstream-divergence-audit` lane and
+`sedna-sync-upstream` run the full audit after mirror refreshes or deliberate
+baseline checkpoints. The later generation phases below remain the forward path
+for ledger and regression projection.
 
 ## Why This Exists
 
@@ -99,6 +100,10 @@ Keep the schema small:
 - `status`
 - `category`
 - `behavior`
+- `upstreamability_tier`
+- `boundary_type`
+- `hotspot_files`
+- `extraction_target`
 - `surface`
 - `surface_type`
 - `files`
@@ -112,6 +117,15 @@ Keep the schema small:
 Paths can point at directories (terminate with `/` to capture every child) or use glob-friendly tokens (`*`, `?`, `[]`). The audit matches these specs against the live diff so you can cover a directory such as `.github/workflows/` without listing each workflow individually.
 
 The optional `surface_type` string (for example `agent-facing`, `operator-facing`, or `both`) signals how a divergence presents itself. The downstream audit renders that value in the registry reconciliation table and the code-path surface column to show whether a change touches agent-facing or operator-facing surfaces.
+
+Every live divergence also declares an upstreamability boundary:
+
+- `upstreamability_tier` must be one of `upstream-pr`, `neutral-seam`, `downstream-adapter`, or `operator-only`.
+- `boundary_type` names the narrow architecture boundary that should own the divergence, such as `app-server-contributor`, `tui-contributor-slot`, `tool-runtime-capability`, or `operator-workflow`.
+- `hotspot_files` lists high-churn files or directories touched by the divergence. Use an empty list only when the carry does not touch a known hot file or workflow surface.
+- `extraction_target` names the seam, adapter, provider registry, workflow layer, or upstream PR target that should reduce future sync pain.
+
+The audit fails strict registry validation when a live divergence omits these fields, uses an unknown upstreamability tier, or touches known hot paths such as core tool handlers, app-server processors, TUI orchestration files, state runtime files, workflow files, or `justfile` without listing `hotspot_files` and a guardrail lane.
 
 ## Suggested Taxonomy
 
@@ -167,9 +181,16 @@ mirror ref, including contents write and workflows write. During migration the
 workflow may fall back to the legacy `SEDNA_SYNC_UPSTREAM_PUSH_TOKEN` secret,
 but that PAT path should be retired after the GitHub App proof run succeeds.
 
-Pull request validation is read-only. The `codex.downstream-docs-check` lane
-fetches live `upstream/main`; when the public mirror is stale it audits against
-that exact fetched snapshot and leaves mirror updates to `sedna-sync-upstream`.
+Pull request validation is read-only. The `codex.downstream-docs-check` lane is
+PR-local and does not require mirror writes. The explicit
+`codex.downstream-divergence-audit` lane fetches live `upstream/main`; when the
+public mirror is stale it audits against that exact fetched snapshot and leaves
+mirror updates to `sedna-sync-upstream`.
+The rendered tree diff still shows both upstream-ahead and downstream-ahead
+paths, but registry enforcement is scoped to the downstream carry diff from the
+merge base to the audited downstream ref. That keeps upstream-only files visible
+without requiring the downstream registry to document upstream work before a
+sync lands.
 
 ## Phased Adoption
 

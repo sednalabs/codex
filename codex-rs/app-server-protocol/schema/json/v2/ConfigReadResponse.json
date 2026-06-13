@@ -18,6 +18,16 @@
     },
     "AppConfig": {
       "properties": {
+        "approvals_reviewer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalsReviewer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "default_tools_approval_mode": {
           "anyOf": [
             {
@@ -193,6 +203,21 @@
         }
       ]
     },
+    "AutoCompactTokenLimitScope": {
+      "description": "Selects which part of the active context is charged against\n`model_auto_compact_token_limit`.",
+      "oneOf": [
+        {
+          "const": "total",
+          "description": "Count the full active context against the limit.",
+          "type": "string"
+        },
+        {
+          "const": "body_after_prefix",
+          "description": "Count sampled output and later growth after the carried window prefix.",
+          "type": "string"
+        }
+      ]
+    },
     "Config": {
       "additionalProperties": true,
       "properties": {
@@ -244,6 +269,13 @@
             "null"
           ]
         },
+        "desktop": {
+          "additionalProperties": true,
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "developer_instructions": {
           "type": [
             "string",
@@ -251,9 +283,13 @@
           ]
         },
         "forced_chatgpt_workspace_id": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForcedChatgptWorkspaceIds"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "forced_login_method": {
@@ -283,6 +319,16 @@
           "type": [
             "integer",
             "null"
+          ]
+        },
+        "model_auto_compact_token_limit_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoCompactTokenLimitScope"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "model_context_window": {
@@ -328,19 +374,6 @@
             }
           ]
         },
-        "profile": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "profiles": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ProfileV2"
-          },
-          "default": {},
-          "type": "object"
-        },
         "review_model": {
           "type": [
             "string",
@@ -368,13 +401,9 @@
           ]
         },
         "service_tier": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "tools": {
@@ -484,11 +513,43 @@
           "type": "object"
         },
         {
+          "description": "Enterprise-managed config layer delivered by the cloud config bundle.",
+          "properties": {
+            "id": {
+              "description": "Stable identifier for the delivered layer.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Admin-facing name for the delivered layer. This is surfaced in\ndiagnostics so users know which cloud layer needs administrator\nattention.",
+              "type": "string"
+            },
+            "type": {
+              "const": "enterpriseManaged",
+              "title": "EnterpriseManagedConfigLayerSourceType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "title": "EnterpriseManagedConfigLayerSource",
+          "type": "object"
+        },
+        {
           "description": "User config layer from $CODEX_HOME/config.toml. This layer is special\nin that it is expected to be:\n- writable by the user\n- generally outside the workspace directory",
           "properties": {
             "file": {
               "$ref": "#/$defs/AbsolutePathBuf",
               "description": "This is the path to the user's config.toml file, though it is not\nguaranteed to exist."
+            },
+            "profile": {
+              "description": "Name of the selected profile-v2 config layered on top of the base\nuser config, when this layer represents one.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "user",
@@ -572,6 +633,20 @@
         }
       ]
     },
+    "ForcedChatgptWorkspaceIds": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Backward-compatible API shape for ChatGPT workspace login restrictions."
+    },
     "ForcedLoginMethod": {
       "enum": [
         "chatgpt",
@@ -579,121 +654,9 @@
       ],
       "type": "string"
     },
-    "ProfileV2": {
-      "additionalProperties": true,
-      "properties": {
-        "approval_policy": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AskForApproval"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "approvals_reviewer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ApprovalsReviewer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "[UNSTABLE] Optional profile-level override for where approval requests\nare routed for review. If omitted, the enclosing config default is\nused."
-        },
-        "chatgpt_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "model": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "model_provider": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "model_reasoning_effort": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ReasoningEffort"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "model_reasoning_summary": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ReasoningSummary"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "model_verbosity": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Verbosity"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "service_tier": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "tools": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolsV2"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "web_search": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WebSearchMode"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "type": "object"
-    },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningSummary": {
@@ -746,21 +709,8 @@
       },
       "type": "object"
     },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
-      "type": "string"
-    },
     "ToolsV2": {
       "properties": {
-        "view_image": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
         "web_search": {
           "anyOf": [
             {
