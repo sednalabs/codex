@@ -153,7 +153,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: just
       - name: cargo fmt
@@ -173,7 +173,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: cargo-shear@1.11.2
       - name: cargo shear
@@ -367,7 +367,7 @@ jobs:
       # Install and restore sccache cache
       - name: Install sccache
         if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: sccache
 
@@ -490,7 +490,7 @@ jobs:
 
       - name: Install cargo-chef
         if: ${{ matrix.profile == 'release' }}
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: cargo-chef@0.1.71
 
@@ -659,7 +659,7 @@ jobs:
 
       - name: Install sccache
         if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: sccache
 
@@ -685,7 +685,7 @@ jobs:
             sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-
             sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-
 
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2.81.4
         with:
           tool: nextest@0.9.103
 
@@ -785,7 +785,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
-      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
         with:
           tool: nextest@0.9.103
 
@@ -878,7 +878,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
-      - uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
         with:
           tool: nextest@0.9.103
 
