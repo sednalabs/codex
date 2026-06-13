@@ -36,6 +36,8 @@ impl ChatWidget {
             ) {
                 self.handle_turn_completed_notification(
                     TurnCompletedNotification {
+                        final_model: None,
+                        model_snapshot: None,
                         thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                         turn: Turn {
                             id: turn_id,
@@ -138,6 +140,11 @@ impl ChatWidget {
                 ..
             } => self.on_mcp_tool_call_started(item),
             item @ ThreadItem::McpToolCall { .. } => self.on_mcp_tool_call_completed(item),
+            item @ ThreadItem::ComputerUseCall {
+                status: codex_app_server_protocol::ComputerUseCallStatus::InProgress,
+                ..
+            } => self.on_computer_use_call_started(item),
+            item @ ThreadItem::ComputerUseCall { .. } => self.on_computer_use_call_completed(item),
             ThreadItem::WebSearch { id, query, action } => {
                 self.on_web_search_begin(id.clone());
                 self.on_web_search_end(
@@ -165,8 +172,8 @@ impl ChatWidget {
             ThreadItem::ExitedReviewMode { .. } => {
                 self.exit_review_mode_after_item();
             }
-            ThreadItem::ContextCompaction { .. } => {
-                self.add_info_message("Context compacted".to_string(), /*hint*/ None);
+            item @ ThreadItem::ContextCompaction { .. } => {
+                self.on_context_compaction_completed(item)
             }
             ThreadItem::HookPrompt { .. } => {}
             ThreadItem::CollabAgentToolCall {
@@ -192,8 +199,8 @@ impl ChatWidget {
                 timed_out,
                 agents_states,
             }),
+            item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::DynamicToolCall { .. } => {}
-            ThreadItem::ComputerUseCall { .. } => {}
         }
 
         if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) && turn_id.is_empty() {

@@ -44,7 +44,6 @@ impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
 
 struct ExtensionEchoExecutor;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced("extension/", "echo")
@@ -73,7 +72,13 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
         })
     }
 
-    async fn handle(
+    fn handle(&self, call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(call))
+    }
+}
+
+impl ExtensionEchoExecutor {
+    async fn handle_call(
         &self,
         call: ExtensionToolCall,
     ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
@@ -84,7 +89,7 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
             "callId": call.call_id,
             "conversationHistory": call.conversation_history.items(),
             "ok": true,
-        }))))
+        }))) as Box<dyn codex_tools::ToolOutput>)
     }
 }
 
@@ -95,17 +100,12 @@ fn extension_tool_test_registry() -> Arc<ExtensionRegistry<Config>> {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "test builds a router from session-owned MCP manager state"
-)]
 async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow::Result<()> {
     let (session, turn) = make_session_and_context().await;
     let mcp_tools = session
         .services
         .mcp_connection_manager
-        .read()
-        .await
+        .load_full()
         .list_all_tools()
         .await;
     let router = ToolRouter::from_turn_context(
@@ -310,19 +310,13 @@ fn mcp_tool_info(
         callable_name: tool_name.to_string(),
         callable_namespace: callable_namespace.to_string(),
         namespace_description: None,
-        tool: rmcp::model::Tool {
-            name: tool_name.to_string().into(),
-            title: None,
-            description: Some("Test MCP tool".to_string().into()),
-            input_schema: Arc::new(rmcp::model::object(json!({
+        tool: rmcp::model::Tool::new(
+            tool_name.to_string(),
+            "Test MCP tool",
+            Arc::new(rmcp::model::object(json!({
                 "type": "object",
             }))),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: None,
-        },
+        ),
         connector_id: None,
         connector_name: None,
         plugin_display_names: Vec::new(),
@@ -342,7 +336,7 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         phase: None,
     };
     session
-        .record_into_history(std::slice::from_ref(&history_item), &turn)
+        .record_conversation_items(&turn, std::slice::from_ref(&history_item))
         .await;
 
     let router = ToolRouter::from_turn_context(

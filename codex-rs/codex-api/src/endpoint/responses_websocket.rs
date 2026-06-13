@@ -1,6 +1,6 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseEvent;
-use crate::common::ResponseProcessedWsRequest;
+use crate::common::ResponseModelIdentity;
 use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::error::ApiError;
@@ -204,40 +204,6 @@ impl ResponsesWebsocketConnection {
 
     pub async fn is_closed(&self) -> bool {
         self.stream.lock().await.is_none()
-    }
-
-    #[instrument(
-        name = "responses_websocket.send_response_processed",
-        level = "info",
-        skip_all,
-        fields(transport = "responses_websocket", api.path = "responses")
-    )]
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the guard serializes exclusive use of the websocket while sending a request frame"
-    )]
-    pub async fn send_response_processed(&self, response_id: String) -> Result<(), ApiError> {
-        let request =
-            ResponsesWsRequest::ResponseProcessed(ResponseProcessedWsRequest { response_id });
-        let request_body = serde_json::to_value(&request).map_err(|err| {
-            ApiError::Stream(format!("failed to encode websocket request: {err}"))
-        })?;
-
-        let mut guard = self.stream.lock().await;
-        let Some(ws_stream) = guard.as_mut() else {
-            return Err(ApiError::Stream(
-                "websocket connection is closed".to_string(),
-            ));
-        };
-
-        send_websocket_request(
-            ws_stream,
-            request_body,
-            self.idle_timeout,
-            self.telemetry.as_ref(),
-            /*connection_reused*/ true,
-        )
-        .await
     }
 
     #[instrument(
@@ -668,6 +634,7 @@ async fn run_websocket_response_stream(
     connection_reused: bool,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
+    let mut last_server_model_identity: Option<ResponseModelIdentity> = None;
     send_websocket_request(
         ws_stream,
         request_body,
@@ -718,13 +685,15 @@ async fn run_websocket_response_stream(
                     }
                 };
                 let model_verifications = event.model_verifications();
+                let turn_moderation_metadata = event.turn_moderation_metadata();
                 if event.kind() == "codex.rate_limits" {
                     if let Some(snapshot) = parse_rate_limit_event(&text) {
                         let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
                     }
                     continue;
                 }
-                if let Some(model) = event.response_model()
+                let model_metadata = event.response_model_metadata();
+                if let Some(model) = model_metadata.warning_model
                     && last_server_model.as_deref() != Some(model.as_str())
                 {
                     let _ = tx_event
@@ -732,9 +701,31 @@ async fn run_websocket_response_stream(
                         .await;
                     last_server_model = Some(model);
                 }
+                let server_model_identity = model_metadata.execution_identity;
+                if (server_model_identity.final_model.is_some()
+                    || server_model_identity.model_snapshot.is_some())
+                    && last_server_model_identity.as_ref() != Some(&server_model_identity)
+                {
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::ServerModelIdentity(
+                            server_model_identity.clone(),
+                        )))
+                        .await;
+                    last_server_model_identity = Some(server_model_identity);
+                }
                 if let Some(verifications) = model_verifications
                     && tx_event
                         .send(Ok(ResponseEvent::ModelVerifications(verifications)))
+                        .await
+                        .is_err()
+                {
+                    return Err(ApiError::Stream(
+                        "response event consumer dropped".to_string(),
+                    ));
+                }
+                if let Some(metadata) = turn_moderation_metadata
+                    && tx_event
+                        .send(Ok(ResponseEvent::TurnModerationMetadata(metadata)))
                         .await
                         .is_err()
                 {

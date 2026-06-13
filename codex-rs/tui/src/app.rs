@@ -11,11 +11,13 @@ use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
 use crate::app_event::HistoryLookupResponse;
 use crate::app_event::PermissionProfileSelection;
+use crate::app_event::PluginLocation;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
+use crate::app_server_session::AppServerBootstrap;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
 use crate::app_server_session::TurnPermissionsOverride;
@@ -35,8 +37,6 @@ use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::split_command_string;
 use crate::exec_command::strip_bash_lc_and_escape;
-use crate::external_agent_config_migration_startup::ExternalAgentConfigMigrationStartupOutcome;
-use crate::external_agent_config_migration_startup::handle_external_agent_config_migration_prompt_if_needed;
 use crate::external_editor;
 use crate::file_search::FileSearchManager;
 use crate::history_cell;
@@ -61,7 +61,9 @@ use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
+use crate::multi_agents::sub_agent_activity_display;
 use crate::pager_overlay::Overlay;
+use crate::pager_overlay::TranscriptOverlayState;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
@@ -129,6 +131,7 @@ use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError as AppServerTurnError;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WriteStatus;
+use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::LoaderOverrides;
 use codex_config::types::ApprovalsReviewer;
@@ -196,6 +199,7 @@ use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_status_feed;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
@@ -259,6 +263,20 @@ fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[Str
                 receiver_thread_ids,
                 ..
             } => Some(receiver_thread_ids),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn sub_agent_activity_item(notification: &ServerNotification) -> Option<&ThreadItem> {
+    match notification {
+        ServerNotification::ItemStarted(notification) => match &notification.item {
+            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
+            _ => None,
+        },
+        ServerNotification::ItemCompleted(notification) => match &notification.item {
+            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
             _ => None,
         },
         _ => None,
@@ -473,7 +491,7 @@ struct SessionSummary {
 
 #[derive(Debug, Default)]
 struct InitialHistoryReplayBuffer {
-    retained_lines: VecDeque<Line<'static>>,
+    retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
 }
 
@@ -486,10 +504,10 @@ pub(crate) struct App {
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(crate) config: Config,
     pub(crate) state_db: Option<StateDbHandle>,
-    pub(crate) active_profile: Option<String>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,
+    cloud_config_bundle: CloudConfigBundleLoader,
     runtime_approval_policy_override: Option<AskForApproval>,
     runtime_permission_profile_override: Option<RuntimePermissionProfileOverride>,
 
@@ -499,7 +517,8 @@ pub(crate) struct App {
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
-    pub(crate) deferred_history_lines: Vec<Line<'static>>,
+    pub(crate) transcript_overlay_state: TranscriptOverlayState,
+    pub(crate) deferred_history_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
@@ -513,10 +532,12 @@ pub(crate) struct App {
     status_line_invalid_items_warned: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
     terminal_title_invalid_items_warned: Arc<AtomicBool>,
+    // Tracks active skill-load warnings so refreshes do not duplicate history cells.
+    skill_load_warnings: SkillLoadWarningState,
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
-    /// When set, the next draw re-renders the transcript into terminal scrollback once.
+    /// When set, the next draw rebuilds terminal scrollback from the retained transcript cells.
     ///
     /// This is used after a confirmed thread rollback to ensure scrollback reflects the trimmed
     /// transcript cells.
@@ -653,6 +674,50 @@ fn active_turn_steer_race(error: &TypedRequestError) -> Option<ActiveTurnSteerRa
     Some(ActiveTurnSteerRace::ExpectedTurnMismatch { actual_turn_id })
 }
 
+fn session_start_error(
+    action: &str,
+    target_session: &SessionTarget,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if let Some(message) = archived_session_guidance(&err) {
+        return color_eyre::eyre::eyre!("{message}");
+    }
+
+    let target_label = target_session.display_label();
+    color_eyre::eyre::eyre!("Failed to {action} session from {target_label}: {err}")
+}
+
+fn archived_session_guidance(err: &color_eyre::eyre::Report) -> Option<String> {
+    let err = err.to_string();
+    let message = &err[err.find("session ")?..];
+    if !message.contains(" is archived. Run `codex unarchive ") {
+        return None;
+    }
+    let message = message
+        .split_once(" (code ")
+        .map_or(message, |(message, _)| message);
+    Some(message.to_string())
+}
+
+fn active_turn_interrupt_race(error: &TypedRequestError) -> Option<String> {
+    let TypedRequestError::Server { method, source } = error else {
+        return None;
+    };
+    if method != "turn/interrupt" {
+        return None;
+    }
+    let mismatch_prefix = "expected active turn id ";
+    let mismatch_separator = " but found ";
+    Some(
+        source
+            .message
+            .strip_prefix(mismatch_prefix)?
+            .split_once(mismatch_separator)?
+            .1
+            .to_string(),
+    )
+}
+
 impl App {
     pub fn chatwidget_init_for_forked_or_resumed_thread(
         &self,
@@ -693,17 +758,18 @@ impl App {
         cli_kv_overrides: Vec<(String, TomlValue)>,
         harness_overrides: ConfigOverrides,
         loader_overrides: LoaderOverrides,
-        active_profile: Option<String>,
+        cloud_config_bundle: CloudConfigBundleLoader,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         session_selection: SessionSelection,
         feedback: codex_feedback::CodexFeedback,
         is_first_run: bool,
-        entered_trust_nux: bool,
         should_prompt_windows_sandbox_nux_at_startup: bool,
         app_server_target: AppServerTarget,
         state_db: Option<StateDbHandle>,
         environment_manager: Arc<EnvironmentManager>,
+        startup_elapsed_before_app: Duration,
+        startup_bootstrap: Option<AppServerBootstrap>,
         startup_hooks_browser: Option<HooksListEntry>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
@@ -719,43 +785,17 @@ impl App {
 
         let harness_overrides =
             normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
-        let external_agent_config_migration_outcome =
-            handle_external_agent_config_migration_prompt_if_needed(
-                tui,
-                &mut app_server,
-                &mut config,
-                &cli_kv_overrides,
-                &harness_overrides,
-                entered_trust_nux,
-            )
-            .await?;
-        let external_agent_config_migration_message = match external_agent_config_migration_outcome
-        {
-            ExternalAgentConfigMigrationStartupOutcome::Continue { success_message } => {
-                success_message
-            }
-            ExternalAgentConfigMigrationStartupOutcome::ExitRequested => {
-                app_server
-                    .shutdown()
-                    .await
-                    .inspect_err(|err| {
-                        tracing::warn!("app-server shutdown failed: {err}");
-                    })
-                    .ok();
-                return Ok(AppExitInfo {
-                    token_usage: TokenUsage::default(),
-                    thread_id: None,
-                    thread_name: None,
-                    update_action: None,
-                    exit_reason: ExitReason::UserRequested,
-                });
-            }
+        let bootstrap = match startup_bootstrap {
+            Some(bootstrap) => bootstrap,
+            None => app_server.bootstrap(&config).await?,
         };
-        let bootstrap_started_at = Instant::now();
-        let bootstrap = app_server.bootstrap(&config).await?;
-        let bootstrap_ms = bootstrap_started_at.elapsed().as_millis();
+        let bootstrap_ms = bootstrap.duration.as_millis();
         let mut model = bootstrap.default_model;
         let available_models = bootstrap.available_models;
+        let remote_connection = crate::status::remote_connection::remote_connection_status_value(
+            &app_server_target,
+            app_server.server_version(),
+        );
         let exit_info = handle_model_migration_prompt_if_needed(
             tui,
             &mut config,
@@ -870,10 +910,7 @@ impl App {
                 let resumed = app_server
                     .resume_thread(config.clone(), target_session.thread_id)
                     .await
-                    .wrap_err_with(|| {
-                        let target_label = target_session.display_label();
-                        format!("Failed to resume session from {target_label}")
-                    })?;
+                    .map_err(|err| session_start_error("resume", &target_session, err))?;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -911,10 +948,7 @@ impl App {
                 let forked = app_server
                     .fork_thread(config.clone(), target_session.thread_id)
                     .await
-                    .wrap_err_with(|| {
-                        let target_label = target_session.display_label();
-                        format!("Failed to fork session from {target_label}")
-                    })?;
+                    .map_err(|err| session_start_error("fork", &target_session, err))?;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -944,11 +978,8 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
+        chat_widget.remote_connection = remote_connection;
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
-        if let Some(message) = external_agent_config_migration_message {
-            chat_widget.add_info_message(message, /*hint*/ None);
-        }
-
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
 
@@ -960,6 +991,10 @@ Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
             )
         })?;
+        let transcript_overlay_state = TranscriptOverlayState::new(
+            chat_widget.history_render_mode(),
+            config.tui_transcript_default_detail_mode.into(),
+        );
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
@@ -971,10 +1006,10 @@ See the Codex keymap documentation for supported actions and examples."
             workspace_command_runner: Some(workspace_command_runner),
             config,
             state_db,
-            active_profile,
             cli_kv_overrides,
             harness_overrides,
             loader_overrides,
+            cloud_config_bundle,
             runtime_approval_policy_override: None,
             runtime_permission_profile_override: None,
             file_search,
@@ -982,6 +1017,7 @@ See the Codex keymap documentation for supported actions and examples."
             keymap: runtime_keymap,
             transcript_cells: Vec::new(),
             overlay: None,
+            transcript_overlay_state,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
@@ -989,6 +1025,7 @@ See the Codex keymap documentation for supported actions and examples."
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
             terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
+            skill_load_warnings: SkillLoadWarningState::default(),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: feedback.clone(),
@@ -1043,11 +1080,13 @@ See the Codex keymap documentation for supported actions and examples."
                     .unwrap_or(false);
             if should_check {
                 let cwd = app.config.cwd.clone();
+                let workspace_roots = app.config.effective_workspace_roots();
                 let env_map: std::collections::HashMap<String, String> = std::env::vars().collect();
                 let tx = app.app_event_tx.clone();
                 let logs_base_dir = app.config.codex_home.clone();
                 Self::spawn_world_writable_scan(
                     cwd,
+                    workspace_roots,
                     env_map,
                     logs_base_dir,
                     startup_permission_profile,
@@ -1062,7 +1101,7 @@ See the Codex keymap documentation for supported actions and examples."
 
         tui.frame_requester().schedule_frame();
         tracing::info!(
-            duration_ms = %startup_started_at.elapsed().as_millis(),
+            duration_ms = %(startup_elapsed_before_app + startup_started_at.elapsed()).as_millis(),
             bootstrap_ms = %bootstrap_ms,
             runtime_model_provider_ms = %runtime_model_provider_ms,
             thread_and_widget_ms = %thread_and_widget_ms,
@@ -1082,16 +1121,15 @@ See the Codex keymap documentation for supported actions and examples."
 
         #[cfg(not(debug_assertions))]
         let pre_loop_exit_reason = if let Some(latest_version) = upgrade_version {
-            let control = app
-                .handle_event(
-                    tui,
-                    &mut app_server,
-                    AppEvent::InsertHistoryCell(Box::new(UpdateAvailableHistoryCell::new(
-                        latest_version,
-                        crate::update_action::get_update_action(),
-                    ))),
-                )
-                .await?;
+            let control = Box::pin(app.handle_event(
+                tui,
+                &mut app_server,
+                AppEvent::InsertHistoryCell(Box::new(UpdateAvailableHistoryCell::new(
+                    latest_version,
+                    crate::update_action::get_update_action(),
+                ))),
+            ))
+            .await?;
             match control {
                 AppRunControl::Continue => None,
                 AppRunControl::Exit(exit_reason) => Some(exit_reason),
@@ -1108,7 +1146,7 @@ See the Codex keymap documentation for supported actions and examples."
             loop {
                 let control = select! {
                     Some(event) = app_event_rx.recv() => {
-                        match app.handle_event(tui, &mut app_server, event).await {
+                        match Box::pin(app.handle_event(tui, &mut app_server, event)).await {
                             Ok(control) => control,
                             Err(err) => break Err(err),
                         }
@@ -1234,8 +1272,8 @@ See the Codex keymap documentation for supported actions and examples."
                 }
                 TuiEvent::Draw | TuiEvent::Resize => {
                     if self.backtrack_render_pending {
+                        self.rebuild_transcript_after_backtrack(tui)?;
                         self.backtrack_render_pending = false;
-                        self.render_transcript_once(tui);
                     }
                     self.chat_widget.maybe_post_pending_notification(tui);
                     if self

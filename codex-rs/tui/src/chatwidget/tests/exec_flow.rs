@@ -360,6 +360,7 @@ async fn exec_end_without_begin_uses_event_command() {
             command: codex_shell_command::parse_command::shlex_join(&command),
             cwd,
             process_id: None,
+            terminal_wait: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions,
@@ -706,16 +707,25 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
 
     terminal_interaction(&mut chat, "call-1", "proc-1", "");
 
-    assert!(chat.transcript.active_cell.is_none());
+    let active_lines = chat
+        .active_cell_transcript_lines(/*width*/ 80)
+        .expect("wait primitive cell should be active");
+    assert_eq!(
+        lines_to_single_string(&active_lines),
+        "• Waiting via background terminal · sleep 5\n"
+    );
     assert_eq!(
         chat.status_state.current_status.header,
-        "Waiting for background terminal"
+        "Waiting · primitive: write_stdin(empty stdin poll)"
     );
     let status = chat
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Waiting for background terminal");
+    assert_eq!(
+        status.header(),
+        "Waiting · primitive: write_stdin(empty stdin poll)"
+    );
     assert_eq!(status.details(), Some("sleep 5"));
 }
 
@@ -745,13 +755,16 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
     terminal_interaction(&mut chat, "call-wait-1b", "proc-1", "");
     assert_eq!(
         chat.status_state.current_status.header,
-        "Waiting for background terminal"
+        "Waiting · primitive: write_stdin(empty stdin poll)"
     );
     let status = chat
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Waiting for background terminal");
+    assert_eq!(
+        status.header(),
+        "Waiting · primitive: write_stdin(empty stdin poll)"
+    );
     assert_eq!(status.details(), Some("just fix"));
 
     handle_turn_completed(&mut chat, "turn-wait-3", /*duration_ms*/ None);

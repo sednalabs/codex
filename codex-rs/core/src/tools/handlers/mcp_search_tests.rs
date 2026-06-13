@@ -11,7 +11,7 @@ fn search_info_uses_mcp_tool_metadata_and_parameter_names() {
 
     assert_eq!(
         search_info.entry.search_text,
-        "mcp__calendar___create_event _create_event createEvent codex-apps Create event Create a calendar event. Calendar Plan events. Calendar plugin attendees start_time"
+        "mcp__calendar___create_event mcp calendar create event mcp_calendar_create_event mcp-calendar-create-event mcpcalendarcreateevent _create_event create event create_event create-event createevent createEvent codex-apps codex apps codex_apps codexapps Create event Create a calendar event. Calendar Plan events. Calendar plugin attendees start_time start time start-time starttime"
     );
     assert_eq!(
         search_info.source_info,
@@ -50,11 +50,10 @@ fn tool_info() -> ToolInfo {
         callable_name: "_create_event".to_string(),
         callable_namespace: "mcp__calendar__".to_string(),
         namespace_description: Some("Plan events.".to_string()),
-        tool: rmcp::model::Tool {
-            name: "createEvent".to_string().into(),
-            title: Some("Create event".to_string()),
-            description: Some("Create a calendar event.".to_string().into()),
-            input_schema: Arc::new(rmcp::model::object(json!({
+        tool: rmcp::model::Tool::new(
+            "createEvent",
+            "Create a calendar event.",
+            Arc::new(rmcp::model::object(json!({
                 "type": "object",
                 "properties": {
                     "start_time": { "type": "string" },
@@ -62,12 +61,8 @@ fn tool_info() -> ToolInfo {
                 },
                 "additionalProperties": false
             }))),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: None,
-        },
+        )
+        .with_title("Create event"),
         connector_id: None,
         connector_name: Some("Calendar".to_string()),
         plugin_display_names: vec![" Calendar plugin ".to_string(), " ".to_string()],

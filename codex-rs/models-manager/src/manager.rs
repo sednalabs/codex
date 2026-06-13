@@ -107,7 +107,7 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
 
     /// Build picker-ready presets from the active catalog snapshot.
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
-        remote_models.sort_by(|a, b| a.priority.cmp(&b.priority));
+        remote_models.sort_by_key(|model| model.priority);
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
         let uses_codex_backend = self
@@ -328,10 +328,9 @@ impl OpenAiModelsManager {
                 .iter()
                 .any(|model| model.visibility == ModelVisibility::List)
             && self.auth_manager.as_ref().is_some_and(|auth_manager| {
-                matches!(
-                    auth_manager.auth_mode(),
-                    Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens)
-                )
+                auth_manager
+                    .auth_mode()
+                    .is_some_and(AuthMode::has_chatgpt_account)
             });
         if should_use_remote_models_only {
             *self.remote_models.write().await = models;

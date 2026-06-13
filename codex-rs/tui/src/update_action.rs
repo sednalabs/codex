@@ -8,19 +8,28 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via the configured npm package.
+    /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
-    /// Update via the configured Bun package.
+    /// Update via `bun install -g @openai/codex@latest`.
     BunGlobalLatest,
-    /// Update via the configured Homebrew cask.
+    /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | sh`.
+    /// Update via the standalone installer for the compiled release channel.
     StandaloneUnix,
-    /// Update via `irm https://chatgpt.com/codex/install.ps1|iex`.
+    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
 }
 
 impl UpdateAction {
+    const UPSTREAM_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
+        "-c",
+        "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+    ];
+    const SEDNA_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
+        "-c",
+        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --allow-prerelease",
+    ];
+
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
@@ -36,19 +45,33 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, Vec<&'static str>) {
+    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", vec!["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", vec!["install", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", vec!["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::StandaloneUnix => Self::standalone_unix_command_args_for_repository(
+                crate::version::CODEX_RELEASE_REPOSITORY,
             ),
             UpdateAction::StandaloneWindows => (
                 "powershell",
-                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                ],
             ),
+        }
+    }
+
+    fn standalone_unix_command_args_for_repository(
+        repository: &str,
+    ) -> (&'static str, &'static [&'static str]) {
+        if repository.eq_ignore_ascii_case("sednalabs/codex") {
+            ("bash", Self::SEDNA_STANDALONE_UNIX_ARGS)
+        } else {
+            ("sh", Self::UPSTREAM_STANDALONE_UNIX_ARGS)
         }
     }
 
@@ -132,17 +155,23 @@ mod tests {
     #[test]
     fn standalone_update_commands_rerun_latest_installer() {
         assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                vec!["-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
-            )
+            UpdateAction::standalone_unix_command_args_for_repository("openai/codex"),
+            ("sh", UpdateAction::UPSTREAM_STANDALONE_UNIX_ARGS,)
+        );
+        assert_eq!(
+            UpdateAction::standalone_unix_command_args_for_repository("sednalabs/codex"),
+            ("bash", UpdateAction::SEDNA_STANDALONE_UNIX_ARGS,)
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
                 "powershell",
-                vec!["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
+                &[
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-c",
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                ][..],
             )
         );
     }

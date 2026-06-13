@@ -1,5 +1,27 @@
 {
   "$defs": {
+    "AdditionalContextEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AdditionalContextKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AdditionalContextKind": {
+      "enum": [
+        "untrusted",
+        "application"
+      ],
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -21,6 +43,8 @@
     },
     "ImageDetail": {
       "enum": [
+        "auto",
+        "low",
         "high",
         "original"
       ],
@@ -180,6 +204,12 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "clientUserMessageId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "expectedTurnId": {
       "description": "Required active turn id precondition. The request fails when it does not\nmatch the currently active turn.",
       "type": "string"

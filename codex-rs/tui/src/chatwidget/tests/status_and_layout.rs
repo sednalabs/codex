@@ -2,6 +2,7 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_app_server_protocol::SpendControlLimitSnapshot;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -393,8 +394,8 @@ async fn completed_plan_table_tail_skips_provisional_history_insert() {
 
     assert!(saw_source_backed_plan, "expected source-backed plan insert");
     assert!(
-        rendered_plan.contains('│') || rendered_plan.contains('┌'),
-        "expected completed plan table to render as a boxed table, got: {rendered_plan:?}"
+        rendered_plan.contains('━'),
+        "expected completed plan table to render with separators, got: {rendered_plan:?}"
     );
     assert!(
         !saw_stream_plan,
@@ -410,7 +411,7 @@ async fn configured_pet_load_is_deferred_until_after_construction() {
     let mut cfg = test_config().await;
     cfg.tui_pet = Some(crate::pets::DEFAULT_PET_ID.to_string());
     crate::pets::write_test_pack(&cfg.codex_home);
-    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = get_model_offline_for_tests(cfg.model.as_deref());
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
@@ -580,13 +581,14 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("secondary usage 50%".to_string())
+        Some("secondary usage 50% left".to_string())
     );
 }
 
@@ -608,17 +610,18 @@ async fn status_line_legacy_limit_items_prefer_matching_windows() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("5h 60%".to_string())
+        Some("5h 60% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 6%".to_string())
+        Some("weekly 6% left".to_string())
     );
 }
 
@@ -640,17 +643,18 @@ async fn status_line_shows_secondary_non_weekly_when_primary_is_weekly() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 6%".to_string())
+        Some("weekly 6% left".to_string())
     );
 }
 
@@ -668,6 +672,7 @@ async fn status_line_five_hour_item_omits_weekly_only_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -678,7 +683,7 @@ async fn status_line_five_hour_item_omits_weekly_only_limit() {
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 91%".to_string())
+        Some("weekly 91% left".to_string())
     );
 }
 
@@ -696,13 +701,14 @@ async fn status_line_single_monthly_primary_omits_weekly_limit_item() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
@@ -724,6 +730,7 @@ async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() 
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -734,7 +741,7 @@ async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() 
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
 }
 
@@ -752,6 +759,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             unlimited: false,
             balance: Some("17.5".to_string()),
         }),
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -772,6 +780,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -794,6 +803,40 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
 }
 
 #[tokio::test]
+async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut usage_limits = snapshot(/*percent*/ 10.0);
+    usage_limits.individual_limit = Some(SpendControlLimitSnapshot {
+        limit: "25000".to_string(),
+        used: "8000".to_string(),
+        remaining_percent: 68,
+        resets_at: 1_800_000_000,
+    });
+    chat.on_rate_limit_snapshot(Some(usage_limits));
+
+    chat.on_rolling_rate_limit_snapshot(snapshot(/*percent*/ 20.0));
+
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    let individual_limit = display
+        .individual_limit
+        .as_ref()
+        .expect("rolling updates should preserve monthly limits");
+    assert_eq!(individual_limit.used, "8,000");
+    assert_eq!(individual_limit.limit, "25,000");
+    assert_eq!(individual_limit.percent_remaining, 68.0);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 30.0)));
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    assert!(display.individual_limit.is_none());
+}
+
+#[tokio::test]
 async fn rate_limit_snapshot_updates_and_retains_plan_type() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -811,6 +854,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Plus),
         rate_limit_reached_type: None,
     }));
@@ -830,6 +874,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(234),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -849,6 +894,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(567),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -873,6 +919,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             unlimited: false,
             balance: Some("5.00".to_string()),
         }),
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -887,6 +934,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -940,6 +988,7 @@ async fn rate_limit_switch_prompt_skips_non_codex_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -1351,7 +1400,7 @@ async fn streaming_final_answer_keeps_task_running_state() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     match op_rx.try_recv() {
-        Ok(Op::Interrupt) => {}
+        Ok(Op::Interrupt { .. }) => {}
         other => panic!("expected Op::Interrupt, got {other:?}"),
     }
     assert!(!chat.bottom_pane.quit_shortcut_hint_visible());
@@ -1384,7 +1433,7 @@ async fn ctrl_c_interrupt_pauses_active_goal_turn() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
 
     match op_rx.try_recv() {
-        Ok(Op::Interrupt) => {}
+        Ok(Op::Interrupt { .. }) => {}
         other => panic!("expected Op::Interrupt, got {other:?}"),
     }
     assert_matches!(
@@ -2159,6 +2208,7 @@ fn set_weekly_status_line_snapshot(
                 window_minutes: Some(window_minutes),
             }),
             credits: None,
+            individual_limit: None,
         },
     );
 }
@@ -2170,9 +2220,9 @@ async fn status_line_weekly_limit_renders_pacing_suffixes_from_live_status_line(
 
     let captured_at = chrono::Local::now();
     let cases = [
-        (40.0, 60.0, "weekly 60% (on pace)"),
-        (40.0, 56.0, "weekly 60% (under 4%)"),
-        (56.0, 50.0, "weekly 44% (over 6%)"),
+        (40.0, 60.0, "weekly 60% left (on pace)"),
+        (40.0, 56.0, "weekly 60% left (under 4%)"),
+        (56.0, 50.0, "weekly 44% left (over 6%)"),
     ];
     for (used_percent, time_remaining_pct, expected) in cases {
         set_weekly_status_line_snapshot(&mut chat, captured_at, used_percent, time_remaining_pct);
@@ -2198,7 +2248,7 @@ async fn status_line_weekly_limit_renders_stale_suffix_over_pace_details() {
 
     assert_eq!(
         status_line_text(&chat),
-        Some("weekly 44% (stale)".to_string())
+        Some("weekly 44% left (stale)".to_string())
     );
 }
 
@@ -2220,12 +2270,13 @@ async fn status_line_weekly_limit_omits_pacing_when_inputs_are_missing() {
                 window_minutes: Some(10_080),
             }),
             credits: None,
+            individual_limit: None,
         },
     );
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("weekly 44%".to_string()));
+    assert_eq!(status_line_text(&chat), Some("weekly 44% left".to_string()));
 }
 
 #[tokio::test]
@@ -2287,6 +2338,63 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 }
 
 #[tokio::test]
+async fn status_surfaces_prefer_turn_completed_provider_model_identity() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["model-with-reasoning".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["model".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.refresh_status_surfaces();
+
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            final_model: Some("provider-final-model".to_string()),
+            model_snapshot: Some("provider-model-snapshot".to_string()),
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn: app_server_turn(
+                "turn-identity",
+                AppServerTurnStatus::Completed,
+                /*duration_ms*/ None,
+                /*error*/ None,
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.current_model(), "gpt-5.4");
+    assert_eq!(
+        status_line_text(&chat),
+        Some("provider-final-model high".to_string())
+    );
+    assert_eq!(
+        chat.last_terminal_title,
+        Some("provider-final-model".to_string())
+    );
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw provider-model footer");
+    assert_chatwidget_snapshot!(
+        "status_line_provider_final_model_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+
+    chat.set_model("gpt-5.3-codex");
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.3-codex high".to_string())
+    );
+    assert_eq!(chat.last_terminal_title, Some("gpt-5.3-codex".to_string()));
+}
+
+#[tokio::test]
 async fn terminal_title_model_updates_on_model_change_without_manual_refresh() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config.tui_terminal_title = Some(vec!["model".to_string()]);
@@ -2297,6 +2405,37 @@ async fn terminal_title_model_updates_on_model_change_without_manual_refresh() {
     chat.set_model("gpt-5.3-codex");
 
     assert_eq!(chat.last_terminal_title, Some("gpt-5.3-codex".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_and_terminal_title_reasoning_render_only_effort() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.config.tui_status_line = Some(vec!["reasoning".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["reasoning".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+
+    chat.refresh_status_line();
+    chat.refresh_terminal_title();
+
+    assert_eq!(status_line_text(&chat), Some("xhigh".to_string()));
+    assert_eq!(chat.last_terminal_title, Some("xhigh".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_reasoning_updates_on_mode_switch_without_manual_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    chat.config.tui_status_line = Some(vec!["reasoning".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    assert_eq!(status_line_text(&chat), Some("high".to_string()));
+
+    let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+        .expect("expected plan collaboration mode");
+    chat.set_collaboration_mask(plan_mask);
+
+    assert_eq!(status_line_text(&chat), Some("medium".to_string()));
 }
 
 #[tokio::test]
@@ -3472,7 +3611,7 @@ async fn hook_completed_before_reveal_renders_completed_without_running_flash() 
             codex_app_server_protocol::HookRunStatus::Completed,
             vec![codex_app_server_protocol::HookOutputEntry {
                 kind: codex_app_server_protocol::HookOutputEntryKind::Context,
-                text: "session context".to_string(),
+                text: "session context\nsecond line".to_string(),
             }],
         ),
     );
@@ -3599,6 +3738,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             command: codex_shell_command::parse_command::shlex_join(&command),
             cwd: cwd.clone(),
             process_id: None,
+            terminal_wait: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::InProgress,
             command_actions: command_actions.clone(),
@@ -3614,6 +3754,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             command: codex_shell_command::parse_command::shlex_join(&command),
             cwd,
             process_id: None,
+            terminal_wait: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions,

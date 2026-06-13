@@ -5,6 +5,7 @@ use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::state::ActiveTurn;
 use crate::test_support::models_manager_with_provider;
+use crate::tools::hook_names::HookToolName;
 use crate::turn_metadata::McpTurnMetadataContext;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::config_toml::ConfigToml;
@@ -46,6 +47,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -56,13 +58,13 @@ fn annotations(
     destructive: Option<bool>,
     open_world: Option<bool>,
 ) -> ToolAnnotations {
-    ToolAnnotations {
-        destructive_hint: destructive,
-        idempotent_hint: None,
-        open_world_hint: open_world,
-        read_only_hint: read_only,
-        title: None,
-    }
+    ToolAnnotations::from_raw(
+        /*title*/ None,
+        read_only,
+        destructive,
+        /*idempotent_hint*/ None,
+        open_world,
+    )
 }
 
 fn approval_metadata(
@@ -138,7 +140,7 @@ async fn execute_mcp_tool_call_records_replayable_correlation() -> anyhow::Resul
         .rollout_thread_trace
         .start_tool_dispatch_trace(|| {
             Some(ToolDispatchInvocation {
-                thread_id: session.conversation_id.to_string(),
+                thread_id: session.thread_id.to_string(),
                 codex_turn_id: turn_context.sub_id.clone(),
                 tool_call_id: "mcp-call".to_string(),
                 tool_name: "search".to_string(),
@@ -280,7 +282,7 @@ fn attach_trace_bundle(
         codex_rollout_trace::ThreadTraceContext::start_root_in_root_for_test(
             root,
             ThreadStartedTraceMetadata {
-                thread_id: session.conversation_id.to_string(),
+                thread_id: session.thread_id.to_string(),
                 agent_path: "/root".to_string(),
                 task_name: None,
                 nickname: None,
@@ -646,7 +648,7 @@ async fn approval_elicitation_request_uses_message_override_and_preserves_tool_p
     assert_eq!(
         request,
         McpServerElicitationRequestParams {
-            thread_id: session.conversation_id.to_string(),
+            thread_id: session.thread_id.to_string(),
             turn_id: Some(turn_context.sub_id),
             server_name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
             request: McpServerElicitationRequest::Form {
@@ -1256,13 +1258,14 @@ fn codex_apps_auth_failure_metadata() -> McpToolApprovalMetadata {
 
 async fn install_host_owned_codex_apps_manager(session: &Session, turn_context: &TurnContext) {
     let auth = session.services.auth_manager.auth().await;
-    let (manager, _cancel_token) = codex_mcp::McpConnectionManager::new(
+    let manager = codex_mcp::McpConnectionManager::new(
         &HashMap::new(),
         turn_context.config.mcp_oauth_credentials_store_mode,
         HashMap::new(),
         &turn_context.approval_policy,
         turn_context.sub_id.clone(),
         session.get_tx_event(),
+        CancellationToken::new(),
         turn_context.permission_profile(),
         codex_mcp::McpRuntimeContext::new(Arc::clone(&session.services.environment_manager), {
             #[allow(deprecated)]
@@ -1271,13 +1274,17 @@ async fn install_host_owned_codex_apps_manager(session: &Session, turn_context: 
         turn_context.config.codex_home.to_path_buf(),
         codex_mcp::codex_apps_tools_cache_key(auth.as_ref()),
         /*host_owned_codex_apps_enabled*/ true,
+        turn_context.config.prefix_mcp_tool_names(),
         rmcp::model::ElicitationCapability::default(),
         codex_mcp::ToolPluginProvenance::default(),
         auth.as_ref(),
         /*elicitation_reviewer*/ None,
     )
     .await;
-    *session.services.mcp_connection_manager.write().await = manager;
+    session
+        .services
+        .mcp_connection_manager
+        .store(Arc::new(manager));
 }
 
 #[tokio::test]
@@ -1885,6 +1892,7 @@ async fn persist_codex_app_tool_approval_writes_tool_override() {
                 "calendar".to_string(),
                 AppConfig {
                     enabled: true,
+                    approvals_reviewer: None,
                     destructive_enabled: None,
                     open_world_enabled: None,
                     default_tools_approval_mode: None,
@@ -2294,7 +2302,7 @@ async fn approve_mode_skips_when_annotations_do_not_require_approval() {
         &turn_context,
         "call-1",
         &invocation,
-        "mcp__test__tool",
+        &HookToolName::new("mcp__test__tool"),
         Some(&metadata),
         AppToolApproval::Approve,
     )
@@ -2368,7 +2376,7 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
         &turn_context,
         "call-guardian",
         &invocation,
-        "mcp__test__tool",
+        &HookToolName::new("mcp__test__tool"),
         Some(&metadata),
         AppToolApproval::Auto,
     )
@@ -2425,7 +2433,7 @@ async fn permission_request_hook_allows_mcp_tool_call() {
         &turn_context,
         "call-mcp-hook",
         &invocation,
-        "mcp__memory__create_entities",
+        &HookToolName::new("mcp__memory__create_entities"),
         Some(&metadata),
         AppToolApproval::Auto,
     )
@@ -2487,7 +2495,7 @@ async fn permission_request_hook_uses_hook_tool_name_without_metadata() {
         &turn_context,
         "call-mcp-hook-no-metadata",
         &invocation,
-        "mcp__memory__create_entities",
+        &HookToolName::new("mcp__memory__create_entities"),
         /*metadata*/ None,
         AppToolApproval::Auto,
     )
@@ -2567,7 +2575,7 @@ async fn permission_request_hook_runs_after_remembered_mcp_approval() {
         &turn_context,
         "call-mcp-remembered",
         &invocation,
-        "mcp__memory__create_entities",
+        &HookToolName::new("mcp__memory__create_entities"),
         Some(&metadata),
         AppToolApproval::Auto,
     )
@@ -2648,7 +2656,7 @@ async fn guardian_mode_mcp_denial_returns_rationale_message() {
         &turn_context,
         "call-guardian-deny",
         &invocation,
-        "mcp__test__tool",
+        &HookToolName::new("mcp__test__tool"),
         Some(&metadata),
         AppToolApproval::Auto,
     )
@@ -2706,7 +2714,7 @@ async fn prompt_mode_waits_for_approval_when_annotations_do_not_require_approval
                 &turn_context,
                 "call-prompt",
                 &invocation,
-                "mcp__test__tool",
+                &HookToolName::new("mcp__test__tool"),
                 Some(&metadata),
                 AppToolApproval::Prompt,
             )
@@ -2762,7 +2770,7 @@ async fn full_access_mode_skips_mcp_tool_approval_for_all_approval_modes() {
             &turn_context,
             "call-2",
             &invocation,
-            "mcp__test__tool",
+            &HookToolName::new("mcp__test__tool"),
             Some(&metadata),
             approval_mode,
         )
@@ -2850,7 +2858,7 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
             &turn_context,
             "call-3",
             &invocation,
-            "mcp__test__tool",
+            &HookToolName::new("mcp__test__tool"),
             Some(&metadata),
             AppToolApproval::Approve,
         )

@@ -15,6 +15,7 @@ from .targets import TARGET_SPECS
 from .targets import PackageInputs
 from .targets import default_target
 from .targets import resolve_input_path
+from .zsh import resolve_zsh_bin
 from .version import read_workspace_version
 
 
@@ -43,8 +44,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=argparse.SUPPRESS,
         help=(
-            "Output directory to create as the package root. Defaults to a new "
-            "temporary directory."
+            "Output directory to create as the package root. Defaults to a new temporary directory."
         ),
     )
     parser.add_argument(
@@ -71,8 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--cargo-profile",
         default="dev-small",
         help=(
-            "Cargo profile for source-built package artifacts. Use release for "
-            "release packages."
+            "Cargo profile for source-built package artifacts. Use release for release packages."
         ),
     )
     parser.add_argument(
@@ -161,13 +160,16 @@ def main() -> int:
     inputs = PackageInputs(
         entrypoint_bin=source_outputs.entrypoint_bin,
         rg_bin=resolve_rg_bin(spec, args.rg_bin),
+        zsh_bin=resolve_zsh_bin(spec),
         bwrap_bin=source_outputs.bwrap_bin,
         codex_command_runner_bin=source_outputs.codex_command_runner_bin,
         codex_windows_sandbox_setup_bin=source_outputs.codex_windows_sandbox_setup_bin,
     )
     prepare_package_dir(package_dir, force=args.force)
     build_package_dir(package_dir, version, variant, spec, inputs)
-    validate_package_dir(package_dir, variant, spec)
+    validate_package_dir(
+        package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
+    )
 
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()

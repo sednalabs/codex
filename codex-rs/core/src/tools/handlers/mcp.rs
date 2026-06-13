@@ -9,22 +9,26 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::flat_tool_name;
+use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolTelemetryTags;
-use crate::tools::tool_search_entry::ToolSearchInfo;
 use codex_mcp::ToolInfo;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::mcp_tool_to_responses_api_tool;
 use serde_json::Map;
 use serde_json::Value;
+
+const LEGACY_MCP_TOOL_NAME_PREFIX: &str = "mcp__";
+const MCP_TOOL_NAME_DELIMITER: &str = "__";
 
 pub struct McpHandler {
     tool_info: ToolInfo,
@@ -36,9 +40,31 @@ impl McpHandler {
         let spec = create_tool_spec(&tool_info)?;
         Ok(Self { tool_info, spec })
     }
+
+    fn hook_tool_name(&self) -> HookToolName {
+        HookToolName::new(ensure_mcp_prefix(&join_tool_name(&self.tool_name())))
+    }
 }
 
-#[async_trait::async_trait]
+fn join_tool_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) => {
+            let namespace = namespace.trim_end_matches('_');
+            let name = tool_name.name.trim_start_matches('_');
+            format!("{namespace}{MCP_TOOL_NAME_DELIMITER}{name}")
+        }
+        None => tool_name.name.clone(),
+    }
+}
+
+fn ensure_mcp_prefix(name: &str) -> String {
+    if name.starts_with(LEGACY_MCP_TOOL_NAME_PREFIX) {
+        name.to_string()
+    } else {
+        format!("{LEGACY_MCP_TOOL_NAME_PREFIX}{name}")
+    }
+}
+
 impl ToolExecutor<ToolInvocation> for McpHandler {
     fn tool_name(&self) -> ToolName {
         self.tool_info.canonical_tool_name()
@@ -61,7 +87,39 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
                 .unwrap_or(false)
     }
 
-    async fn handle(
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        let source_name = self
+            .tool_info
+            .connector_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|connector_name| !connector_name.is_empty())
+            .unwrap_or_else(|| self.tool_info.server_name.trim());
+        let source_info = (!source_name.is_empty()).then(|| ToolSearchSourceInfo {
+            name: source_name.to_string(),
+            description: self
+                .tool_info
+                .namespace_description
+                .as_deref()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .map(str::to_string),
+        });
+
+        ToolSearchInfo::from_spec(
+            build_mcp_search_text(&self.tool_info),
+            self.spec(),
+            source_info,
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl McpHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -89,7 +147,7 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
             call_id.clone(),
             self.tool_info.server_name.clone(),
             self.tool_info.tool.name.to_string(),
-            self.tool_name().to_string(),
+            self.hook_tool_name(),
             payload,
         )
         .await;
@@ -105,32 +163,6 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
 }
 
 impl CoreToolRuntime for McpHandler {
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        let source_name = self
-            .tool_info
-            .connector_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|connector_name| !connector_name.is_empty())
-            .unwrap_or_else(|| self.tool_info.server_name.trim());
-        let source_info = (!source_name.is_empty()).then(|| ToolSearchSourceInfo {
-            name: source_name.to_string(),
-            description: self
-                .tool_info
-                .namespace_description
-                .as_deref()
-                .map(str::trim)
-                .filter(|description| !description.is_empty())
-                .map(str::to_string),
-        });
-
-        ToolSearchInfo::from_spec(
-            build_mcp_search_text(&self.tool_info),
-            self.spec(),
-            source_info,
-        )
-    }
-
     fn telemetry_tags<'a>(
         &'a self,
         _invocation: &'a ToolInvocation,
@@ -150,7 +182,7 @@ impl CoreToolRuntime for McpHandler {
         };
 
         Some(PreToolUsePayload {
-            tool_name: HookToolName::new(self.tool_name().to_string()),
+            tool_name: self.hook_tool_name(),
             tool_input: mcp_hook_tool_input(arguments),
         })
     }
@@ -189,7 +221,7 @@ impl CoreToolRuntime for McpHandler {
         let tool_response =
             result.post_tool_use_response(&invocation.call_id, &invocation.payload)?;
         Some(PostToolUsePayload {
-            tool_name: HookToolName::new(self.tool_name().to_string()),
+            tool_name: self.hook_tool_name(),
             tool_use_id: invocation.call_id.clone(),
             tool_input: result.post_tool_use_input(&invocation.payload)?,
             tool_response,
@@ -233,50 +265,54 @@ fn mcp_hook_tool_input(raw_arguments: &str) -> Value {
 
 fn build_mcp_search_text(info: &ToolInfo) -> String {
     let tool_name = info.canonical_tool_name();
-    let mut schema_properties = info
-        .tool
-        .input_schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    schema_properties.sort();
-    let mut parts = vec![
-        flat_tool_name(&tool_name).into_owned(),
-        info.callable_name.clone(),
-        info.tool.name.to_string(),
-        info.server_name.clone(),
-    ];
+    let mut builder = SearchTextBuilder::new();
+    builder.push(flat_tool_name(&tool_name));
+    builder.push(&info.callable_name);
+    builder.push(info.tool.name.as_ref());
+    builder.push(&info.server_name);
     if let Some(title) = info.tool.title.as_deref().map(str::trim)
         && !title.is_empty()
     {
-        parts.push(title.to_string());
+        builder.push(title);
     }
     if let Some(description) = info.tool.description.as_deref().map(str::trim)
         && !description.is_empty()
     {
-        parts.push(description.to_string());
+        builder.push(description);
     }
     if let Some(connector_name) = info.connector_name.as_deref().map(str::trim)
         && !connector_name.is_empty()
     {
-        parts.push(connector_name.to_string());
+        builder.push(connector_name);
     }
     if let Some(namespace_description) = info.namespace_description.as_deref().map(str::trim)
         && !namespace_description.is_empty()
     {
-        parts.push(namespace_description.to_string());
+        builder.push(namespace_description);
     }
-    parts.extend(
-        info.plugin_display_names
-            .iter()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|display_name| !display_name.is_empty())
-            .map(str::to_string),
-    );
-    parts.extend(schema_properties);
-    parts.join(" ")
+    for display_name in info
+        .plugin_display_names
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty())
+    {
+        builder.push(display_name);
+    }
+    if info
+        .tool
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.read_only_hint)
+        .unwrap_or(false)
+    {
+        builder.push("read only");
+        builder.push("read-only");
+        builder.push("read_only");
+        builder.push("readonly");
+    }
+    builder.push_schema_object_terms(&info.tool.input_schema);
+    builder.finish()
 }
 
 #[cfg(test)]
@@ -288,6 +324,9 @@ mod tests {
     use super::*;
     use crate::session::tests::make_session_and_context;
     use crate::tools::context::ToolCallSource;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::registry::PostToolUsePayload;
+    use crate::tools::registry::PreToolUsePayload;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -295,7 +334,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     #[tokio::test]
-    async fn mcp_pre_tool_use_payload_uses_model_tool_name_and_raw_args() {
+    async fn mcp_pre_tool_use_payload_uses_prefixed_tool_name_and_raw_args() {
         let payload = ToolPayload::Function {
             arguments: json!({
                 "entities": [{
@@ -306,7 +345,7 @@ mod tests {
             .to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("memory", "mcp__memory__", "create_entities"))
+        let handler = McpHandler::new(tool_info("memory", "memory", "create_entities"))
             .expect("MCP tool spec should build");
         assert_eq!(
             handler.pre_tool_use_payload(&ToolInvocation {
@@ -315,7 +354,7 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre".to_string(),
-                tool_name: codex_tools::ToolName::namespaced("mcp__memory__", "create_entities"),
+                tool_name: codex_tools::ToolName::namespaced("memory", "create_entities"),
                 source: ToolCallSource::Direct,
                 payload,
             }),
@@ -337,7 +376,7 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("foo", "mcp__foo__", "exec_command"))
+        let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
         assert_eq!(
@@ -347,7 +386,7 @@ mod tests {
                 cancellation_token: tokio_util::sync::CancellationToken::new(),
                 tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                 call_id: "call-mcp-pre-builtin-like".to_string(),
-                tool_name: codex_tools::ToolName::namespaced("mcp__foo__", "exec_command"),
+                tool_name: codex_tools::ToolName::namespaced("mcp__foo", "exec_command"),
                 source: ToolCallSource::Direct,
                 payload,
             }),
@@ -364,7 +403,7 @@ mod tests {
             arguments: json!({ "message": "hello" }).to_string(),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("foo", "mcp__foo__", "exec_command"))
+        let handler = McpHandler::new(tool_info("foo", "mcp__foo", "exec_command"))
             .expect("MCP tool spec should build");
 
         let invocation = handler
@@ -375,7 +414,7 @@ mod tests {
                     cancellation_token: tokio_util::sync::CancellationToken::new(),
                     tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
                     call_id: "call-mcp-rewrite-builtin-like".to_string(),
-                    tool_name: codex_tools::ToolName::namespaced("mcp__foo__", "exec_command"),
+                    tool_name: codex_tools::ToolName::namespaced("mcp__foo", "exec_command"),
                     source: ToolCallSource::Direct,
                     payload,
                 },
@@ -390,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_post_tool_use_payload_uses_model_tool_name_args_and_result() {
+    async fn mcp_post_tool_use_payload_uses_prefixed_tool_name_args_and_result() {
         let payload = ToolPayload::Function {
             arguments: json!({ "path": "/tmp/notes.txt" }).to_string(),
         };
@@ -414,7 +453,7 @@ mod tests {
             truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(1024),
         };
         let (session, turn) = make_session_and_context().await;
-        let handler = McpHandler::new(tool_info("filesystem", "mcp__filesystem__", "read_file"))
+        let handler = McpHandler::new(tool_info("filesystem", "filesystem", "read_file"))
             .expect("MCP tool spec should build");
         let invocation = ToolInvocation {
             session: session.into(),
@@ -422,7 +461,7 @@ mod tests {
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
             call_id: "call-mcp-post".to_string(),
-            tool_name: codex_tools::ToolName::namespaced("mcp__filesystem__", "read_file"),
+            tool_name: codex_tools::ToolName::namespaced("filesystem", "read_file"),
             source: ToolCallSource::Direct,
             payload,
         };
@@ -445,11 +484,6 @@ mod tests {
                 }),
             })
         );
-    }
-
-    #[test]
-    fn mcp_hook_tool_input_defaults_empty_args_to_object() {
-        assert_eq!(mcp_hook_tool_input("  "), json!({}));
     }
 
     #[test]
@@ -498,19 +532,13 @@ mod tests {
             callable_name: tool_name.to_string(),
             callable_namespace: callable_namespace.to_string(),
             namespace_description: None,
-            tool: rmcp::model::Tool {
-                name: tool_name.to_string().into(),
-                title: None,
-                description: None,
-                input_schema: Arc::new(rmcp::model::object(serde_json::json!({
+            tool: rmcp::model::Tool::new_with_raw(
+                tool_name.to_string(),
+                None,
+                Arc::new(rmcp::model::object(serde_json::json!({
                     "type": "object",
                 }))),
-                output_schema: None,
-                annotations: None,
-                execution: None,
-                icons: None,
-                meta: None,
-            },
+            ),
             connector_id: None,
             connector_name: None,
             plugin_display_names: Vec::new(),

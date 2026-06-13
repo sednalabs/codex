@@ -2,7 +2,6 @@ use anyhow::Context;
 use anyhow::bail;
 use codex_config::config_toml::ConfigToml;
 use codex_config::types::MemoriesToml;
-use codex_features::AppsMcpPathOverrideConfigToml;
 use codex_features::Feature;
 use codex_features::FeatureToml;
 use codex_features::FeaturesToml;
@@ -67,7 +66,7 @@ pub(crate) fn apply_resolved_config_fields(
 ) -> anyhow::Result<()> {
     config_toml.web_search = Some(config.web_search_mode.value());
     config_toml.model_provider = Some(config.model_provider_id.clone());
-    config_toml.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort;
+    config_toml.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort.clone();
     config_toml.model_verbosity = config.model_verbosity;
     config_toml.include_permissions_instructions = Some(config.include_permissions_instructions);
     config_toml.include_apps_instructions = Some(config.include_apps_instructions);
@@ -85,10 +84,6 @@ pub(crate) fn apply_resolved_config_fields(
         resolved_config_to_toml(&config.multi_agent_v2, "features.multi_agent_v2")?;
     multi_agent_v2.enabled = Some(config.features.enabled(Feature::MultiAgentV2));
     features.multi_agent_v2 = Some(FeatureToml::Config(multi_agent_v2));
-    features.apps_mcp_path_override = Some(FeatureToml::Config(AppsMcpPathOverrideConfigToml {
-        enabled: Some(config.features.enabled(Feature::AppsMcpPathOverride)),
-        path: config.apps_mcp_path_override.clone(),
-    }));
 
     config_toml.memories = Some(resolved_config_to_toml::<MemoriesToml>(
         &config.memories,

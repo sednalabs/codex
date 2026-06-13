@@ -76,6 +76,7 @@ fn cache_rate_limit_snapshot(chat: &mut ChatWidget) {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -233,6 +234,7 @@ async fn status_surface_preview_omits_unavailable_rate_limit_items() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -246,7 +248,7 @@ async fn status_surface_preview_omits_unavailable_rate_limit_items() {
             &mut chat,
             &[StatusLineItem::FiveHourLimit, StatusLineItem::WeeklyLimit]
         ),
-        "weekly 91%"
+        "weekly 91% left"
     );
     assert_eq!(
         title_preview_line(
@@ -256,7 +258,7 @@ async fn status_surface_preview_omits_unavailable_rate_limit_items() {
                 TerminalTitleItem::WeeklyLimit
             ],
         ),
-        "weekly 91%"
+        "weekly 91% left"
     );
 }
 

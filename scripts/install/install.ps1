@@ -1,5 +1,6 @@
+[CmdletBinding()]
 param(
-    [string]$Release = "latest"
+    [string]$Release = $env:CODEX_RELEASE
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +16,12 @@ $ReleaseTagPrefix = if ([string]::IsNullOrWhiteSpace($env:CODEX_RELEASE_TAG_PREF
 } else {
     $env:CODEX_RELEASE_TAG_PREFIX
 }
+
+if ([string]::IsNullOrWhiteSpace($Release)) {
+    $Release = "latest"
+}
+
+$NonInteractive = $env:CODEX_NON_INTERACTIVE -match "^(?i:1|true|yes)$"
 
 function Write-Step {
     param(
@@ -36,6 +43,10 @@ function Prompt-YesNo {
     param(
         [string]$Prompt
     )
+
+    if ($NonInteractive) {
+        return $false
+    }
 
     if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
         return $false
@@ -67,6 +78,16 @@ function Normalize-Version {
     }
 
     return $RawVersion
+}
+
+function Assert-ValidReleaseVersion {
+    param(
+        [string]$Version
+    )
+
+    if ($Version -cne "latest" -and $Version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta)(?:\.[0-9]+)?)?$") {
+        throw "Invalid Codex release version: $Version. Expected latest or x.y.z[-alpha[.N]|-beta[.N]]."
+    }
 }
 
 function Find-ReleaseAssetMetadata {
@@ -163,6 +184,22 @@ function Path-Contains {
     return $false
 }
 
+function Prepend-PathEntry {
+    param(
+        [string]$PathValue,
+        [string]$Entry
+    )
+
+    $needle = $Entry.TrimEnd("\")
+    $segments = @($Entry)
+    if (-not [string]::IsNullOrWhiteSpace($PathValue)) {
+        $segments += $PathValue.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries) |
+            Where-Object { $_.TrimEnd("\") -ine $needle }
+    }
+
+    return ($segments -join ";")
+}
+
 function Invoke-WithInstallLock {
     param(
         [string]$LockPath,
@@ -203,6 +240,7 @@ function Remove-StaleInstallArtifacts {
 
 function Resolve-Version {
     $normalizedVersion = Normalize-Version -RawVersion $Release
+    Assert-ValidReleaseVersion -Version $normalizedVersion
     if ($normalizedVersion -ne "latest") {
         return $normalizedVersion
     }
@@ -213,7 +251,9 @@ function Resolve-Version {
         exit 1
     }
 
-    return (Normalize-Version -RawVersion $release.tag_name)
+    $resolvedVersion = Normalize-Version -RawVersion $release.tag_name
+    Assert-ValidReleaseVersion -Version $resolvedVersion
+    return $resolvedVersion
 }
 
 function Get-VersionFromBinary {
@@ -861,7 +901,16 @@ try {
 Maybe-HandleConflictingInstall -Conflict $conflictingInstall
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (-not (Path-Contains -PathValue $userPath -Entry $visibleBinDir)) {
+$prioritizeVisibleBin = $null -ne $conflictingInstall
+if ($prioritizeVisibleBin) {
+    $newUserPath = Prepend-PathEntry -PathValue $userPath -Entry $visibleBinDir
+    if ($newUserPath -cne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Write-Step "PATH updated for future PowerShell sessions."
+    } else {
+        Write-Step "$visibleBinDir is already first on PATH."
+    }
+} elseif (-not (Path-Contains -PathValue $userPath -Entry $visibleBinDir)) {
     if ([string]::IsNullOrWhiteSpace($userPath)) {
         $newUserPath = $visibleBinDir
     } else {
@@ -876,7 +925,9 @@ if (-not (Path-Contains -PathValue $userPath -Entry $visibleBinDir)) {
     Write-Step "PATH is already configured for future PowerShell sessions."
 }
 
-if (-not (Path-Contains -PathValue $env:Path -Entry $visibleBinDir)) {
+if ($prioritizeVisibleBin) {
+    $env:Path = Prepend-PathEntry -PathValue $env:Path -Entry $visibleBinDir
+} elseif (-not (Path-Contains -PathValue $env:Path -Entry $visibleBinDir)) {
     if ([string]::IsNullOrWhiteSpace($env:Path)) {
         $env:Path = $visibleBinDir
     } else {

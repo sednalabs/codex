@@ -36,6 +36,65 @@ mod thread_list_cwd_filter_tests {
     }
 }
 
+mod background_terminal_pagination_tests {
+    use super::super::paginate_background_terminals;
+    use codex_app_server_protocol::ThreadBackgroundTerminal;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use pretty_assertions::assert_eq;
+
+    fn terminal(process_id: &str) -> ThreadBackgroundTerminal {
+        let cwd = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
+
+        ThreadBackgroundTerminal {
+            item_id: format!("item-{process_id}"),
+            process_id: process_id.to_string(),
+            command: format!("command-{process_id}"),
+            cwd: AbsolutePathBuf::from_absolute_path(cwd).expect("absolute cwd"),
+            os_pid: None,
+            cpu_percent: None,
+            rss_kb: None,
+        }
+    }
+
+    #[test]
+    fn paginates_with_process_id_cursor() {
+        let terminals = vec![
+            terminal("1"),
+            terminal("2"),
+            terminal("3"),
+            terminal("4"),
+            terminal("5"),
+        ];
+
+        let (data, next_cursor) =
+            paginate_background_terminals(&terminals, /*cursor*/ None, Some(2))
+                .expect("valid page");
+
+        assert_eq!(data, vec![terminal("1"), terminal("2")]);
+        assert_eq!(next_cursor, Some("2".to_string()));
+        let first_cursor = next_cursor;
+
+        let terminals_without_anchor = vec![terminal("1"), terminal("3"), terminal("4")];
+        let (data, next_cursor) =
+            paginate_background_terminals(&terminals_without_anchor, first_cursor.clone(), Some(2))
+                .expect("valid page");
+
+        assert_eq!(data, vec![terminal("3"), terminal("4")]);
+        assert_eq!(next_cursor, None);
+
+        let (data, next_cursor) =
+            paginate_background_terminals(&terminals, first_cursor, Some(2)).expect("valid page");
+
+        assert_eq!(data, vec![terminal("3"), terminal("4")]);
+        assert_eq!(next_cursor, Some("4".to_string()));
+
+        assert!(
+            paginate_background_terminals(&terminals, Some("missing".to_string()), Some(1))
+                .is_err()
+        );
+    }
+}
+
 mod thread_processor_behavior_tests {
     async fn forked_from_id_from_rollout(path: &Path) -> Option<String> {
         codex_core::read_session_meta_line(path)
@@ -54,7 +113,7 @@ mod thread_processor_behavior_tests {
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ToolRequestUserInputParams;
-    use codex_config::CloudRequirementsLoader;
+    use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
     use codex_config::SessionThreadConfig;
     use codex_config::StaticThreadConfigLoader;
@@ -68,15 +127,16 @@ mod thread_processor_behavior_tests {
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
+    use codex_protocol::protocol::TurnEnvironmentSelections;
     use codex_state::ThreadMetadataBuilder;
     use codex_thread_store::StoredThread;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -116,6 +176,26 @@ mod thread_processor_behavior_tests {
             capability: None,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
+    }
+
+    #[test]
+    fn browser_native_dynamic_tools_require_loaded_thread_reload() {
+        let tool = ApiDynamicToolSpec {
+            namespace: None,
+            name: codex_tools::BROWSER_OBSERVE_TOOL_NAME.to_string(),
+            description: "Browser observe".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": true}),
+            defer_loading: false,
+            persist_on_resume: false,
+            capability: Some(codex_protocol::dynamic_tools::DynamicToolCapability {
+                family: Some("browser".to_string()),
+                capability_scope: Some("session".to_string()),
+                mutation_class: Some("non_mutating".to_string()),
+                lease_mode: None,
+            }),
+        };
+
+        assert!(dynamic_tool_requires_thread_reload(&tool));
     }
 
     #[test]
@@ -229,6 +309,7 @@ mod thread_processor_behavior_tests {
     fn thread_turns_list_merges_in_progress_active_turn_before_agent_status_running() {
         let persisted_items = vec![RolloutItem::EventMsg(EventMsg::UserMessage(
             codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
                 message: "persisted".to_string(),
                 images: None,
                 local_images: Vec::new(),
@@ -240,6 +321,7 @@ mod thread_processor_behavior_tests {
             id: "live-turn".to_string(),
             items: vec![ThreadItem::UserMessage {
                 id: "live-user-message".to_string(),
+                client_id: None,
                 content: vec![V2UserInput::Text {
                     text: "live".to_string(),
                     text_elements: Vec::new(),
@@ -421,8 +503,10 @@ mod thread_processor_behavior_tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
             thread_id,
+            extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: "preview".to_string(),
             name: None,
             model_provider: "openai".to_string(),
@@ -440,7 +524,7 @@ mod thread_processor_behavior_tests {
             agent_path: None,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             token_usage: None,
             first_user_message: Some("first user message".to_string()),
             history: None,
@@ -456,6 +540,50 @@ mod thread_processor_behavior_tests {
             summary.updated_at.as_deref(),
             Some("2025-01-02T03:04:06.789Z")
         );
+    }
+
+    #[test]
+    fn thread_from_stored_thread_preserves_model_and_reasoning_effort() -> Result<()> {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread");
+        let timestamp =
+            DateTime::parse_from_rfc3339("2025-01-02T03:04:05.678Z")?.with_timezone(&Utc);
+        let stored_thread = StoredThread {
+            thread_id,
+            extra_config: None,
+            rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "preview".to_string(),
+            name: None,
+            model_provider: "openai".to_string(),
+            model: Some("gpt-5.3-codex".to_string()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            created_at: timestamp,
+            updated_at: timestamp,
+            archived_at: None,
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::Cli,
+            thread_source: Some(codex_protocol::protocol::ThreadSource::User),
+            agent_nickname: None,
+            agent_role: None,
+            agent_path: None,
+            git_info: None,
+            approval_mode: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::read_only(),
+            token_usage: None,
+            first_user_message: Some("first user message".to_string()),
+            history: None,
+        };
+
+        let fallback_cwd = AbsolutePathBuf::from_absolute_path("/")?;
+        let (thread, history) = thread_from_stored_thread(stored_thread, "fallback", &fallback_cwd);
+
+        assert!(history.is_none());
+        assert_eq!(thread.model, Some("gpt-5.3-codex".to_string()));
+        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::High));
+        Ok(())
     }
 
     #[test]
@@ -535,9 +663,9 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_marks_cloud_requirements_failures_for_relogin() {
-        let err = std::io::Error::other(CloudRequirementsLoadError::new(
-            CloudRequirementsLoadErrorCode::Auth,
+    fn config_load_error_marks_cloud_config_bundle_failures_for_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::Auth,
             Some(401),
             "Your authentication session could not be refreshed automatically. Please log out and sign in again.",
         ));
@@ -547,7 +675,7 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             error.data,
             Some(json!({
-                "reason": "cloudRequirements",
+                "reason": "cloudConfigBundle",
                 "errorCode": "Auth",
                 "action": "relogin",
                 "statusCode": 401,
@@ -562,7 +690,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_leaves_non_cloud_requirements_failures_unmarked() {
+    fn config_load_error_leaves_non_cloud_config_bundle_failures_unmarked() {
         let err = std::io::Error::other("required MCP servers failed to initialize");
 
         let error = config_load_error(&err);
@@ -576,11 +704,11 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_marks_non_auth_cloud_requirements_failures_without_relogin() {
-        let err = std::io::Error::other(CloudRequirementsLoadError::new(
-            CloudRequirementsLoadErrorCode::RequestFailed,
+    fn config_load_error_marks_non_auth_cloud_config_bundle_failures_without_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::RequestFailed,
             /*status_code*/ None,
-            "Failed to load cloud requirements (workspace-managed policies).",
+            "Failed to load cloud config bundle (workspace-managed policies).",
         ));
 
         let error = config_load_error(&err);
@@ -588,9 +716,29 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             error.data,
             Some(json!({
-                "reason": "cloudRequirements",
+                "reason": "cloudConfigBundle",
                 "errorCode": "RequestFailed",
-                "detail": "Failed to load cloud requirements (workspace-managed policies).",
+                "detail": "Failed to load cloud config bundle (workspace-managed policies).",
+            }))
+        );
+    }
+
+    #[test]
+    fn config_load_error_marks_invalid_cloud_config_bundle_failures_without_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::InvalidBundle,
+            /*status_code*/ None,
+            "invalid cloud config bundle: invalid cloud config fragment Base policy (cfg_123)",
+        ));
+
+        let error = config_load_error(&err);
+
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "reason": "cloudConfigBundle",
+                "errorCode": "InvalidBundle",
+                "detail": "invalid cloud config bundle: invalid cloud config fragment Base policy (cfg_123)",
             }))
         );
     }
@@ -622,7 +770,7 @@ mod thread_processor_behavior_tests {
             Vec::new(),
             LoaderOverrides::default(),
             /*strict_config*/ false,
-            CloudRequirementsLoader::default(),
+            CloudConfigBundleLoader::default(),
             Arg0DispatchPaths::default(),
             Arc::new(StaticThreadConfigLoader::new(vec![
                 ThreadConfigSource::Session(SessionThreadConfig {
@@ -640,6 +788,7 @@ mod thread_processor_behavior_tests {
                 Some(HashMap::from([
                     ("model_provider".to_string(), json!("request")),
                     ("features.plugins".to_string(), json!(true)),
+                    ("bypass_hook_trust".to_string(), json!(true)),
                     (
                         "model_providers.session".to_string(),
                         json!({
@@ -656,6 +805,7 @@ mod thread_processor_behavior_tests {
         assert_eq!(config.model_provider_id, "session");
         assert_eq!(config.model_provider, session_provider);
         assert!(!config.features.enabled(Feature::Plugins));
+        assert!(config.bypass_hook_trust);
         Ok(())
     }
 
@@ -681,7 +831,7 @@ mod thread_processor_behavior_tests {
             personality: None,
             dynamic_tools: None,
             exclude_turns: false,
-            persist_extended_history: false,
+            initial_turns_page: None,
         };
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
@@ -691,7 +841,7 @@ mod thread_processor_behavior_tests {
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
             active_permission_profile: None,
-            cwd,
+            environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),
             profile_workspace_roots: Vec::new(),
             ephemeral: false,
@@ -707,6 +857,8 @@ mod thread_processor_behavior_tests {
                 },
             },
             session_source: SessionSource::Cli,
+            forked_from_thread_id: None,
+            parent_thread_id: None,
             thread_source: None,
         };
 
@@ -1186,6 +1338,7 @@ mod thread_processor_behavior_tests {
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: "turn-1".to_string(),
+                    trace_id: None,
                     started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),

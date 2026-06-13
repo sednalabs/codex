@@ -20,6 +20,9 @@ impl ChatWidget {
         self.session_network_proxy = session.network_proxy.clone();
         let previous_thread_id = self.thread_id;
         self.thread_id = Some(session.thread_id);
+        if previous_thread_id != self.thread_id {
+            self.observed_model_display_name = None;
+        }
         self.bottom_pane
             .set_queue_submissions(/*queue_submissions*/ false);
         if previous_thread_id != self.thread_id {
@@ -79,7 +82,7 @@ impl ChatWidget {
         let default_model = session.model.clone();
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(default_model.clone()),
-            Some(session.reasoning_effort),
+            Some(session.reasoning_effort.clone()),
             /*developer_instructions*/ None,
         );
         match session.collaboration_mode.as_deref() {
@@ -93,7 +96,7 @@ impl ChatWidget {
                     Some(&default_model),
                 );
                 if let Some(mask) = self.active_collaboration_mask.as_mut() {
-                    mask.reasoning_effort = Some(session.reasoning_effort);
+                    mask.reasoning_effort = Some(session.reasoning_effort.clone());
                 }
                 self.update_collaboration_mode_indicator();
                 self.refresh_plan_mode_nudge();
@@ -135,13 +138,7 @@ impl ChatWidget {
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
-        if let Some(user_message) = self.initial_user_message.take() {
-            if self.suppress_initial_user_message_submit {
-                self.initial_user_message = Some(user_message);
-            } else {
-                self.submit_user_message(user_message);
-            }
-        }
+        self.submit_initial_user_message_if_pending();
         if display == SessionConfiguredDisplay::Normal
             && let Some(forked_from_id) = forked_from_id
         {

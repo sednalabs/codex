@@ -8,6 +8,7 @@ use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::Personality;
 use crate::types::SessionPickerViewMode;
+use crate::types::TuiTranscriptDetailMode;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_protocol::config_types::ReasoningSummary;
@@ -48,8 +49,6 @@ pub struct ConfigProfile {
     /// Deprecated: ignored.
     #[schemars(skip)]
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
-    /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
-    pub zsh_path: Option<AbsolutePathBuf>,
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub include_permissions_instructions: Option<bool>,
     pub include_apps_instructions: Option<bool>,
@@ -80,18 +79,8 @@ pub struct ProfileTui {
     /// Preferred layout for resume/fork session picker results.
     #[serde(default)]
     pub session_picker_view: Option<SessionPickerViewMode>,
-}
 
-impl From<ConfigProfile> for codex_app_server_protocol::Profile {
-    fn from(config_profile: ConfigProfile) -> Self {
-        Self {
-            model: config_profile.model,
-            model_provider: config_profile.model_provider,
-            approval_policy: config_profile.approval_policy,
-            model_reasoning_effort: config_profile.model_reasoning_effort,
-            model_reasoning_summary: config_profile.model_reasoning_summary,
-            model_verbosity: config_profile.model_verbosity,
-            chatgpt_base_url: config_profile.chatgpt_base_url,
-        }
-    }
+    /// Default detail mode for the `Ctrl+T` transcript overlay.
+    #[serde(default)]
+    pub transcript_default_detail_mode: Option<TuiTranscriptDetailMode>,
 }

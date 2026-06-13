@@ -8,6 +8,7 @@ from pathlib import Path
 from .targets import REPO_ROOT
 from .targets import PackageVariant
 from .targets import TargetSpec
+from .v8 import resolve_codex_v8_cargo_env
 
 
 CODEX_RS_ROOT = REPO_ROOT / "codex-rs"
@@ -43,8 +44,7 @@ def build_source_binaries(
         variant,
         build_entrypoint=entrypoint_bin is None,
         build_bwrap=spec.is_linux and bwrap_bin is None,
-        build_codex_command_runner=spec.is_windows
-        and codex_command_runner_bin is None,
+        build_codex_command_runner=spec.is_windows and codex_command_runner_bin is None,
         build_codex_windows_sandbox_setup=spec.is_windows
         and codex_windows_sandbox_setup_bin is None,
     )
@@ -60,8 +60,19 @@ def build_source_binaries(
         for binary in binaries:
             cmd.extend(["--bin", binary])
 
+        cargo_env = None
+        if entrypoint_bin is None:
+            codex_v8_env = resolve_codex_v8_cargo_env(spec)
+            if codex_v8_env:
+                cargo_env = {**os.environ, **codex_v8_env}
+
         print("+", " ".join(cmd))
-        subprocess.run(cmd, cwd=CODEX_RS_ROOT, check=True)
+        subprocess.run(
+            cmd,
+            cwd=CODEX_RS_ROOT,
+            check=True,
+            env=cargo_env,
+        )
 
     output_dir = cargo_profile_output_dir(spec, profile)
     outputs = SourceBuildOutputs(
@@ -126,7 +137,9 @@ def validate_prebuilt_resource_inputs(
         )
 
 
-def resolve_output_path(explicit_path: Path | None, default_path: Path | None) -> Path | None:
+def resolve_output_path(
+    explicit_path: Path | None, default_path: Path | None
+) -> Path | None:
     if explicit_path is not None:
         return explicit_path.resolve()
 

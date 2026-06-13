@@ -4,10 +4,11 @@ use crate::config_manager::ConfigManager;
 use crate::config_manager_service::ConfigManagerError;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::extensions::ConfigMutationKind;
+use crate::extensions::app_server_hooks;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_analytics::AnalyticsEventsClient;
-use codex_app_server_protocol::AppListUpdatedNotification;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::ComputerUseRequirements;
 use codex_app_server_protocol::ConfigBatchWriteParams;
@@ -29,8 +30,7 @@ use codex_app_server_protocol::NetworkDomainPermission;
 use codex_app_server_protocol::NetworkRequirements;
 use codex_app_server_protocol::NetworkUnixSocketPermission;
 use codex_app_server_protocol::SandboxMode;
-use codex_app_server_protocol::ServerNotification;
-use codex_chatgpt::connectors;
+use codex_app_server_protocol::WindowsSandboxSetupMode;
 use codex_config::ConfigRequirementsToml;
 use codex_config::HookEventsToml;
 use codex_config::HookHandlerConfig as CoreHookHandlerConfig;
@@ -49,13 +49,12 @@ use serde_json::json;
 use std::path::PathBuf;
 
 const SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT: &[&str] = &[
-    "apps",
+    "auth_elicitation",
     "memories",
     "mentions_v2",
-    "plugins",
     "remote_control",
+    "remote_plugin",
     "tool_suggest",
-    "tool_call_mcp_elicitation",
 ];
 
 #[derive(Clone)]
@@ -130,18 +129,24 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigValueWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.write_value(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigValueWrite)
+        self.handle_config_mutation_result(
+            self.write_value(params).await,
+            ConfigMutationKind::ValueWrite,
+        )
+        .await
+        .map(ClientResponsePayload::ConfigValueWrite)
     }
 
     pub(crate) async fn batch_write(
         &self,
         params: ConfigBatchWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
-        self.handle_config_mutation_result(self.batch_write_inner(params).await)
-            .await
-            .map(ClientResponsePayload::ConfigBatchWrite)
+        self.handle_config_mutation_result(
+            self.batch_write_inner(params).await,
+            ConfigMutationKind::BatchWrite,
+        )
+        .await
+        .map(ClientResponsePayload::ConfigBatchWrite)
     }
 
     pub(crate) async fn experimental_feature_enablement_set(
@@ -149,9 +154,11 @@ impl ConfigRequestProcessor {
         request_id: ConnectionRequestId,
         params: ExperimentalFeatureEnablementSetParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let should_refresh_apps_list = params.enablement.get("apps").copied() == Some(true);
         let response = self
-            .handle_config_mutation_result(self.set_experimental_feature_enablement(params).await)
+            .handle_config_mutation_result(
+                self.set_experimental_feature_enablement(params).await,
+                ConfigMutationKind::ExperimentalFeatureEnablementSet,
+            )
             .await?;
         self.outgoing
             .send_response_as(
@@ -159,10 +166,6 @@ impl ConfigRequestProcessor {
                 ClientResponsePayload::ExperimentalFeatureEnablementSet(response),
             )
             .await;
-        if should_refresh_apps_list {
-            self.refresh_apps_list_after_experimental_feature_enablement_set()
-                .await;
-        }
         Ok(None)
     }
 
@@ -179,83 +182,41 @@ impl ConfigRequestProcessor {
         })
     }
 
-    pub(crate) async fn handle_config_mutation(&self) {
-        self.thread_manager.plugins_manager().clear_cache();
-        self.thread_manager.skills_manager().clear_cache();
+    pub(crate) async fn handle_config_mutation(&self, kind: ConfigMutationKind) {
+        let follow_up = app_server_hooks().config_mutation_follow_up(kind);
+        if follow_up.clear_plugin_related_caches {
+            self.thread_manager.plugins_manager().clear_cache();
+            self.thread_manager.skills_manager().clear_cache();
+        }
+        if follow_up.maybe_start_plugin_startup_tasks_for_latest_config {
+            match self.load_latest_config(/*fallback_cwd*/ None).await {
+                Ok(config) => {
+                    self.thread_manager
+                        .plugins_manager()
+                        .maybe_start_plugin_startup_tasks_for_config(
+                            &config.plugins_config_input(),
+                            self.auth_manager.clone(),
+                            /*on_effective_plugins_changed*/ None,
+                        );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to reload config for app-server config mutation follow-up: {}",
+                        err.message
+                    );
+                }
+            }
+        }
     }
 
     async fn handle_config_mutation_result<T>(
         &self,
         result: std::result::Result<T, JSONRPCErrorError>,
+        kind: ConfigMutationKind,
     ) -> Result<T, JSONRPCErrorError> {
         let response = result?;
-        self.handle_config_mutation().await;
+        self.handle_config_mutation(kind).await;
         Ok(response)
-    }
-
-    async fn refresh_apps_list_after_experimental_feature_enablement_set(&self) {
-        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(config) => config,
-            Err(error) => {
-                tracing::warn!(
-                    "failed to load config for apps list refresh after experimental feature enablement: {}",
-                    error.message
-                );
-                return;
-            }
-        };
-        let auth = self.auth_manager.auth().await;
-        if !config.features.apps_enabled_for_auth(
-            auth.as_ref()
-                .is_some_and(codex_login::CodexAuth::uses_codex_backend),
-        ) {
-            return;
-        }
-
-        let outgoing = Arc::clone(&self.outgoing);
-        let environment_manager = self.thread_manager.environment_manager();
-        tokio::spawn(async move {
-            let (all_connectors_result, accessible_connectors_result) = tokio::join!(
-                connectors::list_all_connectors_with_options(&config, /*force_refetch*/ true),
-                connectors::list_accessible_connectors_from_mcp_tools_with_environment_manager(
-                    &config,
-                    /*force_refetch*/ true,
-                    Arc::clone(&environment_manager),
-                ),
-            );
-            let all_connectors = match all_connectors_result {
-                Ok(connectors) => connectors,
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to force-refresh directory apps after experimental feature enablement: {err:#}"
-                    );
-                    return;
-                }
-            };
-            let accessible_connectors = match accessible_connectors_result {
-                Ok(status) => status.connectors,
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to force-refresh accessible apps after experimental feature enablement: {err:#}"
-                    );
-                    return;
-                }
-            };
-
-            let data = connectors::with_app_enabled_state(
-                connectors::merge_connectors_with_accessible(
-                    all_connectors,
-                    accessible_connectors,
-                    /*all_connectors_loaded*/ true,
-                ),
-                &config,
-            );
-            outgoing
-                .send_server_notification(ServerNotification::AppListUpdated(
-                    AppListUpdatedNotification { data },
-                ))
-                .await;
-        });
     }
 
     async fn load_latest_config(
@@ -315,28 +276,19 @@ impl ConfigRequestProcessor {
         &self,
         params: ExperimentalFeatureEnablementSetParams,
     ) -> Result<ExperimentalFeatureEnablementSetResponse, JSONRPCErrorError> {
-        let ExperimentalFeatureEnablementSetParams { enablement } = params;
-        for key in enablement.keys() {
-            if canonical_feature_for_key(key).is_some() {
-                if SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT.contains(&key.as_str()) {
-                    continue;
-                }
-
-                return Err(invalid_request(format!(
-                    "unsupported feature enablement `{key}`: currently supported features are {}",
-                    SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT.join(", ")
-                )));
+        let ExperimentalFeatureEnablementSetParams { mut enablement } = params;
+        let mut invalid_keys = Vec::new();
+        enablement.retain(|key, _| {
+            let valid = canonical_feature_for_key(key).is_some()
+                && SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT.contains(&key.as_str());
+            if !valid {
+                invalid_keys.push(key.clone());
             }
-
-            let message = if let Some(feature) = feature_for_key(key) {
-                format!(
-                    "invalid feature enablement `{key}`: use canonical feature key `{}`",
-                    feature.key()
-                )
-            } else {
-                format!("invalid feature enablement `{key}`")
-            };
-            return Err(invalid_request(message));
+            valid
+        });
+        if !invalid_keys.is_empty() {
+            let invalid_keys = invalid_keys.join(", ");
+            tracing::warn!("ignoring invalid experimental feature enablement keys: {invalid_keys}");
         }
 
         if enablement.is_empty() {
@@ -419,7 +371,25 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
                 .filter_map(map_sandbox_mode_requirement_to_api)
                 .collect()
         }),
-        allowed_permissions: requirements.allowed_permissions,
+        allowed_windows_sandbox_implementations: requirements.windows.and_then(|windows| {
+            windows
+                .allowed_sandbox_implementations
+                .map(|implementations| {
+                    implementations
+                        .into_iter()
+                        .map(|implementation| match implementation {
+                            codex_config::types::WindowsSandboxModeToml::Elevated => {
+                                WindowsSandboxSetupMode::Elevated
+                            }
+                            codex_config::types::WindowsSandboxModeToml::Unelevated => {
+                                WindowsSandboxSetupMode::Unelevated
+                            }
+                        })
+                        .collect()
+                })
+        }),
+        allowed_permission_profiles: requirements.allowed_permission_profiles,
+        default_permissions: requirements.default_permissions,
         allowed_web_search_modes: requirements.allowed_web_search_modes.map(|modes| {
             let mut normalized = modes
                 .into_iter()
@@ -431,6 +401,7 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
             normalized
         }),
         allow_managed_hooks_only: requirements.allow_managed_hooks_only,
+        allow_appshots: requirements.allow_appshots,
         computer_use: requirements
             .computer_use
             .map(map_computer_use_requirements_to_api),
@@ -609,7 +580,7 @@ fn map_network_unix_socket_permission_to_api(
 ) -> NetworkUnixSocketPermission {
     match permission {
         codex_config::NetworkUnixSocketPermissionToml::Allow => NetworkUnixSocketPermission::Allow,
-        codex_config::NetworkUnixSocketPermissionToml::None => NetworkUnixSocketPermission::None,
+        codex_config::NetworkUnixSocketPermissionToml::Deny => NetworkUnixSocketPermission::Deny,
     }
 }
 
@@ -632,29 +603,56 @@ fn config_write_error(code: ConfigWriteErrorCode, message: impl Into<String>) ->
 #[cfg(test)]
 mod tests {
     use super::map_requirements_toml_to_api;
+    use codex_app_server_protocol::WindowsSandboxSetupMode;
     use codex_config::ComputerUseRequirementsToml;
     use codex_config::ConfigRequirementsToml;
+    use codex_config::WindowsRequirementsToml;
     use pretty_assertions::assert_eq;
+    use std::collections::BTreeMap;
 
     #[test]
     fn requirements_api_includes_allow_managed_hooks_only() {
         let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
-            allowed_permissions: Some(vec![
-                "managed-standard".to_string(),
-                "managed-build".to_string(),
-            ]),
             allow_managed_hooks_only: Some(true),
             ..ConfigRequirementsToml::default()
         });
 
-        assert_eq!(
-            mapped.allowed_permissions,
-            Some(vec![
-                "managed-standard".to_string(),
-                "managed-build".to_string(),
-            ])
-        );
         assert_eq!(mapped.allow_managed_hooks_only, Some(true));
+        assert_eq!(mapped.hooks, None);
+    }
+
+    #[test]
+    fn requirements_api_includes_permission_default_and_allowlist() {
+        let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
+            allowed_permission_profiles: Some(BTreeMap::from([
+                ("managed-build".to_string(), false),
+                ("managed-standard".to_string(), true),
+            ])),
+            default_permissions: Some("managed-standard".to_string()),
+            ..ConfigRequirementsToml::default()
+        });
+
+        assert_eq!(
+            mapped.allowed_permission_profiles,
+            Some(BTreeMap::from([
+                ("managed-build".to_string(), false),
+                ("managed-standard".to_string(), true),
+            ]))
+        );
+        assert_eq!(
+            mapped.default_permissions,
+            Some("managed-standard".to_string())
+        );
+    }
+
+    #[test]
+    fn requirements_api_includes_allow_appshots() {
+        let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
+            allow_appshots: Some(false),
+            ..ConfigRequirementsToml::default()
+        });
+
+        assert_eq!(mapped.allow_appshots, Some(false));
         assert_eq!(mapped.hooks, None);
     }
 
@@ -672,6 +670,27 @@ mod tests {
                 .computer_use
                 .and_then(|requirements| requirements.allow_locked_computer_use),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn requirements_api_includes_allowed_windows_sandbox_implementations() {
+        let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
+            windows: Some(WindowsRequirementsToml {
+                allowed_sandbox_implementations: Some(vec![
+                    codex_config::types::WindowsSandboxModeToml::Elevated,
+                    codex_config::types::WindowsSandboxModeToml::Unelevated,
+                ]),
+            }),
+            ..ConfigRequirementsToml::default()
+        });
+
+        assert_eq!(
+            mapped.allowed_windows_sandbox_implementations,
+            Some(vec![
+                WindowsSandboxSetupMode::Elevated,
+                WindowsSandboxSetupMode::Unelevated,
+            ])
         );
     }
 }

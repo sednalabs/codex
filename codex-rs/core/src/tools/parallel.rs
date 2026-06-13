@@ -24,6 +24,7 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
@@ -92,12 +93,20 @@ impl ToolCallRuntime {
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
         let invocation_cancellation_token = cancellation_token.clone();
+        let wait_for_runtime_cancellation = self.router.tool_waits_for_runtime_cancellation(&call);
         let started = Instant::now();
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
-        let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
-        let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
+        let terminal_outcome_reached = registered_tool_runtime_capabilities()
+            .terminal_outcome
+            .map(|capability| {
+                capability
+                    .preserve_completed_lifecycle_after_cancellation
+                    .then(|| Arc::new(AtomicBool::new(false)))
+            })
+            .flatten();
+        let dispatch_terminal_outcome_reached = terminal_outcome_reached.clone();
         let dispatch_call = call.clone();
 
         let dispatch_span = trace_span!(
@@ -117,46 +126,79 @@ impl ToolCallRuntime {
                     Either::Right(lock.write().await)
                 };
 
-                router
-                    .dispatch_tool_call_with_terminal_outcome(
-                        session,
-                        turn,
-                        invocation_cancellation_token,
-                        tracker,
-                        dispatch_call,
-                        source,
-                        dispatch_terminal_outcome_reached,
-                    )
-                    .instrument(dispatch_span.clone())
-                    .await
+                if let Some(terminal_outcome_reached) = dispatch_terminal_outcome_reached {
+                    router
+                        .dispatch_tool_call_with_terminal_outcome(
+                            session,
+                            turn,
+                            invocation_cancellation_token,
+                            tracker,
+                            dispatch_call,
+                            source,
+                            terminal_outcome_reached,
+                        )
+                        .instrument(dispatch_span.clone())
+                        .await
+                } else {
+                    router
+                        .dispatch_tool_call_with_code_mode_result(
+                            session,
+                            turn,
+                            invocation_cancellation_token,
+                            tracker,
+                            dispatch_call,
+                            source,
+                        )
+                        .instrument(dispatch_span.clone())
+                        .await
+                }
             }));
 
         async move {
             tokio::select! {
                 res = &mut handle => res.map_err(Self::tool_task_join_error)?,
                 _ = cancellation_token.cancelled() => {
-                    if terminal_outcome_reached.load(Ordering::Acquire) || handle.is_finished() {
+                    if terminal_outcome_reached_or_finished(
+                        terminal_outcome_reached.as_ref(),
+                        handle.is_finished(),
+                    ) {
                         handle.await.map_err(Self::tool_task_join_error)?
                     } else {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
                         abort_dispatch_span.record("aborted", true);
-                        handle.abort();
-                        match handle.await {
-                            Ok(result) => result,
-                            Err(err) if err.is_cancelled() => {
-                                let response = Self::aborted_response(&call, secs);
-                                notify_tool_aborted(
-                                    abort_session.as_ref(),
-                                    abort_turn.as_ref(),
-                                    call.call_id.as_str(),
-                                    &call.tool_name,
-                                    abort_source,
-                                )
-                                .await;
-                                Ok(response)
+                        if wait_for_runtime_cancellation {
+                            if let Some(terminal_outcome_reached) =
+                                terminal_outcome_reached.as_ref()
+                            {
+                                if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
+                                    return handle.await.map_err(Self::tool_task_join_error)?;
+                                }
                             }
-                            Err(err) => Err(Self::tool_task_join_error(err)),
+                            // The abort owns the terminal outcome; await only so
+                            // the runtime can finish process teardown.
+                            match handle.await {
+                                Ok(_) => {}
+                                Err(err) if err.is_cancelled() => {}
+                                Err(err) => return Err(Self::tool_task_join_error(err)),
+                            }
+                        } else {
+                            handle.abort();
+                            match handle.await {
+                                Ok(result) => return result,
+                                Err(err) if err.is_cancelled() => {}
+                                Err(err) => return Err(Self::tool_task_join_error(err)),
+                            }
                         }
+                        let response = Self::aborted_response(&call, secs);
+                        notify_tool_aborted(
+                            abort_session.as_ref(),
+                            abort_turn.as_ref(),
+                            call.call_id.as_str(),
+                            &call.tool_name,
+                            abort_source,
+                        )
+                        .await;
+                        Ok(response)
                     }
                 },
             }
@@ -222,6 +264,15 @@ impl ToolCallRuntime {
     }
 }
 
+fn terminal_outcome_reached_or_finished(
+    terminal_outcome_reached: Option<&Arc<AtomicBool>>,
+    handle_finished: bool,
+) -> bool {
+    terminal_outcome_reached
+        .is_some_and(|terminal_outcome_reached| terminal_outcome_reached.load(Ordering::Acquire))
+        || handle_finished
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,7 +306,6 @@ mod tests {
         tool_name: codex_tools::ToolName,
     }
 
-    #[async_trait::async_trait]
     impl ToolExecutor<ToolInvocation> for ImmediateHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
             self.tool_name.clone()
@@ -272,18 +322,101 @@ mod tests {
             })
         }
 
-        async fn handle(
-            &self,
-            _invocation: ToolInvocation,
-        ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-            Ok(Box::new(FunctionToolOutput::from_text(
-                "ok".to_string(),
-                Some(true),
-            )))
+        fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            Box::pin(async {
+                Ok(
+                    Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
+                        as Box<dyn crate::tools::context::ToolOutput>,
+                )
+            })
         }
     }
 
     impl CoreToolRuntime for ImmediateHandler {}
+
+    struct CancellationCleanupHandler {
+        tool_name: codex_tools::ToolName,
+        started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        cleanup_started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        allow_cleanup: Arc<Notify>,
+    }
+
+    impl ToolExecutor<ToolInvocation> for CancellationCleanupHandler {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            self.tool_name.clone()
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+                name: self.tool_name.name.clone(),
+                description: "Cancellation cleanup test tool.".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+            })
+        }
+
+        fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            Box::pin(self.handle_call(invocation))
+        }
+    }
+
+    impl CancellationCleanupHandler {
+        async fn handle_call(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+            let started = self
+                .started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(started) = started {
+                let _ = started.send(());
+            }
+            invocation.cancellation_token.cancelled().await;
+            let cleanup_started = self
+                .cleanup_started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(cleanup_started) = cleanup_started {
+                let _ = cleanup_started.send(());
+            }
+            self.allow_cleanup.notified().await;
+            Ok(Box::new(FunctionToolOutput::from_text(
+                "cleanup complete".to_string(),
+                Some(false),
+            )) as Box<dyn crate::tools::context::ToolOutput>)
+        }
+    }
+
+    impl CoreToolRuntime for CancellationCleanupHandler {
+        fn waits_for_runtime_cancellation(&self) -> bool {
+            true
+        }
+    }
+
+    struct FinishRecorder {
+        records: Arc<std::sync::Mutex<Vec<ToolCallOutcome>>>,
+    }
+
+    impl codex_extension_api::ToolLifecycleContributor for FinishRecorder {
+        fn on_tool_finish<'a>(
+            &'a self,
+            input: codex_extension_api::ToolFinishInput<'a>,
+        ) -> codex_extension_api::ToolLifecycleFuture<'a> {
+            let records = Arc::clone(&self.records);
+            let outcome = input.outcome;
+            Box::pin(async move {
+                records
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(outcome);
+            })
+        }
+    }
 
     struct BlockingFinishContributor {
         records: Arc<std::sync::Mutex<Vec<ToolCallOutcome>>>,
@@ -405,5 +538,101 @@ mod tests {
             ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
+    }
+
+    #[test]
+    fn terminal_outcome_helper_defaults_to_handle_state_without_capability_flag() {
+        assert!(!terminal_outcome_reached_or_finished(
+            /*terminal_outcome_reached*/ None, /*handle_finished*/ false
+        ));
+        assert!(terminal_outcome_reached_or_finished(
+            /*terminal_outcome_reached*/ None, /*handle_finished*/ true
+        ));
+    }
+
+    #[test]
+    fn terminal_outcome_helper_honors_capability_flag() {
+        let reached = Arc::new(AtomicBool::new(false));
+        assert!(!terminal_outcome_reached_or_finished(
+            Some(&reached),
+            /*handle_finished*/ false
+        ));
+
+        reached.store(true, Ordering::Release);
+        assert!(terminal_outcome_reached_or_finished(
+            Some(&reached),
+            /*handle_finished*/ false
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_waiting_for_runtime_cleanup_emits_only_aborted_lifecycle()
+    -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut builder =
+            codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+        builder.tool_lifecycle_contributor(Arc::new(FinishRecorder {
+            records: Arc::clone(&records),
+        }));
+        session.services.extensions = Arc::new(builder.build());
+
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("cleanup_tool");
+        let (started_tx, started_rx) = oneshot::channel();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let allow_cleanup = Arc::new(Notify::new());
+        let handler = Arc::new(CancellationCleanupHandler {
+            tool_name: tool_name.clone(),
+            started: std::sync::Mutex::new(Some(started_tx)),
+            cleanup_started: std::sync::Mutex::new(Some(cleanup_started_tx)),
+            allow_cleanup: Arc::clone(&allow_cleanup),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let cancellation_token = CancellationToken::new();
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let response_task =
+            tokio::spawn(runtime.handle_tool_call(call, cancellation_token.clone()));
+        started_rx.await.expect("handler should start");
+        cancellation_token.cancel();
+        cleanup_started_rx
+            .await
+            .expect("handler should start cleanup");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        allow_cleanup.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(1), response_task)
+            .await
+            .expect("timed out waiting for tool response")
+            .expect("tool response task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("cancelled tool should return function output");
+        };
+        let FunctionCallOutputBody::Text(text) = output.body else {
+            anyhow::bail!("cancelled tool output should be text");
+        };
+        assert!(text.contains("aborted by user"));
+
+        let actual = records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect::<Vec<_>>();
+        assert_eq!(vec![ToolCallOutcome::Aborted], actual);
+
+        Ok(())
     }
 }

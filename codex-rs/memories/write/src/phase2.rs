@@ -17,6 +17,7 @@ use crate::workspace::write_workspace_diff;
 use codex_config::Constrained;
 use codex_core::config::Config;
 use codex_features::Feature;
+use codex_model_provider::ModelProvider;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
@@ -77,7 +78,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     }
 
     // 3. Build the locked-down config used by the consolidation agent.
-    let Some(agent_config) = agent::get_config(config.as_ref()) else {
+    let Some(agent_config) = agent::get_config(config.as_ref(), context.provider()) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
         job::failed(
@@ -92,6 +93,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
 
     // 4. Load current DB-backed Phase 2 inputs.
     let raw_memories = match db
+        .memories()
         .get_phase2_input_selection(max_raw_memories, max_unused_days)
         .await
     {
@@ -303,6 +305,7 @@ mod job {
         db: &StateRuntime,
     ) -> Result<Claim, &'static str> {
         let claim = db
+            .memories()
             .try_claim_global_phase2_job(context.thread_id(), crate::stage_two::JOB_LEASE_SECONDS)
             .await
             .map_err(|e| {
@@ -341,15 +344,17 @@ mod job {
     ) {
         context.counter(MEMORY_PHASE_TWO_JOBS, /*inc*/ 1, &[("status", reason)]);
         if matches!(
-            db.mark_global_phase2_job_failed(
-                &claim.token,
-                reason,
-                crate::stage_two::JOB_RETRY_DELAY_SECONDS,
-            )
-            .await,
+            db.memories()
+                .mark_global_phase2_job_failed(
+                    &claim.token,
+                    reason,
+                    crate::stage_two::JOB_RETRY_DELAY_SECONDS,
+                )
+                .await,
             Ok(false)
         ) {
             let _ = db
+                .memories()
                 .mark_global_phase2_job_failed_if_unowned(
                     &claim.token,
                     reason,
@@ -368,7 +373,8 @@ mod job {
         reason: &'static str,
     ) -> bool {
         context.counter(MEMORY_PHASE_TWO_JOBS, /*inc*/ 1, &[("status", reason)]);
-        db.mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
+        db.memories()
+            .mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
             .await
             .unwrap_or(false)
     }
@@ -378,7 +384,7 @@ mod agent {
     use super::*;
     use tracing::warn;
 
-    pub(super) fn get_config(config: &Config) -> Option<Config> {
+    pub(super) fn get_config(config: &Config, provider: &dyn ModelProvider) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         let mut agent_config = config.clone();
 
@@ -420,7 +426,7 @@ mod agent {
                 .memories
                 .consolidation_model
                 .clone()
-                .unwrap_or(crate::stage_two::MODEL.to_string()),
+                .unwrap_or_else(|| provider.memory_consolidation_preferred_model().to_string()),
         );
         agent_config.model_reasoning_effort = Some(crate::stage_two::REASONING_EFFORT);
 
@@ -469,6 +475,7 @@ mod agent {
                 }
                 // Do not reset the workspace baseline if we lost the lock.
                 let still_owns_lock = match db
+                    .memories()
                     .heartbeat_global_phase2_job(
                         &claim.token,
                         crate::stage_two::JOB_LEASE_SECONDS,
@@ -601,6 +608,7 @@ mod agent {
                 }
                 _ = heartbeat_interval.tick() => {
                     match db
+                        .memories()
                         .heartbeat_global_phase2_job(
                             &token,
                             crate::stage_two::JOB_LEASE_SECONDS,

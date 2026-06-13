@@ -272,8 +272,9 @@ fn build_reqwest_client_with_env(
     env_source: &dyn EnvSource,
     mut builder: reqwest::ClientBuilder,
 ) -> Result<reqwest::Client, BuildCustomCaTransportError> {
+    ensure_rustls_crypto_provider();
+
     if let Some(bundle) = env_source.configured_ca_bundle() {
-        ensure_rustls_crypto_provider();
         info!(
             source_env = bundle.source_env,
             ca_path = %bundle.path.display(),
@@ -477,15 +478,13 @@ impl ConfiguredCaBundle {
                     })?;
                     certificates.push(CertificateDer::from(cert_der.to_vec()));
                 }
-                SectionKind::Crl => {
-                    if !logged_crl_presence {
-                        info!(
-                            source_env = self.source_env,
-                            ca_path = %self.path.display(),
-                            "ignoring X509 CRL entries found in custom CA bundle"
-                        );
-                        logged_crl_presence = true;
-                    }
+                SectionKind::Crl if !logged_crl_presence => {
+                    info!(
+                        source_env = self.source_env,
+                        ca_path = %self.path.display(),
+                        "ignoring X509 CRL entries found in custom CA bundle"
+                    );
+                    logged_crl_presence = true;
                 }
                 _ => {}
             }
@@ -701,6 +700,7 @@ mod tests {
     use super::CODEX_CA_CERT_ENV;
     use super::EnvSource;
     use super::SSL_CERT_FILE_ENV;
+    use super::build_reqwest_client_with_env;
     use super::maybe_build_rustls_client_config_with_env;
 
     const TEST_CERT: &str = include_str!("../tests/fixtures/test-ca.pem");
@@ -779,6 +779,16 @@ mod tests {
             .expect("custom CA config should be present");
 
         assert!(config.enable_sni);
+    }
+
+    #[test]
+    fn reqwest_client_builder_installs_rustls_provider_without_custom_ca() {
+        let env = map_env(&[]);
+
+        let _client = build_reqwest_client_with_env(&env, reqwest::Client::builder().no_proxy())
+            .expect("reqwest client");
+
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 
     #[test]

@@ -9,10 +9,10 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
-use crate::tools::tool_search_entry::ToolSearchInfo;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -24,6 +24,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
@@ -38,7 +39,6 @@ pub struct DynamicToolHandler {
     tool_name: ToolName,
     spec: ToolSpec,
     exposure: ToolExposure,
-    search_text: String,
 }
 
 impl DynamicToolHandler {
@@ -61,12 +61,10 @@ impl DynamicToolHandler {
             } else {
                 ToolExposure::Direct
             },
-            search_text: build_dynamic_search_text(tool),
         })
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
     fn tool_name(&self) -> ToolName {
         self.tool_name.clone()
@@ -80,7 +78,23 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         self.exposure
     }
 
-    async fn handle(
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        ToolSearchInfo::from_tool_spec(
+            self.spec(),
+            Some(ToolSearchSourceInfo {
+                name: "Dynamic tools".to_string(),
+                description: Some("Tools provided by the current Codex thread.".to_string()),
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl DynamicToolHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -135,18 +149,7 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
     }
 }
 
-impl CoreToolRuntime for DynamicToolHandler {
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        ToolSearchInfo::from_spec(
-            self.search_text.clone(),
-            self.spec(),
-            Some(ToolSearchSourceInfo {
-                name: "Dynamic tools".to_string(),
-                description: Some("Tools provided by the current Codex thread.".to_string()),
-            }),
-        )
-    }
-}
+impl CoreToolRuntime for DynamicToolHandler {}
 
 #[expect(
     clippy::await_holding_invalid_type,
@@ -221,27 +224,3 @@ async fn request_dynamic_tool(
 
     response
 }
-
-fn build_dynamic_search_text(tool: &DynamicToolSpec) -> String {
-    let mut schema_properties = tool
-        .input_schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-        .map(|map| map.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    schema_properties.sort();
-    let mut parts = vec![
-        tool.name.clone(),
-        tool.name.replace('_', " "),
-        tool.description.clone(),
-    ];
-    if let Some(namespace) = &tool.namespace {
-        parts.push(namespace.clone());
-    }
-    parts.extend(schema_properties);
-    parts.join(" ")
-}
-
-#[cfg(test)]
-#[path = "dynamic_tests.rs"]
-mod tests;

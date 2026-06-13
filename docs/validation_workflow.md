@@ -106,12 +106,29 @@ Use separate runs only when the questions are genuinely independent.
 
 Default validation-lab policy:
 
-- `targeted`: low fan-out
+- `targeted`: focused fan-out for one named lane family
 - `frontier`: bounded fan-out with `fail-fast=false` and split setup-class
   matrices so `workflow`, `node`, `rust_minimal`, `rust_integration`, and
   `release` lanes can scale independently
 - `broad`: moderate fan-out
-- `full`: conservative fan-out
+- `full`: checkpoint fan-out
+
+`fanout_tier` controls how much hosted runner capacity the lab is allowed to
+use for selected lanes:
+
+- `balanced`: smaller caps for routine comparison runs
+- `enterprise`: the default tier for public-repo hosted validation, using more
+  of the available GitHub-hosted runner pool while preserving profile-specific
+  caps
+- `soak`: explicit high-capacity probes for capacity and queueing behavior
+
+The planner rejects any lab plan that would create more than 256 matrix or
+artifact jobs. Use a narrower `lane_set`, explicit `lanes=...`, or a lower
+fanout tier when the guard trips.
+
+Rust validation-lab lanes support `rust_batching=auto|off|force`. Batching
+uses the reusable Rust batch workflow so compatible Rust lanes can share runner
+setup and build artifacts while still reporting per-lane summaries.
 
 Do not widen every iteration into a broad or full run.
 Get one seam green first, use `frontier` to harvest nearby blockers when the
@@ -129,16 +146,43 @@ This is an intentional `validation-lab` use case, not a workaround. It reduces
 runner-minutes, wait time, and unnecessary compute while preserving hosted,
 attributable proof.
 
+## Advisory route recommendations
+
+Use the lab recommendation helper when changed-file metadata is available but
+the final dispatch should remain an explicit operator choice:
+
+```bash
+python3 .github/scripts/resolve_validation_plan.py recommend-lab \
+  --changed-files-json '[".github/workflows/validation-lab.yml"]'
+```
+
+The helper returns an advisory `profile`, `lane_set`, and optional comma
+separated `lanes` input. It prefers exact catalog follow-up routes when one
+route covers the changed files. If no exact route is available, it falls back to
+single-domain rules for workflow, docs, release, UI protocol, or Rust core
+changes. Empty, incomplete, cross-domain, or unknown metadata recommends
+`profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+
+The recommendation output is planner guidance only. It does not change default
+or required gates, does not make checkout-trust decisions, and does not dispatch
+GitHub Actions by itself.
+
 ## Lane catalog contract
 
 The validation planners now consume an explicit lane catalog rather than
 deriving execution behavior from an inline command string.
+
+Named lane families include `product-surfaces` for app-server, MCP server,
+exec-server, CLI, and workflow policy checks, and `sdk` for targeted Python and
+TypeScript SDK checks.
 
 Every lane row in `.github/validation-lanes.json` is expected to define:
 
 - `setup_class`
 - `checkout_fetch_depth` (defaults to shallow checkout; widen only when the
   lane truly needs more history)
+- `timeout_minutes` (defaults to 30; raise it only for lanes whose normal
+  cold-cache runtime is legitimately longer)
 - `working_directory`
 - `script_path`
 - `script_args`
@@ -198,6 +242,9 @@ That summary should identify:
 - one primary blocker per exercised summary family, rather than a raw duplicate
   list of every failing sentinel and depth lane
 - secondary findings for remaining cancelled or missing depth lanes
+- whether failed lane evidence is active, stale, cancelled, or needs a targeted
+  latest-head proof rerun
+- the smallest lane set to rerun when stale failure evidence is still plausible
 - the key failure signal, if available
 - whether smoke gate, targeted lanes, or artifact build ran
 - enough structured failure context to route debugging without embedding raw
@@ -233,19 +280,38 @@ ownership boundary:
   `codex.app-server-computer-use-targeted`,
   `codex.tui-native-computer-use-targeted`, and
   `codex.native-computer-use-tool-registry-targeted`.
+- `codex exec` native browser advertisement or provider-handling changes
+  should add `codex.exec-native-computer-use-targeted`.
+- Provider configuration diagnostics should add
+  `codex.native-computer-use-doctor-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app
   that owns that behavior.
 - Browser provider-selection, command-bridge, Playwright-shim, and native-image
-  guard changes inside `codex-rs/tui` should use the focused Codex TUI and
-  tool-registry lanes above. Also run `node --check` on the Playwright shim when
-  it changes.
+  guard changes inside `codex-rs/browser-computer-use` should use the focused
+  Codex TUI/exec and tool-registry lanes above. Also run `node --check` on the
+  Playwright shim when it changes.
+- Browser provider changes that target realistic editor UX should also be
+  proved on the owning runtime surface with a headed Chrome provider,
+  persistent profile, configured display, and native `inputImage` response.
 - Browser runtime work outside this repo, such as in-app-browser,
   Chrome-extension, remote-browser, viewport capture, and browser input
   execution providers, should be validated in the browser provider or client
   integration that owns that behavior.
+- Desktop runtime work outside this repo, such as macOS Screen
+  Recording/Accessibility capture, lock-screen handling, app focus, UI digest
+  generation, and desktop input execution, should be validated in the desktop
+  provider that owns that behavior. Codex lanes prove only the canonical tool
+  schema, event path, and command-provider seam.
 - Solar Gravity Lab validation is appropriate when proving a consumer workflow,
   not when the question is the generic Codex computer-use contract.
+
+App-server protocol schema fixture drift should stay on the narrow
+`codex.app-server-protocol-test` proof lane. When that lane reports vendored
+schema fixtures diverging from freshly generated output, the lane summary
+artifact records the fixture family, fixture path when available, the
+vendored-versus-generated direction, and the targeted proof lane to rerun after
+regenerating fixtures.
 
 ## Documentation boundaries
 

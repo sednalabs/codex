@@ -285,6 +285,7 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
             completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: "user-1".to_string(),
+                client_id: None,
                 content: vec![AppServerUserInput::Text {
                     text: "Hi, are you there?".to_string(),
                     text_elements: Vec::new(),
@@ -347,6 +348,8 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
@@ -524,6 +527,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 command: command.clone(),
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
@@ -546,6 +550,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 command,
                 cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
+                terminal_wait: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: vec![AppServerCommandAction::Unknown {
@@ -771,6 +776,8 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
 
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
@@ -825,6 +832,87 @@ async fn live_app_server_failed_turn_consolidates_streamed_answer() {
     assert!(
         saw_consolidate,
         "failed turn should consolidate streamed cells before clearing the stream controller"
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_context_compaction_start_updates_status_header() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Compacting context");
+    assert_eq!(status.details(), None);
+}
+
+#[tokio::test]
+async fn live_app_server_context_compaction_completion_updates_status_header() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Context compacted");
+    assert_eq!(status.details(), None);
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Context compacted"),
+        "expected completed compaction notice, got {rendered:?}"
+    );
+    insta::assert_snapshot!(
+        format!("status: {} | history: {}", status.header(), rendered.trim()),
+        @"status: Context compacted | history: • Context compacted"
     );
 }
 

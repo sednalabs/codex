@@ -28,6 +28,7 @@
       "type": "object"
     },
     "AccountRateLimitsUpdatedNotification": {
+      "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response\nor refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and\ndoes not clear a previously observed value.",
       "properties": {
         "rateLimits": {
           "$ref": "#/$defs/RateLimitSnapshot"
@@ -158,6 +159,28 @@
         "delta"
       ],
       "type": "object"
+    },
+    "AgentMessageInputContent": {
+      "oneOf": [
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "encrypted_content",
+              "title": "EncryptedContentAgentMessageInputContentType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "encrypted_content"
+          ],
+          "title": "EncryptedContentAgentMessageInputContent",
+          "type": "object"
+        }
+      ]
     },
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
@@ -511,6 +534,16 @@
         {
           "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "type": "string"
+        },
+        {
+          "const": "personalAccessToken",
+          "description": "Programmatic Codex auth backed by a personal access token.",
+          "type": "string"
+        },
+        {
+          "const": "bedrockApiKey",
+          "description": "Amazon Bedrock bearer token managed by Codex.",
           "type": "string"
         }
       ]
@@ -2151,6 +2184,7 @@
         "sessionFlags",
         "plugin",
         "cloudRequirements",
+        "cloudManagedConfig",
         "legacyManagedConfigFile",
         "legacyManagedConfigMdm",
         "unknown"
@@ -2180,6 +2214,8 @@
     },
     "ImageDetail": {
       "enum": [
+        "auto",
+        "low",
         "high",
         "original"
       ],
@@ -2442,6 +2478,12 @@
         },
         "status": {
           "$ref": "#/$defs/McpServerStartupState"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2875,6 +2917,16 @@
             }
           ]
         },
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpendControlLimitSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "limitId": {
           "type": [
             "string",
@@ -2983,15 +3035,8 @@
       "type": "string"
     },
     "ReasoningEffort": {
-      "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
-      ],
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
       "type": "string"
     },
     "ReasoningItemContent": {
@@ -3268,6 +3313,35 @@
             "content"
           ],
           "title": "MessageResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "author": {
+              "type": "string"
+            },
+            "content": {
+              "items": {
+                "$ref": "#/$defs/AgentMessageInputContent"
+              },
+              "type": "array"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_message",
+              "title": "AgentMessageResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "author",
+            "recipient",
+            "content"
+          ],
+          "title": "AgentMessageResponseItem",
           "type": "object"
         },
         {
@@ -3948,6 +4022,39 @@
       "description": "Notification emitted when watched local skill files change.\n\nTreat this as an invalidation signal and re-run `skills/list` with the\nclient's current parameters when refreshed skill metadata is needed.",
       "type": "object"
     },
+    "SpendControlLimitSnapshot": {
+      "properties": {
+        "limit": {
+          "type": "string"
+        },
+        "remainingPercent": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "resetsAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "used": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "used",
+        "remainingPercent",
+        "resetsAt"
+      ],
+      "type": "object"
+    },
+    "SubAgentActivityKind": {
+      "enum": [
+        "started",
+        "interacted",
+        "interrupted"
+      ],
+      "type": "string"
+    },
     "SubAgentSource": {
       "oneOf": [
         {
@@ -4031,6 +4138,16 @@
         "stdin": {
           "type": "string"
         },
+        "terminalWait": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TerminalWaitInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "threadId": {
           "type": "string"
         },
@@ -4046,6 +4163,41 @@
         "stdin"
       ],
       "type": "object"
+    },
+    "TerminalWaitInfo": {
+      "properties": {
+        "heartbeatIntervalMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "primitive": {
+          "$ref": "#/$defs/TerminalWaitPrimitive"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "TerminalWaitPrimitive": {
+      "enum": [
+        "execCommandWaitUntilTerminal",
+        "writeStdinWaitUntilTerminal",
+        "writeStdinEmptyPoll"
+      ],
+      "type": "string"
     },
     "TextElement": {
       "properties": {
@@ -4156,12 +4308,26 @@
         "id": {
           "type": "string"
         },
+        "model": {
+          "description": "Latest observed model for this thread, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "modelProvider": {
           "description": "Model provider used for this thread (for example, 'openai').",
           "type": "string"
         },
         "name": {
           "description": "Optional user-facing thread title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
           "type": [
             "string",
             "null"
@@ -4177,6 +4343,17 @@
         "preview": {
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest observed reasoning effort for this thread, if known."
         },
         "sessionId": {
           "description": "Session id shared by threads that belong to the same session tree.",
@@ -4249,6 +4426,17 @@
       "type": "object"
     },
     "ThreadClosedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadDeletedNotification": {
       "properties": {
         "threadId": {
           "type": "string"
@@ -4355,6 +4543,12 @@
       "oneOf": [
         {
           "properties": {
+            "clientId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "content": {
               "items": {
                 "$ref": "#/$defs/UserInput"
@@ -4558,6 +4752,17 @@
             },
             "status": {
               "$ref": "#/$defs/CommandExecutionStatus"
+            },
+            "terminalWait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TerminalWaitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata for command executions that are also blocking terminal waits."
             },
             "type": {
               "const": "commandExecution",
@@ -4879,6 +5084,36 @@
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "agentPath": {
+              "type": "string"
+            },
+            "agentThreadId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SubAgentActivityKind"
+            },
+            "type": {
+              "const": "subAgentActivity",
+              "title": "SubAgentActivityThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "agentThreadId",
+            "agentPath"
+          ],
+          "title": "SubAgentActivityThreadItem",
           "type": "object"
         },
         {
@@ -5338,11 +5573,6 @@
       "type": "object"
     },
     "ThreadSource": {
-      "enum": [
-        "user",
-        "subagent",
-        "memory_consolidation"
-      ],
       "type": "string"
     },
     "ThreadStartedNotification": {
@@ -5587,6 +5817,20 @@
     },
     "TurnCompletedNotification": {
       "properties": {
+        "finalModel": {
+          "description": "Final model used after server-side routing or fallback.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelSnapshot": {
+          "description": "Concrete resolved model snapshot used to execute the turn.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         },
@@ -5666,6 +5910,23 @@
           "type": "string"
         }
       ]
+    },
+    "TurnModerationMetadataNotification": {
+      "properties": {
+        "metadata": true,
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "metadata"
+      ],
+      "type": "object"
     },
     "TurnPlanStep": {
       "properties": {
@@ -6113,6 +6374,24 @@
         "params"
       ],
       "title": "Thread/archivedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/deleted",
+          "title": "Thread/deletedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadDeletedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/deletedNotification",
       "type": "object"
     },
     {
@@ -6893,6 +7172,24 @@
         "params"
       ],
       "title": "Model/verificationNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "turn/moderationMetadata",
+          "title": "Turn/moderationMetadataNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/TurnModerationMetadataNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Turn/moderationMetadataNotification",
       "type": "object"
     },
     {

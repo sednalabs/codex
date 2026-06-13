@@ -14,7 +14,7 @@ pub(crate) mod runtimes;
 pub(crate) mod sandboxing;
 pub(crate) mod spec_plan;
 pub(crate) mod tool_dispatch_trace;
-pub(crate) mod tool_search_entry;
+pub(crate) mod tool_runtime_capabilities;
 
 use std::borrow::Cow;
 

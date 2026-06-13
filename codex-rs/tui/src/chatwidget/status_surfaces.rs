@@ -560,8 +560,9 @@ impl ChatWidget {
     /// git metadata.
     pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
-            StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
+            StatusLineItem::ModelName => Some(self.status_surface_model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
+            StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::CurrentDir => {
                 Some(format_directory_display(
                     self.status_line_cwd(),
@@ -713,6 +714,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::RawOutput => StatusLineItem::RawOutput,
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
+            StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
         };
         self.status_line_value_for_item(status_line_item)
     }
@@ -771,19 +773,34 @@ impl ChatWidget {
                 .status_line_value_for_item(StatusLineItem::FastMode)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::Model => Some(Self::truncate_terminal_title_part(
-                self.model_display_name().to_string(),
+                self.status_surface_model_display_name().to_string(),
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::ModelWithReasoning => Some(Self::truncate_terminal_title_part(
                 self.model_with_reasoning_display_name(),
                 /*max_chars*/ 32,
             )),
+            TerminalTitleItem::Reasoning => Some(Self::truncate_terminal_title_part(
+                self.reasoning_display_name(),
+                /*max_chars*/ 32,
+            )),
             TerminalTitleItem::TaskProgress => self.terminal_title_task_progress(),
         }
     }
 
+    fn reasoning_display_name(&self) -> String {
+        let effort = self.effective_reasoning_effort();
+        Self::status_line_reasoning_effort_label(effort.as_ref())
+    }
+
+    fn status_surface_model_display_name(&self) -> &str {
+        self.observed_model_display_name
+            .as_deref()
+            .unwrap_or_else(|| self.model_display_name())
+    }
+
     fn model_with_reasoning_display_name(&self) -> String {
-        let label = Self::status_line_reasoning_effort_label(self.effective_reasoning_effort());
+        let label = self.reasoning_display_name();
         let service_tier_label = self
             .current_service_tier()
             .and_then(|service_tier| {
@@ -795,7 +812,10 @@ impl ChatWidget {
             .filter(|_| self.has_chatgpt_account)
             .map(|tier| format!(" {tier}"))
             .unwrap_or_default();
-        format!("{} {label}{service_tier_label}", self.model_display_name())
+        format!(
+            "{} {label}{service_tier_label}",
+            self.status_surface_model_display_name()
+        )
     }
 
     /// Computes the compact runtime status label used by word-based status items.
@@ -1035,13 +1055,14 @@ fn permissions_display(config: &Config) -> String {
 
 fn approval_mode_display(config: &Config) -> String {
     let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
-    if approval_policy == AskForApproval::OnRequest
-        && config.approvals_reviewer == ApprovalsReviewer::AutoReview
-    {
-        "auto-review".to_string()
-    } else {
-        config.permissions.approval_policy.value().to_string()
+    if approval_policy == AskForApproval::OnRequest {
+        return match config.approvals_reviewer {
+            ApprovalsReviewer::AutoReview => "Approve for me".to_string(),
+            ApprovalsReviewer::User => "Ask for approval".to_string(),
+        };
     }
+
+    config.permissions.approval_policy.value().to_string()
 }
 
 fn parse_items_with_invalids<T>(ids: impl IntoIterator<Item = String>) -> (Vec<T>, Vec<String>)

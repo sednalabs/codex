@@ -159,7 +159,7 @@ impl ChatWidget {
     /// so the footer reflects it without waiting for the next mode switch.
     /// Passing `None` resets to the Plan-mode preset default.
     pub(crate) fn set_plan_mode_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
-        self.config.plan_mode_reasoning_effort = effort;
+        self.config.plan_mode_reasoning_effort = effort.clone();
         if self.collaboration_modes_enabled()
             && let Some(mask) = self.active_collaboration_mask.as_mut()
             && mask.mode == Some(ModeKind::Plan)
@@ -182,7 +182,7 @@ impl ChatWidget {
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             /*model*/ None,
-            Some(effort),
+            Some(effort.clone()),
             /*developer_instructions*/ None,
         );
         if self.collaboration_modes_enabled()
@@ -253,6 +253,7 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
+        self.observed_model_display_name = None;
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model.to_string()),
             /*effort*/ None,
@@ -471,7 +472,7 @@ impl ChatWidget {
         let current_effort = self.current_collaboration_mode.reasoning_effort();
         self.active_collaboration_mask
             .as_ref()
-            .and_then(|mask| mask.reasoning_effort)
+            .and_then(|mask| mask.reasoning_effort.clone())
             .unwrap_or(current_effort)
     }
 
@@ -580,6 +581,7 @@ impl ChatWidget {
     pub(super) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
         let mode_kind = mode.mode;
         let settings = mode.settings;
+        self.observed_model_display_name = None;
         if mode_kind == ModeKind::Default {
             self.current_collaboration_mode = CollaborationMode {
                 mode: ModeKind::Default,
@@ -590,7 +592,7 @@ impl ChatWidget {
             name: mode_kind.display_name().to_string(),
             mode: Some(mode_kind),
             model: Some(settings.model.clone()),
-            reasoning_effort: Some(settings.reasoning_effort),
+            reasoning_effort: Some(settings.reasoning_effort.clone()),
             developer_instructions: Some(settings.developer_instructions),
         });
         self.update_collaboration_mode_indicator();
@@ -712,7 +714,7 @@ impl ChatWidget {
         let previous_model = self.current_model().to_string();
         let previous_effort = self.effective_reasoning_effort();
         if mask.mode == Some(ModeKind::Plan)
-            && let Some(effort) = self.config.plan_mode_reasoning_effort
+            && let Some(effort) = self.config.plan_mode_reasoning_effort.clone()
         {
             mask.reasoning_effort = Some(Some(effort));
         }
@@ -721,6 +723,7 @@ impl ChatWidget {
                 .insert(self.plan_mode_nudge_scope());
         }
         self.active_collaboration_mask = Some(mask);
+        self.observed_model_display_name = None;
         self.update_collaboration_mode_indicator();
         self.refresh_plan_mode_nudge();
         self.refresh_model_dependent_surfaces();
@@ -732,13 +735,9 @@ impl ChatWidget {
         {
             let mut message = format!("Model changed to {next_model}");
             if !next_model.starts_with("codex-auto-") {
-                let reasoning_label = match next_effort {
-                    Some(ReasoningEffortConfig::Minimal) => "minimal",
-                    Some(ReasoningEffortConfig::Low) => "low",
-                    Some(ReasoningEffortConfig::Medium) => "medium",
-                    Some(ReasoningEffortConfig::High) => "high",
-                    Some(ReasoningEffortConfig::XHigh) => "xhigh",
+                let reasoning_label = match next_effort.as_ref() {
                     None | Some(ReasoningEffortConfig::None) => "default",
+                    Some(effort) => effort.as_str(),
                 };
                 message.push(' ');
                 message.push_str(reasoning_label);
