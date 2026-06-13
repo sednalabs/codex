@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 from collections import Counter
 from collections import OrderedDict
 from pathlib import Path
@@ -37,6 +38,7 @@ RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
 LAB_MATRIX_JOB_LIMIT = 256
 VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
+SAFE_NEXTEST_ARCHIVE_FIELD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 RECOMMENDATION_DOMAIN_ORDER = [
     "workflow",
     "docs",
@@ -351,8 +353,60 @@ def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
         if "pilot_only" in lane and not isinstance(lane.get("pilot_only"), bool):
             raise SystemExit(f"lane {lane_id} must set pilot_only to true or false")
 
+        validate_nextest_archive_config(lane, repo_root=repo_root)
         resolve_checkout_fetch_depth(lane)
         resolve_timeout_minutes(lane)
+
+
+def validate_safe_nextest_archive_field(lane_id: str, field_name: str, value: object) -> str:
+    if not isinstance(value, str) or not SAFE_NEXTEST_ARCHIVE_FIELD_RE.fullmatch(value):
+        raise SystemExit(
+            f"lane {lane_id} nextest_archive.{field_name} must be 1-128 safe "
+            "letters, numbers, dots, underscores, or hyphens"
+        )
+    return value
+
+
+def validate_nextest_archive_config(lane: dict, *, repo_root: Path) -> None:
+    archive = lane.get("nextest_archive")
+    if archive is None:
+        return
+
+    lane_id = str(lane.get("lane_id") or "<unknown>")
+    if not isinstance(archive, dict):
+        raise SystemExit(f"lane {lane_id} must set nextest_archive to an object")
+    if lane.get("setup_class") != "rust_integration":
+        raise SystemExit(
+            f"lane {lane_id} nextest_archive is currently supported only for rust_integration lanes"
+        )
+    if not lane.get("explicit_only") or not lane.get("pilot_only"):
+        raise SystemExit(
+            f"lane {lane_id} nextest_archive lanes must be explicit_only and pilot_only"
+        )
+
+    required_fields = {
+        "cohort",
+        "artifact_name",
+        "archive_file_name",
+        "build_script_path",
+    }
+    missing = sorted(field for field in required_fields if field not in archive)
+    if missing:
+        raise SystemExit(
+            f"lane {lane_id} nextest_archive is missing required field(s): {', '.join(missing)}"
+        )
+
+    for field_name in ("cohort", "artifact_name", "archive_file_name"):
+        validate_safe_nextest_archive_field(lane_id, field_name, archive.get(field_name))
+
+    build_script_path = archive.get("build_script_path")
+    if not isinstance(build_script_path, str) or not build_script_path:
+        raise SystemExit(f"lane {lane_id} nextest_archive.build_script_path must be set")
+    resolve_repo_relative_path(
+        repo_root,
+        build_script_path,
+        label=f"lane {lane_id} nextest_archive.build_script_path",
+    )
 
 
 def resolve_checkout_fetch_depth(lane: dict, *, default: int | None = None) -> int:
@@ -382,6 +436,7 @@ def resolve_timeout_minutes(lane: dict, *, default: int | None = None) -> int:
 
 
 def lane_payload(spec: dict, *, lane_phase: str) -> dict:
+    nextest_archive = nextest_archive_payload(spec)
     return {
         "lane_id": spec["lane_id"],
         "lane_phase": lane_phase,
@@ -406,6 +461,26 @@ def lane_payload(spec: dict, *, lane_phase: str) -> dict:
         "needs_bazel": bool(spec.get("needs_bazel", False)),
         "batch_group": str(spec.get("batch_group") or default_batch_group(spec)),
         "batch_weight_seconds": resolve_batch_weight_seconds(spec),
+        **nextest_archive,
+    }
+
+
+def nextest_archive_payload(spec: dict) -> dict:
+    archive = spec.get("nextest_archive")
+    if not archive:
+        return {
+            "uses_nextest_archive": False,
+            "nextest_archive_cohort": "",
+            "nextest_archive_artifact_name": "",
+            "nextest_archive_file_name": "",
+            "nextest_archive_build_script_path": "",
+        }
+    return {
+        "uses_nextest_archive": True,
+        "nextest_archive_cohort": archive["cohort"],
+        "nextest_archive_artifact_name": archive["artifact_name"],
+        "nextest_archive_file_name": archive["archive_file_name"],
+        "nextest_archive_build_script_path": archive["build_script_path"],
     }
 
 
@@ -831,6 +906,68 @@ def split_rust_batch_execution_lanes(
     return single_lanes, batched_by_setup_class, reasons
 
 
+def split_nextest_archive_execution_lanes(selected: list[dict]) -> tuple[list[dict], list[dict]]:
+    archive_lanes = [lane for lane in selected if lane.get("uses_nextest_archive")]
+    ordinary_lanes = [lane for lane in selected if not lane.get("uses_nextest_archive")]
+    return ordinary_lanes, archive_lanes
+
+
+def nextest_archive_matrix(archive_lanes: list[dict]) -> list[dict]:
+    by_artifact: OrderedDict[str, dict] = OrderedDict()
+    for lane in archive_lanes:
+        artifact_name = str(lane["nextest_archive_artifact_name"])
+        existing = by_artifact.get(artifact_name)
+        row = {
+            "archive_cohort": lane["nextest_archive_cohort"],
+            "artifact_name": artifact_name,
+            "archive_file_name": lane["nextest_archive_file_name"],
+            "build_script_path": lane["nextest_archive_build_script_path"],
+            "working_directory": lane["working_directory"],
+            "checkout_fetch_depth": lane["checkout_fetch_depth"],
+            "needs_node": lane["needs_node"],
+            "needs_linux_build_deps": lane["needs_linux_build_deps"],
+            "needs_dotslash": lane["needs_dotslash"],
+            "needs_sccache": lane["needs_sccache"],
+            "lane_ids": [lane["lane_id"]],
+            "lane_ids_json": json.dumps([lane["lane_id"]], separators=(",", ":")),
+        }
+        if existing is None:
+            by_artifact[artifact_name] = row
+            continue
+
+        comparable_fields = [
+            "archive_cohort",
+            "archive_file_name",
+            "build_script_path",
+            "working_directory",
+        ]
+        mismatches = [
+            field
+            for field in comparable_fields
+            if existing.get(field) != row.get(field)
+        ]
+        if mismatches:
+            joined = ", ".join(mismatches)
+            raise SystemExit(
+                f"nextest archive artifact {artifact_name} has conflicting field(s): {joined}"
+            )
+        existing["checkout_fetch_depth"] = max(
+            int(existing["checkout_fetch_depth"]),
+            int(row["checkout_fetch_depth"]),
+        )
+        for field in (
+            "needs_node",
+            "needs_linux_build_deps",
+            "needs_dotslash",
+            "needs_sccache",
+        ):
+            existing[field] = bool(existing[field] or row[field])
+        existing["lane_ids"].append(lane["lane_id"])
+        existing["lane_ids_json"] = json.dumps(existing["lane_ids"], separators=(",", ":"))
+
+    return list(by_artifact.values())
+
+
 def batch_lane_matrix(lanes: list[dict], *, setup_class: str) -> list[dict]:
     groups: OrderedDict[str, list[dict]] = OrderedDict()
     for lane in lanes:
@@ -983,6 +1120,8 @@ def enforce_lab_matrix_job_limit(
     execution_selected: list[dict],
     rust_minimal_batch_matrix: list[dict],
     rust_integration_batch_matrix: list[dict],
+    nextest_archive_matrix: list[dict],
+    nextest_archive_lanes: list[dict],
     run_artifact: bool,
     fanout_tier: str,
     profile: str,
@@ -992,6 +1131,8 @@ def enforce_lab_matrix_job_limit(
         + len(execution_selected)
         + len(rust_minimal_batch_matrix)
         + len(rust_integration_batch_matrix)
+        + len(nextest_archive_matrix)
+        + len(nextest_archive_lanes)
         + (1 if run_artifact else 0)
     )
     if planned_job_count > LAB_MATRIX_JOB_LIMIT:
@@ -1150,8 +1291,10 @@ def lab_plan(args: argparse.Namespace) -> None:
         args.rust_batching_override,
         override_label="VALIDATION_LAB_RUST_BATCHING",
     )
+    ordinary_selected, nextest_archive_lanes = split_nextest_archive_execution_lanes(selected)
+    nextest_archives = nextest_archive_matrix(nextest_archive_lanes)
     execution_selected, batched_by_setup_class, rust_batching_reasons = (
-        split_rust_batch_execution_lanes(selected, mode=rust_batching_mode)
+        split_rust_batch_execution_lanes(ordinary_selected, mode=rust_batching_mode)
     )
     rust_minimal_batch_matrix = batch_lane_matrix(
         batched_by_setup_class["rust_minimal"], setup_class="rust_minimal"
@@ -1164,18 +1307,26 @@ def lab_plan(args: argparse.Namespace) -> None:
         and not rust_minimal_batch_matrix
         and not rust_integration_batch_matrix
     ):
+        no_batch_reasons = [rust_batching_reason]
+        if nextest_archive_lanes and not ordinary_selected:
+            no_batch_reasons.append("archive-backed lanes bypass runner-local batching")
+        else:
+            no_batch_reasons.extend(
+                [
+                    rust_batching_reasons["rust_minimal"],
+                    rust_batching_reasons["rust_integration"],
+                ]
+            )
         rust_batching_reason = "; ".join(
-            [
-                rust_batching_reason,
-                rust_batching_reasons["rust_minimal"],
-                rust_batching_reasons["rust_integration"],
-            ]
+            no_batch_reasons
         )
     planned_job_count = enforce_lab_matrix_job_limit(
         smoke_matrix=smoke_matrix,
         execution_selected=execution_selected,
         rust_minimal_batch_matrix=rust_minimal_batch_matrix,
         rust_integration_batch_matrix=rust_integration_batch_matrix,
+        nextest_archive_matrix=nextest_archives,
+        nextest_archive_lanes=nextest_archive_lanes,
         run_artifact=run_artifact,
         fanout_tier=fanout_tier,
         profile=args.profile,
@@ -1221,6 +1372,10 @@ def lab_plan(args: argparse.Namespace) -> None:
         "selected_rust_minimal_batch_count": len(rust_minimal_batch_matrix),
         "selected_rust_integration_batch_matrix": {"include": rust_integration_batch_matrix},
         "selected_rust_integration_batch_count": len(rust_integration_batch_matrix),
+        "selected_nextest_archive_matrix": {"include": nextest_archives},
+        "selected_nextest_archive_count": len(nextest_archives),
+        "selected_rust_integration_archive_matrix": {"include": nextest_archive_lanes},
+        "selected_rust_integration_archive_lane_count": len(nextest_archive_lanes),
         "selected_setup_classes": selected_setup_classes,
         "workflow_max_parallel": str(parallel_limits["workflow"]),
         "node_max_parallel": str(parallel_limits["node"]),

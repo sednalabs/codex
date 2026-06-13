@@ -685,6 +685,28 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(lane.get("checkout_fetch_depth"), 0)
         self.assertFalse(lane["needs_just"])
 
+    def test_nextest_archive_pilot_declares_archive_contract(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.nextest-archive-core-carry-pilot"
+        )
+        archive = lane.get("nextest_archive") or {}
+
+        self.assertTrue(lane["explicit_only"])
+        self.assertTrue(lane["pilot_only"])
+        self.assertEqual(lane["setup_class"], "rust_integration")
+        self.assertEqual(archive.get("cohort"), "core-carry-pilot")
+        self.assertEqual(
+            archive.get("artifact_name"),
+            "validation-lab-nextest-core-carry-pilot",
+        )
+        self.assertEqual(archive.get("archive_file_name"), "codex-core-carry-nextest.tar.zst")
+        self.assertEqual(
+            archive.get("build_script_path"),
+            ".github/scripts/validation-lanes/build-nextest-archive-core-carry-pilot.sh",
+        )
+
     def test_app_server_followup_route_picks_full_carry_bundle(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/app-server/src/router.rs"],
@@ -1575,6 +1597,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             (jobs.get("rust_minimal_batches") or {}).get("needs"), ["metadata"]
         )
+        self.assertEqual((jobs.get("nextest_archives") or {}).get("needs"), ["metadata"])
+        self.assertEqual(
+            (jobs.get("rust_integration_archive_lanes") or {}).get("needs"),
+            ["metadata", "nextest_archives"],
+        )
         self.assertEqual(
             (jobs.get("rust_integration_lanes") or {}).get("needs"), ["metadata"]
         )
@@ -1601,6 +1628,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "node_lanes",
                 "rust_minimal_lanes",
                 "rust_minimal_batches",
+                "nextest_archives",
+                "rust_integration_archive_lanes",
                 "rust_integration_lanes",
                 "rust_integration_batches",
                 "release_lanes",
@@ -1823,6 +1852,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "node_lanes",
             "rust_minimal_lanes",
             "rust_minimal_batches",
+            "nextest_archives",
+            "rust_integration_archive_lanes",
             "rust_integration_lanes",
             "rust_integration_batches",
             "release_lanes",
@@ -1839,6 +1870,89 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "dedupe_should_skip != 'true'",
             (jobs.get("summary") or {}).get("if") or "",
         )
+
+    def test_validation_lab_nextest_archive_jobs_build_and_download_artifacts(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        jobs = payload.get("jobs") or {}
+        metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
+
+        self.assertEqual(
+            metadata_outputs.get("selected_nextest_archive_matrix"),
+            "${{ steps.meta.outputs.selected_nextest_archive_matrix }}",
+        )
+        self.assertEqual(
+            metadata_outputs.get("selected_rust_integration_archive_matrix"),
+            "${{ steps.meta.outputs.selected_rust_integration_archive_matrix }}",
+        )
+
+        archive_job = jobs.get("nextest_archives") or {}
+        self.assertEqual(archive_job.get("needs"), ["metadata"])
+        self.assertIn(
+            "needs.metadata.outputs.selected_nextest_archive_count",
+            archive_job.get("if") or "",
+        )
+        archive_steps = archive_job.get("steps") or []
+        build_step = next(
+            step for step in archive_steps if step.get("name") == "Build nextest archive"
+        )
+        self.assertIn("run_validation_lane.py", build_step.get("run") or "")
+        self.assertEqual(
+            (build_step.get("env") or {}).get("VALIDATION_LAB_NEXTEST_ARCHIVE_FILE"),
+            "${{ runner.temp }}/validation-lab-nextest-archives/${{ matrix.archive_file_name }}",
+        )
+        upload_step = next(
+            step for step in archive_steps if step.get("name") == "Upload nextest archive"
+        )
+        self.assertEqual(upload_step.get("uses"), "actions/upload-artifact@v7")
+        self.assertEqual((upload_step.get("with") or {}).get("name"), "${{ matrix.artifact_name }}")
+
+        archive_lanes = jobs.get("rust_integration_archive_lanes") or {}
+        self.assertEqual(archive_lanes.get("needs"), ["metadata", "nextest_archives"])
+        self.assertIn("needs.nextest_archives.result == 'success'", archive_lanes.get("if") or "")
+        self.assertEqual(
+            ((archive_lanes.get("with") or {}).get("nextest_archive_artifact_name")),
+            "${{ matrix.nextest_archive_artifact_name }}",
+        )
+        self.assertEqual(
+            ((archive_lanes.get("with") or {}).get("nextest_archive_file_name")),
+            "${{ matrix.nextest_archive_file_name }}",
+        )
+        self.assertNotIn(
+            "nextest_archive_artifact_name",
+            (jobs.get("rust_integration_lanes") or {}).get("with") or {},
+        )
+
+    def test_validation_lab_rust_integration_workflow_downloads_nextest_archive(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/_validation-lane-rust-integration.yml"
+        )
+        workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
+        inputs = workflow_call.get("inputs") or {}
+        run_job = (payload.get("jobs") or {}).get("run") or {}
+        steps = run_job.get("steps") or []
+
+        self.assertIn("nextest_archive_artifact_name", inputs)
+        self.assertIn("nextest_archive_file_name", inputs)
+        download_step = next(
+            step for step in steps if step.get("name") == "Download nextest archive"
+        )
+        self.assertEqual(download_step.get("uses"), "actions/download-artifact@v8")
+        self.assertEqual(
+            (download_step.get("with") or {}).get("name"),
+            "${{ inputs.nextest_archive_artifact_name }}",
+        )
+        export_step = next(
+            step for step in steps if step.get("name") == "Export nextest archive path"
+        )
+        self.assertIn("VALIDATION_LAB_NEXTEST_ARCHIVE_FILE", export_step.get("run") or "")
+
+        summary_step = next(
+            step for step in steps if step.get("name") == "Prepare lane summary artifact"
+        )
+        summary_run = summary_step.get("run") or ""
+        self.assertIn("--nextest-archive-artifact-name", summary_run)
+        self.assertIn("--nextest-archive-file-name", summary_run)
+        self.assertIn("--nextest-archive-mode", summary_run)
 
     def test_validation_lab_summary_records_plan_dedupe_fields(self) -> None:
         summary_step = workflow_step_by_name(
@@ -3170,6 +3284,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "gha",
                     "--sccache-restore-mode",
                     "not-applicable",
+                    "--nextest-archive-artifact-name",
+                    "validation-lab-nextest-core-carry-pilot",
+                    "--nextest-archive-file-name",
+                    "codex-core-carry-nextest.tar.zst",
+                    "--nextest-archive-mode",
+                    "downloaded",
                     "--output",
                     str(output),
                 ],
@@ -3185,6 +3305,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary["cache_policy"], "restore-only")
         self.assertEqual(summary["cache_backend"], "gha")
         self.assertEqual(summary["sccache_restore_mode"], "not-applicable")
+        self.assertEqual(
+            summary["nextest_archive_artifact_name"],
+            "validation-lab-nextest-core-carry-pilot",
+        )
+        self.assertEqual(summary["nextest_archive_file_name"], "codex-core-carry-nextest.tar.zst")
+        self.assertEqual(summary["nextest_archive_mode"], "downloaded")
         self.assertNotIn("run_command", summary)
 
     def test_lane_summary_detects_server_notification_schema_fixture_drift(self) -> None:
@@ -3565,6 +3691,73 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["matrix_fail_fast"], "true")
         self.assertEqual(payload["eager_release_lanes"], "false")
 
+    def test_validation_lab_explicit_nextest_archive_pilot_splits_archive_matrices(
+        self,
+    ) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "core-carry",
+            "--fanout-tier",
+            "enterprise",
+            "--lanes",
+            "codex.nextest-archive-core-carry-pilot",
+            "--rust-batching",
+            "auto",
+            "--artifact-build",
+            "false",
+            "--include-explicit-lanes",
+            "true",
+        )
+
+        self.assertEqual(payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
+        self.assertEqual(payload["selected_nextest_archive_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_archive_lane_count"], 1)
+        self.assertEqual(payload["planned_job_count"], 2)
+
+        archive = payload["selected_nextest_archive_matrix"]["include"][0]
+        self.assertEqual(archive["archive_cohort"], "core-carry-pilot")
+        self.assertEqual(archive["artifact_name"], "validation-lab-nextest-core-carry-pilot")
+        self.assertEqual(archive["archive_file_name"], "codex-core-carry-nextest.tar.zst")
+        self.assertEqual(archive["lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+
+        archive_lane = payload["selected_rust_integration_archive_matrix"]["include"][0]
+        self.assertTrue(archive_lane["uses_nextest_archive"])
+        self.assertEqual(
+            archive_lane["nextest_archive_artifact_name"],
+            "validation-lab-nextest-core-carry-pilot",
+        )
+
+    def test_validation_lab_frontier_does_not_silently_select_archive_pilot(self) -> None:
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "frontier",
+            "--lane-set",
+            "core-carry",
+            "--fanout-tier",
+            "enterprise",
+            "--lanes",
+            "",
+            "--rust-batching",
+            "auto",
+            "--artifact-build",
+            "false",
+            "--include-explicit-lanes",
+            "true",
+        )
+
+        self.assertNotIn("codex.nextest-archive-core-carry-pilot", payload["selected_lane_ids"])
+        self.assertEqual(payload["selected_nextest_archive_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_archive_lane_count"], 0)
+        self.assertGreater(len(payload["selected_lane_ids"]), 0)
+
     def test_sedna_heavy_manual_harvest_jobs_follow_metadata_fail_fast(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         jobs = payload.get("jobs") or {}
@@ -3893,6 +4086,30 @@ class RustCiModeScriptTests(unittest.TestCase):
             argpkg_job.get("if"),
             "${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}",
         )
+
+    def test_rust_ci_argument_comment_lint_uses_single_cached_bazel_action(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
+        jobs = payload.get("jobs") or {}
+
+        matrix_plan_run = (
+            next(
+                step
+                for step in (jobs.get("matrix_plan") or {}).get("steps") or []
+                if step.get("name") == "Compute platform matrices"
+            ).get("run")
+            or ""
+        )
+        self.assertIn('"timeout_minutes": 240', matrix_plan_run)
+
+        arglint_steps = (jobs.get("argument_comment_lint_prebuilt") or {}).get("steps") or []
+        lint_steps = [
+            step
+            for step in arglint_steps
+            if step.get("name") == "Run argument comment lint on codex-rs"
+        ]
+        self.assertEqual(len(lint_steps), 1)
+        self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
+        self.assertNotIn("buildbuddy-api-key", lint_steps[0].get("with") or {})
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(

@@ -5,6 +5,7 @@ import argparse
 import glob
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -47,6 +48,50 @@ def first_json_line(path: Path) -> dict | None:
 def shorten(text: str, limit: int = 140) -> str:
     clean = " ".join(text.split())
     return clean if len(clean) <= limit else clean[: limit - 3] + "..."
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        normalized = value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def format_duration_seconds(total_seconds: float) -> str:
+    seconds = int(abs(total_seconds))
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
+def time_since(timestamp: str | None, now: datetime) -> str | None:
+    parsed = parse_timestamp(timestamp)
+    if not parsed:
+        return None
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    delta_seconds = (now - parsed).total_seconds()
+    duration = format_duration_seconds(delta_seconds)
+    if delta_seconds < 0:
+        return f"-{duration} (last event is in the future)"
+    return duration
 
 
 def summarize_record(obj: dict) -> str | None:
@@ -248,6 +293,7 @@ def read_meta(path: Path) -> dict:
 
 def main() -> None:
     args = parse_args()
+    now = datetime.now().astimezone()
     session_info = None
     match_count = 0
     if args.child_thread_id:
@@ -273,6 +319,7 @@ def main() -> None:
     print(f"agent_role: {meta.get('agent_role')}")
     print(f"agent_nickname: {meta.get('agent_nickname')}")
     print(f"session_state: {session_info.get('session_state')}")
+    print(f"system_time: {now.isoformat(timespec='seconds')}")
     current_turn = ensure_dict(session_info.get("last_task_started"))
     if current_turn.get("turn_id"):
         print(f"current_turn_id: {current_turn.get('turn_id')}")
@@ -282,8 +329,12 @@ def main() -> None:
         print(f"terminal_at: {last_terminal.get('timestamp')}")
         if last_terminal.get("reason"):
             print(f"terminal_reason: {last_terminal.get('reason')}")
-    if session_info.get("last_timestamp"):
-        print(f"last_event_at: {session_info.get('last_timestamp')}")
+    last_timestamp = session_info.get("last_timestamp")
+    if last_timestamp:
+        print(f"last_event_at: {last_timestamp}")
+        event_age = time_since(last_timestamp, now)
+        if event_age:
+            print(f"time_since_last_event: {event_age}")
     print("tail:")
     for row in session_info.get("tail_rows") or []:
         print(f"- {row}")
