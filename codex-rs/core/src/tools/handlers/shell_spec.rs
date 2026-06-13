@@ -5,6 +5,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
+use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandToolOptions {
     pub allow_login_shell: bool,
@@ -13,12 +16,15 @@ pub struct CommandToolOptions {
 
 #[cfg(test)]
 pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
-    create_exec_command_tool_with_environment_id(options, /*include_environment_id*/ false)
+    create_exec_command_tool_with_environment_id(
+        options, /*include_environment_id*/ false, /*include_shell_parameter*/ true,
+    )
 }
 
 pub(crate) fn create_exec_command_tool_with_environment_id(
     options: CommandToolOptions,
     include_environment_id: bool,
+    include_shell_parameter: bool,
 ) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
@@ -28,60 +34,48 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         (
             "workdir".to_string(),
             JsonSchema::string(Some(
-                "Optional working directory to run the command in; defaults to the turn cwd."
+                "Working directory for the command. Defaults to the turn cwd."
                     .to_string(),
-            )),
-        ),
-        (
-            "shell".to_string(),
-            JsonSchema::string(Some(
-                "Shell binary to launch. Defaults to the user's default shell.".to_string(),
             )),
         ),
         (
             "tty".to_string(),
             JsonSchema::boolean(Some(
-                "Whether to allocate a TTY for the command. Defaults to false (plain pipes); set to true to open a PTY and access TTY process."
+                "True allocates a PTY for the command; false or omitted uses plain pipes."
                     .to_string(),
             )),
         ),
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "How long to wait (in milliseconds) for output before yielding.".to_string(),
+                "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.".to_string(),
             )),
         ),
         (
             "max_output_tokens".to_string(),
             JsonSchema::number(Some(
-                "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
-            )),
-        ),
-        (
-            "wait_until_terminal".to_string(),
-            JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
-            )),
-        ),
-        (
-            "max_wait_ms".to_string(),
-            JsonSchema::number(Some(
-                "Maximum total wait window for wait_until_terminal, in milliseconds.".to_string(),
-            )),
-        ),
-        (
-            "heartbeat_interval_ms".to_string(),
-            JsonSchema::number(Some(
-                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                    .to_string(),
+                "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
             )),
         ),
     ]);
+    if include_shell_parameter {
+        properties.insert(
+            "shell".to_string(),
+            JsonSchema::string(Some(
+                "Shell binary to launch. Defaults to the user's default shell.".to_string(),
+            )),
+        );
+    }
+    add_unified_exec_blocking_wait_properties(
+        &mut properties,
+        registered_tool_runtime_capabilities(),
+    );
     if options.allow_login_shell {
         properties.insert(
             "login".to_string(),
             JsonSchema::boolean(Some(
-                "Whether to run the shell with -l/-i semantics. Defaults to true.".to_string(),
+                "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+                    .to_string(),
             )),
         );
     }
@@ -89,7 +83,8 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         properties.insert(
             "environment_id".to_string(),
             JsonSchema::string(Some(
-                "Optional environment id from the <environment_context> block. If omitted, uses the primary environment.".to_string(),
+                "Environment id from <environment_context>. Omit to use the primary environment."
+                    .to_string(),
             )),
         );
     }
@@ -120,7 +115,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 }
 
 pub fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
@@ -130,41 +125,26 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "chars".to_string(),
             JsonSchema::string(Some(
-                "Bytes to write to stdin (may be empty to poll).".to_string(),
+                "Bytes to write to stdin. Defaults to empty, which polls without writing.".to_string(),
             )),
         ),
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "How long to wait (in milliseconds) for output before yielding.".to_string(),
+                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
             )),
         ),
         (
             "max_output_tokens".to_string(),
             JsonSchema::number(Some(
-                "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
-            )),
-        ),
-        (
-            "wait_until_terminal".to_string(),
-            JsonSchema::boolean(Some(
-                "When true, block until the process exits or max_wait_ms elapses, capped at 7200000 ms.".to_string(),
-            )),
-        ),
-        (
-            "max_wait_ms".to_string(),
-            JsonSchema::number(Some(
-                "Maximum total wait window for wait_until_terminal, in milliseconds.".to_string(),
-            )),
-        ),
-        (
-            "heartbeat_interval_ms".to_string(),
-            JsonSchema::number(Some(
-                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
-                    .to_string(),
+                "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
             )),
         ),
     ]);
+    add_unified_exec_blocking_wait_properties(
+        &mut properties,
+        registered_tool_runtime_capabilities(),
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
@@ -182,24 +162,56 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
+fn add_unified_exec_blocking_wait_properties(
+    properties: &mut BTreeMap<String, JsonSchema>,
+    capabilities: ToolRuntimeCapabilities,
+) {
+    let Some(capability) = capabilities.unified_exec_blocking_waits else {
+        return;
+    };
+
+    properties.insert(
+        "wait_until_terminal".to_string(),
+        JsonSchema::boolean(Some(format!(
+            "When true, block until the process exits. Each internal wait window is capped at max_wait_ms, up to {} ms.",
+            capability.max_terminal_wait_ms
+        ))),
+    );
+    properties.insert(
+        "max_wait_ms".to_string(),
+        JsonSchema::number(Some(
+            "Maximum per-window wait for wait_until_terminal, in milliseconds.".to_string(),
+        )),
+    );
+    if capability.heartbeat_interval {
+        properties.insert(
+            "heartbeat_interval_ms".to_string(),
+            JsonSchema::number(Some(
+                "Heartbeat cadence while wait_until_terminal is active, in milliseconds."
+                    .to_string(),
+            )),
+        );
+    }
+}
+
 pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
             "command".to_string(),
             JsonSchema::string(Some(
-                "The shell script to execute in the user's default shell".to_string(),
+                "Shell script to run in the user's default shell.".to_string(),
             )),
         ),
         (
             "workdir".to_string(),
             JsonSchema::string(Some(
-                "The working directory to execute the command in".to_string(),
+                "Working directory for the command. Defaults to the turn cwd.".to_string(),
             )),
         ),
         (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(
-                "The timeout for the command in milliseconds".to_string(),
+                "Maximum command runtime. Defaults to 10000 ms.".to_string(),
             )),
         ),
     ]);
@@ -207,7 +219,7 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
         properties.insert(
             "login".to_string(),
             JsonSchema::boolean(Some(
-                "Whether to run the shell with login shell semantics. Defaults to true."
+                "True runs with login shell semantics; false disables them. Defaults to true."
                     .to_string(),
             )),
         );
@@ -260,6 +272,13 @@ pub fn create_request_permissions_tool(description: String) -> ToolSpec {
                 "Optional short explanation for why additional permissions are needed.".to_string(),
             )),
         ),
+        (
+            "environment_id".to_string(),
+            JsonSchema::string(Some(
+                "Environment id from <environment_context>. Omit to use the primary environment."
+                    .to_string(),
+            )),
+        ),
         ("permissions".to_string(), permission_profile_schema()),
     ]);
 
@@ -278,7 +297,7 @@ pub fn create_request_permissions_tool(description: String) -> ToolSpec {
 }
 
 pub fn request_permissions_tool_description() -> String {
-    "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Granted permissions apply automatically to later shell-like commands in the current turn, or for the rest of the session if the client approves them at session scope."
+    "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Use environment_id to target a specific attached environment; omit it to use the primary environment. Relative filesystem paths resolve against the selected environment cwd. Granted permissions apply automatically to later shell-like commands in the current turn, or for the rest of the session if the client approves them at session scope."
         .to_string()
 }
 
@@ -319,92 +338,108 @@ fn unified_exec_output_schema() -> Value {
 fn create_approval_parameters(
     exec_permission_approvals_enabled: bool,
 ) -> BTreeMap<String, JsonSchema> {
+    let mut sandbox_permission_values = vec![json!("use_default")];
+    if exec_permission_approvals_enabled {
+        sandbox_permission_values.push(json!("with_additional_permissions"));
+    }
+    sandbox_permission_values.push(json!("require_escalated"));
+    let sandbox_permissions_description = if exec_permission_approvals_enabled {
+        "Per-command sandbox override. Defaults to `use_default`; use `with_additional_permissions` with `additional_permissions`, or `require_escalated` for unsandboxed execution."
+    } else {
+        "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
+    };
+
     let mut properties = BTreeMap::from([
         (
             "sandbox_permissions".to_string(),
-            JsonSchema::string(Some(
-                if exec_permission_approvals_enabled {
-                    "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem or network permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
-                } else {
-                    "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
-                }
-                .to_string(),
-            )),
+            JsonSchema::string_enum(
+                sandbox_permission_values,
+                Some(sandbox_permissions_description.to_string()),
+            ),
         ),
         (
             "justification".to_string(),
             JsonSchema::string(Some(
-                r#"Only set if sandbox_permissions is \"require_escalated\".
-                    Request approval from the user to run this command outside the sandbox.
-                    Phrased as a simple question that summarizes the purpose of the
-                    command as it relates to the task at hand - e.g. 'Do you want to
-                    fetch and pull the latest version of this git branch?'"#
-                    .to_string(),
+                "User-facing approval question for `require_escalated`; omit otherwise.".to_string(),
             )),
         ),
         (
             "prefix_rule".to_string(),
             JsonSchema::array(JsonSchema::string(/*description*/ None), Some(
-                    r#"Only specify when sandbox_permissions is `require_escalated`.
-                        Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.
-                        Should be a short but reasonable prefix, e.g. [\"git\", \"pull\"] or [\"uv\", \"run\"] or [\"pytest\"]."#.to_string(),
+                    r#"Reusable approval prefix for `cmd`, only with `sandbox_permissions: "require_escalated"`; for example ["git", "pull"]."#.to_string(),
                 )),
         ),
     ]);
 
     if exec_permission_approvals_enabled {
-        properties.insert(
-            "additional_permissions".to_string(),
-            permission_profile_schema(),
+        let mut additional_permissions = permission_profile_schema();
+        additional_permissions.description = Some(
+            "Sandboxed filesystem or network access for this command; only with `sandbox_permissions: \"with_additional_permissions\"`."
+                .to_string(),
         );
+        properties.insert("additional_permissions".to_string(), additional_permissions);
     }
 
     properties
 }
 
 fn permission_profile_schema() -> JsonSchema {
-    JsonSchema::object(
+    let mut schema = JsonSchema::object(
         BTreeMap::from([
             ("network".to_string(), network_permissions_schema()),
             ("file_system".to_string(), file_system_permissions_schema()),
         ]),
         /*required*/ None,
         Some(false.into()),
-    )
+    );
+    schema.description = Some("Filesystem or network access request.".to_string());
+    schema
 }
 
 fn network_permissions_schema() -> JsonSchema {
-    JsonSchema::object(
+    let mut schema = JsonSchema::object(
         BTreeMap::from([(
             "enabled".to_string(),
-            JsonSchema::boolean(Some("Set to true to request network access.".to_string())),
+            JsonSchema::boolean(Some(
+                "True requests network access; false or omitted requests none.".to_string(),
+            )),
         )]),
         /*required*/ None,
         Some(false.into()),
-    )
+    );
+    schema.description = Some("Network access request.".to_string());
+    schema
 }
 
 fn file_system_permissions_schema() -> JsonSchema {
-    JsonSchema::object(
+    let mut schema = JsonSchema::object(
         BTreeMap::from([
             (
                 "read".to_string(),
                 JsonSchema::array(
                     JsonSchema::string(/*description*/ None),
-                    Some("Absolute paths to grant read access to.".to_string()),
+                    Some(
+                        "Absolute paths to grant read access; omit when none are needed."
+                            .to_string(),
+                    ),
                 ),
             ),
             (
                 "write".to_string(),
                 JsonSchema::array(
                     JsonSchema::string(/*description*/ None),
-                    Some("Absolute paths to grant write access to.".to_string()),
+                    Some(
+                        "Absolute paths to grant write access; omit when none are needed."
+                            .to_string(),
+                    ),
                 ),
             ),
         ]),
         /*required*/ None,
         Some(false.into()),
-    )
+    );
+    schema.description = Some("Filesystem access request.".to_string());
+    schema
 }
 
 fn windows_shell_guidance() -> &'static str {

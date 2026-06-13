@@ -10,6 +10,7 @@ mod guard;
 mod metrics;
 mod phase1;
 mod phase2;
+mod phase2_attestation;
 mod prompts;
 mod runtime;
 mod start;
@@ -29,6 +30,8 @@ pub use storage::rebuild_raw_memories_file_from_memories;
 pub use storage::rollout_summary_file_stem;
 pub use storage::sync_rollout_summaries_from_memories;
 
+#[cfg(test)]
+mod phase2_attestation_tests;
 #[cfg(test)]
 mod startup_tests;
 
@@ -76,7 +79,6 @@ signal to remove stale memories derived only from those resources.
 }
 
 mod stage_one {
-    pub(super) const MODEL: &str = "gpt-5.4-mini";
     pub(super) const REASONING_EFFORT: codex_protocol::openai_models::ReasoningEffort =
         codex_protocol::openai_models::ReasoningEffort::Low;
     pub(super) const CONCURRENCY_LIMIT: usize = 8;
@@ -101,7 +103,6 @@ mod stage_one {
 }
 
 mod stage_two {
-    pub(super) const MODEL: &str = "gpt-5.4";
     pub(super) const REASONING_EFFORT: codex_protocol::openai_models::ReasoningEffort =
         codex_protocol::openai_models::ReasoningEffort::Medium;
     pub(super) const JOB_LEASE_SECONDS: i64 = 3_600;

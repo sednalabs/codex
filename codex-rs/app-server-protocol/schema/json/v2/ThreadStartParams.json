@@ -63,6 +63,34 @@
         }
       ]
     },
+    "CapabilityRootLocation": {
+      "description": "Location used to resolve a selected capability root.",
+      "oneOf": [
+        {
+          "description": "A path owned by an execution environment.",
+          "properties": {
+            "environmentId": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "environment",
+              "title": "EnvironmentCapabilityRootLocationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "environmentId",
+            "path"
+          ],
+          "title": "EnvironmentCapabilityRootLocation",
+          "type": "object"
+        }
+      ]
+    },
     "DynamicToolCapability": {
       "properties": {
         "capabilityScope": {
@@ -121,6 +149,7 @@
           ]
         },
         "persistOnResume": {
+          "default": true,
           "type": "boolean"
         }
       },
@@ -130,61 +159,6 @@
         "inputSchema"
       ],
       "type": "object"
-    },
-    "PermissionProfileModificationParams": {
-      "oneOf": [
-        {
-          "description": "Additional concrete directory that should be writable.",
-          "properties": {
-            "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
-            },
-            "type": {
-              "const": "additionalWritableRoot",
-              "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path"
-          ],
-          "title": "AdditionalWritableRootPermissionProfileModificationParams",
-          "type": "object"
-        }
-      ]
-    },
-    "PermissionProfileSelectionParams": {
-      "oneOf": [
-        {
-          "description": "Select a named built-in or user-defined profile and optionally apply\nbounded modifications that Codex knows how to validate.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "modifications": {
-              "items": {
-                "$ref": "#/$defs/PermissionProfileModificationParams"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "profile",
-              "title": "ProfilePermissionProfileSelectionParamsType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id"
-          ],
-          "title": "ProfilePermissionProfileSelectionParams",
-          "type": "object"
-        }
-      ]
     },
     "Personality": {
       "enum": [
@@ -202,12 +176,25 @@
       ],
       "type": "string"
     },
-    "ThreadSource": {
-      "enum": [
-        "user",
-        "subagent",
-        "memory_consolidation"
+    "SelectedCapabilityRoot": {
+      "description": "A user-selected root that can expose one or more runtime capabilities.",
+      "properties": {
+        "id": {
+          "description": "Stable identifier supplied by the capability selection platform.",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/CapabilityRootLocation",
+          "description": "Where the selected root can be resolved."
+        }
+      },
+      "required": [
+        "id",
+        "location"
       ],
+      "type": "object"
+    },
+    "ThreadSource": {
       "type": "string"
     },
     "ThreadStartSource": {
@@ -344,7 +331,7 @@
     "threadSource": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSource"
+          "$ref": "#/$defs/ThreadSource"
         },
         {
           "type": "null"

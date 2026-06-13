@@ -10,6 +10,7 @@ pub use session_id::SessionId;
 pub use thread_id::ThreadId;
 pub use tool_name::ToolName;
 pub mod approvals;
+pub mod capabilities;
 pub mod config_types;
 pub mod custom_prompts;
 pub mod dynamic_tools;

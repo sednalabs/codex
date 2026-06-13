@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -20,6 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app_event_sender::AppEventSender;
 use crate::key_hint;
+use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
@@ -51,6 +53,7 @@ pub(crate) struct StatusIndicatorWidget {
     show_interrupt_hint: bool,
     interrupt_requires_double_press: bool,
     interrupt_confirmation_deadline: Option<Instant>,
+    interrupt_binding: Option<KeyBinding>,
 
     elapsed_running: Duration,
     last_resume_at: Instant,
@@ -77,6 +80,11 @@ pub fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
+fn is_plain_esc_binding(binding: KeyBinding) -> bool {
+    let (key, modifiers) = binding.parts();
+    key == KeyCode::Esc && modifiers == KeyModifiers::NONE
+}
+
 impl StatusIndicatorWidget {
     pub(crate) fn new(
         app_event_tx: AppEventSender,
@@ -92,6 +100,7 @@ impl StatusIndicatorWidget {
             show_interrupt_hint: true,
             interrupt_requires_double_press,
             interrupt_confirmation_deadline: None,
+            interrupt_binding: Some(key_hint::plain(KeyCode::Esc)),
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
             is_paused: false,
@@ -103,7 +112,8 @@ impl StatusIndicatorWidget {
     }
 
     pub(crate) fn interrupt(&self) {
-        self.app_event_tx.interrupt();
+        self.app_event_tx
+            .interrupt_and_restore_prompt_if_no_output();
     }
 
     /// Update the animated header label (left of the brackets).
@@ -161,6 +171,10 @@ impl StatusIndicatorWidget {
 
     pub(crate) fn set_interrupt_confirmation_deadline(&mut self, deadline: Option<Instant>) {
         self.interrupt_confirmation_deadline = deadline;
+    }
+
+    pub(crate) fn set_interrupt_binding(&mut self, binding: Option<KeyBinding>) {
+        self.interrupt_binding = binding;
     }
 
     pub(crate) fn pause_timer(&mut self) {
@@ -270,19 +284,21 @@ impl Renderable for StatusIndicatorWidget {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
-        if self.show_interrupt_hint {
+        if self.show_interrupt_hint
+            && let Some(interrupt_binding) = self.interrupt_binding
+        {
             spans.push(format!("({pretty_elapsed} • ").dim());
             if self
                 .interrupt_confirmation_deadline
                 .is_some_and(|deadline| deadline > now)
             {
-                spans.push(key_hint::plain(KeyCode::Esc).into());
+                spans.push(interrupt_binding.into());
                 spans.push(" again to interrupt)".dim());
             } else {
-                spans.push(key_hint::plain(KeyCode::Esc).into());
-                if self.interrupt_requires_double_press {
+                spans.push(interrupt_binding.into());
+                if self.interrupt_requires_double_press && is_plain_esc_binding(interrupt_binding) {
                     spans.push(" ".into());
-                    spans.push(key_hint::plain(KeyCode::Esc).into());
+                    spans.push(interrupt_binding.into());
                 }
                 spans.push(" to interrupt)".dim());
             }
@@ -430,6 +446,27 @@ mod tests {
             .collect::<String>();
 
         assert!(line.starts_with("Working (0s • esc to interrupt)"));
+    }
+
+    #[test]
+    fn renders_remapped_interrupt_hint() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            /*interrupt_requires_double_press*/ false,
+        );
+        w.set_interrupt_binding(Some(key_hint::plain(KeyCode::F(12))));
+        w.is_paused = true;
+        w.elapsed_running = Duration::ZERO;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

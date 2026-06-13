@@ -5,13 +5,13 @@ use anyhow::ensure;
 use codex_arg0::Arg0PathEntryGuard;
 use codex_utils_cargo_bin::CargoBinError;
 use ctor::ctor;
+use std::future::Future;
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
-use codex_config::CloudRequirementsLoader;
-use codex_config::ConfigRequirementsToml;
+use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
-use codex_config::NetworkRequirementsToml;
+use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -22,6 +22,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 pub use codex_utils_absolute_path::test_support::PathBufExt;
 pub use codex_utils_absolute_path::test_support::PathExt;
 use regex_lite::Regex;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Once;
@@ -38,6 +39,8 @@ pub mod tracing;
 pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
+
+pub const LARGE_STACK_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
@@ -115,6 +118,42 @@ pub fn test_absolute_path(unix_path: &str) -> AbsolutePathBuf {
     test_absolute_path_with_windows(unix_path, /*windows_path*/ None)
 }
 
+pub fn run_large_stack_test<Fut>(thread_name: &'static str, test_body: Fut) -> anyhow::Result<()>
+where
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .stack_size(LARGE_STACK_TEST_STACK_SIZE)
+        .spawn(move || -> anyhow::Result<()> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(LARGE_STACK_TEST_STACK_SIZE)
+                .enable_all()
+                .build()?;
+            runtime.block_on(test_body)
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+#[cfg(unix)]
+#[allow(clippy::expect_used)]
+pub fn create_directory_symlink(source: &Path, link: &Path) {
+    std::os::unix::fs::symlink(source, link).expect("create directory symlink");
+}
+
+#[cfg(windows)]
+#[allow(clippy::expect_used)]
+pub fn create_directory_symlink(source: &Path, link: &Path) {
+    // Running this test locally may require Windows Developer Mode or an elevated process.
+    std::os::windows::fs::symlink_dir(source, link)
+        .expect("create directory symlink; enable Developer Mode or run the test elevated");
+}
+
 pub trait TempDirExt {
     fn abs(&self) -> AbsolutePathBuf;
 }
@@ -173,24 +212,24 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    load_default_config_for_test_with_cloud_requirements(
+    load_default_config_for_test_with_cloud_config_bundle(
         codex_home,
-        CloudRequirementsLoader::default(),
+        CloudConfigBundleLoader::default(),
     )
     .await
 }
 
-/// Returns a default `Config` with test-provided cloud requirements applied
+/// Returns a default `Config` with test-provided cloud bundle requirements applied.
 /// during config construction.
-pub async fn load_default_config_for_test_with_cloud_requirements(
+pub async fn load_default_config_for_test_with_cloud_config_bundle(
     codex_home: &TempDir,
-    cloud_requirements: CloudRequirementsLoader,
+    cloud_config_bundle: CloudConfigBundleLoader,
 ) -> Config {
     let mut config = ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
-        .cloud_requirements(cloud_requirements)
+        .cloud_config_bundle(cloud_config_bundle)
         .build()
         .await
         .expect("defaults for test should always succeed");
@@ -202,17 +241,14 @@ pub async fn load_default_config_for_test_with_cloud_requirements(
     config
 }
 
-pub fn managed_network_requirements_loader() -> CloudRequirementsLoader {
-    CloudRequirementsLoader::new(async {
-        Ok(Some(ConfigRequirementsToml {
-            network: Some(NetworkRequirementsToml {
-                enabled: Some(true),
-                allow_local_binding: Some(true),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))
-    })
+pub fn managed_network_requirements_loader() -> CloudConfigBundleLoader {
+    CloudConfigBundleFixture::loader_with_enterprise_requirement(
+        r#"
+[experimental_network]
+enabled = true
+allow_local_binding = true
+"#,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -256,6 +292,39 @@ where
 {
     use tokio::time::Duration;
     wait_for_event_with_timeout(codex, predicate, Duration::from_secs(1)).await
+}
+
+/// Waits for a configured MCP server to finish startup and requires it to be ready.
+pub async fn wait_for_mcp_server(codex: &CodexThread, server_name: &str) -> anyhow::Result<()> {
+    use codex_protocol::protocol::EventMsg;
+
+    // Wait for the startup summary regardless of outcome, then interpret the
+    // requested server's ready, failed, or cancelled entry below.
+    let summary = loop {
+        let event = codex
+            .next_event()
+            .await
+            .expect("stream ended unexpectedly while waiting for MCP startup");
+        if let EventMsg::McpStartupComplete(summary) = event.msg {
+            break summary;
+        }
+    };
+    if let Some(failure) = summary
+        .failed
+        .iter()
+        .find(|failure| failure.server == server_name)
+    {
+        let error = &failure.error;
+        anyhow::bail!("MCP server {server_name} failed to start: {error}");
+    }
+    if summary.cancelled.iter().any(|server| server == server_name) {
+        anyhow::bail!("MCP server {server_name} startup was cancelled");
+    }
+    assert!(
+        summary.ready.iter().any(|server| server == server_name),
+        "expected MCP server {server_name} to be ready; startup summary: {summary:?}"
+    );
+    Ok(())
 }
 
 pub async fn submit_thread_settings(

@@ -29,6 +29,7 @@
         "sessionStart",
         "userPromptSubmit",
         "subagentStart",
+        "subagentStop",
         "stop"
       ],
       "type": "string"
@@ -101,18 +102,20 @@
           "type": "integer"
         },
         "trustStatus": {
-          "$ref": "#/definitions/HookTrustStatus"
+          "$ref": "#/$defs/HookTrustStatus"
         }
       },
       "required": [
-        "currentHash",
-        "displayOrder",
-        "enabled",
+        "key",
         "eventName",
         "handlerType",
         "timeoutSec",
         "sourcePath",
-        "timeoutSec",
+        "source",
+        "displayOrder",
+        "enabled",
+        "isManaged",
+        "currentHash",
         "trustStatus"
       ],
       "type": "object"
@@ -126,6 +129,7 @@
         "sessionFlags",
         "plugin",
         "cloudRequirements",
+        "cloudManagedConfig",
         "legacyManagedConfigFile",
         "legacyManagedConfigMdm",
         "unknown"

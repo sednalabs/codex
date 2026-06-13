@@ -20,19 +20,22 @@ pub struct RequestUserInputHandler {
     pub available_modes: Vec<ModeKind>,
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for RequestUserInputHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(REQUEST_USER_INPUT_TOOL_NAME)
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_request_user_input_tool(
-            request_user_input_tool_description(&self.available_modes),
-        ))
+    fn spec(&self) -> ToolSpec {
+        create_request_user_input_tool(request_user_input_tool_description(&self.available_modes))
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl RequestUserInputHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {

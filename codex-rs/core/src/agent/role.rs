@@ -173,8 +173,9 @@ fn role_preserves_current_profile(role_config: &ConfigToml) -> bool {
 impl RolePreservationPolicy {
     fn from_config(config: &Config, role_layer_toml: &TomlValue) -> Self {
         let preserve_current_profile = role_preserves_current_profile_from_layer(role_layer_toml);
+        let active_profile_name = active_user_profile_name(config);
         let active_profile_updates =
-            role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
+            role_profile_field_updates(active_profile_name.as_deref(), role_layer_toml);
 
         Self {
             preserve_current_profile,
@@ -209,8 +210,9 @@ impl SpawnModelSelectionCarry {
         role_layer_toml: &TomlValue,
     ) -> Self {
         let preserve_current_profile = role_preserves_current_profile(role_config);
+        let active_profile_name = active_user_profile_name(config);
         let active_profile_updates =
-            role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
+            role_profile_field_updates(active_profile_name.as_deref(), role_layer_toml);
 
         Self {
             model_provider_id: (preserve_current_profile && !active_profile_updates.model_provider)
@@ -227,7 +229,8 @@ impl SpawnModelSelectionCarry {
             {
                 role_config
                     .model_reasoning_effort
-                    .or(config.model_reasoning_effort)
+                    .clone()
+                    .or_else(|| config.model_reasoning_effort.clone())
             } else {
                 None
             },
@@ -255,8 +258,9 @@ impl SpawnModelSelectionCarry {
         role_layer_toml: &TomlValue,
     ) -> Self {
         let preserve_current_profile = role_preserves_current_profile(role_config);
+        let active_profile_name = active_user_profile_name(config);
         let active_profile_updates =
-            role_profile_field_updates(config.active_profile.as_deref(), role_layer_toml);
+            role_profile_field_updates(active_profile_name.as_deref(), role_layer_toml);
 
         Self {
             model_provider_id: (preserve_current_profile && !active_profile_updates.model_provider)
@@ -273,7 +277,7 @@ impl SpawnModelSelectionCarry {
                 preserve_current_profile,
                 active_profile_updates.model_reasoning_effort,
                 role_config.model_reasoning_effort.is_some(),
-                config.model_reasoning_effort,
+                config.model_reasoning_effort.clone(),
             ),
             model_reasoning_summary: sticky_spawn_setting(
                 preserve_current_profile,
@@ -300,8 +304,8 @@ impl SpawnModelSelectionCarry {
         if let Some(model) = &self.model {
             config.model = Some(model.clone());
         }
-        if let Some(reasoning_effort) = self.model_reasoning_effort {
-            config.model_reasoning_effort = Some(reasoning_effort);
+        if let Some(reasoning_effort) = &self.model_reasoning_effort {
+            config.model_reasoning_effort = Some(reasoning_effort.clone());
         }
         if let Some(reasoning_summary) = self.model_reasoning_summary {
             config.model_reasoning_summary = Some(reasoning_summary);
@@ -310,6 +314,19 @@ impl SpawnModelSelectionCarry {
             config.model_verbosity = Some(verbosity);
         }
     }
+}
+
+fn active_user_profile_name(config: &Config) -> Option<String> {
+    config
+        .config_layer_stack
+        .get_active_user_layer()
+        .and_then(|layer| match &layer.name {
+            ConfigLayerSource::User {
+                profile: Some(profile),
+                ..
+            } => Some(profile.clone()),
+            _ => None,
+        })
 }
 
 mod reload {
@@ -321,19 +338,14 @@ mod reload {
         role_layer_toml: TomlValue,
         preservation_policy: &RolePreservationPolicy,
     ) -> Result<Config, String> {
-        let active_profile_name = preservation_policy
-            .preserve_current_profile
-            .then_some(config.active_profile.as_deref())
-            .flatten();
-        let config_layer_stack =
-            build_config_layer_stack(config, role_name, &role_layer_toml, active_profile_name)?;
+        let config_layer_stack = build_config_layer_stack(config, role_name, &role_layer_toml)?;
         let mut merged_config =
             deserialize_effective_config(config, role_name, &config_layer_stack)?;
         if preservation_policy.preserve_current_profile {
             merged_config.profile = None;
         }
 
-        let mut next_config = Config::load_config_with_layer_stack(
+        Config::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             merged_config,
             reload_overrides(config, preservation_policy),
@@ -341,31 +353,15 @@ mod reload {
             config_layer_stack,
         )
         .await
-        .map_err(|err| {
-            format!("failed to apply merged config for agent type '{role_name}': {err}")
-        })?;
-        if preservation_policy.preserve_current_profile {
-            next_config.active_profile = config.active_profile.clone();
-        }
-        Ok(next_config)
+        .map_err(|err| format!("failed to apply merged config for agent type '{role_name}': {err}"))
     }
 
     fn build_config_layer_stack(
         config: &Config,
         role_name: &str,
         role_layer_toml: &TomlValue,
-        active_profile_name: Option<&str>,
     ) -> Result<ConfigLayerStack, String> {
         let mut layers = existing_layers(config);
-        if let Some(resolved_profile_layer) = resolved_profile_layer(
-            config,
-            role_name,
-            &layers,
-            role_layer_toml,
-            active_profile_name,
-        )? {
-            insert_layer(&mut layers, resolved_profile_layer);
-        }
         insert_layer(&mut layers, role_layer(role_layer_toml.clone()));
 
         ConfigLayerStack::new(
@@ -376,46 +372,6 @@ mod reload {
         .map_err(|err| {
             format!("failed to create layered config for agent type '{role_name}': {err}")
         })
-    }
-
-    fn resolved_profile_layer(
-        config: &Config,
-        role_name: &str,
-        existing_layers: &[ConfigLayerEntry],
-        role_layer_toml: &TomlValue,
-        active_profile_name: Option<&str>,
-    ) -> Result<Option<ConfigLayerEntry>, String> {
-        let Some(active_profile_name) = active_profile_name else {
-            return Ok(None);
-        };
-
-        let mut layers = existing_layers.to_vec();
-        insert_layer(&mut layers, role_layer(role_layer_toml.clone()));
-        let layered_stack = ConfigLayerStack::new(
-            layers,
-            config.config_layer_stack.requirements().clone(),
-            config.config_layer_stack.requirements_toml().clone(),
-        )
-        .map_err(|err| {
-            format!("failed to create layered config for agent type '{role_name}': {err}")
-        })?;
-        let merged_config = deserialize_effective_config(config, role_name, &layered_stack)?;
-        let resolved_profile = merged_config
-            .get_config_profile(Some(active_profile_name.to_string()))
-            .map_err(|err| {
-                format!(
-                    "failed to resolve active profile '{active_profile_name}' for agent type '{role_name}': {err}"
-                )
-            })?;
-        let resolved_profile_toml = TomlValue::try_from(resolved_profile).map_err(|err| {
-            format!(
-                "failed to materialize active profile '{active_profile_name}' for agent type '{role_name}': {err}"
-            )
-        })?;
-        Ok(Some(ConfigLayerEntry::new(
-            ConfigLayerSource::SessionFlags,
-            resolved_profile_toml,
-        )))
     }
 
     fn deserialize_effective_config(
@@ -463,10 +419,6 @@ mod reload {
             service_tier: preservation_policy
                 .preserve_current_service_tier
                 .then(|| config.service_tier.clone()),
-            config_profile: preservation_policy
-                .preserve_current_profile
-                .then(|| config.active_profile.clone())
-                .flatten(),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
             ..Default::default()

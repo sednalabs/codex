@@ -26,18 +26,23 @@ pub enum SlashCommand {
     AutoReview,
     Memories,
     Skills,
+    Import,
     Hooks,
     Review,
     Rename,
     New,
+    Archive,
+    Delete,
     Resume,
     Fork,
+    App,
     Init,
     Compact,
     Plan,
     Goal,
     Agent,
     Side,
+    Btw,
     Copy,
     Raw,
     Diff,
@@ -85,14 +90,20 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Archive => "archive this session and exit",
+            SlashCommand::Delete => "permanently delete this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
+            SlashCommand::App => "continue this session in Codex Desktop",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Copy => "copy last response as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
+            SlashCommand::Import => {
+                "import setup, this project, and recent chats from another coding agent"
+            }
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
@@ -114,7 +125,7 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
-            SlashCommand::Side => "start a side conversation in an ephemeral fork",
+            SlashCommand::Side | SlashCommand::Btw => "start a resumable side conversation",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::Keymap => "remap TUI shortcuts",
             SlashCommand::Vim => "toggle Vim mode for the composer",
@@ -154,6 +165,7 @@ impl SlashCommand {
                 | SlashCommand::Raw
                 | SlashCommand::Pets
                 | SlashCommand::Side
+                | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
         )
@@ -169,6 +181,8 @@ impl SlashCommand {
                 | SlashCommand::Mention
                 | SlashCommand::Status
                 | SlashCommand::Ide
+                | SlashCommand::Quit
+                | SlashCommand::Exit
         )
     }
 
@@ -176,21 +190,21 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         match self {
             SlashCommand::New
+            | SlashCommand::Archive
+            | SlashCommand::Delete
             | SlashCommand::Resume
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
-            | SlashCommand::Model
             | SlashCommand::Personality
-            | SlashCommand::Permissions
             | SlashCommand::Keymap
             | SlashCommand::Vim
             | SlashCommand::ElevateSandbox
             | SlashCommand::SandboxReadRoot
             | SlashCommand::Experimental
             | SlashCommand::Memories
+            | SlashCommand::Import
             | SlashCommand::Review
-            | SlashCommand::Plan
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -207,6 +221,7 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Ps
             | SlashCommand::Stop
+            | SlashCommand::App
             | SlashCommand::Goal
             | SlashCommand::Mcp
             | SlashCommand::Apps
@@ -216,9 +231,13 @@ impl SlashCommand {
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
             | SlashCommand::Ide
+            | SlashCommand::Model
+            | SlashCommand::Permissions
+            | SlashCommand::Plan
             | SlashCommand::Quit
             | SlashCommand::Exit
-            | SlashCommand::Side => true,
+            | SlashCommand::Side
+            | SlashCommand::Btw => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Realtime => true,
@@ -232,6 +251,7 @@ impl SlashCommand {
         match self {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
+            SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
             _ => true,
         }
@@ -273,11 +293,15 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
+        assert!(SlashCommand::Model.available_during_task());
+        assert!(SlashCommand::Permissions.available_during_task());
+        assert!(SlashCommand::Plan.available_during_task());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
+        assert!(SlashCommand::App.available_during_task());
     }
 
     #[test]

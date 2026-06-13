@@ -5,6 +5,7 @@ use std::any::Any;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::CreateThreadParams;
+use crate::DeleteThreadParams;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListThreadsParams;
@@ -13,9 +14,11 @@ use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
+use crate::SearchThreadsParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadPage;
+use crate::ThreadSearchPage;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
@@ -76,6 +79,16 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Lists stored threads matching the supplied filters.
     async fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreResult<ThreadPage>;
 
+    /// Searches stored threads and returns search-only preview metadata.
+    async fn search_threads(
+        &self,
+        _params: SearchThreadsParams,
+    ) -> ThreadStoreResult<ThreadSearchPage> {
+        Err(ThreadStoreError::Unsupported {
+            operation: "thread/search",
+        })
+    }
+
     /// Lists turns within a stored thread.
     async fn list_turns(&self, _params: ListTurnsParams) -> ThreadStoreResult<TurnPage> {
         Err(ThreadStoreError::Unsupported {
@@ -107,4 +120,7 @@ pub trait ThreadStore: Any + Send + Sync {
         &self,
         params: ArchiveThreadParams,
     ) -> ThreadStoreResult<StoredThread>;
+
+    /// Deletes a thread's persisted rollout data and associated metadata.
+    async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()>;
 }

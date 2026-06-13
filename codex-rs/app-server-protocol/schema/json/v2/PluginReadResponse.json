@@ -24,17 +24,76 @@
         },
         "name": {
           "type": "string"
-        },
-        "needsAuth": {
-          "type": "boolean"
         }
       },
       "required": [
         "id",
-        "name",
-        "needsAuth"
+        "name"
       ],
       "type": "object"
+    },
+    "AppTemplateSummary": {
+      "properties": {
+        "canonicalConnectorId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logoUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logoUrlDark": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "materializedAppIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppTemplateUnavailableReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "templateId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "templateId",
+        "name",
+        "materializedAppIds"
+      ],
+      "type": "object"
+    },
+    "AppTemplateUnavailableReason": {
+      "enum": [
+        "NOT_CONFIGURED_FOR_WORKSPACE",
+        "NO_ACTIVE_WORKSPACE"
+      ],
+      "type": "string"
     },
     "HookEventName": {
       "enum": [
@@ -46,6 +105,7 @@
         "sessionStart",
         "userPromptSubmit",
         "subagentStart",
+        "subagentStop",
         "stop"
       ],
       "type": "string"
@@ -74,6 +134,12 @@
     },
     "PluginDetail": {
       "properties": {
+        "appTemplates": {
+          "items": {
+            "$ref": "#/$defs/AppTemplateSummary"
+          },
+          "type": "array"
+        },
         "apps": {
           "items": {
             "$ref": "#/$defs/AppSummary"
@@ -88,7 +154,7 @@
         },
         "hooks": {
           "items": {
-            "$ref": "#/definitions/PluginHookSummary"
+            "$ref": "#/$defs/PluginHookSummary"
           },
           "type": "array"
         },
@@ -122,12 +188,12 @@
         }
       },
       "required": [
-        "apps",
-        "hooks",
         "marketplaceName",
         "summary",
         "skills",
+        "hooks",
         "apps",
+        "appTemplates",
         "mcpServers"
       ],
       "type": "object"
@@ -135,15 +201,15 @@
     "PluginHookSummary": {
       "properties": {
         "eventName": {
-          "$ref": "#/definitions/HookEventName"
+          "$ref": "#/$defs/HookEventName"
         },
         "key": {
           "type": "string"
         }
       },
       "required": [
-        "eventName",
-        "key"
+        "key",
+        "eventName"
       ],
       "type": "object"
     },
@@ -302,7 +368,7 @@
         "discoverability": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareDiscoverability"
+              "$ref": "#/$defs/PluginShareDiscoverability"
             },
             {
               "type": "null"
@@ -322,7 +388,7 @@
         },
         "sharePrincipals": {
           "items": {
-            "$ref": "#/definitions/PluginSharePrincipal"
+            "$ref": "#/$defs/PluginSharePrincipal"
           },
           "type": [
             "array",
@@ -358,17 +424,17 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/definitions/PluginSharePrincipalRole"
+          "$ref": "#/$defs/PluginSharePrincipalRole"
         }
       },
       "required": [
-        "name",
-        "principalId",
         "principalType",
-        "role"
+        "principalId",
+        "role",
+        "name"
       ],
       "type": "object"
     },
@@ -521,7 +587,7 @@
         "shareContext": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginShareContext"
+              "$ref": "#/$defs/PluginShareContext"
             },
             {
               "type": "null"

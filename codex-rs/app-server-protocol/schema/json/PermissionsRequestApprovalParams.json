@@ -173,7 +173,6 @@
               "type": "string"
             },
             "subpath": {
-              "default": null,
               "type": [
                 "string",
                 "null"
@@ -268,6 +267,13 @@
     "cwd": {
       "$ref": "#/$defs/AbsolutePathBuf"
     },
+    "environmentId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },
@@ -293,13 +299,10 @@
     }
   },
   "required": [
-    "cwd",
-    "itemId",
-    "permissions",
-    "startedAtMs",
     "threadId",
     "turnId",
     "itemId",
+    "startedAtMs",
     "cwd",
     "permissions"
   ],

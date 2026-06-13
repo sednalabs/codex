@@ -6,6 +6,7 @@ use crate::SkillsManager;
 use crate::agent::AgentControl;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
+use crate::config::NetworkProxyAuditMetadata;
 use crate::config::StartedNetworkProxy;
 use crate::exec_policy::ExecPolicyManager;
 use crate::guardian::GuardianRejection;
@@ -15,7 +16,9 @@ use crate::tools::code_mode::CodeModeService;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecProcessManager;
+use anyhow::Result;
 use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::Environment;
@@ -35,12 +38,12 @@ use codex_thread_store::ThreadStore;
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct SessionServices {
-    pub(crate) mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
+    /// The latest manager; callers retain an owned handle while performing MCP I/O.
+    pub(crate) mcp_connection_manager: Arc<ArcSwap<McpConnectionManager>>,
     pub(crate) mcp_startup_cancellation_token: Mutex<CancellationToken>,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -68,7 +71,9 @@ pub(crate) struct SessionServices {
     pub(crate) session_extension_data: ExtensionData,
     pub(crate) thread_extension_data: ExtensionData,
     pub(crate) agent_control: AgentControl,
-    pub(crate) network_proxy: Option<StartedNetworkProxy>,
+    pub(crate) network_proxy: ArcSwapOption<StartedNetworkProxy>,
+    pub(crate) network_proxy_audit_metadata: NetworkProxyAuditMetadata,
+    pub(crate) managed_network_requirements_configured: bool,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) live_thread: Option<LiveThread>,
@@ -86,21 +91,23 @@ pub(crate) struct SessionServices {
 
 impl SessionServices {
     pub(crate) async fn log_usage_event(&self, event: &Event) {
-        if let Some(logger) = &self.usage_logger {
-            let mut guard = logger.lock().await;
-            guard.record_event(event).await;
-        }
+        let Some(usage_logger) = &self.usage_logger else {
+            return;
+        };
+
+        usage_logger.lock().await.record_event(event).await;
     }
 
-    pub(crate) async fn update_usage_turn_snapshot(
+    /// Installs the manager before validating required servers so startup-time elicitation can
+    /// resolve through the session's manager while validation waits.
+    pub(crate) async fn install_mcp_connection_manager(
         &self,
-        turn_id: &str,
-        requested_model: Option<String>,
-        requested_provider: Option<String>,
-    ) {
-        if let Some(logger) = &self.usage_logger {
-            let mut guard = logger.lock().await;
-            guard.update_turn_snapshot(turn_id, requested_model, requested_provider);
-        }
+        manager: McpConnectionManager,
+    ) -> Result<()> {
+        self.mcp_connection_manager.store(Arc::new(manager));
+        self.mcp_connection_manager
+            .load_full()
+            .validate_required_servers()
+            .await
     }
 }

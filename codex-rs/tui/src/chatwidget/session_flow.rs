@@ -21,6 +21,11 @@ impl ChatWidget {
         let previous_thread_id = self.thread_id;
         self.thread_id = Some(session.thread_id);
         if previous_thread_id != self.thread_id {
+            self.observed_model_display_name = None;
+        }
+        self.bottom_pane
+            .set_queue_submissions(/*queue_submissions*/ false);
+        if previous_thread_id != self.thread_id {
             self.review.recent_auto_review_denials = RecentAutoReviewDenials::default();
         }
         self.refresh_plan_mode_nudge();
@@ -71,18 +76,31 @@ impl ChatWidget {
             }
         }
         self.config.approvals_reviewer = session.approvals_reviewer;
+        self.config.personality = session.personality;
         self.status_line_project_root_name_cache = None;
         let forked_from_id = session.forked_from_id;
-        let model_for_header = session.model.clone();
-        self.session_header.set_model(&model_for_header);
+        let default_model = session.model.clone();
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
-            Some(model_for_header.clone()),
-            Some(session.reasoning_effort),
+            Some(default_model.clone()),
+            Some(session.reasoning_effort.clone()),
             /*developer_instructions*/ None,
         );
-        if let Some(mask) = self.active_collaboration_mask.as_mut() {
-            mask.model = Some(model_for_header.clone());
-            mask.reasoning_effort = Some(session.reasoning_effort);
+        match session.collaboration_mode.as_deref() {
+            Some(collaboration_mode) => {
+                self.set_effective_collaboration_mode(collaboration_mode.clone());
+            }
+            None => {
+                self.active_collaboration_mask = Self::initial_collaboration_mask(
+                    &self.config,
+                    self.model_catalog.as_ref(),
+                    Some(&default_model),
+                );
+                if let Some(mask) = self.active_collaboration_mask.as_mut() {
+                    mask.reasoning_effort = Some(session.reasoning_effort.clone());
+                }
+                self.update_collaboration_mode_indicator();
+                self.refresh_plan_mode_nudge();
+            }
         }
         self.refresh_model_display();
         self.refresh_status_surfaces();
@@ -91,6 +109,7 @@ impl ChatWidget {
         self.sync_plugins_command_enabled();
         self.sync_goal_command_enabled();
         self.refresh_plugin_mentions();
+        let model_for_header = self.current_model().to_string();
         if display == SessionConfiguredDisplay::Normal {
             let startup_tooltip_override = self.startup_tooltip_override.take();
             let show_fast_status = self
@@ -119,13 +138,7 @@ impl ChatWidget {
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
-        if let Some(user_message) = self.initial_user_message.take() {
-            if self.suppress_initial_user_message_submit {
-                self.initial_user_message = Some(user_message);
-            } else {
-                self.submit_user_message(user_message);
-            }
-        }
+        self.submit_initial_user_message_if_pending();
         if display == SessionConfiguredDisplay::Normal
             && let Some(forked_from_id) = forked_from_id
         {

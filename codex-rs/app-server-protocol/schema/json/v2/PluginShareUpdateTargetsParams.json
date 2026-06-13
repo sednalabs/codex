@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "PluginSharePrincipalType": {
       "enum": [
         "user",
@@ -15,15 +14,15 @@
           "type": "string"
         },
         "principalType": {
-          "$ref": "#/definitions/PluginSharePrincipalType"
+          "$ref": "#/$defs/PluginSharePrincipalType"
         },
         "role": {
-          "$ref": "#/definitions/PluginShareTargetRole"
+          "$ref": "#/$defs/PluginShareTargetRole"
         }
       },
       "required": [
-        "principalId",
         "principalType",
+        "principalId",
         "role"
       ],
       "type": "object"
@@ -43,23 +42,24 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "discoverability": {
-      "$ref": "#/definitions/PluginShareUpdateDiscoverability"
+      "$ref": "#/$defs/PluginShareUpdateDiscoverability"
     },
     "remotePluginId": {
       "type": "string"
     },
     "shareTargets": {
       "items": {
-        "$ref": "#/definitions/PluginShareTarget"
+        "$ref": "#/$defs/PluginShareTarget"
       },
       "type": "array"
     }
   },
   "required": [
-    "discoverability",
     "remotePluginId",
+    "discoverability",
     "shareTargets"
   ],
   "title": "PluginShareUpdateTargetsParams",
