@@ -689,6 +689,11 @@ jobs:
         with:
           tool: nextest@0.9.103
 
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
       - name: Build nextest archive
         shell: bash
         run: |
