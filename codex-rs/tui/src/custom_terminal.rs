@@ -46,6 +46,34 @@ use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 use unicode_width::UnicodeWidthStr;
 
+fn backend_error_to_io(err: impl std::error::Error) -> io::Error {
+    io::Error::other(err.to_string())
+}
+
+fn to_crossterm_color(color: Color) -> crossterm::style::Color {
+    match color {
+        Color::Reset => crossterm::style::Color::Reset,
+        Color::Black => crossterm::style::Color::Black,
+        Color::Red => crossterm::style::Color::DarkRed,
+        Color::Green => crossterm::style::Color::DarkGreen,
+        Color::Yellow => crossterm::style::Color::DarkYellow,
+        Color::Blue => crossterm::style::Color::DarkBlue,
+        Color::Magenta => crossterm::style::Color::DarkMagenta,
+        Color::Cyan => crossterm::style::Color::DarkCyan,
+        Color::Gray => crossterm::style::Color::Grey,
+        Color::DarkGray => crossterm::style::Color::DarkGrey,
+        Color::LightRed => crossterm::style::Color::Red,
+        Color::LightGreen => crossterm::style::Color::Green,
+        Color::LightYellow => crossterm::style::Color::Yellow,
+        Color::LightBlue => crossterm::style::Color::Blue,
+        Color::LightMagenta => crossterm::style::Color::Magenta,
+        Color::LightCyan => crossterm::style::Color::Cyan,
+        Color::White => crossterm::style::Color::White,
+        Color::Rgb(r, g, b) => crossterm::style::Color::Rgb { r, g, b },
+        Color::Indexed(index) => crossterm::style::Color::AnsiValue(index),
+    }
+}
+
 /// Returns the display width of a cell symbol, ignoring OSC escape sequences.
 ///
 /// OSC sequences (e.g. OSC 8 hyperlinks: `\x1B]8;;URL\x07`) are terminal
@@ -194,7 +222,7 @@ where
 {
     /// Creates a new [`Terminal`] with the given [`Backend`] and [`TerminalOptions`].
     pub fn with_options(mut backend: B) -> io::Result<Self> {
-        let screen_size = backend.size()?;
+        let screen_size = backend.size().map_err(backend_error_to_io)?;
         let cursor_pos = backend.get_cursor_position().unwrap_or_else(|err| {
             // Some PTYs do not answer CPR (`ESC[6n`); continue with a safe default instead
             // of failing TUI startup.
@@ -215,7 +243,7 @@ where
     /// the inline viewport anchor, so callers should only use this after they have chosen the same
     /// fallback they want the first render to honor.
     pub fn with_options_and_cursor_position(backend: B, cursor_pos: Position) -> io::Result<Self> {
-        let screen_size = backend.size()?;
+        let screen_size = backend.size().map_err(backend_error_to_io)?;
         Ok(Self::with_screen_size_and_cursor_position(
             backend,
             screen_size,
@@ -423,21 +451,21 @@ where
 
         self.swap_buffers();
 
-        Backend::flush(&mut self.backend)?;
+        Backend::flush(&mut self.backend).map_err(backend_error_to_io)?;
 
         Ok(())
     }
 
     /// Hides the cursor.
     pub fn hide_cursor(&mut self) -> io::Result<()> {
-        self.backend.hide_cursor()?;
+        self.backend.hide_cursor().map_err(backend_error_to_io)?;
         self.hidden_cursor = true;
         Ok(())
     }
 
     /// Shows the cursor.
     pub fn show_cursor(&mut self) -> io::Result<()> {
-        self.backend.show_cursor()?;
+        self.backend.show_cursor().map_err(backend_error_to_io)?;
         self.hidden_cursor = false;
         Ok(())
     }
@@ -457,13 +485,17 @@ where
     /// This is the position of the cursor after the last draw call.
     #[allow(dead_code)]
     pub fn get_cursor_position(&mut self) -> io::Result<Position> {
-        self.backend.get_cursor_position()
+        self.backend
+            .get_cursor_position()
+            .map_err(backend_error_to_io)
     }
 
     /// Sets the cursor position.
     pub fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
         let position = position.into();
-        self.backend.set_cursor_position(position)?;
+        self.backend
+            .set_cursor_position(position)
+            .map_err(backend_error_to_io)?;
         self.last_known_cursor_pos = position;
         Ok(())
     }
@@ -478,8 +510,12 @@ where
 
     /// Clear from `position` through the end of the visible screen and force a full redraw.
     pub(crate) fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
-        self.backend.set_cursor_position(position)?;
-        self.backend.clear_region(ClearType::AfterCursor)?;
+        self.backend
+            .set_cursor_position(position)
+            .map_err(backend_error_to_io)?;
+        self.backend
+            .clear_region(ClearType::AfterCursor)
+            .map_err(backend_error_to_io)?;
         // Reset the back buffer to make sure the next update will redraw everything.
         self.previous_buffer_mut().reset();
         Ok(())
@@ -515,7 +551,9 @@ where
         // with an explicit cursor-home before/after, matching the common `clear`
         // sequence (`CSI 2J` + `CSI H`).
         self.set_cursor_position(home)?;
-        self.backend.clear_region(ClearType::All)?;
+        self.backend
+            .clear_region(ClearType::All)
+            .map_err(backend_error_to_io)?;
         self.set_cursor_position(home)?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
@@ -561,7 +599,7 @@ where
 
     /// Queries the real size of the backend.
     pub fn size(&self) -> io::Result<Size> {
-        self.backend.size()
+        self.backend.size().map_err(backend_error_to_io)
     }
 }
 
@@ -669,7 +707,10 @@ where
                 if cell.fg != fg || cell.bg != bg {
                     queue!(
                         writer,
-                        SetColors(Colors::new(cell.fg.into(), cell.bg.into()))
+                        SetColors(Colors::new(
+                            to_crossterm_color(cell.fg),
+                            to_crossterm_color(cell.bg)
+                        ))
                     )?;
                     fg = cell.fg;
                     bg = cell.bg;
@@ -680,7 +721,7 @@ where
             DrawCommand::ClearToEnd { bg: clear_bg, .. } => {
                 queue!(writer, SetAttribute(crossterm::style::Attribute::Reset))?;
                 modifier = Modifier::empty();
-                queue!(writer, SetBackgroundColor(clear_bg.into()))?;
+                queue!(writer, SetBackgroundColor(to_crossterm_color(clear_bg)))?;
                 bg = clear_bg;
                 queue!(writer, Clear(crossterm::terminal::ClearType::UntilNewLine))?;
             }
@@ -804,6 +845,8 @@ mod tests {
     }
 
     impl Backend for CaptureBackend {
+        type Error = io::Error;
+
         fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
         where
             I: Iterator<Item = (u16, u16, &'a Cell)>,

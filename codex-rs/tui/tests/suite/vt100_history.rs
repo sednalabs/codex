@@ -41,7 +41,7 @@ impl TestScenario {
 
     fn redraw_viewport(&mut self, content: Line<'static>) {
         self.term
-            .draw(|frame| frame.render_widget_ref(content, frame.area()))
+            .draw(|frame| frame.render_widget_ref(&content, frame.area()))
             .expect("failed to draw viewport content in test");
     }
 }

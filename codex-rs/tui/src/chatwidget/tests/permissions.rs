@@ -599,9 +599,13 @@ async fn approvals_popup_shows_disabled_presets() {
 
     let width = 80;
     let height = chat.desired_height(width);
-    let mut terminal =
-        ratatui::Terminal::new(VT100Backend::new(width, height)).expect("create terminal");
-    terminal.set_viewport_area(Rect::new(0, 0, width, height));
+    let mut terminal = ratatui::Terminal::with_options(
+        VT100Backend::new(width, height),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, width, height)),
+        },
+    )
+    .expect("create terminal");
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("render approvals popup");
