@@ -248,7 +248,9 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
             Event::FocusGained => {
                 self.terminal_focused.store(true, Ordering::Relaxed);
-                crate::terminal_palette::requery_default_colors();
+                // Default colors are a startup snapshot. Upstream crossterm does not expose the
+                // fork-only event-aware OSC 10/11 query helpers, so focus redraws must not run
+                // direct tty color probes while the input event stream is active.
                 Some(TuiEvent::Draw)
             }
             Event::FocusLost => {

@@ -1881,9 +1881,13 @@ async fn status_widget_and_approval_modal_snapshot() {
     // Render at the widget's desired height and snapshot.
     let width: u16 = 100;
     let height = chat.desired_height(width);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
-        .expect("create terminal");
-    terminal.set_viewport_area(Rect::new(0, 0, width, height));
+    let mut terminal = ratatui::Terminal::with_options(
+        ratatui::backend::TestBackend::new(width, height),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, width, height)),
+        },
+    )
+    .expect("create terminal");
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw status + approval modal");
