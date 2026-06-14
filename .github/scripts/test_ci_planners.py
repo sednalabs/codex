@@ -5242,21 +5242,33 @@ jobs:
 
             violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
 
+        repo_scoped_runner = (
+            ".github/workflows/release.yml: repo-scoped runner label "
+            + "'${{ github.event.repository.name }}-linux-arm64' is not allowed; "
+            + "use a standard public GitHub-hosted runner label."
+        )
+        macos_large_runner = (
+            ".github/workflows/release.yml: runner label 'macos-15-large' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        macos_xlarge_runner = (
+            ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        windows_xlarge_runner = (
+            ".github/workflows/release.yml: runner label 'windows-2022-xlarge' "
+            + "uses a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
         self.assertEqual(
             violations,
             [
-                ".github/workflows/release.yml: repo-scoped runner label "
-                "'${{ github.event.repository.name }}-linux-arm64' is not allowed; "
-                "use a standard public GitHub-hosted runner label.",
-                ".github/workflows/release.yml: runner label 'macos-15-large' uses "
-                "a larger-runner size token; use standard public GitHub-hosted "
-                "runner labels.",
-                ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
-                "a larger-runner size token; use standard public GitHub-hosted "
-                "runner labels.",
-                ".github/workflows/release.yml: runner label 'windows-2022-xlarge' "
-                "uses a larger-runner size token; use standard public GitHub-hosted "
-                "runner labels.",
+                repo_scoped_runner,
+                macos_large_runner,
+                macos_xlarge_runner,
+                windows_xlarge_runner,
             ],
         )
 
@@ -5282,12 +5294,13 @@ jobs:
 
             violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
 
+        runner_group_violation = (
+            ".github/workflows/release.yml: runner groups are not allowed; use "
+            + "standard public GitHub-hosted runner labels directly."
+        )
         self.assertEqual(
             violations,
-            [
-                ".github/workflows/release.yml: runner groups are not allowed; use "
-                "standard public GitHub-hosted runner labels directly."
-            ],
+            [runner_group_violation],
         )
 
     def test_workflow_policy_rejects_runner_group_inputs(self) -> None:
@@ -5318,12 +5331,13 @@ jobs:
 
             violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
 
+        runner_group_input_violation = (
+            ".github/workflows/reusable.yml: runner group inputs are not allowed; "
+            + "use standard public GitHub-hosted runner labels directly."
+        )
         self.assertEqual(
             violations,
-            [
-                ".github/workflows/reusable.yml: runner group inputs are not allowed; "
-                "use standard public GitHub-hosted runner labels directly."
-            ],
+            [runner_group_input_violation],
         )
 
     def test_workflow_policy_does_not_treat_unused_runs_on_as_runner_override(self) -> None:
@@ -5351,13 +5365,14 @@ jobs:
 
             violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
 
+        xlarge_runner_violation = (
+            ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
         self.assertEqual(
             violations,
-            [
-                ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
-                "a larger-runner size token; use standard public GitHub-hosted "
-                "runner labels."
-            ],
+            [xlarge_runner_violation],
         )
 
     def test_workflow_policy_allows_standard_public_runners(self) -> None:
