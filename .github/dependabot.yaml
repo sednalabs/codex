@@ -5,11 +5,7 @@ updates:
   - package-ecosystem: npm
     directories:
       - /
-      - /codex-cli
-      - /codex-rs/responses-api-proxy/npm
       - /.devcontainer/codex-install
-      - /sdk/typescript
-      - /shell-tool-mcp
     schedule:
       interval: daily
       time: "03:00"
@@ -22,6 +18,10 @@ updates:
       interval: daily
       time: "03:00"
       timezone: Etc/UTC
+    ignore:
+      - dependency-name: keyring
+      - dependency-name: aws-config
+      - dependency-name: aws-sigv4
   - package-ecosystem: pip
     directories:
       - /scripts
@@ -50,6 +50,9 @@ updates:
       interval: daily
       time: "03:00"
       timezone: Etc/UTC
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
+      - dependency-name: EmbarkStudios/cargo-deny-action
   - package-ecosystem: rust-toolchain
     directories:
       - /codex-rs
