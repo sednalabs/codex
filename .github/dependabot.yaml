@@ -2,41 +2,59 @@
 
 version: 2
 updates:
-  - package-ecosystem: bun
-    directory: .github/actions/codex
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /codex-cli
+      - /codex-rs/responses-api-proxy/npm
+      - /.devcontainer/codex-install
+      - /sdk/typescript
+      - /shell-tool-mcp
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
   - package-ecosystem: cargo
     directories:
-      - codex-rs
-      - codex-rs/*
+      - /codex-rs
+      - /tools/argument-comment-lint
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+  - package-ecosystem: pip
+    directories:
+      - /scripts
+      - /sdk/python
+      - /sdk/python-runtime
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
   - package-ecosystem: devcontainers
     directory: /
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
   - package-ecosystem: docker
-    directory: codex-cli
+    directories:
+      - /.devcontainer
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
   - package-ecosystem: rust-toolchain
-    directory: codex-rs
+    directories:
+      - /codex-rs
+      - /tools/argument-comment-lint
     schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
