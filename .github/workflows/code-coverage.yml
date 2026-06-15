@@ -1,0 +1,164 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [main, upstream-main]
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/code-coverage.yml"
+      - "scripts/codex_package/**"
+      - "scripts/*.py"
+      - "sdk/python/**"
+      - "sdk/typescript/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    branches: [main, upstream-main]
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/code-coverage.yml"
+      - "scripts/codex_package/**"
+      - "scripts/*.py"
+      - "sdk/python/**"
+      - "sdk/typescript/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-coverage-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+
+jobs:
+  python-tools:
+    name: Python tool coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      code-quality: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install coverage
+        run: python -m pip install coverage pyyaml
+
+      - name: Run Python tool tests with coverage
+        run: |
+          set -euo pipefail
+          coverage run --source=.github/scripts,scripts/codex_package \
+            -m unittest discover -s scripts/codex_package -p 'test_*.py'
+          for test_file in .github/scripts/test_*.py; do
+            coverage run --append --source=.github/scripts,scripts/codex_package "${test_file}"
+          done
+          coverage xml -o coverage-python-tools.xml
+
+      - name: Upload Python tool coverage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: coverage-python-tools.xml
+          language: Python
+          label: code-coverage/python-tools
+
+  python-sdk:
+    name: Python SDK coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      code-quality: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
+      - name: Run Python SDK tests with coverage
+        working-directory: sdk/python
+        run: |
+          set -euo pipefail
+          uv run --extra dev --frozen --with pytest-cov \
+            pytest \
+              tests/test_async_client_behavior.py \
+              tests/test_client_rpc_methods.py \
+              tests/test_public_api_runtime_behavior.py \
+              tests/test_public_api_signatures.py \
+              --cov=src/openai_codex \
+              --cov-report=xml:coverage.xml
+
+      - name: Upload Python SDK coverage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: sdk/python/coverage.xml
+          language: Python
+          label: code-coverage/python-sdk
+
+  typescript-sdk:
+    name: TypeScript SDK coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      code-quality: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run TypeScript SDK tests with coverage
+        run: |
+          set -euo pipefail
+          pnpm --dir sdk/typescript exec jest \
+            tests/exec.test.ts \
+            --coverage \
+            --coverageReporters=cobertura \
+            --coverageDirectory=coverage
+
+      - name: Upload TypeScript SDK coverage
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: sdk/typescript/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/typescript-sdk
