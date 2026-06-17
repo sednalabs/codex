@@ -80,6 +80,7 @@ pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
     "codex.mcp.tools.fetch_uncached.duration_ms";
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_TOOL_LIST_PAGES: usize = 100;
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -419,7 +420,7 @@ where
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
 
-    loop {
+    for _ in 0..MAX_TOOL_LIST_PAGES {
         let params = cursor
             .as_ref()
             .map(|next| PaginatedRequestParams::default().with_cursor(Some(next.clone())));
@@ -436,6 +437,10 @@ where
             None => return Ok(collected),
         }
     }
+
+    Err(anyhow!(
+        "tools/list exceeded maximum page limit of {MAX_TOOL_LIST_PAGES}"
+    ))
 }
 
 fn sanitize_tool_connector_metadata(
@@ -783,6 +788,28 @@ mod tests {
 
         assert!(
             error.to_string().contains("duplicate cursor"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_tool_pages_rejects_excessive_page_count() {
+        let mut request_count = 0;
+
+        let result = collect_tool_pages(|_| {
+            request_count += 1;
+            let next_cursor = format!("page-{request_count}");
+            async move { Ok(tool_page(&["tool"], Some(&next_cursor))) }
+        })
+        .await;
+        let error = match result {
+            Ok(_) => panic!("excessive page count should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(request_count, MAX_TOOL_LIST_PAGES);
+        assert!(
+            error.to_string().contains("maximum page limit"),
             "unexpected error: {error:#}"
         );
     }
