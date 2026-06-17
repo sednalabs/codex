@@ -751,7 +751,7 @@ mod tests {
         let mut pages = vec![
             tool_page(&["tool_a", "tool_b"], Some("page-2")),
             tool_page(&["tool_c"], Some("page-3")),
-            tool_page(&["tool_d"], /* next_cursor */ None),
+            tool_page(&["tool_d"], /*next_cursor*/ None),
         ]
         .into_iter();
         let mut requested_cursors = Vec::new();
