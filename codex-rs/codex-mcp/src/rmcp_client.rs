@@ -8,8 +8,10 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -51,9 +53,11 @@ use codex_exec_server::ReqwestHttpClient;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
 use codex_rmcp_client::ExecutorStdioServerLauncher;
+use codex_rmcp_client::ListToolsWithConnectorIdResult;
 use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StdioServerLauncher;
+use codex_rmcp_client::ToolWithConnectorId;
 use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
@@ -61,6 +65,7 @@ use rmcp::model::ClientCapabilities;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
 use tokio_util::sync::CancellationToken;
@@ -345,11 +350,12 @@ pub(crate) async fn list_tools_for_client_uncached(
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
-    let resp = client
-        .list_tools_with_connector_ids(/*params*/ None, timeout)
-        .await?;
-    let tools = resp
-        .tools
+    let raw_tools = collect_tool_pages(|params| {
+        let client = Arc::clone(client);
+        async move { client.list_tools_with_connector_ids(params, timeout).await }
+    })
+    .await?;
+    let tools = raw_tools
         .into_iter()
         .map(|tool| {
             let mut tool_def = tool.tool;
@@ -402,6 +408,34 @@ pub(crate) async fn list_tools_for_client_uncached(
         return Ok(filter_disallowed_codex_apps_tools(tools));
     }
     Ok(tools)
+}
+
+async fn collect_tool_pages<F, Fut>(mut fetch_page: F) -> Result<Vec<ToolWithConnectorId>>
+where
+    F: FnMut(Option<PaginatedRequestParams>) -> Fut,
+    Fut: Future<Output = Result<ListToolsWithConnectorIdResult>>,
+{
+    let mut collected = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    loop {
+        let params = cursor
+            .as_ref()
+            .map(|next| PaginatedRequestParams::default().with_cursor(Some(next.clone())));
+        let response = fetch_page(params).await?;
+        collected.extend(response.tools);
+
+        match response.next_cursor {
+            Some(next) => {
+                if !seen_cursors.insert(next.clone()) {
+                    return Err(anyhow!("tools/list returned duplicate cursor"));
+                }
+                cursor = Some(next);
+            }
+            None => return Ok(collected),
+        }
+    }
 }
 
 fn sanitize_tool_connector_metadata(
@@ -663,6 +697,25 @@ mod tests {
     use rmcp::model::JsonObject;
     use rmcp::model::Meta;
 
+    fn connector_tool(name: &str) -> ToolWithConnectorId {
+        ToolWithConnectorId {
+            tool: RmcpTool::new(name, "test tool", Arc::new(JsonObject::default())),
+            connector_id: None,
+            connector_name: None,
+            connector_description: None,
+        }
+    }
+
+    fn tool_page(
+        names: &[&str],
+        next_cursor: Option<&str>,
+    ) -> ListToolsWithConnectorIdResult {
+        ListToolsWithConnectorIdResult {
+            next_cursor: next_cursor.map(str::to_string),
+            tools: names.iter().map(|name| connector_tool(name)).collect(),
+        }
+    }
+
     fn tool_with_connector_meta() -> RmcpTool {
         RmcpTool::new(
             "capture_file_upload",
@@ -685,6 +738,59 @@ mod tests {
             .expect("object")
             .clone(),
         ))
+    }
+
+    #[tokio::test]
+    async fn collect_tool_pages_follows_next_cursor() {
+        let mut pages = vec![
+            tool_page(&["tool_a", "tool_b"], Some("page-2")),
+            tool_page(&["tool_c"], Some("page-3")),
+            tool_page(&["tool_d"], None),
+        ]
+        .into_iter();
+        let mut requested_cursors = Vec::new();
+
+        let tools = collect_tool_pages(|params| {
+            requested_cursors.push(params.and_then(|params| params.cursor));
+            let page = pages.next().expect("expected page request");
+            async move { Ok(page) }
+        })
+        .await
+        .expect("collects all pages");
+
+        assert_eq!(
+            requested_cursors,
+            vec![None, Some("page-2".to_string()), Some("page-3".to_string())]
+        );
+        let names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool.tool.name.as_ref())
+            .collect();
+        assert_eq!(names, ["tool_a", "tool_b", "tool_c", "tool_d"]);
+    }
+
+    #[tokio::test]
+    async fn collect_tool_pages_rejects_duplicate_cursor() {
+        let mut pages = vec![
+            tool_page(&["tool_a"], Some("page-2")),
+            tool_page(&["tool_b"], Some("page-2")),
+        ]
+        .into_iter();
+
+        let result = collect_tool_pages(|_| {
+            let page = pages.next().expect("expected page request");
+            async move { Ok(page) }
+        })
+        .await;
+        let error = match result {
+            Ok(_) => panic!("duplicate cursor should fail"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("duplicate cursor"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
