@@ -165,11 +165,15 @@ pub fn create_send_message_tool() -> ToolSpec {
             )),
         ),
         (
-            "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to queue on the target agent.".to_string(),
-            ))
-            .with_encrypted(),
+            "items".to_string(),
+            create_collab_text_input_items_schema(),
+        ),
+        (
+            "interrupt".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, stop the agent's current task and handle this immediately. When false (default), queue this message."
+                    .to_string(),
+            )),
         ),
     ]);
 
