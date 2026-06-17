@@ -706,10 +706,7 @@ mod tests {
         }
     }
 
-    fn tool_page(
-        names: &[&str],
-        next_cursor: Option<&str>,
-    ) -> ListToolsWithConnectorIdResult {
+    fn tool_page(names: &[&str], next_cursor: Option<&str>) -> ListToolsWithConnectorIdResult {
         ListToolsWithConnectorIdResult {
             next_cursor: next_cursor.map(str::to_string),
             tools: names.iter().map(|name| connector_tool(name)).collect(),
@@ -762,10 +759,7 @@ mod tests {
             requested_cursors,
             vec![None, Some("page-2".to_string()), Some("page-3".to_string())]
         );
-        let names: Vec<_> = tools
-            .iter()
-            .map(|tool| tool.tool.name.as_ref())
-            .collect();
+        let names: Vec<_> = tools.iter().map(|tool| tool.tool.name.as_ref()).collect();
         assert_eq!(names, ["tool_a", "tool_b", "tool_c", "tool_d"]);
     }
 
