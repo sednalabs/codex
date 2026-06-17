@@ -1976,7 +1976,10 @@ async fn multi_agent_v2_send_message_rejects_legacy_message_field() {
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
     let mut config = turn.config.as_ref().clone();
-    let _ = config.features.enable(Feature::MultiAgentV2);
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);

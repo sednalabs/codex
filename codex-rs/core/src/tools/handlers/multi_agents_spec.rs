@@ -166,7 +166,7 @@ pub fn create_send_message_tool() -> ToolSpec {
         ),
         (
             "items".to_string(),
-            create_collab_text_input_items_schema(),
+            create_collab_text_input_items_schema().with_encrypted(),
         ),
         (
             "interrupt".to_string(),
