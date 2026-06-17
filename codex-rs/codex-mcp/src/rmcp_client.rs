@@ -704,7 +704,11 @@ mod tests {
 
     fn connector_tool(name: &str) -> ToolWithConnectorId {
         ToolWithConnectorId {
-            tool: RmcpTool::new(name.to_string(), "test tool", Arc::new(JsonObject::default())),
+            tool: RmcpTool::new(
+                name.to_string(),
+                "test tool",
+                Arc::new(JsonObject::default()),
+            ),
             connector_id: None,
             connector_name: None,
             connector_description: None,
