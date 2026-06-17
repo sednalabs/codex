@@ -266,15 +266,13 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
         .as_ref()
         .expect("send_message should use object params");
     assert!(properties.contains_key("target"));
-    assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("items"));
     assert_eq!(
-        properties
-            .get("message")
-            .and_then(|schema| schema.encrypted),
+        properties.get("items").and_then(|schema| schema.encrypted),
         Some(true)
     );
-    assert!(!properties.contains_key("interrupt"));
-    assert!(!properties.contains_key("items"));
+    assert!(properties.contains_key("interrupt"));
+    assert!(!properties.contains_key("message"));
     assert_eq!(
         properties
             .get("target")

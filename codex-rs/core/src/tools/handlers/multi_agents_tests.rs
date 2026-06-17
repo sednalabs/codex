@@ -1341,7 +1341,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             "send_message",
             function_payload(json!({
                 "target": "test_process",
-                "message": "encrypted-send-message"
+                "items": [{"type": "text", "text": "encrypted-send-message"}]
             })),
         ))
         .await
@@ -1538,7 +1538,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
             "send_message",
             function_payload(json!({
                 "target": "/root",
-                "message": "encrypted-done"
+                "items": [{"type": "text", "text": "encrypted-done"}]
             })),
         ))
         .await
@@ -1966,7 +1966,63 @@ async fn multi_agent_v2_list_agents_keeps_interrupted_resident_agents() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
+async fn multi_agent_v2_send_message_rejects_legacy_message_field() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "boot worker",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn worker");
+    let agent_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker should resolve");
+    let invocation = invocation(
+        session,
+        turn,
+        "send_message",
+        function_payload(json!({
+            "target": agent_id.to_string(),
+            "message": "continue"
+        })),
+    );
+
+    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+        panic!("legacy message field should be rejected in v2");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("legacy message field should surface as a model-facing error");
+    };
+    assert!(message.contains("unknown field `message`"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_send_message_rejects_non_text_items() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
