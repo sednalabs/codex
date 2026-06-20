@@ -32,5 +32,6 @@ pub use render::default_skill_metadata_budget;
 pub use render::render_available_skills_body;
 pub use root_loader::PluginSkillSnapshots;
 pub use service::SkillsLoadInput;
-pub use service::SkillsService;
+pub use service::SkillsManager;
+pub use service::SkillsManager as SkillsService;
 pub use skill_instructions::SkillInstructions;

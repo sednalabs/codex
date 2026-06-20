@@ -13,6 +13,7 @@ use codex_utils_plugins::PluginSkillRoot;
 use tracing::info;
 use tracing::warn;
 
+use crate::HostSkillsSnapshot;
 use crate::SkillLoadOutcome;
 use crate::build_implicit_skill_path_indexes;
 use crate::config_rules::SkillConfigRules;
@@ -125,6 +126,14 @@ impl SkillsManager {
         outcome
     }
 
+    pub async fn snapshot_for_config(
+        &self,
+        input: &SkillsLoadInput,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
+    ) -> HostSkillsSnapshot {
+        HostSkillsSnapshot::new(Arc::new(self.skills_for_config(input, fs).await))
+    }
+
     pub async fn skill_roots_for_config(
         &self,
         input: &SkillsLoadInput,
@@ -181,6 +190,15 @@ impl SkillsManager {
             cache.insert(input.cwd.clone(), outcome.clone());
         }
         outcome
+    }
+
+    pub async fn snapshot_for_cwd(
+        &self,
+        input: &SkillsLoadInput,
+        force_reload: bool,
+        fs: Option<Arc<dyn ExecutorFileSystem>>,
+    ) -> HostSkillsSnapshot {
+        HostSkillsSnapshot::new(Arc::new(self.skills_for_cwd(input, force_reload, fs).await))
     }
 
     async fn build_skill_outcome(
@@ -392,5 +410,5 @@ fn finalize_skill_outcome(
 }
 
 #[cfg(test)]
-#[path = "manager_tests.rs"]
+#[path = "service_tests.rs"]
 mod tests;
