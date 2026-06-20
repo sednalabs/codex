@@ -176,7 +176,7 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
         url: UNEXPIRED_SERVER_URL.to_string(),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
-        expires_at: Some(now.saturating_add(/*rhs*/ 60_000)),
+        expires_at: Some(now.saturating_add(/*rhs*/ 120_000)),
     };
     save_oauth_tokens(SERVER_NAME, &tokens, OAuthCredentialsStoreMode::File)?;
 
