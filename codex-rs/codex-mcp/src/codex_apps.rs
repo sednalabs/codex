@@ -277,6 +277,10 @@ fn write_cached_codex_apps_server_info(
     Ok(())
 }
 
+pub(crate) fn filter_disallowed_codex_apps_tools(tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
+    tools
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexAppsToolsDiskCache {
     schema_version: u8,
