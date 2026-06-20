@@ -162,6 +162,26 @@ fn load_oauth_tokens_with_keyring_store<K: KeyringStore>(
     }
 }
 
+fn load_oauth_tokens_for_refresh_with_keyring_store<K: KeyringStore>(
+    keyring_store: &K,
+    server_name: &str,
+    url: &str,
+    resolved_store: ResolvedOAuthCredentialStore,
+) -> Result<Option<StoredOAuthTokens>> {
+    match resolved_store {
+        ResolvedOAuthCredentialStore::File => load_oauth_tokens_from_file(server_name, url)
+            .context("failed to reread OAuth tokens from resolved file storage"),
+        ResolvedOAuthCredentialStore::Keyring => load_oauth_tokens_from_keyring(
+            keyring_store,
+            server_name,
+            url,
+        )
+        .context(
+            "failed to reread OAuth tokens from resolved keyring storage; refusing file fallback",
+        ),
+    }
+}
+
 pub(crate) fn oauth_token_status(
     server_name: &str,
     url: &str,
@@ -472,26 +492,6 @@ impl OAuthPersistor {
             .await
     }
 
-    fn load_resolved_credentials(&self) -> Result<Option<StoredOAuthTokens>> {
-        let keyring_store = DefaultKeyringStore;
-        match self.inner.credential_store {
-            ResolvedOAuthCredentialStore::File => {
-                load_oauth_tokens_from_file(&self.inner.server_name, &self.inner.url)
-                    .context("failed to reread OAuth tokens from resolved file storage")
-            }
-            ResolvedOAuthCredentialStore::Keyring => {
-                load_oauth_tokens_from_keyring(
-                    &keyring_store,
-                    &self.inner.server_name,
-                    &self.inner.url,
-                )
-                .context(
-                    "failed to reread OAuth tokens from resolved keyring storage; refusing file fallback",
-                )
-            }
-        }
-    }
-
     fn save_resolved_credentials(&self, tokens: &StoredOAuthTokens) -> Result<()> {
         let keyring_store = DefaultKeyringStore;
         match self.inner.credential_store {
@@ -502,14 +502,25 @@ impl OAuthPersistor {
         }
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "AuthorizationManager async access must be serialized through its mutex"
-    )]
     async fn refresh_transaction(
         &self,
         reason: RefreshReason,
         overall_timeout: Duration,
+    ) -> Result<()> {
+        let keyring_store = DefaultKeyringStore;
+        self.refresh_transaction_with_keyring_store(reason, overall_timeout, &keyring_store)
+            .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager async access must be serialized through its mutex"
+    )]
+    async fn refresh_transaction_with_keyring_store<K: KeyringStore>(
+        &self,
+        reason: RefreshReason,
+        overall_timeout: Duration,
+        keyring_store: &K,
     ) -> Result<()> {
         let local_access_token = {
             let last_credentials = self.inner.last_credentials.lock().await;
@@ -531,7 +542,13 @@ impl OAuthPersistor {
         // Reread after acquiring the cross-process lock. If another Codex
         // client refreshed the rotating token first, this process must adopt
         // that newer state instead of replaying its stale refresh token.
-        let Some(latest) = self.load_resolved_credentials()? else {
+        let Some(latest) = load_oauth_tokens_for_refresh_with_keyring_store(
+            keyring_store,
+            &self.inner.server_name,
+            &self.inner.url,
+            self.inner.credential_store,
+        )?
+        else {
             self.clear_manager_credentials().await;
             let mut last_credentials = self.inner.last_credentials.lock().await;
             *last_credentials = None;
@@ -1566,6 +1583,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn refresh_transaction_keeps_manager_credentials_on_keyring_reread_error() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockKeyringStore::default();
+        let mut tokens = sample_tokens();
+        tokens.expires_at = Some(0);
+        tokens
+            .token_response
+            .0
+            .set_expires_in(Some(&Duration::ZERO));
+        let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
+        store.set_error(&key, KeyringError::Invalid("error".into(), "load".into()));
+
+        let manager = authorization_manager_for(&tokens).await?;
+        let persistor = OAuthPersistor::new(
+            tokens.server_name.clone(),
+            tokens.url.clone(),
+            manager.clone(),
+            ResolvedOAuthCredentialStore::Keyring,
+            Some(tokens.clone()),
+        );
+
+        let error = persistor
+            .refresh_transaction_with_keyring_store(
+                RefreshReason::Expiry,
+                Duration::from_secs(/*secs*/ 1),
+                &store,
+            )
+            .await
+            .expect_err("keyring reread failure should abort refresh");
+
+        assert!(
+            format!("{error:#}")
+                .contains("failed to reread OAuth tokens from resolved keyring storage"),
+            "unexpected error: {error:#}"
+        );
+        let access_token = manager.lock().await.get_access_token().await?;
+        assert_eq!(
+            access_token,
+            tokens.token_response.0.access_token().secret()
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn locked_save_waits_for_refresh_transaction_lock() -> Result<()> {
         let _env = TempCodexHome::new();
         let tokens = sample_tokens();
@@ -1599,6 +1660,30 @@ mod tests {
         let saved = super::read_fallback_file()?.expect("fallback file should load");
         assert!(saved.contains_key(&key));
         Ok(())
+    }
+
+    async fn authorization_manager_for(
+        tokens: &StoredOAuthTokens,
+    ) -> Result<std::sync::Arc<tokio::sync::Mutex<AuthorizationManager>>> {
+        let manager = std::sync::Arc::new(tokio::sync::Mutex::new(
+            AuthorizationManager::new(&tokens.url).await?,
+        ));
+        {
+            let mut guard = manager.lock().await;
+            guard.set_metadata(rmcp::transport::auth::AuthorizationMetadata {
+                authorization_endpoint: "https://auth.example.test/authorize".to_string(),
+                token_endpoint: "https://auth.example.test/token".to_string(),
+                registration_endpoint: None,
+                issuer: None,
+                jwks_uri: None,
+                scopes_supported: None,
+                response_types_supported: None,
+                code_challenge_methods_supported: None,
+                additional_fields: Default::default(),
+            });
+        }
+        super::install_tokens_in_manager(&manager, tokens).await?;
+        Ok(manager)
     }
 
     fn assert_tokens_match_without_expiry(
