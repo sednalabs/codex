@@ -4329,30 +4329,26 @@ mod tests {
 
         assert_eq!(
             meta.dynamic_tools,
-            Some(vec![DynamicToolSpec::Namespace(
-                crate::dynamic_tools::DynamicToolNamespaceSpec {
-                    name: "legacy_app".to_string(),
-                    description: String::new(),
-                    tools: vec![
-                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
-                            crate::dynamic_tools::DynamicToolFunctionSpec {
-                                name: "lookup_ticket".to_string(),
-                                description: "Look up a ticket".to_string(),
-                                input_schema: json!({"type": "object", "properties": {}}),
-                                defer_loading: true,
-                            },
-                        ),
-                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
-                            crate::dynamic_tools::DynamicToolFunctionSpec {
-                                name: "update_ticket".to_string(),
-                                description: "Update a ticket".to_string(),
-                                input_schema: json!({"type": "object", "properties": {}}),
-                                defer_loading: false,
-                            },
-                        ),
-                    ],
+            Some(vec![
+                DynamicToolSpec {
+                    namespace: Some("legacy_app".to_string()),
+                    name: "lookup_ticket".to_string(),
+                    description: "Look up a ticket".to_string(),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                    defer_loading: true,
+                    persist_on_resume: true,
+                    capability: None,
                 },
-            )])
+                DynamicToolSpec {
+                    namespace: Some("legacy_app".to_string()),
+                    name: "update_ticket".to_string(),
+                    description: "Update a ticket".to_string(),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                    defer_loading: false,
+                    persist_on_resume: true,
+                    capability: None,
+                },
+            ])
         );
         Ok(())
     }
