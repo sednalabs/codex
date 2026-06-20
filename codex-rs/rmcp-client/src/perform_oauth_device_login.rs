@@ -19,7 +19,7 @@ use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::perform_oauth_login::OAuthProviderError;
-use crate::save_oauth_tokens;
+use crate::save_oauth_tokens_locked;
 use crate::utils::build_default_headers;
 use crate::utils::build_reqwest_client;
 use codex_config::types::OAuthCredentialsStoreMode;
@@ -109,7 +109,7 @@ pub async fn perform_oauth_device_login(
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at,
     };
-    save_oauth_tokens(server_name, &stored, store_mode)
+    save_oauth_tokens_locked(server_name, &stored, store_mode).await
 }
 
 async fn resolve_device_oauth_client_id(
