@@ -1485,6 +1485,7 @@ fn thread_start_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             config, /*control_instructions*/ None,
         ),
+        dynamic_tools: configured_native_dynamic_tools(config),
         ..ThreadStartParams::default()
     }
 }
@@ -1520,6 +1521,7 @@ fn thread_resume_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
+        dynamic_tools: configured_native_dynamic_tools(&config),
         ..ThreadResumeParams::default()
     }
 }
@@ -1560,14 +1562,24 @@ fn thread_fork_params_from_config(
         ),
         ephemeral: config.ephemeral,
         thread_source: Some(thread_source),
-        dynamic_tools: configured_native_dynamic_tools(),
+        dynamic_tools: configured_native_dynamic_tools(&config),
         ..ThreadForkParams::default()
     }
 }
 
-fn configured_native_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let mut tools = crate::browser_computer_use_provider::configured_browser_dynamic_tools();
-    tools.extend(crate::android_computer_use_provider::configured_android_dynamic_tools());
+fn configured_native_dynamic_tools(
+    config: &Config,
+) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let codex_home = config.codex_home.as_path();
+    let mut tools =
+        crate::browser_computer_use_provider::configured_browser_dynamic_tools_for_codex_home(
+            codex_home,
+        );
+    tools.extend(
+        crate::android_computer_use_provider::configured_android_dynamic_tools_for_codex_home(
+            codex_home,
+        ),
+    );
     tools.extend(crate::desktop_computer_use_provider::configured_desktop_dynamic_tools());
     (!tools.is_empty()).then_some(tools)
 }
@@ -1983,6 +1995,50 @@ mod tests {
         );
 
         assert_eq!(params.session_start_source, Some(ThreadStartSource::Clear));
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_include_configured_native_dynamic_tools() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp_dir.path().join("browser-computer-use.json"),
+            r#"{"provider":"playwright"}"#,
+        )
+        .expect("write browser provider config");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+        let expected_browser_tools =
+            crate::browser_computer_use_provider::configured_browser_dynamic_tools_for_codex_home(
+                temp_dir.path(),
+            );
+
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ThreadSource::User,
+        );
+        let start_tools = start
+            .dynamic_tools
+            .expect("start should include configured native tools");
+
+        assert!(!expected_browser_tools.is_empty());
+        assert!(start_tools.starts_with(&expected_browser_tools));
+        assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
+        assert_eq!(fork.dynamic_tools, Some(start_tools));
     }
 
     #[test]
