@@ -1603,13 +1603,10 @@ mod tests {
             ResolvedOAuthCredentialStore::Keyring,
             Some(tokens.clone()),
         );
+        let refresh_timeout = Duration::from_secs(1);
 
         let error = persistor
-            .refresh_transaction_with_keyring_store(
-                RefreshReason::Expiry,
-                Duration::from_secs(/*secs*/ 1),
-                &store,
-            )
+            .refresh_transaction_with_keyring_store(RefreshReason::Expiry, refresh_timeout, &store)
             .await
             .expect_err("keyring reread failure should abort refresh");
 
@@ -1621,7 +1618,7 @@ mod tests {
         let access_token = manager.lock().await.get_access_token().await?;
         assert_eq!(
             access_token,
-            tokens.token_response.0.access_token().secret()
+            tokens.token_response.0.access_token().secret().as_str()
         );
         Ok(())
     }
@@ -1668,21 +1665,17 @@ mod tests {
         let manager = std::sync::Arc::new(tokio::sync::Mutex::new(
             AuthorizationManager::new(&tokens.url).await?,
         ));
+        let store = InMemoryCredentialStore::new();
+        store
+            .save(super::stored_credentials_from_tokens(
+                tokens,
+                CredentialExposure::Request,
+            ))
+            .await?;
         {
             let mut guard = manager.lock().await;
-            guard.set_metadata(rmcp::transport::auth::AuthorizationMetadata {
-                authorization_endpoint: "https://auth.example.test/authorize".to_string(),
-                token_endpoint: "https://auth.example.test/token".to_string(),
-                registration_endpoint: None,
-                issuer: None,
-                jwks_uri: None,
-                scopes_supported: None,
-                response_types_supported: None,
-                code_challenge_methods_supported: None,
-                additional_fields: Default::default(),
-            });
+            guard.set_credential_store(store);
         }
-        super::install_tokens_in_manager(&manager, tokens).await?;
         Ok(manager)
     }
 
