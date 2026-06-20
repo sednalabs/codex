@@ -201,7 +201,6 @@ impl McpConnectionManager {
                 server_name.clone(),
                 server,
                 store_mode,
-                keyring_backend_kind,
                 cancel_token.clone(),
                 tx_event.clone(),
                 elicitation_requests.clone(),
@@ -210,7 +209,6 @@ impl McpConnectionManager {
                 runtime_context.clone(),
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
-                supports_openai_form_elicitation,
             );
             clients.insert(server_name.clone(), async_managed_client.clone());
             let tx_event = tx_event.clone();

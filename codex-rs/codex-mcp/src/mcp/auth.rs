@@ -223,7 +223,6 @@ async fn compute_auth_status(
                 http_headers.clone(),
                 env_http_headers.clone(),
                 store_mode,
-                keyring_backend_kind,
             )
             .await
         }
