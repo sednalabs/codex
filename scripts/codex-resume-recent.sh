@@ -36,6 +36,8 @@ launch_cwd=0
 include_side_chats=0
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 history_file="$codex_home/history.jsonl"
+current_user="${USER:-$(id -un)}"
+uuid_ere='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 
 while (($# > 0)); do
   case "$1" in
@@ -98,7 +100,7 @@ if [[ ! -f "$history_file" ]]; then
   exit 1
 fi
 
-for cmd in jq ps tac awk sort; do
+for cmd in jq ps tac awk sort readlink; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing required command: $cmd" >&2
     exit 1
@@ -184,13 +186,53 @@ session_is_side_chat() {
   usage_db_marks_side_chat "$id"
 }
 
-mapfile -t running_ids < <(
-  ps -eo args= | awk 'BEGIN{IGNORECASE=1}
-    /codex/ && / resume / {
-      if (match($0, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)) {
-        print substr($0, RSTART, RLENGTH)
+codex_process_rows() {
+  ps -u "$current_user" -ww -o pid= -o comm= -o args= | awk '
+    {
+      pid = $1
+      comm = $2
+      sub(/^.*\//, "", comm)
+      if (comm != "codex") {
+        next
       }
-    }' | sort -u
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]*/, "", $0)
+      print pid "\t" $0
+    }
+  '
+}
+
+running_ids_from_process_args() {
+  local args="$1"
+
+  [[ "$args" == *" resume "* || "$args" == "resume "* ]] || return 0
+  if [[ "$args" =~ $uuid_ere ]]; then
+    printf '%s\n' "${BASH_REMATCH[0],,}"
+  fi
+}
+
+running_ids_from_process_fds() {
+  local pid="$1"
+  local fd
+  local fd_target
+  local session_prefix="$codex_home/sessions/"
+
+  [[ -d "/proc/$pid/fd" ]] || return 0
+  for fd in "/proc/$pid/fd/"*; do
+    [[ -L "$fd" ]] || continue
+    fd_target="$(readlink "$fd" 2>/dev/null || true)"
+    [[ "$fd_target" == "$session_prefix"* ]] || continue
+    if [[ "$fd_target" =~ $uuid_ere ]]; then
+      printf '%s\n' "${BASH_REMATCH[0],,}"
+    fi
+  done
+}
+
+mapfile -t running_ids < <(
+  while IFS=$'\t' read -r pid args; do
+    [[ -z "$pid" ]] && continue
+    running_ids_from_process_args "$args"
+    running_ids_from_process_fds "$pid"
+  done < <(codex_process_rows) | sort -u
 )
 
 mapfile -t recent_ids < <(
