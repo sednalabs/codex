@@ -24,6 +24,27 @@ RELEASE_INSTALL_SCRIPT = "scripts/install_sedna_release_asset"
 DRY_RUN_FIELD_PATTERN = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field)\s+['\"]?dry_run=true['\"]?(?:\s|$)"
 )
+FORBIDDEN_RUNNER_SIZE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:xlarge|large|xl)(?![A-Za-z0-9])", re.IGNORECASE
+)
+STANDARD_PUBLIC_RUNNER_PATTERNS = (
+    re.compile(r"ubuntu-(?:latest|slim|\d{2}\.\d{2}(?:-arm)?)"),
+    re.compile(r"windows-(?:latest|\d{4}(?:-vs\d{4})?|\d{2}(?:-vs\d{4})?-arm)"),
+    re.compile(r"macos-(?:latest|\d{2}(?:-intel)?)"),
+)
+RUNNER_FIELD_NAMES = {
+    "runs-on",
+    "runs_on",
+    "runner",
+    "archive_runner",
+    "os",
+}
+RUNNER_GROUP_FIELD_NAMES = {
+    "runner_group",
+    "runner_labels",
+    "archive_runner_group",
+    "archive_runner_labels",
+}
 
 
 def workflow_paths(root: Path) -> list[Path]:
@@ -47,16 +68,161 @@ def walk_mappings(value: Any):
             yield from walk_mappings(child)
 
 
+def iter_runner_fields(value: Any, *, skip_runner_with_explicit_runs_on: bool = False):
+    if isinstance(value, dict):
+        has_explicit_runner_selector = "runs-on" in value or "runs_on" in value
+        for child_key, child in value.items():
+            key = str(child_key)
+            if (
+                key == "runner"
+                and skip_runner_with_explicit_runs_on
+                and has_explicit_runner_selector
+            ):
+                continue
+            if key in RUNNER_FIELD_NAMES or key in RUNNER_GROUP_FIELD_NAMES:
+                yield key, child
+            else:
+                yield from iter_runner_fields(
+                    child,
+                    skip_runner_with_explicit_runs_on=skip_runner_with_explicit_runs_on,
+                )
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_runner_fields(
+                child,
+                skip_runner_with_explicit_runs_on=skip_runner_with_explicit_runs_on,
+            )
+
+
+def iter_runner_labels(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_runner_labels(child)
+
+
+def is_expression(value: str) -> bool:
+    stripped = value.strip()
+    return stripped.startswith("${{") and stripped.endswith("}}")
+
+
+def is_standard_public_runner_label(value: str) -> bool:
+    return any(pattern.fullmatch(value) for pattern in STANDARD_PUBLIC_RUNNER_PATTERNS)
+
+
+def workflow_call_inputs(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    triggers = payload.get("on")
+    if not isinstance(triggers, dict):
+        return {}
+    workflow_call = triggers.get("workflow_call")
+    if not isinstance(workflow_call, dict):
+        return {}
+    inputs = workflow_call.get("inputs")
+    return inputs if isinstance(inputs, dict) else {}
+
+
+def check_runner_value(key: str, value: Any, violations: set[str]) -> None:
+    if key in RUNNER_GROUP_FIELD_NAMES:
+        violations.add(
+            "runner group inputs are not allowed; use standard public "
+            "GitHub-hosted runner labels directly."
+        )
+        return
+
+    if isinstance(value, list) and "self-hosted" in value:
+        violations.add(
+            "self-hosted runners are not allowed; use external deployment "
+            "automation for host-local operations."
+        )
+        return
+
+    if isinstance(value, dict):
+        if "group" in value or "labels" in value:
+            violations.add(
+                "runner groups are not allowed; use standard public GitHub-hosted "
+                "runner labels directly."
+            )
+        else:
+            violations.add(
+                "object-valued runner selectors are not allowed; use standard "
+                "public GitHub-hosted runner labels directly."
+            )
+        return
+
+    for label in iter_runner_labels(value):
+        if label == "self-hosted":
+            violations.add(
+                "self-hosted runners are not allowed; use external deployment "
+                "automation for host-local operations."
+            )
+            continue
+        if "github.event.repository.name" in label:
+            violations.add(
+                f"repo-scoped runner label '{label}' is not allowed; use a "
+                "standard public GitHub-hosted runner label."
+            )
+            continue
+        if FORBIDDEN_RUNNER_SIZE_PATTERN.search(label):
+            violations.add(
+                f"runner label '{label}' uses a larger-runner size token; use "
+                "standard public GitHub-hosted runner labels."
+            )
+            continue
+        if is_expression(label):
+            continue
+        if not is_standard_public_runner_label(label):
+            violations.add(
+                f"runner label '{label}' is not a recognized standard public "
+                "GitHub-hosted runner label."
+            )
+
+
+def check_runner_fields(
+    value: Any,
+    violations: set[str],
+    *,
+    skip_runner_with_explicit_runs_on: bool = False,
+) -> None:
+    for key, runner_value in iter_runner_fields(
+        value,
+        skip_runner_with_explicit_runs_on=skip_runner_with_explicit_runs_on,
+    ):
+        check_runner_value(key, runner_value, violations)
+
+
+def runner_policy_violations(payload: Any) -> list[str]:
+    violations: set[str] = set()
+    for input_name in workflow_call_inputs(payload):
+        if input_name in RUNNER_GROUP_FIELD_NAMES:
+            violations.add(
+                "runner group inputs are not allowed; use standard public "
+                "GitHub-hosted runner labels directly."
+            )
+
+    for _job_id, job in iter_jobs(payload):
+        runs_on = job.get("runs-on")
+        if "runs-on" in job:
+            check_runner_value("runs-on", runs_on, violations)
+        strategy = job.get("strategy")
+        if isinstance(strategy, dict):
+            check_runner_fields(
+                strategy.get("matrix"),
+                violations,
+                skip_runner_with_explicit_runs_on=isinstance(runs_on, str)
+                and "matrix.runs_on" in runs_on,
+            )
+        workflow_inputs = job.get("with")
+        if isinstance(workflow_inputs, dict):
+            check_runner_fields(workflow_inputs, violations)
+
+    return sorted(violations)
+
+
 def is_action_ref(uses: Any, action: str) -> bool:
     return isinstance(uses, str) and uses.startswith(f"{action}@")
-
-
-def uses_self_hosted_runner(runs_on: Any) -> bool:
-    if isinstance(runs_on, str):
-        return runs_on == "self-hosted"
-    if isinstance(runs_on, list):
-        return "self-hosted" in runs_on
-    return False
 
 
 def workflow_has_trigger(payload: Any, trigger_name: str) -> bool:
@@ -200,13 +366,9 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
     for path in workflow_paths(root):
         relative_path = path.relative_to(root)
         payload = load_workflow(path)
+        for violation in runner_policy_violations(payload):
+            violations.append(f"{relative_path}: {violation}")
         for node in walk_mappings(payload):
-            if uses_self_hosted_runner(node.get("runs-on")):
-                violations.append(
-                    f"{relative_path}: public workflows must not use self-hosted runners; "
-                    "use external deployment automation for host-local operations."
-                )
-
             if grants_write_all(node.get("permissions")):
                 violations.append(
                     f"{relative_path}: permissions must not use write-all; "
