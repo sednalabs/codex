@@ -15,6 +15,7 @@ use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_policy::ExecApprovalRequest;
+use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
 use crate::tools::context::ExecCommandToolOutput;
@@ -26,6 +27,7 @@ use crate::tools::network_approval::finish_deferred_network_approval;
 use crate::tools::orchestrator::ToolOrchestrator;
 use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolRequest;
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
+use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::unified_exec::ExecCommandRequest;
@@ -50,13 +52,15 @@ use crate::unified_exec::process::OutputBuffer;
 use crate::unified_exec::process::OutputHandles;
 use crate::unified_exec::process::SpawnLifecycleHandle;
 use crate::unified_exec::process::UnifiedExecProcess;
+use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_sandboxing::SandboxCommand;
 use codex_tools::ToolName;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::approx_token_count;
+use codex_utils_path_uri::PathUri;
 
 const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
     ("NO_COLOR", "1"),
@@ -156,7 +160,7 @@ fn exec_server_params_for_request(
     codex_exec_server::ExecParams {
         process_id: exec_server_process_id(process_id).into(),
         argv: request.command.clone(),
-        cwd: request.cwd.to_path_buf(),
+        cwd: request.cwd.clone(),
         env_policy,
         env,
         tty,
@@ -293,7 +297,7 @@ async fn emit_failed_initial_exec_end_if_unstored(
     process_started_alive: bool,
     context: &UnifiedExecContext,
     request: &ExecCommandRequest,
-    cwd: AbsolutePathBuf,
+    cwd: PathUri,
     transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
     fallback_output: String,
     message: String,
@@ -418,7 +422,6 @@ impl UnifiedExecProcessManager {
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
-            request.terminal_wait.clone(),
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
@@ -602,7 +605,7 @@ impl UnifiedExecProcessManager {
             chunk_id,
             wall_time,
             raw_output: collected,
-            truncation_policy: context.turn.truncation_policy,
+            truncation_policy: context.turn.model_info.truncation_policy.into(),
             max_output_tokens: request.max_output_tokens,
             process_id: response_process_id,
             exit_code,
@@ -672,10 +675,7 @@ impl UnifiedExecProcessManager {
             // writes keep a fixed max cap so interactive stdin remains responsive.
             let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
             if request.input.is_empty() {
-                time_ms.clamp(
-                    request.empty_input_min_yield_time_ms,
-                    self.max_write_stdin_yield_time_ms,
-                )
+                time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
             } else {
                 time_ms.min(MAX_YIELD_TIME_MS)
             }
@@ -844,7 +844,7 @@ impl UnifiedExecProcessManager {
         context: &UnifiedExecContext,
         command: &[String],
         hook_command: String,
-        cwd: AbsolutePathBuf,
+        cwd: PathUri,
         started_at: Instant,
         process_id: i32,
         tty: bool,
@@ -890,7 +890,47 @@ impl UnifiedExecProcessManager {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open_session_with_exec_env(
+        &self,
+        process_id: i32,
+        command: SandboxCommand,
+        options: ExecOptions,
+        attempt: &SandboxAttempt<'_>,
+        network: Option<&NetworkProxy>,
+        environment_id: Option<&str>,
+        exec_server_env_config: Option<ExecServerEnvConfig>,
+        tty: bool,
+        spawn_lifecycle: SpawnLifecycleHandle,
+        environment: &codex_exec_server::Environment,
+    ) -> Result<UnifiedExecProcess, ToolError> {
+        let mut request = if environment.is_remote() {
+            attempt.env_for_exec_server(command, options, network, environment_id)
+        } else {
+            attempt.env_for(command, options, network, environment_id)
+        }
+        .map_err(ToolError::Codex)?;
+        request.exec_server_env_config = exec_server_env_config;
+        self.open_session_with_prepared_exec_env(
+            process_id,
+            &request,
+            tty,
+            spawn_lifecycle,
+            environment,
+        )
+        .await
+        .map_err(|err| match err {
+            UnifiedExecError::SandboxDenied { output, .. } => {
+                ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                    output: Box::new(output),
+                    network_policy_decision: None,
+                }))
+            }
+            other => ToolError::Rejected(other.to_string()),
+        })
+    }
+
+    pub(crate) async fn open_session_with_prepared_exec_env(
         &self,
         process_id: i32,
         request: &ExecRequest,
@@ -902,6 +942,14 @@ impl UnifiedExecProcessManager {
 
         #[cfg(target_os = "windows")]
         if request.sandbox == codex_sandboxing::SandboxType::WindowsRestrictedToken {
+            // TODO(anp): Keep PathUri through the Windows sandbox launch boundary.
+            let native_cwd =
+                request
+                    .cwd
+                    .to_abs_path()
+                    .map_err(|_| UnifiedExecError::ForeignPath {
+                        path: request.cwd.clone(),
+                    })?;
             let codex_home = crate::config::find_codex_home().map_err(|err| {
                 UnifiedExecError::create_process(format!(
                     "windows sandbox: failed to resolve codex_home: {err}"
@@ -936,9 +984,10 @@ impl UnifiedExecProcessManager {
                         request.windows_sandbox_workspace_roots.as_slice(),
                         codex_home.as_ref(),
                         request.command.clone(),
-                        request.cwd.as_path(),
+                        native_cwd.as_path(),
                         request.env.clone(),
-                        /*timeout_ms*/ None,
+                        request.network.is_some(),
+                        None,
                         elevated_read_roots_override.as_deref(),
                         elevated_read_roots_include_platform_defaults,
                         elevated_write_roots_override.as_deref(),
@@ -957,9 +1006,9 @@ impl UnifiedExecProcessManager {
                         request.windows_sandbox_workspace_roots.as_slice(),
                         codex_home.as_ref(),
                         request.command.clone(),
-                        request.cwd.as_path(),
+                        native_cwd.as_path(),
                         request.env.clone(),
-                        /*timeout_ms*/ None,
+                        None,
                         &additional_deny_read_paths,
                         &additional_deny_write_paths,
                         tty,
@@ -993,6 +1042,14 @@ impl UnifiedExecProcessManager {
             return UnifiedExecProcess::from_exec_server_started(started, request.sandbox).await;
         }
 
+        // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
+        let native_cwd = request
+            .cwd
+            .to_abs_path()
+            .map_err(|_| UnifiedExecError::ForeignPath {
+                path: request.cwd.clone(),
+            })?;
+
         let (program, args) = request
             .command
             .split_first()
@@ -1001,7 +1058,7 @@ impl UnifiedExecProcessManager {
             codex_utils_pty::pty::spawn_process_with_inherited_fds(
                 program,
                 args,
-                request.cwd.as_path(),
+                native_cwd.as_path(),
                 &request.env,
                 &request.arg0,
                 codex_utils_pty::TerminalSize::default(),
@@ -1012,7 +1069,7 @@ impl UnifiedExecProcessManager {
             codex_utils_pty::pipe::spawn_process_no_stdin_with_inherited_fds(
                 program,
                 args,
-                request.cwd.as_path(),
+                native_cwd.as_path(),
                 &request.env,
                 &request.arg0,
                 &inherited_fds,
@@ -1028,11 +1085,11 @@ impl UnifiedExecProcessManager {
     pub(super) async fn open_session_with_sandbox(
         &self,
         request: &ExecCommandRequest,
-        cwd: AbsolutePathBuf,
+        cwd: PathUri,
         context: &UnifiedExecContext,
     ) -> Result<(UnifiedExecProcess, Option<DeferredNetworkApproval>), UnifiedExecError> {
         let local_policy_env = create_env(
-            &context.turn.shell_environment_policy,
+            &context.turn.config.permissions.shell_environment_policy,
             /*thread_id*/ None,
         );
         let mut env = local_policy_env.clone();
@@ -1042,7 +1099,9 @@ impl UnifiedExecProcessManager {
         );
         let env = apply_unified_exec_env(env);
         let exec_server_env_config = ExecServerEnvConfig {
-            policy: exec_env_policy_from_shell_policy(&context.turn.shell_environment_policy),
+            policy: exec_env_policy_from_shell_policy(
+                &context.turn.config.permissions.shell_environment_policy,
+            ),
             local_policy_env,
         };
         let mut orchestrator = ToolOrchestrator::new();
@@ -1071,10 +1130,16 @@ impl UnifiedExecProcessManager {
             process_id: request.process_id,
             cwd,
             sandbox_cwd: request.sandbox_cwd.clone(),
-            environment: Arc::clone(&request.environment),
+            turn_environment: request.turn_environment.clone(),
             env,
             exec_server_env_config: Some(exec_server_env_config),
-            explicit_env_overrides: context.turn.shell_environment_policy.r#set.clone(),
+            explicit_env_overrides: context
+                .turn
+                .config
+                .permissions
+                .shell_environment_policy
+                .r#set
+                .clone(),
             network: request.network.clone(),
             tty: request.tty,
             sandbox_permissions: request.sandbox_permissions,

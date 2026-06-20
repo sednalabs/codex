@@ -437,6 +437,7 @@ mod tests {
             reasoning_effort: None,
             created_at: 1,
             updated_at: 2,
+            recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp/read").abs(),

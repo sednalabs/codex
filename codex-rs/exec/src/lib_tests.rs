@@ -267,6 +267,35 @@ fn lagged_event_warning_message_is_explicit() {
     );
 }
 
+#[test]
+fn runtime_warnings_are_filtered_to_the_primary_thread() {
+    let primary_thread_id = "thread-1";
+    let turn_id = "turn-1";
+    let outcomes = [
+        codex_app_server_protocol::WarningNotification {
+            thread_id: None,
+            message: "global warning".to_string(),
+        },
+        codex_app_server_protocol::WarningNotification {
+            thread_id: Some(primary_thread_id.to_string()),
+            message: "primary warning".to_string(),
+        },
+        codex_app_server_protocol::WarningNotification {
+            thread_id: Some("thread-2".to_string()),
+            message: "other warning".to_string(),
+        },
+    ]
+    .map(|warning| {
+        should_process_notification(
+            &ServerNotification::Warning(warning),
+            primary_thread_id,
+            turn_id,
+        )
+    });
+
+    assert_eq!(outcomes, [true, true, false]);
+}
+
 #[tokio::test]
 async fn resume_lookup_model_providers_filters_only_last_lookup() {
     let codex_home = tempdir().expect("create temp codex home");
@@ -311,10 +340,9 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         preview: String::new(),
         ephemeral: false,
         model_provider: "openai".to_string(),
-        model: None,
-        reasoning_effort: None,
         created_at: 0,
         updated_at: 0,
+        recency_at: Some(0),
         status: codex_app_server_protocol::ThreadStatus::Idle,
         path: None,
         cwd: test_path_buf("/tmp/project").abs(),
@@ -373,8 +401,6 @@ fn turn_items_for_thread_returns_matching_turn_items() {
 fn should_backfill_turn_completed_items_skips_ephemeral_threads() {
     let notification =
         ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
-            final_model: None,
-            model_snapshot: None,
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
@@ -388,12 +414,8 @@ fn should_backfill_turn_completed_items_skips_ephemeral_threads() {
             },
         });
 
-    assert!(should_backfill_turn_completed_items(
-        /*thread_is_ephemeral*/ false,
-        &notification
-    ));
     assert!(!should_backfill_turn_completed_items(
-        /*thread_is_ephemeral*/ true,
+        /*thread_ephemeral*/ true,
         &notification
     ));
 }
@@ -573,43 +595,29 @@ async fn thread_start_params_include_user_thread_source() {
 }
 
 #[tokio::test]
-async fn thread_lifecycle_params_include_configured_browser_dynamic_tools() {
+async fn thread_lifecycle_params_preserve_hook_trust_bypass() {
     let codex_home = tempdir().expect("create temp codex home");
-    std::fs::write(
-        codex_home.path().join("browser-computer-use.json"),
-        r#"{"provider":"playwright"}"#,
-    )
-    .expect("write browser provider config");
     let cwd = tempdir().expect("create temp cwd");
     let config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            bypass_hook_trust: Some(true),
+            ..Default::default()
+        })
         .fallback_cwd(Some(cwd.path().to_path_buf()))
         .build()
         .await
-        .expect("build config");
+        .expect("build config with hook trust bypass");
+    let expected_config = Some(HashMap::from([(
+        "bypass_hook_trust".to_string(),
+        serde_json::Value::Bool(true),
+    )]));
 
     let start_params = thread_start_params_from_config(&config);
     let resume_params = thread_resume_params_from_config(&config, "thread-id".to_string());
 
-    let browser_tools = vec!["browser_observe".to_string(), "browser_step".to_string()];
-    assert_eq!(
-        start_params
-            .dynamic_tools
-            .expect("start dynamic tools")
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>(),
-        browser_tools
-    );
-    assert_eq!(
-        resume_params
-            .dynamic_tools
-            .expect("resume dynamic tools")
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>(),
-        browser_tools
-    );
+    assert_eq!(start_params.config, expected_config);
+    assert_eq!(resume_params.config, expected_config);
 }
 
 #[test]
@@ -751,10 +759,9 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
-            model: None,
-            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
+            recency_at: Some(0),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: Some(PathBuf::from("/tmp/rollout.jsonl")),
             cwd: test_path_buf("/tmp").abs(),
@@ -783,5 +790,6 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         },
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
     }
 }

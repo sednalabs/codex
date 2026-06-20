@@ -84,6 +84,12 @@
             "null"
           ]
         },
+        "allowRemoteControl": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "allowedApprovalPolicies": {
           "items": {
             "$ref": "#/$defs/AskForApproval"
@@ -521,6 +527,7 @@
       "enum": [
         "disabled",
         "cached",
+        "indexed",
         "live"
       ],
       "type": "string"

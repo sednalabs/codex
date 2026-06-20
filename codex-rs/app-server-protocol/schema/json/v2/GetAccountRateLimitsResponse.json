@@ -48,6 +48,18 @@
       ],
       "type": "string"
     },
+    "RateLimitResetCreditsSummary": {
+      "properties": {
+        "availableCount": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "availableCount"
+      ],
+      "type": "object"
+    },
     "RateLimitSnapshot": {
       "properties": {
         "credits": {
@@ -179,6 +191,16 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "rateLimitResetCredits": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RateLimitResetCreditsSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "rateLimits": {
       "$ref": "#/$defs/RateLimitSnapshot",
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."

@@ -2,10 +2,12 @@ use std::sync::Arc;
 
 use super::SessionTask;
 use super::SessionTaskContext;
+use super::SessionTaskResult;
 use super::emit_compact_metric;
 use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
+use codex_protocol::error::CodexErr;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -26,11 +28,12 @@ impl SessionTask for CompactTask {
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
         _input: Vec<TurnInput>,
-        cancellation_token: CancellationToken,
-    ) -> Option<String> {
+        _cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task(ctx.provider.info()) {
+        let result = if crate::compact::should_use_remote_compact_task(ctx.provider.info()) {
             if ctx
+                .config
                 .features
                 .enabled(codex_features::Feature::RemoteCompactionV2)
             {
@@ -46,12 +49,7 @@ impl SessionTask for CompactTask {
                     "remote",
                     /*manual*/ true,
                 );
-                crate::compact_remote::run_remote_compact_task(
-                    session.clone(),
-                    ctx,
-                    &cancellation_token,
-                )
-                .await
+                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
             }
         } else {
             emit_compact_metric(
@@ -60,12 +58,20 @@ impl SessionTask for CompactTask {
                 /*manual*/ true,
             );
             let input = vec![UserInput::Text {
-                text: ctx.compact_prompt().to_string(),
+                text: ctx
+                    .config
+                    .compact_prompt
+                    .as_deref()
+                    .unwrap_or(crate::compact::SUMMARIZATION_PROMPT)
+                    .to_string(),
                 // Compaction prompt is synthesized; no UI element ranges to preserve.
                 text_elements: Vec::new(),
             }];
-            crate::compact::run_compact_task(session.clone(), ctx, input, &cancellation_token).await
+            crate::compact::run_compact_task(session.clone(), ctx, input).await
         };
-        None
+        if let Err(err @ CodexErr::TurnAborted) = result {
+            return Err(err);
+        }
+        Ok(None)
     }
 }

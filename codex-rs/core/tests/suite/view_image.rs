@@ -29,6 +29,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
+use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::get_remote_test_env;
@@ -42,9 +43,9 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local;
-use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_with_timeout;
@@ -81,7 +82,6 @@ fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) ->
         responsesapi_client_metadata: None,
         additional_context: Default::default(),
         thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            environments: Some(local_selections(test.config.cwd.clone())),
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: Some(sandbox_policy),
             permission_profile,
@@ -134,9 +134,10 @@ fn png_bytes(width: u32, height: u32, rgba: [u8; 4]) -> anyhow::Result<Vec<u8>> 
 
 async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow::Result<PathBuf> {
     let abs_path = test.config.cwd.join(rel_path);
+    let abs_path_uri = PathUri::from_path(&abs_path)?;
     test.fs()
         .create_directory(
-            &abs_path,
+            &abs_path_uri,
             CreateDirectoryOptions { recursive: true },
             /*sandbox*/ None,
         )
@@ -151,16 +152,18 @@ async fn write_workspace_file(
 ) -> anyhow::Result<PathBuf> {
     let abs_path = test.config.cwd.join(rel_path);
     if let Some(parent) = abs_path.parent() {
+        let parent_uri = PathUri::from_path(&parent)?;
         test.fs()
             .create_directory(
-                &parent,
+                &parent_uri,
                 CreateDirectoryOptions { recursive: true },
                 /*sandbox*/ None,
             )
             .await?;
     }
+    let abs_path_uri = PathUri::from_path(&abs_path)?;
     test.fs()
-        .write_file(&abs_path, contents, /*sandbox*/ None)
+        .write_file(&abs_path_uri, contents, /*sandbox*/ None)
         .await?;
     Ok(abs_path.into_path_buf())
 }
@@ -590,6 +593,8 @@ async fn view_image_tool_applies_local_sandbox_read_denies() -> anyhow::Result<(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()> {
+    // TODO(anp): Remove after remote-cwd fixtures use target-native paths.
+    skip_if_wine_exec!(Ok(()), "hardcodes a POSIX remote cwd");
     skip_if_no_network!(Ok(()));
     let Some(_remote_env) = get_remote_test_env() else {
         return Ok(());
@@ -607,20 +612,22 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
     ))
     .abs();
     let image_path = remote_cwd.join("remote.png");
+    let remote_cwd_uri = PathUri::from_path(&remote_cwd)?;
     test.fs()
         .create_directory(
-            &remote_cwd,
+            &remote_cwd_uri,
             CreateDirectoryOptions { recursive: true },
             /*sandbox*/ None,
         )
         .await?;
     let png = png_bytes(/*width*/ 1, /*height*/ 1, [0, 255, 0, 255])?;
+    let image_path_uri = PathUri::from_path(&image_path)?;
     test.fs()
-        .write_file(&image_path, png, /*sandbox*/ None)
+        .write_file(&image_path_uri, png, /*sandbox*/ None)
         .await?;
     let remote_selection = TurnEnvironmentSelection {
         environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-        cwd: remote_cwd.clone(),
+        cwd: PathUri::from_abs_path(&remote_cwd),
     };
     let call_id = "call-view-image-multi-env";
     let response_mock = mount_sse_sequence(
@@ -675,7 +682,7 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
 
     test.fs()
         .remove(
-            &remote_cwd,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,

@@ -138,6 +138,7 @@ mod tests {
             reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
+            recency_at: Some(0),
             status: ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp").abs(),

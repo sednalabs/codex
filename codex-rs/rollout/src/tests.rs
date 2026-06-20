@@ -613,6 +613,7 @@ async fn test_list_conversations_latest_first() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-01-03T12-00-00".into()),
+                recency_at: updated_times.first().cloned().flatten(),
                 updated_at: updated_times.first().cloned().flatten(),
             },
             ThreadItem {
@@ -632,6 +633,7 @@ async fn test_list_conversations_latest_first() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-01-02T12-00-00".into()),
+                recency_at: updated_times.get(1).cloned().flatten(),
                 updated_at: updated_times.get(1).cloned().flatten(),
             },
             ThreadItem {
@@ -651,6 +653,7 @@ async fn test_list_conversations_latest_first() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-01-01T12-00-00".into()),
+                recency_at: updated_times.get(2).cloned().flatten(),
                 updated_at: updated_times.get(2).cloned().flatten(),
             },
         ],
@@ -763,6 +766,7 @@ async fn test_pagination_cursor() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-03-05T09-00-00".into()),
+                recency_at: updated_page1.first().cloned().flatten(),
                 updated_at: updated_page1.first().cloned().flatten(),
             },
             ThreadItem {
@@ -782,6 +786,7 @@ async fn test_pagination_cursor() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-03-04T09-00-00".into()),
+                recency_at: updated_page1.get(1).cloned().flatten(),
                 updated_at: updated_page1.get(1).cloned().flatten(),
             },
         ],
@@ -837,6 +842,7 @@ async fn test_pagination_cursor() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-03-03T09-00-00".into()),
+                recency_at: updated_page2.first().cloned().flatten(),
                 updated_at: updated_page2.first().cloned().flatten(),
             },
             ThreadItem {
@@ -856,6 +862,7 @@ async fn test_pagination_cursor() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some("2025-03-02T09-00-00".into()),
+                recency_at: updated_page2.get(1).cloned().flatten(),
                 updated_at: updated_page2.get(1).cloned().flatten(),
             },
         ],
@@ -903,6 +910,7 @@ async fn test_pagination_cursor() {
             model_provider: Some(TEST_PROVIDER.to_string()),
             cli_version: Some("test_version".to_string()),
             created_at: Some("2025-03-01T09-00-00".into()),
+            recency_at: updated_page3.first().cloned().flatten(),
             updated_at: updated_page3.first().cloned().flatten(),
         }],
         next_cursor: None,
@@ -1075,6 +1083,7 @@ async fn test_get_thread_contents() {
             model_provider: Some(TEST_PROVIDER.to_string()),
             cli_version: Some("test_version".to_string()),
             created_at: Some(ts.into()),
+            recency_at: page.items[0].updated_at.clone(),
             updated_at: page.items[0].updated_at.clone(),
         }],
         next_cursor: None,
@@ -1314,6 +1323,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                     text: format!("reply-{idx}"),
                 }],
                 phase: None,
+                metadata: None,
             }),
         };
         writeln!(file, "{}", serde_json::to_string(&response_line)?)?;
@@ -1430,6 +1440,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some(ts.to_string()),
+                recency_at: updated_page1.first().cloned().flatten(),
                 updated_at: updated_page1.first().cloned().flatten(),
             },
             ThreadItem {
@@ -1449,6 +1460,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
                 model_provider: Some(TEST_PROVIDER.to_string()),
                 cli_version: Some("test_version".to_string()),
                 created_at: Some(ts.to_string()),
+                recency_at: updated_page1.get(1).cloned().flatten(),
                 updated_at: updated_page1.get(1).cloned().flatten(),
             },
         ],
