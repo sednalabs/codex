@@ -229,7 +229,7 @@ jobs:
 
       - name: Install sccache
         if: ${{ inputs.setup_class != 'light' }}
-        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
         with:
           tool: sccache
 
@@ -255,13 +255,13 @@ jobs:
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
 
-      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
+      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
         if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
         with:
           tool: nextest@0.9.103
 
       - name: Install just
-        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
         with:
           tool: just
 
