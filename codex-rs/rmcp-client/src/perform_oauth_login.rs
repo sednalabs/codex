@@ -583,12 +583,7 @@ impl OauthLoginFlow {
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
             };
-            save_oauth_tokens(
-                &self.server_name,
-                &stored,
-                self.store_mode,
-                self.keyring_backend_kind,
-            )?;
+            save_oauth_tokens(&self.server_name, &stored, self.store_mode)?;
 
             Ok(())
         }
