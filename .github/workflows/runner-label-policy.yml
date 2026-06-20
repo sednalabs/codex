@@ -1,0 +1,51 @@
+name: runner-label-policy
+
+on:
+  pull_request: {}
+  merge_group: {}
+  push:
+    branches: [main, upstream-main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  runner-label-policy:
+    name: Runner label policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install policy script dependencies
+        shell: bash
+        run: python3 -m pip install PyYAML==6.0.3
+
+      - name: Compile workflow policy checks
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            .github/scripts/check_workflow_policy.py \
+            .github/scripts/test_ci_planners.py
+
+      - name: Run workflow policy checks
+        shell: bash
+        run: python3 .github/scripts/check_workflow_policy.py
+
+      - name: Run workflow policy tests
+        shell: bash
+        run: |
+          python3 -m unittest discover \
+            -s .github/scripts \
+            -p 'test_ci_planners.py' \
+            -k workflow_policy

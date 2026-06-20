@@ -5210,10 +5210,213 @@ jobs:
         self.assertEqual(
             violations,
             [
-                ".github/workflows/deploy.yml: public workflows must not use self-hosted "
-                "runners; use external deployment automation for host-local operations."
+                ".github/workflows/deploy.yml: self-hosted runners are not allowed; "
+                "use external deployment automation for host-local operations."
             ],
         )
+
+    def test_workflow_policy_rejects_larger_runner_matrix_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-xlarge
+          - runner: macos-15-large
+          - runner: windows-2022-xlarge
+          - runner: ${{ github.event.repository.name }}-linux-arm64
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        repo_scoped_runner = (
+            ".github/workflows/release.yml: repo-scoped runner label "
+            + "'${{ github.event.repository.name }}-linux-arm64' is not allowed; "
+            + "use a standard public GitHub-hosted runner label."
+        )
+        macos_large_runner = (
+            ".github/workflows/release.yml: runner label 'macos-15-large' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        macos_xlarge_runner = (
+            ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        windows_xlarge_runner = (
+            ".github/workflows/release.yml: runner label 'windows-2022-xlarge' "
+            + "uses a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        self.assertEqual(
+            violations,
+            [
+                repo_scoped_runner,
+                macos_large_runner,
+                macos_xlarge_runner,
+                windows_xlarge_runner,
+            ],
+        )
+
+    def test_workflow_policy_rejects_runner_group_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on:
+      group: custom-runners
+      labels: custom-windows-x64
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        runner_group_violation = (
+            ".github/workflows/release.yml: runner groups are not allowed; use "
+            + "standard public GitHub-hosted runner labels directly."
+        )
+        self.assertEqual(
+            violations,
+            [runner_group_violation],
+        )
+
+    def test_workflow_policy_rejects_runner_group_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/reusable.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: reusable
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      runner_group:
+        required: false
+        type: string
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        runner_group_input_violation = (
+            ".github/workflows/reusable.yml: runner group inputs are not allowed; "
+            + "use standard public GitHub-hosted runner labels directly."
+        )
+        self.assertEqual(
+            violations,
+            [runner_group_input_violation],
+        )
+
+    def test_workflow_policy_does_not_treat_unused_runs_on_as_runner_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-xlarge
+            runs_on: ubuntu-24.04
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        xlarge_runner_violation = (
+            ".github/workflows/release.yml: runner label 'macos-15-xlarge' uses "
+            + "a larger-runner size token; use standard public GitHub-hosted "
+            + "runner labels."
+        )
+        self.assertEqual(
+            violations,
+            [xlarge_runner_violation],
+        )
+
+    def test_workflow_policy_allows_standard_public_runners(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+          - runner: ubuntu-slim
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-26.04
+          - runner: ubuntu-26.04-arm
+          - runner: windows-latest
+          - runner: windows-2022
+          - runner: windows-2025
+          - runner: windows-2025-vs2026
+          - runner: windows-11-arm
+          - runner: windows-11-vs2026-arm
+          - runner: macos-latest
+          - runner: macos-15
+          - runner: macos-15-intel
+          - runner: macos-26
+          - runner: macos-26-intel
+          - runner: macos-14
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        self.assertEqual(violations, [])
 
     def test_workflow_policy_rejects_release_install_dispatch_without_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
