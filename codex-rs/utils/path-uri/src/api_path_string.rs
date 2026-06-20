@@ -3,9 +3,12 @@ use crate::PathUri;
 use crate::is_windows_separator_byte;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
+use std::borrow::Cow;
 use std::fmt;
 use thiserror::Error;
 use ts_rs::TS;
@@ -223,11 +226,11 @@ impl Serialize for LegacyAppPathString {
 }
 
 impl JsonSchema for LegacyAppPathString {
-    fn schema_name() -> String {
-        "LegacyAppPathString".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "LegacyAppPathString".into()
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         String::json_schema(generator)
     }
 }
