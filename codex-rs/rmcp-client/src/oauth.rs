@@ -151,14 +151,14 @@ fn load_oauth_tokens_with_keyring_store<K: KeyringStore>(
                 store: ResolvedOAuthCredentialStore::File,
             },
         )),
-        OAuthCredentialsStoreMode::Keyring => Ok(Some(
-            load_oauth_tokens_from_keyring(keyring_store, server_name, url)
-                .with_context(|| "failed to read OAuth tokens from keyring".to_string())
-                .map(|tokens| LoadedOAuthTokens {
-                    tokens,
-                    store: ResolvedOAuthCredentialStore::Keyring,
-                })?,
-        )),
+        OAuthCredentialsStoreMode::Keyring => {
+            let tokens = load_oauth_tokens_from_keyring(keyring_store, server_name, url)
+                .with_context(|| "failed to read OAuth tokens from keyring".to_string())?;
+            Ok(tokens.map(|tokens| LoadedOAuthTokens {
+                tokens,
+                store: ResolvedOAuthCredentialStore::Keyring,
+            }))
+        }
     }
 }
 
