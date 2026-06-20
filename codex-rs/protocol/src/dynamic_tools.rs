@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as _;
 use serde_json::Value as JsonValue;
 use ts_rs::TS;
 
@@ -19,6 +20,23 @@ pub struct DynamicToolSpec {
     pub persist_on_resume: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<DynamicToolCapability>,
+}
+
+pub type DynamicToolFunctionSpec = DynamicToolSpec;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolNamespaceSpec {
+    pub name: String,
+    pub description: String,
+    pub tools: Vec<DynamicToolNamespaceTool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+pub enum DynamicToolNamespaceTool {
+    Function(DynamicToolFunctionSpec),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
@@ -117,6 +135,26 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
             capability,
         })
     }
+}
+
+pub fn normalize_dynamic_tool_specs(
+    values: Vec<JsonValue>,
+) -> Result<Vec<DynamicToolSpec>, serde_json::Error> {
+    values.into_iter().map(serde_json::from_value).collect()
+}
+
+pub fn deserialize_dynamic_tool_specs<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<DynamicToolSpec>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(values) = Option::<Vec<JsonValue>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    normalize_dynamic_tool_specs(values)
+        .map(Some)
+        .map_err(D::Error::custom)
 }
 
 #[cfg(test)]
