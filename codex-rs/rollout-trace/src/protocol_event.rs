@@ -181,6 +181,7 @@ impl<'a> From<&'a ExecCommandBeginEvent> for ExecCommandBeginTracePayload<'a> {
             parsed_cmd,
             source,
             interaction_input,
+            ..
         } = event;
         Self {
             call_id,
@@ -241,6 +242,7 @@ impl<'a> From<&'a ExecCommandEndEvent> for ExecCommandEndTracePayload<'a> {
             duration,
             formatted_output,
             status,
+            ..
         } = event;
         Self {
             call_id,
