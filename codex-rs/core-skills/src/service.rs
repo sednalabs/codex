@@ -14,6 +14,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::HostSkillsSnapshot;
+use crate::PluginSkillSnapshots;
 use crate::SkillLoadOutcome;
 use crate::build_implicit_skill_path_indexes;
 use crate::config_rules::SkillConfigRules;
@@ -32,6 +33,7 @@ pub struct SkillsLoadInput {
     pub effective_skill_roots: Vec<PluginSkillRoot>,
     pub config_layer_stack: ConfigLayerStack,
     pub bundled_skills_enabled: bool,
+    plugin_skill_snapshots: Option<PluginSkillSnapshots>,
 }
 
 impl SkillsLoadInput {
@@ -46,7 +48,16 @@ impl SkillsLoadInput {
             effective_skill_roots,
             config_layer_stack,
             bundled_skills_enabled,
+            plugin_skill_snapshots: None,
         }
+    }
+
+    pub fn with_plugin_skill_snapshots(
+        mut self,
+        plugin_skill_snapshots: Option<PluginSkillSnapshots>,
+    ) -> Self {
+        self.plugin_skill_snapshots = plugin_skill_snapshots;
+        self
     }
 }
 
@@ -208,7 +219,7 @@ impl SkillsManager {
         config_layer_stack: &ConfigLayerStack,
     ) -> SkillLoadOutcome {
         let outcome = crate::filter_skill_load_outcome_for_product(
-            load_skills_from_roots(roots).await,
+            load_skills_from_roots(roots, input.plugin_skill_snapshots.as_ref()).await,
             self.restriction_product,
         );
         let disabled_paths = resolve_disabled_skill_paths(&outcome.skills, skill_config_rules);
