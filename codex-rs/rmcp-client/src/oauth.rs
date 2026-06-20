@@ -151,14 +151,14 @@ fn load_oauth_tokens_with_keyring_store<K: KeyringStore>(
                 store: ResolvedOAuthCredentialStore::File,
             },
         )),
-        OAuthCredentialsStoreMode::Keyring => {
-            Ok(load_oauth_tokens_from_keyring(keyring_store, server_name, url)
+        OAuthCredentialsStoreMode::Keyring => Ok(Some(
+            load_oauth_tokens_from_keyring(keyring_store, server_name, url)
                 .with_context(|| "failed to read OAuth tokens from keyring".to_string())
                 .map(|tokens| LoadedOAuthTokens {
                     tokens,
                     store: ResolvedOAuthCredentialStore::Keyring,
-                })?)
-        }
+                })?,
+        )),
     }
 }
 
@@ -1056,7 +1056,7 @@ fn refresh_lock_path(store_key: &str) -> Result<PathBuf> {
     let digest = hasher.finalize();
     Ok(find_codex_home()?
         .join(REFRESH_LOCK_DIR)
-        .join(format!("{digest:x}.lock"))
+        .join(format!("{}.lock", digest_hex(digest)))
         .to_path_buf())
 }
 
