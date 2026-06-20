@@ -162,6 +162,7 @@ codex-cloud-config = { path = "cloud-config" }
 codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
+codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-context-fragments = { path = "context-fragments" }
@@ -186,6 +187,7 @@ codex-install-context = { path = "install-context" }
 codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }
+codex-home = { path = "codex-home" }
 codex-hooks = { path = "hooks" }
 codex-keyring-store = { path = "keyring-store" }
 codex-linux-sandbox = { path = "linux-sandbox" }
@@ -282,6 +284,14 @@ chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
 clap_complete = "4"
+clatter = { version = "2.2.0", default-features = false, features = [
+    "alloc",
+    "getrandom",
+    "use-25519",
+    "use-aes-gcm",
+    "use-rust-crypto-ml-kem",
+    "use-sha",
+] }
 color-eyre = "0.6.3"
 constant_time_eq = "0.3.1"
 crossbeam-channel = "0.5.15"
@@ -326,6 +336,9 @@ keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
 libc = "0.2.182"
+# Keep SQLx's bundled SQLite on a version containing the WAL-reset corruption fix:
+# https://www.sqlite.org/wal.html#the_wal_reset_bug
+libsqlite3-sys = { version = "0.37", default-features = false }
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
