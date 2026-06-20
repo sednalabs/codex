@@ -8,6 +8,7 @@ use codex_exec_server::ExecServerError;
 use reqwest::StatusCode;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
+use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use tokio::time;
 use tracing::warn;
@@ -22,12 +23,79 @@ use super::RmcpClient;
 const JSON_RPC_INTERNAL_ERROR_CODE: i64 = -32603;
 pub(super) const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 
+#[derive(Default)]
+struct InitializeAttemptContext {
+    oauth_persistor: Option<OAuthPersistor>,
+}
+
 impl RmcpClient {
-    pub(super) async fn connect_pending_transport_with_initialize_retries(
+    pub(super) async fn connect_pending_transport_with_oauth_recovery(
         &self,
         initial_transport: PendingTransport,
         client_service: ElicitationClientService,
         timeout: Option<Duration>,
+    ) -> Result<(
+        Arc<RunningService<RoleClient, ElicitationClientService>>,
+        Option<OAuthPersistor>,
+    )> {
+        let mut attempt_context = InitializeAttemptContext::default();
+        let deadline = timeout.map(|duration| Instant::now() + duration);
+        match self
+            .connect_pending_transport_with_initialize_retries(
+                initial_transport,
+                client_service.clone(),
+                timeout,
+                &mut attempt_context,
+            )
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) if Self::is_unauthorized_initialize_error(&error) => {
+                let Some(oauth_persistor) = attempt_context.oauth_persistor else {
+                    return Err(error);
+                };
+                let refresh_result = match remaining_initialize_timeout(timeout, deadline)? {
+                    Some(remaining) => {
+                        oauth_persistor
+                            .refresh_after_unauthorized_with_timeout(remaining)
+                            .await
+                    }
+                    None => oauth_persistor.refresh_after_unauthorized().await,
+                };
+                if let Err(error) = refresh_result {
+                    remaining_initialize_timeout(timeout, deadline)?;
+                    return Err(error);
+                }
+                let remaining = remaining_initialize_timeout(timeout, deadline)?;
+                let transport = match remaining {
+                    Some(remaining) => time::timeout(
+                        remaining,
+                        Self::create_pending_transport(&self.transport_recipe),
+                    )
+                    .await
+                    .map_err(|_| initialize_timeout_error(timeout, remaining))??,
+                    None => Self::create_pending_transport(&self.transport_recipe).await?,
+                };
+                let remaining = remaining_initialize_timeout(timeout, deadline)?;
+                let mut retry_context = InitializeAttemptContext::default();
+                self.connect_pending_transport_with_initialize_retries(
+                    transport,
+                    client_service,
+                    remaining,
+                    &mut retry_context,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn connect_pending_transport_with_initialize_retries(
+        &self,
+        initial_transport: PendingTransport,
+        client_service: ElicitationClientService,
+        timeout: Option<Duration>,
+        attempt_context: &mut InitializeAttemptContext,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthPersistor>,
@@ -61,6 +129,14 @@ impl RmcpClient {
                         None => Self::create_pending_transport(&self.transport_recipe).await?,
                     }
                 }
+            };
+            attempt_context.oauth_persistor = match &transport {
+                PendingTransport::StreamableHttpWithOAuth {
+                    oauth_persistor, ..
+                } => Some(oauth_persistor.clone()),
+                PendingTransport::InProcess { .. }
+                | PendingTransport::Stdio { .. }
+                | PendingTransport::StreamableHttp { .. } => None,
             };
             let attempt_timeout = remaining_initialize_timeout(timeout, retry_deadline)?;
 
@@ -107,6 +183,29 @@ impl RmcpClient {
                     .downcast_ref::<rmcp::service::ClientInitializeError>()
                     .is_some_and(Self::is_retryable_client_initialize_error)
         })
+    }
+
+    fn is_unauthorized_initialize_error(error: &anyhow::Error) -> bool {
+        error.chain().any(|source| {
+            source
+                .downcast_ref::<HandshakeError>()
+                .is_some_and(|error| Self::is_unauthorized_client_initialize_error(&error.source))
+                || source
+                    .downcast_ref::<rmcp::service::ClientInitializeError>()
+                    .is_some_and(Self::is_unauthorized_client_initialize_error)
+        })
+    }
+
+    fn is_unauthorized_client_initialize_error(
+        error: &rmcp::service::ClientInitializeError,
+    ) -> bool {
+        match error {
+            rmcp::service::ClientInitializeError::TransportError { error, .. } => error
+                .error
+                .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+                .is_some_and(Self::is_unauthorized_streamable_http_error),
+            _ => false,
+        }
     }
 
     fn is_retryable_client_initialize_error(error: &rmcp::service::ClientInitializeError) -> bool {
@@ -163,6 +262,19 @@ impl RmcpClient {
             _ => false,
         }
     }
+
+    pub(super) fn is_unauthorized_streamable_http_error(
+        error: &StreamableHttpError<StreamableHttpClientAdapterError>,
+    ) -> bool {
+        match error {
+            StreamableHttpError::AuthRequired(_)
+            | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
+            StreamableHttpError::UnexpectedServerResponse(message) => {
+                message.starts_with("HTTP 401")
+            }
+            _ => false,
+        }
+    }
 }
 
 fn is_retryable_unexpected_server_response(message: &str) -> bool {
@@ -194,7 +306,7 @@ fn is_retryable_http_status(status: StatusCode) -> bool {
     )
 }
 
-fn remaining_initialize_timeout(
+pub(super) fn remaining_initialize_timeout(
     timeout: Option<Duration>,
     deadline: Option<Instant>,
 ) -> Result<Option<Duration>> {
@@ -209,7 +321,10 @@ fn remaining_initialize_timeout(
     }
 }
 
-fn initialize_timeout_error(timeout: Option<Duration>, fallback: Duration) -> anyhow::Error {
+pub(super) fn initialize_timeout_error(
+    timeout: Option<Duration>,
+    fallback: Duration,
+) -> anyhow::Error {
     let duration = timeout.unwrap_or(fallback);
     anyhow!("timed out handshaking with MCP server after {duration:?}")
 }
