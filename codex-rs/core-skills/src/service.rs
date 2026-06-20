@@ -127,7 +127,7 @@ impl SkillsManager {
         }
 
         let outcome = self
-            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .build_skill_outcome(input, roots, &skill_config_rules, &input.config_layer_stack)
             .await;
         let mut cache = self
             .cache_by_config
@@ -191,7 +191,7 @@ impl SkillsManager {
         }
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
         let outcome = self
-            .build_skill_outcome(roots, &skill_config_rules, &input.config_layer_stack)
+            .build_skill_outcome(input, roots, &skill_config_rules, &input.config_layer_stack)
             .await;
         if use_cwd_cache {
             let mut cache = self
@@ -214,6 +214,7 @@ impl SkillsManager {
 
     async fn build_skill_outcome(
         &self,
+        input: &SkillsLoadInput,
         roots: Vec<SkillRoot>,
         skill_config_rules: &SkillConfigRules,
         config_layer_stack: &ConfigLayerStack,
