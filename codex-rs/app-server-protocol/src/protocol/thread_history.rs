@@ -243,7 +243,9 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(item),
-            RolloutItem::TurnContext(_) | RolloutItem::SessionMeta(_) => {}
+            RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::SessionMeta(_) => {}
         }
     }
 
@@ -367,6 +369,12 @@ impl ThreadHistoryBuilder {
                     ThreadItem::from(payload.item.clone()),
                 );
             }
+            codex_protocol::items::TurnItem::Sleep(_) => {
+                self.upsert_item_in_turn_id(
+                    &payload.turn_id,
+                    ThreadItem::from(payload.item.clone()),
+                );
+            }
             codex_protocol::items::TurnItem::UserMessage(_)
             | codex_protocol::items::TurnItem::HookPrompt(_)
             | codex_protocol::items::TurnItem::AgentMessage(_)
@@ -386,6 +394,12 @@ impl ThreadHistoryBuilder {
                 if plan.text.is_empty() {
                     return;
                 }
+                self.upsert_item_in_turn_id(
+                    &payload.turn_id,
+                    ThreadItem::from(payload.item.clone()),
+                );
+            }
+            codex_protocol::items::TurnItem::Sleep(_) => {
                 self.upsert_item_in_turn_id(
                     &payload.turn_id,
                     ThreadItem::from(payload.item.clone()),
@@ -588,6 +602,7 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
+            app_context: None,
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
             result: None,
@@ -630,6 +645,7 @@ impl ThreadHistoryBuilder {
                 .arguments
                 .clone()
                 .unwrap_or(serde_json::Value::Null),
+            app_context: None,
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
             result,
@@ -2157,6 +2173,7 @@ mod tests {
                 tool: "lookup".into(),
                 status: McpToolCallStatus::Failed,
                 arguments: serde_json::json!({"id":"123"}),
+                app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
                 result: None,
@@ -2216,6 +2233,7 @@ mod tests {
                 tool: "lookup".into(),
                 status: McpToolCallStatus::Completed,
                 arguments: serde_json::json!({"id":"123"}),
+                app_context: None,
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
                 plugin_id: Some("sample@test".into()),
                 result: Some(Box::new(McpToolCallResult {
