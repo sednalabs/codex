@@ -2041,7 +2041,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         tool_values: list[str] = []
         for job in (payload.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
-                if step.get("uses") != "taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46":
+                if step.get("uses") != "taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9":
                     continue
                 with_section = step.get("with") or {}
                 self.assertNotIn("version", with_section)
@@ -5080,7 +5080,7 @@ class HelperScriptTests(unittest.TestCase):
             },
             {
                 "cargo_home_restore": "actions/cache/restore@v5",
-                "sccache_install": "taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46",
+                "sccache_install": "taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9",
                 "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
                 "sccache_restore": "actions/cache/restore@v5",
                 "cargo_home_save": "actions/cache/save@v5",
