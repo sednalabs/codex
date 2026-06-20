@@ -1193,9 +1193,7 @@ async fn create_oauth_transport_and_runtime(
         credential_store,
         Some(initial_tokens.clone()),
     );
-    runtime
-        .adopt_credentials(initial_tokens)
-        .await?;
+    runtime.adopt_credentials(initial_tokens).await?;
 
     Ok((transport, runtime))
 }

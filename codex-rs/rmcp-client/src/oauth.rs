@@ -218,12 +218,14 @@ fn load_oauth_tokens_from_keyring_with_fallback_to_file<K: KeyringStore>(
     server_name: &str,
     url: &str,
 ) -> Result<Option<StoredOAuthTokens>> {
-    Ok(load_oauth_tokens_from_keyring_with_fallback_to_file_with_source(
-        keyring_store,
-        server_name,
-        url,
-    )?
-    .map(|loaded| loaded.tokens))
+    Ok(
+        load_oauth_tokens_from_keyring_with_fallback_to_file_with_source(
+            keyring_store,
+            server_name,
+            url,
+        )?
+        .map(|loaded| loaded.tokens),
+    )
 }
 
 fn load_oauth_tokens_from_keyring_with_fallback_to_file_with_source<K: KeyringStore>(
@@ -727,9 +729,7 @@ impl OAuthStoreLock {
             .create(true)
             .truncate(false)
             .open(&path)
-            .with_context(|| {
-                format!("failed to open MCP OAuth store lock {}", path.display())
-            })?;
+            .with_context(|| format!("failed to open MCP OAuth store lock {}", path.display()))?;
         let started = Instant::now();
 
         loop {
@@ -747,8 +747,9 @@ impl OAuthStoreLock {
                     std::thread::sleep(STORE_LOCK_RETRY_SLEEP);
                 }
                 Err(error) => {
-                    return Err(std::io::Error::from(error))
-                        .with_context(|| format!("failed to lock MCP OAuth store lock {}", path.display()));
+                    return Err(std::io::Error::from(error)).with_context(|| {
+                        format!("failed to lock MCP OAuth store lock {}", path.display())
+                    });
                 }
             }
         }
