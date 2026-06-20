@@ -5,8 +5,8 @@ use app_test_support::create_fake_rollout;
 use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
-use app_test_support::default_rollout_cwd;
 use app_test_support::rollout_path;
+use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use chrono::DateTime;
 use chrono::Utc;
@@ -20,7 +20,6 @@ use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadSearchResponse;
 use codex_app_server_protocol::ThreadSortKey;
-use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -36,7 +35,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::ThreadSource as CoreThreadSource;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::cmp::Reverse;
@@ -93,11 +92,11 @@ async fn list_threads_with_sort(
             sort_direction: None,
             model_providers: providers,
             source_kinds,
-            thread_sources: None,
             archived,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -106,6 +105,37 @@ async fn list_threads_with_sort(
     )
     .await??;
     to_response::<ThreadListResponse>(resp)
+}
+
+async fn list_threads_for_parent(
+    mcp: &mut TestAppServer,
+    parent_thread_id: ThreadId,
+    cursor: Option<String>,
+    limit: u32,
+    model_providers: Option<Vec<String>>,
+    source_kinds: Option<Vec<ThreadSourceKind>>,
+) -> Result<ThreadListResponse> {
+    let request_id = mcp
+        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
+            cursor,
+            limit: Some(limit),
+            sort_key: None,
+            sort_direction: None,
+            model_providers,
+            source_kinds,
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: Some(parent_thread_id.to_string()),
+        })
+        .await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    to_response::<ThreadListResponse>(response)
 }
 
 fn create_fake_rollouts<F, G>(
@@ -173,26 +203,6 @@ fn set_rollout_cwd(path: &Path, cwd: &Path) -> Result<()> {
         ));
     };
     session_meta_line.meta.cwd = cwd.to_path_buf();
-    rollout_line.item = RolloutItem::SessionMeta(session_meta_line);
-    *first_line = serde_json::to_string(&rollout_line)?;
-    fs::write(path, lines.join("\n") + "\n")?;
-    Ok(())
-}
-
-fn set_rollout_thread_source(path: &Path, thread_source: CoreThreadSource) -> Result<()> {
-    let content = fs::read_to_string(path)?;
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-    let first_line = lines
-        .first_mut()
-        .ok_or_else(|| anyhow::anyhow!("rollout at {} is empty", path.display()))?;
-    let mut rollout_line: RolloutLine = serde_json::from_str(first_line)?;
-    let RolloutItem::SessionMeta(mut session_meta_line) = rollout_line.item else {
-        return Err(anyhow::anyhow!(
-            "rollout at {} does not start with session metadata",
-            path.display()
-        ));
-    };
-    session_meta_line.meta.thread_source = Some(thread_source);
     rollout_line.item = RolloutItem::SessionMeta(session_meta_line);
     *first_line = serde_json::to_string(&rollout_line)?;
     fs::write(path, lines.join("\n") + "\n")?;
@@ -399,14 +409,12 @@ async fn thread_list_pagination_next_cursor_none_on_last_page() -> Result<()> {
     )
     .await?;
     assert_eq!(data1.len(), 2);
-    let expected_cwd = codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?)
-        .expect("rollout cwd should be absolute");
     for thread in &data1 {
         assert_eq!(thread.preview, "Hello");
         assert_eq!(thread.model_provider, "mock_provider");
         assert!(thread.created_at > 0);
         assert_eq!(thread.updated_at, thread.created_at);
-        assert_eq!(thread.cwd, expected_cwd);
+        assert_eq!(thread.cwd, test_absolute_path("/"));
         assert_eq!(thread.cli_version, "0.0.0");
         assert_eq!(thread.source, SessionSource::Cli);
         assert_eq!(thread.git_info, None);
@@ -434,7 +442,7 @@ async fn thread_list_pagination_next_cursor_none_on_last_page() -> Result<()> {
         assert_eq!(thread.model_provider, "mock_provider");
         assert!(thread.created_at > 0);
         assert_eq!(thread.updated_at, thread.created_at);
-        assert_eq!(thread.cwd, expected_cwd);
+        assert_eq!(thread.cwd, test_absolute_path("/"));
         assert_eq!(thread.cli_version, "0.0.0");
         assert_eq!(thread.source, SessionSource::Cli);
         assert_eq!(thread.git_info, None);
@@ -490,11 +498,7 @@ async fn thread_list_respects_provider_filter() -> Result<()> {
     let expected_ts = chrono::DateTime::parse_from_rfc3339("2025-01-02T11:00:00Z")?.timestamp();
     assert_eq!(thread.created_at, expected_ts);
     assert_eq!(thread.updated_at, expected_ts);
-    assert_eq!(
-        thread.cwd,
-        codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?)
-            .expect("rollout cwd should be absolute")
-    );
+    assert_eq!(thread.cwd, test_absolute_path("/"));
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
@@ -559,7 +563,6 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::Many(vec![
                 first_target_cwd.to_string_lossy().into_owned(),
@@ -567,6 +570,7 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             ])),
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -672,11 +676,11 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
             search_term: Some("needle".to_string()),
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -733,7 +737,6 @@ async fn thread_search_returns_content_matches() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             search_term: "needle".to_string(),
         })
@@ -781,7 +784,6 @@ async fn thread_search_matches_json_escaped_content() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             search_term: search_term.to_string(),
         })
@@ -831,7 +833,6 @@ async fn thread_search_filters_by_source_kind() -> Result<()> {
             sort_key: None,
             sort_direction: None,
             source_kinds: Some(vec![ThreadSourceKind::Exec]),
-            thread_sources: None,
             archived: None,
             search_term: "needle".to_string(),
         })
@@ -892,11 +893,11 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -929,13 +930,13 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
             use_state_db_only: true,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -959,13 +960,13 @@ sqlite = true
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let resp: JSONRPCResponse = timeout(
@@ -975,6 +976,162 @@ sqlite = true
     .await??;
     let scanned_response = to_response::<ThreadListResponse>(resp)?;
     assert_eq!(scanned_response.data.len(), 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_parent_filter_reads_direct_children_from_state_db() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+    let parent_id = ThreadId::new();
+    let older_child_id = ThreadId::new();
+    let newer_child_id = ThreadId::new();
+    let grandchild_id = ThreadId::new();
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        "mock_provider".to_string(),
+    )
+    .await?;
+    for (thread_id, created_at, source, model_provider) in [
+        (
+            older_child_id,
+            "2025-02-01T10:00:00Z",
+            CoreSessionSource::SubAgent(SubAgentSource::Other("agent_job:job-1".to_string())),
+            "other_provider",
+        ),
+        (
+            newer_child_id,
+            "2025-02-01T11:00:00Z",
+            CoreSessionSource::Cli,
+            "mock_provider",
+        ),
+        (
+            grandchild_id,
+            "2025-02-01T12:00:00Z",
+            CoreSessionSource::SubAgent(SubAgentSource::Other("agent_job:job-2".to_string())),
+            "mock_provider",
+        ),
+    ] {
+        let created_at = DateTime::parse_from_rfc3339(created_at)?.with_timezone(&Utc);
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            codex_home.path().join(format!("{thread_id}.jsonl")),
+            created_at,
+            source,
+        );
+        builder.model_provider = Some(model_provider.to_string());
+        builder.cwd = codex_home.path().to_path_buf();
+        builder.cli_version = Some("0.0.0".to_string());
+        let mut metadata = builder.build(model_provider);
+        metadata.preview = Some("child thread".to_string());
+        metadata.first_user_message = metadata.preview.clone();
+        state_db.upsert_thread(&metadata).await?;
+    }
+    for (parent_thread_id, child_thread_id) in [
+        (parent_id, older_child_id),
+        (parent_id, newer_child_id),
+        (newer_child_id, grandchild_id),
+    ] {
+        state_db
+            .upsert_thread_spawn_edge(
+                parent_thread_id,
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await?;
+    }
+    state_db
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let first_page = list_threads_for_parent(
+        &mut mcp, parent_id, /*cursor*/ None, /*limit*/ 1, /*model_providers*/ None,
+        /*source_kinds*/ None,
+    )
+    .await?;
+    let second_page = list_threads_for_parent(
+        &mut mcp,
+        parent_id,
+        first_page.next_cursor.clone(),
+        /*limit*/ 1,
+        /*model_providers*/ None,
+        /*source_kinds*/ None,
+    )
+    .await?;
+
+    assert_eq!(
+        first_page
+            .data
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>(),
+        vec![newer_child_id.to_string()]
+    );
+    assert_eq!(
+        second_page
+            .data
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>(),
+        vec![older_child_id.to_string()]
+    );
+    assert_eq!(second_page.next_cursor, None);
+    let expected_parent_id = parent_id.to_string();
+    assert!(
+        first_page
+            .data
+            .iter()
+            .chain(&second_page.data)
+            .all(|thread| thread.parent_thread_id.as_deref() == Some(expected_parent_id.as_str()))
+    );
+    let interactive_only = list_threads_for_parent(
+        &mut mcp,
+        parent_id,
+        /*cursor*/ None,
+        /*limit*/ 10,
+        /*model_providers*/ None,
+        /*source_kinds*/ Some(Vec::new()),
+    )
+    .await?;
+    assert_eq!(
+        interactive_only
+            .data
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>(),
+        vec![newer_child_id.to_string()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_parent_filter_rejects_malformed_thread_id() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let request_id = mcp
+        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: None,
+            source_kinds: None,
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: Some("not-a-thread-id".to_string()),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
 
     Ok(())
 }
@@ -1021,79 +1178,6 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
     assert_eq!(ids, vec![cli_id.as_str()]);
     assert_ne!(cli_id, exec_id);
     assert_eq!(data[0].source, SessionSource::Cli);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn thread_list_hides_side_threads_until_side_filter_requested() -> Result<()> {
-    let codex_home = TempDir::new()?;
-    create_minimal_config(codex_home.path())?;
-    let normal_id = create_fake_rollout(
-        codex_home.path(),
-        "2025-02-01T10-00-00",
-        "2025-02-01T10:00:00Z",
-        "normal chat",
-        Some("mock_provider"),
-        /*git_info*/ None,
-    )?;
-    let side_id = create_fake_rollout(
-        codex_home.path(),
-        "2025-02-01T11-00-00",
-        "2025-02-01T11:00:00Z",
-        "side chat",
-        Some("mock_provider"),
-        /*git_info*/ None,
-    )?;
-    set_rollout_thread_source(
-        rollout_path(codex_home.path(), "2025-02-01T11-00-00", &side_id).as_path(),
-        CoreThreadSource::Side,
-    )?;
-
-    let mut mcp = init_mcp(codex_home.path()).await?;
-    let default_response = list_threads(
-        &mut mcp,
-        /*cursor*/ None,
-        Some(10),
-        Some(vec!["mock_provider".to_string()]),
-        /*source_kinds*/ None,
-        /*archived*/ None,
-    )
-    .await?;
-    let default_ids: Vec<_> = default_response
-        .data
-        .iter()
-        .map(|thread| thread.id.as_str())
-        .collect();
-    assert_eq!(default_ids, vec![normal_id.as_str()]);
-
-    let request_id = mcp
-        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
-            cursor: None,
-            limit: Some(10),
-            sort_key: None,
-            sort_direction: None,
-            model_providers: Some(vec!["mock_provider".to_string()]),
-            source_kinds: None,
-            thread_sources: Some(vec![ThreadSource::Side]),
-            archived: None,
-            cwd: None,
-            use_state_db_only: false,
-            search_term: None,
-        })
-        .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let side_response = to_response::<ThreadListResponse>(resp)?;
-    let side_ids: Vec<_> = side_response
-        .data
-        .iter()
-        .map(|thread| thread.id.as_str())
-        .collect();
-    assert_eq!(side_ids, vec![side_id.as_str()]);
 
     Ok(())
 }
@@ -1488,11 +1572,7 @@ async fn thread_list_includes_git_info() -> Result<()> {
     };
     assert_eq!(thread.git_info, Some(expected_git));
     assert_eq!(thread.source, SessionSource::Cli);
-    assert_eq!(
-        thread.cwd,
-        codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?)
-            .expect("rollout cwd should be absolute")
-    );
+    assert_eq!(thread.cwd, test_absolute_path("/"));
     assert_eq!(thread.cli_version, "0.0.0");
 
     Ok(())
@@ -1605,6 +1685,89 @@ async fn thread_list_sort_updated_at_orders_by_mtime() -> Result<()> {
 
     let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
     assert_eq!(ids, vec![id_old.as_str(), id_mid.as_str(), id_new.as_str()]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_sort_recency_at_uses_state_db_order_with_provider_filter() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+
+    let id_old = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-01T10-00-00",
+        "2025-01-01T10:00:00Z",
+        "Hello",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let id_new = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-01T11-00-00",
+        "2025-01-01T11:00:00Z",
+        "Hello",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    set_rollout_mtime(
+        rollout_path(codex_home.path(), "2025-01-01T10-00-00", &id_old).as_path(),
+        "2025-01-03T00:00:00Z",
+    )?;
+
+    let state_db =
+        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
+            .await?;
+    state_db
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await?;
+    let rollout_config = codex_rollout::RolloutConfig {
+        codex_home: codex_home.path().to_path_buf(),
+        sqlite_home: codex_home.path().to_path_buf(),
+        cwd: codex_home.path().to_path_buf(),
+        model_provider_id: "mock_provider".to_string(),
+        generate_memories: false,
+    };
+    codex_core::RolloutRecorder::list_threads(
+        Some(state_db.clone()),
+        &rollout_config,
+        /*page_size*/ 10,
+        /*cursor*/ None,
+        codex_core::ThreadSortKey::CreatedAt,
+        codex_core::SortDirection::Desc,
+        codex_core::INTERACTIVE_SESSION_SOURCES.as_slice(),
+        /*model_providers*/ None,
+        /*cwd_filters*/ None,
+        "mock_provider",
+        /*search_term*/ None,
+    )
+    .await?;
+    state_db
+        .touch_thread_recency_at(
+            ThreadId::from_string(&id_new)?,
+            DateTime::<Utc>::from_timestamp(1_800_000_000, 0).expect("timestamp"),
+        )
+        .await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let ThreadListResponse { data, .. } = list_threads_with_sort(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        /*source_kinds*/ None,
+        Some(ThreadSortKey::RecencyAt),
+        /*archived*/ None,
+    )
+    .await?;
+
+    assert_eq!(
+        data.iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![id_new.as_str(), id_old.as_str()]
+    );
+    assert!(data.iter().all(|thread| thread.recency_at.is_some()));
 
     Ok(())
 }
@@ -1739,11 +1902,11 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 sort_direction: Some(SortDirection::Desc),
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
-                thread_sources: None,
                 archived: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
+                parent_thread_id: None,
             })
             .await?;
         let resp: JSONRPCResponse = timeout(
@@ -1782,11 +1945,11 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 sort_direction: Some(SortDirection::Asc),
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
-                thread_sources: None,
                 archived: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
+                parent_thread_id: None,
             })
             .await?;
         let resp: JSONRPCResponse = timeout(
@@ -2021,11 +2184,11 @@ async fn thread_list_invalid_cursor_returns_error() -> Result<()> {
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let error: JSONRPCError = timeout(

@@ -1204,7 +1204,11 @@ fn auth_check(config: &Config) -> DoctorCheck {
         return check;
     }
 
-    match load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match load_auth_dot_json(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
+    ) {
         Ok(Some(auth)) => {
             details.push(format!("stored auth mode: {}", stored_auth_mode(&auth)));
             details.push(format!("stored API key: {}", auth.openai_api_key.is_some()));
@@ -1403,8 +1407,8 @@ fn stored_auth_issues(
         codex_app_server_protocol::AuthMode::AgentIdentity => {
             if auth
                 .agent_identity
-                .as_deref()
-                .is_none_or(|token| token.trim().is_empty())
+                .as_ref()
+                .is_none_or(|agent_identity| !agent_identity.has_auth_material())
             {
                 issues.push("agent identity auth is missing an agent identity token");
             }
@@ -2536,10 +2540,13 @@ impl ProviderAuthReachabilityMode {
 }
 
 fn provider_reachability_plan(config: &Config) -> ReachabilityPlan {
-    let stored_auth =
-        load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode)
-            .ok()
-            .flatten();
+    let stored_auth = load_auth_dot_json(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
+    )
+    .ok()
+    .flatten();
     let mode = provider_auth_reachability_mode_from_auth(
         config.model_provider.requires_openai_auth,
         env_var_present,

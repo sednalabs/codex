@@ -15,6 +15,7 @@
 //! bridging async `mpsc` channels on both sides. Queues are bounded so overload
 //! surfaces as channel-full errors rather than unbounded memory growth.
 
+mod path;
 mod remote;
 
 use std::error::Error;
@@ -58,6 +59,7 @@ pub use codex_exec_server::EnvironmentManager;
 pub use codex_exec_server::ExecServerRuntimePaths;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -65,6 +67,7 @@ use tokio::time::timeout;
 use toml::Value as TomlValue;
 use tracing::warn;
 
+pub use crate::path::AppServerPath;
 pub use crate::remote::RemoteAppServerClient;
 pub use crate::remote::RemoteAppServerConnectArgs;
 pub use crate::remote::RemoteAppServerEndpoint;
@@ -77,7 +80,6 @@ pub use crate::remote::RemoteAppServerEndpoint;
 pub mod legacy_core {
     pub use codex_core::check_execpolicy_for_warnings;
     pub use codex_core::format_exec_policy_error_with_source;
-    pub use codex_core::grant_read_root_non_elevated;
 
     pub mod config {
         pub use codex_core::config::*;
@@ -85,10 +87,6 @@ pub mod legacy_core {
         pub mod edit {
             pub use codex_core::config::edit::*;
         }
-    }
-
-    pub mod windows_sandbox {
-        pub use codex_core::windows_sandbox::*;
     }
 }
 
@@ -352,6 +350,8 @@ pub struct InProcessClientStartArgs {
     pub client_version: String,
     /// Whether experimental APIs are requested at initialize time.
     pub experimental_api: bool,
+    /// Whether MCP servers may send `openai/form` elicitation requests.
+    pub mcp_server_openai_form_elicitation: bool,
     /// Notification methods this client opts out of receiving.
     pub opt_out_notification_methods: Vec<String>,
     /// Queue capacity for command/event channels (clamped to at least 1).
@@ -376,6 +376,7 @@ impl InProcessClientStartArgs {
             } else {
                 Some(self.opt_out_notification_methods.clone())
             },
+            mcp_server_openai_form_elicitation: self.mcp_server_openai_form_elicitation,
         };
 
         InitializeParams {
@@ -850,6 +851,15 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    pub fn codex_home(&self, local_codex_home: &AbsolutePathBuf) -> Option<AppServerPath> {
+        match self {
+            Self::InProcess(_) => Some(AppServerPath::from_app_server(
+                local_codex_home.display().to_string(),
+            )),
+            Self::Remote(client) => client.codex_home().map(AppServerPath::from_app_server),
+        }
+    }
+
     pub async fn request(&self, request: ClientRequest) -> IoResult<RequestResult> {
         match self {
             Self::InProcess(client) => client.request(request).await,
@@ -1037,6 +1047,7 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity,
         })
@@ -1115,6 +1126,7 @@ mod tests {
                 id: request.id,
                 result: serde_json::json!({
                     "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+                    "codexHome": "/server/.codex",
                 }),
             }),
         )
@@ -1231,9 +1243,23 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: 8,
         }
+    }
+
+    #[test]
+    fn remote_initialize_params_forward_openai_form_capability() {
+        let mut args = test_remote_connect_args("ws://localhost/rpc".to_string());
+        args.mcp_server_openai_form_elicitation = true;
+
+        assert!(
+            args.initialize_params()
+                .capabilities
+                .expect("initialize capabilities")
+                .mcp_server_openai_form_elicitation
+        );
     }
 
     #[tokio::test]
@@ -1453,6 +1479,7 @@ mod tests {
             .expect("remote client should connect");
 
         assert_eq!(client.server_version(), Some("9.8.7-test"));
+        assert_eq!(client.codex_home(), Some("/server/.codex"));
         let response: GetAccountResponse = client
             .request_typed(ClientRequest::GetAccount {
                 request_id: RequestId::Integer(1),
@@ -1505,6 +1532,7 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: 8,
         })
@@ -1593,6 +1621,7 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: 8,
         })
@@ -1612,6 +1641,7 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: 8,
         })
@@ -1881,6 +1911,7 @@ mod tests {
                             is_secret: false,
                             options: Some(vec![]),
                         }],
+                        auto_resolution_ms: None,
                     })
                     .expect("params should serialize"),
                 ),
@@ -1942,6 +1973,7 @@ mod tests {
                                 is_secret: false,
                                 options: Some(vec![]),
                             }],
+                            auto_resolution_ms: None,
                         })
                         .expect("params should serialize"),
                     ),
@@ -2157,7 +2189,10 @@ mod tests {
         assert!(event_requires_delivery(
             &InProcessServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::ExternalAgentConfigImportCompleted(
-                    codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {},
+                    codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
+                        import_id: "import".to_string(),
+                        item_type_results: Vec::new(),
+                    },
                 )
             )
         ));
@@ -2179,7 +2214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_start_args_forward_environment_manager() {
+    async fn runtime_start_args_forward_environment_manager_and_openai_form_capability() {
         let config = Arc::new(build_test_config().await);
         let environment_manager = Arc::new(
             EnvironmentManager::create_for_tests(
@@ -2212,12 +2247,20 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: true,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         }
         .into_runtime_start_args();
 
         assert_eq!(runtime_args.config, config);
+        assert!(
+            runtime_args
+                .initialize
+                .capabilities
+                .expect("initialize capabilities")
+                .mcp_server_openai_form_elicitation
+        );
         assert!(Arc::ptr_eq(
             &runtime_args.environment_manager,
             &environment_manager
@@ -2253,6 +2296,7 @@ mod tests {
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
             experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         }

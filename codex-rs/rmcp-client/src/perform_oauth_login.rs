@@ -26,9 +26,10 @@ use urlencoding::decode;
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
-use crate::save_oauth_tokens_locked;
+use crate::save_oauth_tokens;
+use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
-use crate::utils::build_reqwest_client;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 struct OauthHeaders {
@@ -81,6 +82,7 @@ pub async fn perform_oauth_login(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -93,6 +95,7 @@ pub async fn perform_oauth_login(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         http_headers,
         env_http_headers,
         scopes,
@@ -110,6 +113,7 @@ pub async fn perform_oauth_login_silent(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -122,6 +126,7 @@ pub async fn perform_oauth_login_silent(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         http_headers,
         env_http_headers,
         scopes,
@@ -139,6 +144,7 @@ async fn perform_oauth_login_with_browser_output(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -156,6 +162,7 @@ async fn perform_oauth_login_with_browser_output(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         headers,
         scopes,
         oauth_client_id,
@@ -175,6 +182,7 @@ pub async fn perform_oauth_login_return_url(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -192,6 +200,7 @@ pub async fn perform_oauth_login_return_url(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         headers,
         scopes,
         oauth_client_id,
@@ -350,6 +359,7 @@ struct OauthLoginFlow {
     server_name: String,
     server_url: String,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     launch_browser: bool,
     timeout: Duration,
 }
@@ -445,6 +455,7 @@ impl OauthLoginFlow {
         server_name: &str,
         server_url: &str,
         store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
         headers: OauthHeaders,
         scopes: &[String],
         oauth_client_id: Option<&str>,
@@ -481,7 +492,7 @@ impl OauthLoginFlow {
             env_http_headers,
         } = headers;
         let default_headers = build_default_headers(http_headers, env_http_headers)?;
-        let http_client = build_reqwest_client(ClientBuilder::new(), &default_headers)?;
+        let http_client = apply_default_headers(ClientBuilder::new(), &default_headers).build()?;
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
         let oauth_state = start_authorization(
@@ -508,6 +519,7 @@ impl OauthLoginFlow {
             server_name: server_name.to_string(),
             server_url: server_url.to_string(),
             store_mode,
+            keyring_backend_kind,
             launch_browser,
             timeout,
         })
@@ -571,7 +583,12 @@ impl OauthLoginFlow {
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
             };
-            save_oauth_tokens_locked(&self.server_name, &stored, self.store_mode).await?;
+            save_oauth_tokens(
+                &self.server_name,
+                &stored,
+                self.store_mode,
+                self.keyring_backend_kind,
+            )?;
 
             Ok(())
         }
@@ -610,14 +627,11 @@ async fn start_authorization(
 ) -> Result<OAuthState> {
     let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
     else {
-        let mut auth_manager = AuthorizationManager::new(server_url).await?;
-        auth_manager.with_client(http_client)?;
-        let metadata = auth_manager.discover_metadata().await?;
-        auth_manager.set_metadata(metadata);
-        let session =
-            AuthorizationSession::new(auth_manager, scopes, redirect_uri, Some("Codex"), None)
-                .await?;
-        return Ok(OAuthState::Session(session));
+        let mut oauth_state = OAuthState::new(server_url, Some(http_client)).await?;
+        oauth_state
+            .start_authorization(scopes, redirect_uri, Some("Codex"))
+            .await?;
+        return Ok(oauth_state);
     };
 
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
@@ -654,22 +668,11 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
-
+    use axum::Json;
     use axum::Router;
-    use axum::http::HeaderMap as AxumHeaderMap;
-    use axum::http::StatusCode;
-    use axum::http::header::CONTENT_TYPE;
-    use axum::response::IntoResponse;
-    use axum::response::Response;
     use axum::routing::get;
-    use axum::routing::post;
     use pretty_assertions::assert_eq;
     use reqwest::Url;
-    use reqwest::header::HeaderMap;
-    use reqwest::header::HeaderValue;
     use serde_json::json;
     use tokio::net::TcpListener;
 
@@ -681,19 +684,6 @@ mod tests {
     use super::callback_path_from_redirect_uri;
     use super::parse_oauth_callback;
     use super::start_authorization;
-
-    fn json_response(value: serde_json::Value) -> Response {
-        status_json_response(StatusCode::OK, value)
-    }
-
-    fn status_json_response(status: StatusCode, value: serde_json::Value) -> Response {
-        (
-            status,
-            [(CONTENT_TYPE, "application/json")],
-            value.to_string(),
-        )
-            .into_response()
-    }
 
     async fn spawn_oauth_metadata_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -712,14 +702,14 @@ mod tests {
                 "/.well-known/oauth-authorization-server/mcp",
                 get(move || {
                     let metadata = path_scoped_metadata.clone();
-                    async move { json_response(metadata) }
+                    async move { Json(metadata) }
                 }),
             )
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(move || {
                     let metadata = metadata.clone();
-                    async move { json_response(metadata) }
+                    async move { Json(metadata) }
                 }),
             );
 
@@ -730,75 +720,6 @@ mod tests {
         });
 
         base_url
-    }
-
-    async fn spawn_oauth_metadata_server_requiring_registration_header() -> (String, Arc<AtomicBool>)
-    {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind metadata listener");
-        let addr = listener.local_addr().expect("read metadata listener addr");
-        let base_url = format!("http://{addr}");
-        let metadata = json!({
-            "authorization_endpoint": format!("{base_url}/oauth/authorize"),
-            "token_endpoint": format!("{base_url}/oauth/token"),
-            "registration_endpoint": format!("{base_url}/register"),
-            "scopes_supported": ["offline_access"],
-        });
-        let path_scoped_metadata = metadata.clone();
-        let saw_registration_header = Arc::new(AtomicBool::new(false));
-        let saw_registration_header_for_handler = saw_registration_header.clone();
-
-        let app = Router::new()
-            .route(
-                "/.well-known/oauth-authorization-server/mcp",
-                get(move || {
-                    let metadata = path_scoped_metadata.clone();
-                    async move { json_response(metadata) }
-                }),
-            )
-            .route(
-                "/.well-known/oauth-authorization-server",
-                get(move || {
-                    let metadata = metadata.clone();
-                    async move { json_response(metadata) }
-                }),
-            )
-            .route(
-                "/register",
-                post(move |headers: AxumHeaderMap| {
-                    let saw_registration_header = saw_registration_header_for_handler.clone();
-                    async move {
-                        if headers
-                            .get("x-codex-test-dcr")
-                            .and_then(|value| value.to_str().ok())
-                            == Some("present")
-                        {
-                            saw_registration_header.store(true, Ordering::SeqCst);
-                            return status_json_response(
-                                StatusCode::CREATED,
-                                json!({
-                                    "client_id": "dynamic-codex-client",
-                                    "redirect_uris": ["http://127.0.0.1/callback"],
-                                }),
-                            );
-                        }
-
-                        status_json_response(
-                            StatusCode::BAD_REQUEST,
-                            json!({ "error": "missing required header" }),
-                        )
-                    }
-                }),
-            );
-
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("serve oauth metadata");
-        });
-
-        (base_url, saw_registration_header)
     }
 
     #[tokio::test]
@@ -825,53 +746,6 @@ mod tests {
             .map(|(_, value)| value.into_owned());
 
         assert_eq!(client_id.as_deref(), Some("eci-prd-pub-codex-123"));
-    }
-
-    #[tokio::test]
-    async fn start_authorization_routes_dynamic_registration_through_configured_client() {
-        let (base_url, saw_registration_header) =
-            spawn_oauth_metadata_server_requiring_registration_header().await;
-        let mut default_headers = HeaderMap::new();
-        default_headers.insert("x-codex-test-dcr", HeaderValue::from_static("present"));
-        let http_client = crate::utils::build_reqwest_client(
-            reqwest::Client::builder().no_proxy(),
-            &default_headers,
-        )
-        .expect("client");
-
-        let oauth_state = start_authorization(
-            &format!("{base_url}/mcp"),
-            http_client,
-            &["ops:read"],
-            "http://127.0.0.1/callback",
-            /*oauth_client_id*/ None,
-        )
-        .await
-        .expect("start oauth authorization");
-
-        assert!(saw_registration_header.load(Ordering::SeqCst));
-        let authorization_url = oauth_state
-            .get_authorization_url()
-            .await
-            .expect("read authorization url");
-        let auth_url = Url::parse(&authorization_url).expect("authorization url should parse");
-        let client_id = auth_url
-            .query_pairs()
-            .find(|(key, _)| key == "client_id")
-            .map(|(_, value)| value.into_owned());
-        let requested_scopes: Vec<String> = auth_url
-            .query_pairs()
-            .filter(|(key, _)| key == "scope")
-            .flat_map(|(_, value)| {
-                value
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        assert_eq!(client_id.as_deref(), Some("dynamic-codex-client"));
-        assert_eq!(requested_scopes, vec!["ops:read".to_string()]);
     }
 
     #[test]

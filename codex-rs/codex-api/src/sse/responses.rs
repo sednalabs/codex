@@ -24,6 +24,7 @@ use tracing::debug;
 use tracing::trace;
 
 const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
+const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const OPENAI_MODEL_SNAPSHOT_HEADER: &str = "openai-model-snapshot";
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -63,8 +64,8 @@ pub fn spawn_response_stream(
     if let Some(turn_state) = turn_state.as_ref()
         && let Some(header_value) = stream_response
             .headers
-            .get("x-codex-turn-state")
-            .and_then(|v| v.to_str().ok())
+            .get(X_CODEX_TURN_STATE_HEADER)
+            .and_then(|value| value.to_str().ok())
     {
         let _ = turn_state.set(header_value.to_string());
     }
@@ -217,6 +218,16 @@ impl ResponsesStreamEvent {
         }
     }
 
+    pub(crate) fn turn_state(&self) -> Option<String> {
+        if self.kind() != "response.metadata" {
+            return None;
+        }
+
+        self.headers
+            .as_ref()
+            .and_then(header_turn_state_value_from_json)
+    }
+
     pub(crate) fn model_verifications(&self) -> Option<Vec<ModelVerification>> {
         if self.kind() != "response.metadata" {
             return None;
@@ -257,6 +268,17 @@ fn response_model_identity_from_json(value: &Value) -> Option<ResponseModelIdent
         }
     }
     Some(identity)
+}
+
+fn header_turn_state_value_from_json(value: &Value) -> Option<String> {
+    let headers = value.as_object()?;
+    headers.iter().find_map(|(name, value)| {
+        if name.eq_ignore_ascii_case(X_CODEX_TURN_STATE_HEADER) {
+            json_value_as_string(value)
+        } else {
+            None
+        }
+    })
 }
 
 fn model_verifications_from_json_value(value: &Value) -> Option<Vec<ModelVerification>> {
