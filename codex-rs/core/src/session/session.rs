@@ -466,6 +466,38 @@ async fn warm_plugins_and_skills_for_session_init(
         .clone()
 }
 
+async fn maybe_create_usage_logger(
+    state_db: Option<Arc<codex_state::StateRuntime>>,
+    thread_id: ThreadId,
+    session_source: SessionSource,
+    thread_source: Option<ThreadSource>,
+    forked_from_id: Option<ThreadId>,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+) -> Option<Mutex<codex_state::UsageLogger>> {
+    let Some(state_db) = state_db else {
+        return None;
+    };
+
+    match codex_state::UsageLogger::try_new_with_thread_source(
+        state_db,
+        thread_id,
+        session_source,
+        thread_source,
+        forked_from_id,
+        agent_nickname,
+        agent_role,
+    )
+    .await
+    {
+        Ok(logger) => Some(Mutex::new(logger)),
+        Err(err) => {
+            warn!("failed to initialize usage logger for thread {thread_id}: {err}");
+            None
+        }
+    }
+}
+
 impl Session {
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
@@ -874,6 +906,16 @@ impl Session {
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
             export_config_lock_if_configured(&session_configuration, thread_id).await?;
+            let usage_logger = maybe_create_usage_logger(
+                state_db_ctx.clone(),
+                thread_id,
+                session_configuration.session_source.clone(),
+                session_configuration.thread_source.clone(),
+                forked_from_id,
+                session_configuration.session_source.get_nickname(),
+                session_configuration.session_source.get_agent_role(),
+            )
+            .await;
             let state = SessionState::new(session_configuration.clone());
             let managed_network_requirements_configured = config
                 .config_layer_stack
@@ -1043,14 +1085,16 @@ impl Session {
                 time_provider,
                 model_client: ModelClient::new(
                     Some(Arc::clone(&auth_manager)),
+                    session_id,
                     thread_id,
+                    installation_id.clone(),
                     session_configuration.provider.clone(),
                     session_configuration.session_source.clone(),
+                    session_configuration.parent_thread_id,
                     config.model_verbosity,
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
-                    /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
                     attestation_provider,
                 )
                 .with_prompt_cache_key_override(
@@ -1060,6 +1104,7 @@ impl Session {
                     ),
                 ),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(),
+                usage_logger,
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };

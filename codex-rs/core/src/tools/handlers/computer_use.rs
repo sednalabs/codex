@@ -654,21 +654,22 @@ mod tests {
             codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
                 .expect("create second environment"),
         );
-        turn_context.environments = crate::environment_selection::ResolvedTurnEnvironments {
+        turn_context.environments = crate::environment_selection::TurnEnvironmentSnapshot {
             turn_environments: vec![
-                TurnEnvironment {
-                    environment_id: "first".to_string(),
-                    environment: first_environment,
-                    cwd: cwd.clone(),
-                    shell: Some("bash".to_string()),
-                },
-                TurnEnvironment {
-                    environment_id: "second".to_string(),
-                    environment: second_environment,
-                    cwd,
-                    shell: Some("bash".to_string()),
-                },
+                TurnEnvironment::new(
+                    "first".to_string(),
+                    first_environment,
+                    codex_utils_path_uri::PathUri::from_abs_path(&cwd),
+                    None,
+                ),
+                TurnEnvironment::new(
+                    "second".to_string(),
+                    second_environment,
+                    codex_utils_path_uri::PathUri::from_abs_path(&cwd),
+                    None,
+                ),
             ],
+            starting: Vec::new(),
         };
 
         assert_eq!(

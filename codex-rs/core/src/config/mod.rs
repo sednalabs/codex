@@ -1,4 +1,3 @@
-use crate::agents_md::AgentsMdManager;
 pub use crate::agents_md::LoadedAgentsMd;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
@@ -2870,12 +2869,7 @@ impl Config {
             .startup_warnings()
             .unwrap_or_default()
             .to_vec();
-        let user_instructions = AgentsMdManager::load_global_instructions(
-            LOCAL_FS.as_ref(),
-            Some(&codex_home),
-            &mut startup_warnings,
-        )
-        .await;
+        let user_instructions = None;
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
