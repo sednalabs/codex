@@ -141,7 +141,7 @@
         "approvals_reviewer": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ApprovalsReviewer"
+              "$ref": "#/$defs/ApprovalsReviewer"
             },
             {
               "type": "null"
@@ -151,7 +151,7 @@
         "default_tools_approval_mode": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AppToolApproval"
+              "$ref": "#/$defs/AppToolApproval"
             },
             {
               "type": "null"

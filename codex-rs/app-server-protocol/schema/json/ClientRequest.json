@@ -37,6 +37,24 @@
       "oneOf": [
         {
           "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_text",
+              "title": "InputTextAgentMessageInputContentType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "title": "InputTextAgentMessageInputContent",
+          "type": "object"
+        },
+        {
+          "properties": {
             "encrypted_content": {
               "type": "string"
             },
@@ -538,6 +556,18 @@
       ],
       "type": "object"
     },
+    "ConsumeAccountRateLimitResetCreditParams": {
+      "properties": {
+        "idempotencyKey": {
+          "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -606,6 +636,14 @@
         }
       ]
     },
+    "ConversationTextRole": {
+      "enum": [
+        "user",
+        "developer",
+        "assistant"
+      ],
+      "type": "string"
+    },
     "DynamicToolCapability": {
       "properties": {
         "capabilityScope": {
@@ -648,6 +686,7 @@
           ]
         },
         "deferLoading": {
+          "default": false,
           "type": "boolean"
         },
         "description": {
@@ -677,6 +716,15 @@
     },
     "EnvironmentAddParams": {
       "properties": {
+        "connectTimeoutMs": {
+          "description": "Optional WebSocket connection timeout. The server default applies when omitted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "environmentId": {
           "type": "string"
         },
@@ -746,7 +794,7 @@
           ]
         },
         "includeHome": {
-          "description": "If true, include detection under the user's home (~/.claude, ~/.codex, etc.).",
+          "description": "If true, include detection under the user's home directory.",
           "type": "boolean"
         }
       },
@@ -759,6 +807,13 @@
             "$ref": "#/$defs/ExternalAgentConfigMigrationItem"
           },
           "type": "array"
+        },
+        "source": {
+          "description": "Source product that produced the migration items. Missing means unspecified.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1268,6 +1323,10 @@
           "description": "Opt into receiving experimental API methods and fields.",
           "type": "boolean"
         },
+        "mcpServerOpenaiFormElicitation": {
+          "description": "Allow downstream MCP servers to request OpenAI extended form elicitations.",
+          "type": "boolean"
+        },
         "optOutNotificationMethods": {
           "description": "Exact notification method names that should be suppressed for this\nconnection (for example `thread/started`).",
           "items": {
@@ -1306,6 +1365,9 @@
         "clientInfo"
       ],
       "type": "object"
+    },
+    "LegacyAppPathString": {
+      "type": "string"
     },
     "ListMcpServerStatusParams": {
       "properties": {
@@ -1755,6 +1817,14 @@
     "ModelProviderCapabilitiesReadParams": {
       "type": "object"
     },
+    "MultiAgentMode": {
+      "description": "Controls whether the model should only spawn sub-agents after an explicit\nuser request or may delegate proactively when doing so would help.",
+      "enum": [
+        "explicitRequestOnly",
+        "proactive"
+      ],
+      "type": "string"
+    },
     "NetworkAccess": {
       "enum": [
         "restricted",
@@ -1855,7 +1925,8 @@
         "local",
         "vertical",
         "workspace-directory",
-        "shared-with-me"
+        "shared-with-me",
+        "created-by-me-remote"
       ],
       "type": "string"
     },
@@ -2429,6 +2500,22 @@
       ],
       "type": "object"
     },
+    "RemoteControlDisableParams": {
+      "properties": {
+        "ephemeral": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RemoteControlEnableParams": {
+      "properties": {
+        "ephemeral": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RemoteControlPairingStartParams": {
       "properties": {
         "manualCode": {
@@ -2479,8 +2566,17 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "phase": {
               "anyOf": [
@@ -2520,6 +2616,22 @@
               },
               "type": "array"
             },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "recipient": {
               "type": "string"
             },
@@ -2554,6 +2666,22 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "summary": {
@@ -2592,8 +2720,17 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "status": {
               "$ref": "#/$defs/LocalShellStatus"
@@ -2624,8 +2761,17 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "name": {
               "type": "string"
@@ -2667,8 +2813,17 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "status": {
               "type": [
@@ -2694,6 +2849,22 @@
           "properties": {
             "call_id": {
               "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "output": {
               "$ref": "#/$defs/FunctionCallOutputBody"
@@ -2721,11 +2892,20 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "input": {
               "type": "string"
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "name": {
               "type": "string"
@@ -2755,6 +2935,22 @@
           "properties": {
             "call_id": {
               "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "name": {
               "type": [
@@ -2789,6 +2985,22 @@
             },
             "execution": {
               "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "status": {
               "type": "string"
@@ -2828,8 +3040,17 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "status": {
               "type": [
@@ -2852,7 +3073,20 @@
         {
           "properties": {
             "id": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "result": {
               "type": "string"
@@ -2874,7 +3108,6 @@
           },
           "required": [
             "type",
-            "id",
             "status",
             "result"
           ],
@@ -2885,6 +3118,22 @@
           "properties": {
             "encrypted_content": {
               "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "const": "compaction",
@@ -2901,6 +3150,16 @@
         },
         {
           "properties": {
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "const": "compaction_trigger",
               "title": "CompactionTriggerResponseItemType",
@@ -2919,6 +3178,22 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemMetadata"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "type": {
@@ -2948,6 +3223,23 @@
           "type": "object"
         }
       ]
+    },
+    "ResponseItemMetadata": {
+      "properties": {
+        "source_call_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -3591,16 +3883,6 @@
             "null"
           ]
         },
-        "dynamicTools": {
-          "description": "Optional client-supplied dynamic tools to install before the next turn.",
-          "items": {
-            "$ref": "#/$defs/DynamicToolSpec"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "ephemeral": {
           "type": "boolean"
         },
@@ -3841,6 +4123,13 @@
             "null"
           ]
         },
+        "parentThreadId": {
+          "description": "Optional direct parent thread filter.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "searchTerm": {
           "description": "Optional substring filter for the extracted thread title.",
           "type": [
@@ -3874,16 +4163,6 @@
           "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
           "items": {
             "$ref": "#/$defs/ThreadSourceKind"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "threadSources": {
-          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
-          "items": {
-            "$ref": "#/$defs/ThreadSource"
           },
           "type": [
             "array",
@@ -4019,9 +4298,29 @@
       ],
       "type": "object"
     },
+    "ThreadRealtimeAppendSpeechParams": {
+      "description": "EXPERIMENTAL - append speakable text to thread realtime.",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "text"
+      ],
+      "type": "object"
+    },
     "ThreadRealtimeAppendTextParams": {
       "description": "EXPERIMENTAL - append text input to thread realtime.",
       "properties": {
+        "role": {
+          "$ref": "#/$defs/ConversationTextRole",
+          "default": "user"
+        },
         "text": {
           "type": "string"
         },
@@ -4081,6 +4380,41 @@
     "ThreadRealtimeStartParams": {
       "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
       "properties": {
+        "clientManagedHandoffs": {
+          "description": "Leaves Codex response handoffs to the client's explicit append calls instead of forwarding\nthem automatically. Defaults to false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "codexResponseHandoffPrefix": {
+          "description": "Optional prefix added to automatic V1 Codex commentary sent with\n`conversation.handoff.append` when `codexResponsesAsItems` is not true. Final answers are\nsent without the prefix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codexResponseItemPrefix": {
+          "description": "Optional prefix added to automatic Codex response items when `codexResponsesAsItems` is true.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codexResponsesAsItems": {
+          "description": "Sends automatic Codex responses as realtime conversation items instead of handoff appends.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "includeStartupContext": {
+          "description": "Set to false to start without Codex's startup context. Omitted or null includes it.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "model": {
           "description": "Overrides the configured realtime model for this session only.",
           "type": [
@@ -4280,16 +4614,6 @@
             "null"
           ]
         },
-        "dynamicTools": {
-          "description": "Optional client-supplied dynamic tools to install before the next turn.",
-          "items": {
-            "$ref": "#/$defs/DynamicToolSpec"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "excludeTurns": {
           "description": "When true, return only thread metadata and live-resume state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after resuming.",
           "type": "boolean"
@@ -4466,16 +4790,6 @@
             "array",
             "null"
           ]
-        },
-        "threadSources": {
-          "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
-          "items": {
-            "$ref": "#/$defs/ThreadSource"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
         }
       },
       "required": [
@@ -4558,6 +4872,17 @@
             "null"
           ]
         },
+        "multiAgentMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Select the multi-agent mode for subsequent turns."
+        },
         "permissions": {
           "description": "Select a named permissions profile id for subsequent turns. Cannot be\ncombined with `sandboxPolicy`.",
           "type": [
@@ -4633,7 +4958,8 @@
     "ThreadSortKey": {
       "enum": [
         "created_at",
-        "updated_at"
+        "updated_at",
+        "recency_at"
       ],
       "type": "string"
     },
@@ -4704,6 +5030,7 @@
           ]
         },
         "dynamicTools": {
+          "default": null,
           "items": {
             "$ref": "#/$defs/DynamicToolSpec"
           },
@@ -4750,6 +5077,17 @@
             "string",
             "null"
           ]
+        },
+        "multiAgentMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set the initial multi-agent mode for this thread.\nOmitted leaves the thread without a selected mode. Eligible multi-agent\nv2 turns still default to `explicitRequestOnly`."
         },
         "permissions": {
           "description": "Named profile id for this thread. Cannot be combined with `sandbox`.",
@@ -4957,7 +5295,7 @@
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/$defs/LegacyAppPathString"
         },
         "environmentId": {
           "type": "string"
@@ -5095,6 +5433,17 @@
             "null"
           ]
         },
+        "multiAgentMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Controls whether multi-agent v2 delegation requires an explicit user request.\nOmitted keeps the loaded session's current mode."
+        },
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
         },
@@ -5120,7 +5469,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Optional turn-scoped Responses API client metadata.",
+          "description": "Optional metadata to enrich Codex's ResponsesAPI turn metadata.\n\nEntries are flattened into the JSON string sent as\n`client_metadata[\"x-codex-turn-metadata\"]` on ResponsesAPI HTTP and websocket requests.\n\nThey are not sent as top-level ResponsesAPI `client_metadata` keys, and reserved keys\nsuch as `session_id`, `thread_id`, `turn_id`, and `window_id` cannot be overridden.",
           "type": [
             "object",
             "null"
@@ -5207,7 +5556,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Optional turn-scoped Responses API client metadata.",
+          "description": "Optional metadata to enrich Codex's ResponsesAPI turn metadata.\n\nEntries are flattened into the JSON string sent as\n`client_metadata[\"x-codex-turn-metadata\"]` on ResponsesAPI HTTP and websocket requests.\n\nThey are not sent as top-level ResponsesAPI `client_metadata` keys, and reserved keys\nsuch as `session_id`, `thread_id`, `turn_id`, and `window_id` cannot be overridden.",
           "type": [
             "object",
             "null"
@@ -6910,6 +7259,28 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
+          "const": "account/rateLimitResetCredit/consume",
+          "title": "Account/rateLimitResetCredit/consumeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ConsumeAccountRateLimitResetCreditParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Account/rateLimitResetCredit/consumeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
           "const": "account/usage/read",
           "title": "Account/usage/readRequestMethod",
           "type": "string"
@@ -7125,6 +7496,27 @@
         "params"
       ],
       "title": "ExternalAgentConfig/importRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "externalAgentConfig/import/readHistories",
+          "title": "ExternalAgentConfig/import/readHistoriesRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "method",
+        "id"
+      ],
+      "title": "ExternalAgentConfig/import/readHistoriesRequest",
       "type": "object"
     },
     {

@@ -562,16 +562,14 @@
           "type": "string"
         },
         "mode": {
-          "enum": [
-            "openai/form"
-          ],
+          "const": "openai/form",
           "type": "string"
         },
         "requestedSchema": true
       },
       "required": [
-        "message",
         "mode",
+        "message",
         "requestedSchema"
       ],
       "type": "object"

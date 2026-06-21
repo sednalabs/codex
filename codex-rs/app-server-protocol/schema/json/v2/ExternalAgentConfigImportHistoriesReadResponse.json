@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ExternalAgentConfigImportHistory": {
       "properties": {
         "completedAtMs": {
@@ -9,7 +8,7 @@
         },
         "failures": {
           "items": {
-            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeFailure"
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
           },
           "type": "array"
         },
@@ -18,16 +17,16 @@
         },
         "successes": {
           "items": {
-            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeSuccess"
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
           },
           "type": "array"
         }
       },
       "required": [
-        "completedAtMs",
-        "failures",
         "importId",
-        "successes"
+        "completedAtMs",
+        "successes",
+        "failures"
       ],
       "type": "object"
     },
@@ -49,7 +48,7 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         },
         "message": {
           "type": "string"
@@ -62,8 +61,8 @@
         }
       },
       "required": [
-        "failureStage",
         "itemType",
+        "failureStage",
         "message"
       ],
       "type": "object"
@@ -77,7 +76,7 @@
           ]
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         },
         "source": {
           "type": [
@@ -112,10 +111,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ExternalAgentConfigImportHistory"
+        "$ref": "#/$defs/ExternalAgentConfigImportHistory"
       },
       "type": "array"
     }

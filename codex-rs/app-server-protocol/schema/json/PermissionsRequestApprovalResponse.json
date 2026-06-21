@@ -1,9 +1,5 @@
 {
   "$defs": {
-    "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
-      "type": "string"
-    },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
@@ -26,7 +22,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -36,7 +32,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -70,7 +66,7 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             "type": {
               "const": "path",
@@ -259,6 +255,9 @@
         }
       },
       "type": "object"
+    },
+    "LegacyAppPathString": {
+      "type": "string"
     },
     "PermissionGrantScope": {
       "enum": [

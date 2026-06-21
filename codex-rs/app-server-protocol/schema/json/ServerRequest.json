@@ -26,7 +26,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -36,7 +36,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -373,13 +373,21 @@
         "cwd": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             {
               "type": "null"
             }
           ],
           "description": "The command's working directory."
+        },
+        "environmentId": {
+          "default": null,
+          "description": "Environment in which the command will run.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "itemId": {
           "type": "string"
@@ -474,6 +482,17 @@
         "adapter",
         "tool",
         "arguments"
+      ],
+      "type": "object"
+    },
+    "CurrentTimeReadParams": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
       ],
       "type": "object"
     },
@@ -671,7 +690,7 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             "type": {
               "const": "path",
@@ -835,6 +854,9 @@
           "type": "object"
         }
       ]
+    },
+    "LegacyAppPathString": {
+      "type": "string"
     },
     "McpElicitationArrayType": {
       "enum": [
@@ -1393,6 +1415,25 @@
         {
           "properties": {
             "_meta": true,
+            "message": {
+              "type": "string"
+            },
+            "mode": {
+              "const": "openai/form",
+              "type": "string"
+            },
+            "requestedSchema": true
+          },
+          "required": [
+            "mode",
+            "message",
+            "requestedSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "_meta": true,
             "elicitationId": {
               "type": "string"
             },
@@ -1691,6 +1732,15 @@
     "ToolRequestUserInputParams": {
       "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
       "properties": {
+        "autoResolutionMs": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },

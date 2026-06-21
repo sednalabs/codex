@@ -133,6 +133,7 @@
           ]
         },
         "deferLoading": {
+          "default": false,
           "type": "boolean"
         },
         "description": {
@@ -159,6 +160,17 @@
         "inputSchema"
       ],
       "type": "object"
+    },
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "MultiAgentMode": {
+      "description": "Controls whether the model should only spawn sub-agents after an explicit\nuser request or may delegate proactively when doing so would help.",
+      "enum": [
+        "explicitRequestOnly",
+        "proactive"
+      ],
+      "type": "string"
     },
     "Personality": {
       "enum": [
@@ -207,7 +219,7 @@
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/$defs/LegacyAppPathString"
         },
         "environmentId": {
           "type": "string"
