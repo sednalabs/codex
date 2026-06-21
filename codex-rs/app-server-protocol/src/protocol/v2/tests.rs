@@ -401,8 +401,8 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
 }
 
 #[test]
-fn command_execution_request_approval_rejects_relative_additional_permission_paths() {
-    let err = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+fn command_execution_request_approval_defers_relative_additional_permission_path_validation() {
+    let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
         "threadId": "thr_123",
         "turnId": "turn_123",
         "itemId": "call_123",
@@ -423,10 +423,16 @@ fn command_execution_request_approval_rejects_relative_additional_permission_pat
         "proposedNetworkPolicyAmendments": null,
         "availableDecisions": null
     }))
-    .expect_err("relative additional permission paths should fail");
+    .expect("legacy path strings should deserialize");
+
+    let err = CoreAdditionalPermissionProfile::try_from(
+        params
+            .additional_permissions
+            .expect("additional permissions should be present"),
+    )
+    .expect_err("relative additional permission paths should fail conversion");
     assert!(
-        err.to_string()
-            .contains("AbsolutePathBuf deserialized without a base path"),
+        err.to_string().contains("not absolute"),
         "unexpected error: {err}"
     );
 }
@@ -3886,8 +3892,8 @@ fn turn_start_params_treat_null_or_omitted_environments_as_default() {
 }
 
 #[test]
-fn turn_start_params_reject_relative_environment_cwd() {
-    let err = serde_json::from_value::<TurnStartParams>(json!({
+fn turn_start_params_defers_relative_environment_cwd_validation() {
+    let params = serde_json::from_value::<TurnStartParams>(json!({
         "threadId": "thread_123",
         "input": [],
         "environments": [
@@ -3897,11 +3903,12 @@ fn turn_start_params_reject_relative_environment_cwd() {
             }
         ],
     }))
-    .expect_err("relative environment cwd should fail");
+    .expect("legacy path strings should deserialize");
 
+    let cwd = &params.environments.expect("environment should be present")[0].cwd;
+    assert_eq!(cwd.as_str(), "relative");
     assert!(
-        err.to_string()
-            .contains("AbsolutePathBuf deserialized without a base path"),
-        "unexpected error: {err}"
+        cwd.to_inferred_path_uri().is_none(),
+        "relative environment cwd should fail path URI conversion"
     );
 }
