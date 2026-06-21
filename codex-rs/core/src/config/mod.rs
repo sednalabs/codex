@@ -36,6 +36,7 @@ use codex_config::permissions_toml::PermissionsToml;
 use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
@@ -139,6 +140,7 @@ use toml::Value as TomlValue;
 use toml_edit::DocumentMut;
 
 pub(crate) mod agent_roles;
+mod auth_keyring;
 pub mod edit;
 mod managed_features;
 mod network_proxy_spec;
@@ -156,6 +158,7 @@ pub use codex_config::ConstraintError;
 pub use codex_config::ConstraintResult;
 pub use codex_config::LoaderOverrides;
 pub use codex_config::config_toml::ConfigToml;
+pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
 pub use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
 pub use codex_sandboxing::system_bwrap_warning;
@@ -1178,6 +1181,10 @@ impl AuthManagerConfig for Config {
 
     fn cli_auth_credentials_store_mode(&self) -> AuthCredentialsStoreMode {
         self.cli_auth_credentials_store_mode
+    }
+
+    fn auth_keyring_backend_kind(&self) -> AuthKeyringBackendKind {
+        Config::auth_keyring_backend_kind(self)
     }
 
     fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>> {
