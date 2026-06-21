@@ -158,6 +158,7 @@ pub use codex_config::ConstraintError;
 pub use codex_config::ConstraintResult;
 pub use codex_config::LoaderOverrides;
 pub use codex_config::config_toml::ConfigToml;
+pub use auth_keyring::ConfigTomlLoadResult;
 pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
 pub use codex_network_proxy::NetworkProxyAuditMetadata;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
@@ -1684,6 +1685,51 @@ pub async fn load_config_as_toml_with_cli_overrides(
         loader_overrides,
     )
     .await
+}
+
+/// DEPRECATED for most callers: prefer [Config::load_with_cli_overrides()] or
+/// [ConfigBuilder] because working with [ConfigToml] directly means
+/// [ConfigRequirements] have not been applied yet, which risks skipping
+/// required constraints.
+pub async fn load_config_toml_with_layer_stack(
+    codex_home: &Path,
+    cwd: Option<&AbsolutePathBuf>,
+    cli_overrides: Vec<(String, TomlValue)>,
+    options: ConfigLoadOptions,
+) -> std::io::Result<ConfigTomlLoadResult> {
+    let config_layer_stack = load_config_layers_state(
+        LOCAL_FS.as_ref(),
+        codex_home,
+        cwd.cloned(),
+        &cli_overrides,
+        options,
+        &codex_config::NoopThreadConfigLoader,
+    )
+    .await?;
+    let merged_toml = config_layer_stack.effective_config();
+    let config_toml: ConfigToml = match merged_toml.try_into() {
+        Ok(config_toml) => config_toml,
+        Err(err) => {
+            if let Some(config_error) = codex_config::first_layer_config_error::<ConfigToml>(
+                &config_layer_stack,
+                codex_config::CONFIG_TOML_FILE,
+            )
+            .await
+            {
+                return Err(codex_config::io_error_from_config_error(
+                    std::io::ErrorKind::InvalidData,
+                    config_error,
+                    Some(err),
+                ));
+            }
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
+        }
+    };
+
+    Ok(ConfigTomlLoadResult {
+        config_toml,
+        config_layer_stack,
+    })
 }
 
 /// DEPRECATED for most callers: prefer [Config::load_with_cli_overrides()] or
