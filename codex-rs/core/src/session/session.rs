@@ -1,7 +1,10 @@
 use super::input_queue::InputQueue;
 use super::*;
+use crate::SkillsService;
 use crate::agents_md::LoadedAgentsMd;
+use crate::agents_md::load_project_instructions;
 use crate::config::ConstraintError;
+use crate::current_time::TimeProvider;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshot;
@@ -9,6 +12,7 @@ use crate::skills::SkillError;
 use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::SessionId;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
