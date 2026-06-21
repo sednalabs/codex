@@ -28,9 +28,6 @@
       ],
       "type": "string"
     },
-    "ThreadSource": {
-      "type": "string"
-    },
     "ThreadSourceKind": {
       "enum": [
         "cli",
@@ -126,16 +123,6 @@
       "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
       "items": {
         "$ref": "#/$defs/ThreadSourceKind"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "threadSources": {
-      "description": "Optional thread-source filter; when set, only threads with these semantic\nsources are returned. When omitted or empty, side chats are excluded from\nthe default history view.",
-      "items": {
-        "$ref": "#/$defs/ThreadSource"
       },
       "type": [
         "array",

@@ -194,7 +194,7 @@
     "rateLimitResetCredits": {
       "anyOf": [
         {
-          "$ref": "#/definitions/RateLimitResetCreditsSummary"
+          "$ref": "#/$defs/RateLimitResetCreditsSummary"
         },
         {
           "type": "null"

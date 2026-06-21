@@ -108,7 +108,7 @@
       "type": "string"
     },
     "MultiAgentMode": {
-      "description": "Controls whether the model should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help.",
+      "description": "Controls whether the model should only spawn sub-agents after an explicit\nuser request or may delegate proactively when doing so would help.",
       "enum": [
         "explicitRequestOnly",
         "proactive"
@@ -307,6 +307,18 @@
         },
         "modelProvider": {
           "type": "string"
+        },
+        "multiAgentMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiAgentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Current selected multi-agent mode for this thread, if one was selected."
         },
         "personality": {
           "anyOf": [

@@ -1,42 +1,34 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ConsumeAccountRateLimitResetCreditOutcome": {
       "oneOf": [
         {
+          "const": "reset",
           "description": "A reset credit was consumed and the eligible rate-limit windows were reset.",
-          "enum": [
-            "reset"
-          ],
           "type": "string"
         },
         {
+          "const": "nothingToReset",
           "description": "No current rate-limit window is eligible for a reset.",
-          "enum": [
-            "nothingToReset"
-          ],
           "type": "string"
         },
         {
+          "const": "noCredit",
           "description": "The account has no earned reset credits available.",
-          "enum": [
-            "noCredit"
-          ],
           "type": "string"
         },
         {
+          "const": "alreadyRedeemed",
           "description": "The same idempotency key already completed a reset successfully.",
-          "enum": [
-            "alreadyRedeemed"
-          ],
           "type": "string"
         }
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "outcome": {
-      "$ref": "#/definitions/ConsumeAccountRateLimitResetCreditOutcome"
+      "$ref": "#/$defs/ConsumeAccountRateLimitResetCreditOutcome"
     }
   },
   "required": [
