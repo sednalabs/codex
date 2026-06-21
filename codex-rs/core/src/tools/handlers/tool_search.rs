@@ -20,23 +20,62 @@ use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 pub struct ToolSearchHandler {
+    search_infos: Vec<ToolSearchInfo>,
     entries: Vec<ToolSearchEntry>,
     search_source_infos: Vec<ToolSearchSourceInfo>,
     search_engine: SearchEngine<usize>,
 }
 
-impl ToolSearchHandler {
-    pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
-        let mut entries = Vec::with_capacity(search_infos.len());
-        let mut search_source_infos = Vec::new();
-        for search_info in search_infos {
-            entries.push(search_info.entry);
-            if let Some(source_info) = search_info.source_info {
-                search_source_infos.push(source_info);
+#[derive(Default)]
+pub(crate) struct ToolSearchHandlerCache {
+    cached: Mutex<Option<Arc<ToolSearchHandler>>>,
+}
+
+impl ToolSearchHandlerCache {
+    pub(crate) fn get_or_build(&self, search_infos: Vec<ToolSearchInfo>) -> Arc<ToolSearchHandler> {
+        {
+            let cached = self.cached();
+            if let Some(cached) = cached.as_ref()
+                && cached.search_infos == search_infos
+            {
+                return Arc::clone(cached);
             }
         }
+
+        let handler = Arc::new(ToolSearchHandler::new(search_infos));
+        let mut cached = self.cached();
+        if let Some(cached) = cached.as_ref()
+            && cached.search_infos == handler.search_infos
+        {
+            return Arc::clone(cached);
+        }
+
+        *cached = Some(Arc::clone(&handler));
+        handler
+    }
+
+    fn cached(&self) -> std::sync::MutexGuard<'_, Option<Arc<ToolSearchHandler>>> {
+        match self.cached.lock() {
+            Ok(cached) => cached,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl ToolSearchHandler {
+    pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
+        let entries = search_infos
+            .iter()
+            .map(|search_info| search_info.entry.clone())
+            .collect::<Vec<_>>();
+        let search_source_infos = search_infos
+            .iter()
+            .filter_map(|search_info| search_info.source_info.clone())
+            .collect::<Vec<_>>();
         let documents: Vec<Document<usize>> = entries
             .iter()
             .map(|entry| entry.search_text.clone())
@@ -47,6 +86,7 @@ impl ToolSearchHandler {
             SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
 
         Self {
+            search_infos,
             entries,
             search_source_infos,
             search_engine,
