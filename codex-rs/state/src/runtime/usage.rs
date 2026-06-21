@@ -1281,7 +1281,9 @@ ORDER BY rowid
             msg: EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation.clone(),
+                connector_id: None,
                 mcp_app_resource_uri: None,
+                link_id: None,
                 plugin_id: None,
             }),
         };
@@ -1292,7 +1294,9 @@ ORDER BY rowid
             msg: EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 call_id: tool_call_id.to_string(),
                 invocation: tool_invocation,
+                connector_id: None,
                 mcp_app_resource_uri: None,
+                link_id: None,
                 plugin_id: None,
                 duration: Duration::from_millis(42),
                 result: Ok(CallToolResult {
