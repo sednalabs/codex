@@ -69,14 +69,16 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
     let thread_id = ThreadId::new();
     ModelClient::new(
         /*auth_manager*/ None,
+        thread_id.into(),
         thread_id,
+        TEST_INSTALLATION_ID.to_string(),
         provider,
         session_source,
+        /*parent_thread_id*/ None,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
-        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     )
 }
@@ -558,16 +560,19 @@ fn model_client_with_counting_attestation(
             create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
         )
     };
+    let thread_id = ThreadId::new();
     let model_client = ModelClient::new(
         auth_manager,
-        ThreadId::new(),
+        thread_id.into(),
+        thread_id,
+        TEST_INSTALLATION_ID.to_string(),
         provider,
         SessionSource::Exec,
+        /*parent_thread_id*/ None,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
-        /*item_ids_enabled*/ false,
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),
