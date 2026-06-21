@@ -10,6 +10,7 @@ use ts_rs::TS;
 #[serde(rename_all = "camelCase")]
 pub struct DynamicToolSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub namespace: Option<String>,
     pub name: String,
     pub description: String,
@@ -19,6 +20,7 @@ pub struct DynamicToolSpec {
     #[serde(default = "default_dynamic_tool_persist_on_resume")]
     pub persist_on_resume: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub capability: Option<DynamicToolCapability>,
 }
 
