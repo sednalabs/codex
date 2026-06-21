@@ -1,5 +1,6 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_protocol::config_types::MultiAgentMode;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");

@@ -8,6 +8,7 @@ use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::MultiAgentVersion;
