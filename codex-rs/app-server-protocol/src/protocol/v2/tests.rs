@@ -34,6 +34,7 @@ use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
+use codex_utils_path_uri::LegacyAppPathString;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -51,6 +52,12 @@ fn absolute_path_string(path: &str) -> String {
 fn absolute_path(path: &str) -> AbsolutePathBuf {
     let path = format!("/{}", path.trim_start_matches('/'));
     test_path_buf(&path).abs()
+}
+
+fn legacy_app_path_from_str(path: &str) -> LegacyAppPathString {
+    LegacyAppPathString::from_abs_path(
+        &AbsolutePathBuf::try_from(PathBuf::from(path)).expect("path must be absolute"),
+    )
 }
 
 fn test_absolute_path() -> AbsolutePathBuf {
@@ -175,6 +182,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             reasoning_effort: None,
             created_at: 1,
             updated_at: 1,
+            recency_at: None,
             status: ThreadStatus::Idle,
             path: None,
             cwd: absolute_path("tmp"),
@@ -198,6 +206,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: None,
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
             next_cursor: Some("cursor_next".to_string()),
@@ -298,13 +307,13 @@ fn thread_list_params_accepts_state_db_only_flag() {
 }
 
 #[test]
-fn thread_list_params_accepts_side_thread_source_filter() {
+fn thread_list_params_accepts_source_kind_filter() {
     let params = serde_json::from_value::<ThreadListParams>(json!({
-        "threadSources": ["side"],
+        "sourceKinds": ["subAgent"],
     }))
-    .expect("thread source filter should deserialize");
+    .expect("thread source kind filter should deserialize");
 
-    assert_eq!(params.thread_sources, Some(vec![ThreadSource::Side]));
+    assert_eq!(params.source_kinds, Some(vec![ThreadSourceKind::SubAgent]));
 }
 
 #[test]
@@ -386,6 +395,7 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
                     ..Default::default()
                 }),
             }],
+            source: None,
         }
     );
 }
@@ -462,14 +472,8 @@ fn permissions_request_approval_uses_request_permission_profile() {
                 enabled: Some(true),
             }),
             file_system: Some(AdditionalFileSystemPermissions {
-                read: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
-                        .expect("path must be absolute"),
-                ]),
-                write: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
-                        .expect("path must be absolute"),
-                ]),
+                read: Some(vec![legacy_app_path_from_str(read_only_path)]),
+                write: Some(vec![legacy_app_path_from_str(read_write_path)]),
                 glob_scan_max_depth: None,
                 entries: None,
             }),
@@ -477,7 +481,8 @@ fn permissions_request_approval_uses_request_permission_profile() {
     );
 
     assert_eq!(
-        CoreRequestPermissionProfile::from(params.permissions),
+        CoreRequestPermissionProfile::try_from(params.permissions)
+            .expect("permissions should convert to core"),
         CoreRequestPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -571,7 +576,8 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
         }
     );
     assert_eq!(
-        CoreFileSystemPermissions::from(permissions),
+        CoreFileSystemPermissions::try_from(permissions)
+            .expect("permissions should convert to core"),
         core_permissions
     );
 }
@@ -580,6 +586,8 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
 fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     let read_only_path = absolute_path("read-only");
     let read_write_path = absolute_path("read-write");
+    let read_only_legacy = LegacyAppPathString::from_abs_path(&read_only_path);
+    let read_write_legacy = LegacyAppPathString::from_abs_path(&read_write_path);
     let core_permissions = CoreFileSystemPermissions::from_read_write_roots(
         Some(vec![read_only_path.clone()]),
         Some(vec![read_write_path.clone()]),
@@ -590,19 +598,19 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     assert_eq!(
         permissions,
         AdditionalFileSystemPermissions {
-            read: Some(vec![read_only_path.clone()]),
-            write: Some(vec![read_write_path.clone()]),
+            read: Some(vec![read_only_legacy.clone()]),
+            write: Some(vec![read_write_legacy.clone()]),
             glob_scan_max_depth: None,
             entries: Some(vec![
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_only_path,
+                        path: read_only_legacy,
                     },
                     access: FileSystemAccessMode::Read,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_write_path,
+                        path: read_write_legacy,
                     },
                     access: FileSystemAccessMode::Write,
                 },
@@ -610,7 +618,8 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
         }
     );
     assert_eq!(
-        CoreFileSystemPermissions::from(permissions),
+        CoreFileSystemPermissions::try_from(permissions)
+            .expect("permissions should convert to core"),
         core_permissions
     );
 }
@@ -678,14 +687,8 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
                 enabled: Some(true),
             }),
             file_system: Some(AdditionalFileSystemPermissions {
-                read: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
-                        .expect("path must be absolute"),
-                ]),
-                write: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
-                        .expect("path must be absolute"),
-                ]),
+                read: Some(vec![legacy_app_path_from_str(read_only_path)]),
+                write: Some(vec![legacy_app_path_from_str(read_write_path)]),
                 glob_scan_max_depth: None,
                 entries: None,
             }),
@@ -693,7 +696,8 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
     );
 
     assert_eq!(
-        CoreAdditionalPermissionProfile::from(response.permissions),
+        CoreAdditionalPermissionProfile::try_from(response.permissions)
+            .expect("permissions should convert to core"),
         CoreAdditionalPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -1716,6 +1720,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
             allow_appshots: None,
+            allow_remote_control: None,
             computer_use: None,
             feature_requirements: None,
             hooks: None,
@@ -3669,10 +3674,13 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         serde_json::from_value(response.clone()).expect("thread/resume response");
     let fork: ThreadForkResponse = serde_json::from_value(response).expect("thread/fork response");
 
-    assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.thread.parent_thread_id, None);
-    assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
-    assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(
+        resume.instruction_sources,
+        Vec::<LegacyAppPathString>::new()
+    );
+    assert_eq!(fork.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(resume.initial_turns_page, None);
@@ -3714,6 +3722,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         summary: None,
         output_schema: None,
         collaboration_mode: None,
+        multi_agent_mode: None,
         personality: None,
     };
     let serialized_without_override =
@@ -3811,7 +3820,7 @@ fn turn_start_params_round_trip_environments() {
         params.environments,
         Some(vec![TurnEnvironmentParams {
             environment_id: "local".to_string(),
-            cwd: cwd.clone(),
+            cwd: LegacyAppPathString::from_abs_path(&cwd),
         }])
     );
     assert_eq!(
