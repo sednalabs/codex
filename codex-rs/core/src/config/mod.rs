@@ -67,6 +67,7 @@ use codex_features::Features;
 use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
+use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
@@ -1011,6 +1012,13 @@ pub struct Config {
     /// Settings specific to the task-path-based multi-agent tool surface.
     pub multi_agent_v2: MultiAgentV2Config,
 
+    /// Context-window token budget configuration, when enabled.
+    pub token_budget: Option<TokenBudgetConfig>,
+    /// Shared token budget for the root thread and its sub-agents.
+    pub rollout_budget: Option<RolloutBudgetConfig>,
+    /// Current-time reminder configuration, when enabled.
+    pub current_time_reminder: Option<CurrentTimeReminderConfig>,
+
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
 
@@ -1052,6 +1060,51 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub excluded_tool_namespaces: Vec<String>,
+    pub direct_only_tool_namespaces: Vec<String>,
+}
+
+pub(crate) const DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE: &str = concat!(
+    "Your context window is nearly exhausted (only {n_remaining} tokens remaining) and will be automatically reset for you soon. ",
+    "Once reset, message items in current context window will be cleared in the new window, but notes and history items will be persistent across windows."
+);
+const TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES: usize = 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TokenBudgetConfig {
+    pub reminder_threshold_tokens: Option<i64>,
+    pub reminder_message_template: String,
+}
+
+impl Default for TokenBudgetConfig {
+    fn default() -> Self {
+        Self {
+            reminder_threshold_tokens: None,
+            reminder_message_template: DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RolloutBudgetConfig {
+    pub limit_tokens: i64,
+    pub reminder_interval_tokens: i64,
+    pub sampling_token_weight: f64,
+    pub prefill_token_weight: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CurrentTimeReminderConfig {
+    pub reminder_interval_model_requests: u64,
+    pub clock_source: CurrentTimeSource,
+}
+
+impl Default for CurrentTimeReminderConfig {
+    fn default() -> Self {
+        Self {
+            reminder_interval_model_requests: 1,
+            clock_source: CurrentTimeSource::System,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2391,6 +2444,135 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     }
 }
 
+fn resolve_token_budget_config(
+    config_toml: &ConfigToml,
+    features: &ManagedFeatures,
+) -> std::io::Result<Option<TokenBudgetConfig>> {
+    if !features.enabled(Feature::TokenBudget) {
+        return Ok(None);
+    }
+
+    let token_budget_config = token_budget_toml_config(config_toml.features.as_ref());
+    let reminder_threshold_tokens =
+        token_budget_config.and_then(|config| config.reminder_threshold_tokens);
+    if reminder_threshold_tokens.is_some_and(|tokens| tokens <= 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.token_budget.reminder_threshold_tokens must be positive",
+        ));
+    }
+
+    let reminder_message_template = token_budget_config
+        .and_then(|config| config.reminder_message_template.clone())
+        .unwrap_or_else(|| DEFAULT_TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE.to_string());
+    if reminder_message_template.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.token_budget.reminder_message_template must not be empty",
+        ));
+    }
+    if reminder_message_template.len() > TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "features.token_budget.reminder_message_template must not exceed {TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES} bytes"
+            ),
+        ));
+    }
+
+    Ok(Some(TokenBudgetConfig {
+        reminder_threshold_tokens,
+        reminder_message_template,
+    }))
+}
+
+fn resolve_rollout_budget_config(
+    config_toml: &ConfigToml,
+    features: &ManagedFeatures,
+) -> std::io::Result<Option<RolloutBudgetConfig>> {
+    if !features.enabled(Feature::RolloutBudget) {
+        return Ok(None);
+    }
+    let missing_limit_error = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.rollout_budget.limit_tokens is required when rollout_budget is enabled",
+        )
+    };
+    let Some(FeatureToml::Config(config)) = config_toml
+        .features
+        .as_ref()
+        .and_then(|features| features.rollout_budget.as_ref())
+    else {
+        return Err(missing_limit_error());
+    };
+    let Some(limit_tokens) = config.limit_tokens else {
+        return Err(missing_limit_error());
+    };
+    if limit_tokens <= 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.rollout_budget.limit_tokens must be positive",
+        ));
+    }
+    let reminder_interval_tokens = config
+        .reminder_interval_tokens
+        .unwrap_or_else(|| (limit_tokens / 10).max(1));
+    if reminder_interval_tokens <= 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.rollout_budget.reminder_interval_tokens must be positive",
+        ));
+    }
+    let sampling_token_weight = config.sampling_token_weight.unwrap_or(1.0);
+    let prefill_token_weight = config.prefill_token_weight.unwrap_or(1.0);
+    for (field, weight) in [
+        ("sampling_token_weight", sampling_token_weight),
+        ("prefill_token_weight", prefill_token_weight),
+    ] {
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("features.rollout_budget.{field} must be finite and non-negative"),
+            ));
+        }
+    }
+    Ok(Some(RolloutBudgetConfig {
+        limit_tokens,
+        reminder_interval_tokens,
+        sampling_token_weight,
+        prefill_token_weight,
+    }))
+}
+
+fn resolve_current_time_reminder_config(
+    config_toml: &ConfigToml,
+    features: &ManagedFeatures,
+) -> std::io::Result<Option<CurrentTimeReminderConfig>> {
+    if !features.enabled(Feature::CurrentTimeReminder) {
+        return Ok(None);
+    }
+
+    let base = current_time_reminder_toml_config(config_toml.features.as_ref());
+    let default = CurrentTimeReminderConfig::default();
+    let reminder_interval_model_requests = base
+        .and_then(|config| config.reminder_interval_model_requests)
+        .unwrap_or(default.reminder_interval_model_requests);
+    if reminder_interval_model_requests == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.current_time_reminder.reminder_interval_model_requests must be positive",
+        ));
+    }
+
+    Ok(Some(CurrentTimeReminderConfig {
+        reminder_interval_model_requests,
+        clock_source: base
+            .and_then(|config| config.clock_source)
+            .unwrap_or(default.clock_source),
+    }))
+}
+
 fn resolve_terminal_resize_reflow_config(config_toml: &ConfigToml) -> TerminalResizeReflowConfig {
     let Some(tui) = config_toml.tui.as_ref() else {
         return TerminalResizeReflowConfig::default();
@@ -2425,6 +2607,22 @@ fn code_mode_toml_config(features: Option<&FeaturesToml>) -> Option<&CodeModeCon
 
 fn multi_agent_v2_toml_config(features: Option<&FeaturesToml>) -> Option<&MultiAgentV2ConfigToml> {
     match features?.multi_agent_v2.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
+fn token_budget_toml_config(features: Option<&FeaturesToml>) -> Option<&TokenBudgetConfigToml> {
+    match features?.token_budget.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
+fn current_time_reminder_toml_config(
+    features: Option<&FeaturesToml>,
+) -> Option<&CurrentTimeReminderConfigToml> {
+    match features?.current_time_reminder.as_ref()? {
         FeatureToml::Enabled(_) => None,
         FeatureToml::Config(config) => Some(config),
     }
@@ -3108,6 +3306,9 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        let token_budget = resolve_token_budget_config(&cfg, &features)?;
+        let rollout_budget = resolve_rollout_budget_config(&cfg, &features)?;
+        let current_time_reminder = resolve_current_time_reminder_config(&cfg, &features)?;
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
         let agent_roles =
@@ -3645,6 +3846,9 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
+            token_budget,
+            rollout_budget,
+            current_time_reminder,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning
