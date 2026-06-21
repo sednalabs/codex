@@ -4,4 +4,4 @@
 import type { DynamicToolCapability } from "./DynamicToolCapability";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type DynamicToolSpec = { namespace?: string | null, name: string, description: string, inputSchema: JsonValue, deferLoading: boolean, persistOnResume: boolean, capability?: DynamicToolCapability | null, };
+export type DynamicToolSpec = { namespace?: string, name: string, description: string, inputSchema: JsonValue, deferLoading: boolean, persistOnResume: boolean, capability?: DynamicToolCapability, };
