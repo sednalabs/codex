@@ -47,7 +47,7 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",
     "@types/jest": "^29.5.14",
-    "@types/node": "^20.19.18",
+    "@types/node": "^25.9.3",
     "eslint": "^9.36.0",
     "eslint-config-prettier": "^9.1.2",
     "eslint-plugin-jest": "^29.0.1",
