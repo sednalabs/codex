@@ -960,7 +960,7 @@ jobs:
 
       - name: Install sccache
         if: ${{ matrix.needs_sccache }}
-        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
           tool: sccache
 
@@ -991,7 +991,7 @@ jobs:
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
             sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
 
-      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
+      - uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
         with:
           tool: nextest@0.9.103
 
