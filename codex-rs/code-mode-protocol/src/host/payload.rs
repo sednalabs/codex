@@ -128,6 +128,8 @@ impl From<WireToolDefinition> for ToolDefinition {
         Self {
             name: value.name,
             tool_name: value.tool_name.into(),
+            all_tools_name: None,
+            all_tools_module: None,
             description: value.description,
             kind: value.kind.into(),
             input_schema: value.input_schema,
