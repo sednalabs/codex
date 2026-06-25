@@ -1,8 +1,11 @@
 use crate::common::ResponseEvent;
 use crate::common::ResponseModelIdentity;
 use crate::common::ResponseStream;
+use crate::common::SafetyBuffering;
+use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
 use crate::rate_limits::parse_all_rate_limits;
+use crate::safety_buffering::treatment_from_headers;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -61,6 +64,8 @@ pub fn spawn_response_stream(
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let safety_buffering_treatment =
+        treatment_from_headers(&stream_response.headers).unwrap_or_default();
     if let Some(turn_state) = turn_state.as_ref()
         && let Some(header_value) = stream_response
             .headers
@@ -97,7 +102,14 @@ pub fn spawn_response_stream(
                 .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                 .await;
         }
-        process_sse(stream_response.bytes, tx_event, idle_timeout, telemetry).await;
+        process_sse_with_treatment(
+            stream_response.bytes,
+            tx_event,
+            idle_timeout,
+            telemetry,
+            safety_buffering_treatment,
+        )
+        .await;
     });
 
     ResponseStream {
@@ -167,7 +179,7 @@ struct ResponseCompletedOutputTokensDetails {
 pub struct ResponsesStreamEvent {
     #[serde(rename = "type")]
     pub(crate) kind: String,
-    headers: Option<Value>,
+    pub(crate) headers: Option<Value>,
     metadata: Option<Value>,
     response: Option<Value>,
     item: Option<Value>,
@@ -176,6 +188,7 @@ pub struct ResponsesStreamEvent {
     delta: Option<String>,
     summary_index: Option<i64>,
     content_index: Option<i64>,
+    safety_buffering: Option<Value>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -249,6 +262,10 @@ impl ResponsesStreamEvent {
             .and_then(|metadata| metadata.get("openai_chatgpt_moderation_metadata"))
             .cloned()
             .map(|metadata| TurnModerationMetadataEvent { metadata })
+    }
+
+    pub(crate) fn safety_buffering(&self) -> Option<SafetyBuffering> {
+        serde_json::from_value(self.safety_buffering.as_ref()?.clone()).ok()
     }
 }
 
@@ -470,11 +487,29 @@ pub fn process_responses_event(
     Ok(None)
 }
 
+#[cfg(test)]
 pub async fn process_sse(
     stream: ByteStream,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
+) {
+    process_sse_with_treatment(
+        stream,
+        tx_event,
+        idle_timeout,
+        telemetry,
+        SafetyBufferingTreatment::default(),
+    )
+    .await;
+}
+
+async fn process_sse_with_treatment(
+    stream: ByteStream,
+    tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    idle_timeout: Duration,
+    telemetry: Option<Arc<dyn SseTelemetry>>,
+    safety_buffering_treatment: SafetyBufferingTreatment,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
@@ -520,6 +555,9 @@ pub async fn process_sse(
         };
         let model_verifications = event.model_verifications();
         let turn_moderation_metadata = event.turn_moderation_metadata();
+        let safety_buffering = event
+            .safety_buffering()
+            .map(|buffering| buffering.with_treatment(&safety_buffering_treatment));
 
         let model_metadata = event.response_model_metadata();
         if let Some(model) = model_metadata.warning_model
@@ -561,6 +599,14 @@ pub async fn process_sse(
         if let Some(metadata) = turn_moderation_metadata
             && tx_event
                 .send(Ok(ResponseEvent::TurnModerationMetadata(metadata)))
+                .await
+                .is_err()
+        {
+            return;
+        }
+        if let Some(buffering) = safety_buffering
+            && tx_event
+                .send(Ok(ResponseEvent::SafetyBuffering(buffering)))
                 .await
                 .is_err()
         {
@@ -1420,6 +1466,64 @@ mod tests {
                 end_turn: None,
             } if response_id == "resp-1"
         );
+    }
+
+    #[tokio::test]
+    async fn process_sse_emits_all_safety_buffering_notifications_without_dropping_response_events()
+    {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.created",
+                "response": { "id": "resp-1" },
+                "safety_buffering": false
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "delta": "hello",
+                "safety_buffering": {
+                    "use_cases": ["cyber"],
+                    "reasons": ["user_risk"]
+                }
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "delta": " world",
+                "safety_buffering": {
+                    "use_cases": ["cyber"],
+                    "reasons": ["user_risk"]
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp-1" },
+                "safety_buffering": {
+                    "use_cases": ["cyber"],
+                    "reasons": ["user_risk"]
+                }
+            }),
+        ])
+        .await;
+
+        assert_eq!(events.len(), 7);
+        assert_matches!(&events[0], ResponseEvent::Created);
+        assert_matches!(
+            &events[1],
+            ResponseEvent::SafetyBuffering(buffering)
+                if buffering.use_cases == ["cyber"] && buffering.reasons == ["user_risk"]
+        );
+        assert_matches!(&events[2], ResponseEvent::OutputTextDelta(delta) if delta == "hello");
+        assert_matches!(
+            &events[3],
+            ResponseEvent::SafetyBuffering(buffering)
+                if buffering.use_cases == ["cyber"] && buffering.reasons == ["user_risk"]
+        );
+        assert_matches!(&events[4], ResponseEvent::OutputTextDelta(delta) if delta == " world");
+        assert_matches!(
+            &events[5],
+            ResponseEvent::SafetyBuffering(buffering)
+                if buffering.use_cases == ["cyber"] && buffering.reasons == ["user_risk"]
+        );
+        assert_matches!(&events[6], ResponseEvent::Completed { response_id, .. } if response_id == "resp-1");
     }
 
     #[test]

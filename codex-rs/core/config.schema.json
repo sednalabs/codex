@@ -271,12 +271,6 @@
           "type": "string"
         },
         {
-          "const": "on-failure",
-          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
-          "type": "string"
-        },
-        {
-          "const": "on-request",
           "description": "The model decides when to ask the user for approval.",
           "type": "string"
         },
@@ -476,7 +470,7 @@
             "browser_use_external": {
               "type": "boolean"
             },
-            "child_agents_md": {
+            "browser_use_full_cdp_access": {
               "type": "boolean"
             },
             "chronicle": {
@@ -908,6 +902,30 @@
         }
       },
       "type": "object"
+    },
+    "CurrentTimeReminderConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "clock_source": {
+          "$ref": "#/definitions/CurrentTimeSource"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "reminder_interval_seconds": {
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "CurrentTimeSource": {
+      "enum": [
+        "system",
+        "external"
+      ],
+      "type": "string"
     },
     "DebugConfigLockToml": {
       "additionalProperties": false,
@@ -1444,6 +1462,9 @@
         }
       ],
       "description": "One action binding value in config. This accepts either: 1. A single key spec string (`\"ctrl-a\"`). 2. A list of key spec strings (`[\"ctrl-a\", \"alt-a\"]`). An empty list explicitly unbinds the action in that scope. Because an explicit empty list is still a configured value, runtime resolution must not fall through to global or built-in defaults for that action."
+    },
+    "LegacyAppPathString": {
+      "type": "string"
     },
     "MarketplaceConfig": {
       "additionalProperties": false,
@@ -1986,10 +2007,8 @@
           ]
         },
         "usage_hint_enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "description": "Deprecated compatibility field. Its value is ignored.",
+          "type": "boolean"
         },
         "usage_hint_text": {
           "type": [
@@ -2918,11 +2937,12 @@
           ]
         },
         "cwd": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "allOf": [
+            {
+              "$ref": "#/definitions/LegacyAppPathString"
+            }
+          ],
+          "default": null
         },
         "default_tools_approval_mode": {
           "default": null,
@@ -3249,6 +3269,38 @@
           "type": "string"
         }
       ]
+    },
+    "RolloutBudgetConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "limit_tokens": {
+          "format": "int64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "prefill_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "reminder_at_remaining_tokens": {
+          "description": "Remaining weighted-token values that trigger reminders when crossed.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sampling_token_weight": {
+          "format": "double",
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "type": "object"
     },
     "SandboxMode": {
       "enum": [
@@ -5877,7 +5929,7 @@
         "browser_use_external": {
           "type": "boolean"
         },
-        "child_agents_md": {
+        "browser_use_full_cdp_access": {
           "type": "boolean"
         },
         "chronicle": {

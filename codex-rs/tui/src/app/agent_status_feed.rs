@@ -182,7 +182,8 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
             return bounded_summary(&format!("Web search: {query}"));
         }
         ThreadItem::ImageView { path, .. } => {
-            return bounded_summary(&format!("Viewed {}", path.display()));
+            let path = path.render_for_ui();
+            return bounded_summary(&format!("Viewed {path}"));
         }
         ThreadItem::ComputerUseCall { .. } => return Some("Computer use".to_string()),
         ThreadItem::ImageGeneration { .. } => return Some("Generated an image".to_string()),

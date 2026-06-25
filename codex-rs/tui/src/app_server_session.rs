@@ -311,16 +311,19 @@ impl AppServerSession {
                 false,
             ),
             Some(Account::Chatgpt { email, plan_type }) => {
-                let feedback_audience = if email.ends_with("@openai.com") {
+                let feedback_audience = if email
+                    .as_deref()
+                    .is_some_and(|email| email.ends_with("@openai.com"))
+                {
                     FeedbackAudience::OpenAiEmployee
                 } else {
                     FeedbackAudience::External
                 };
                 (
-                    Some(email.clone()),
+                    email.clone(),
                     Some(TelemetryAuthMode::Chatgpt),
                     Some(StatusAccountDisplay::ChatGpt {
-                        email: Some(email),
+                        email,
                         plan: Some(plan_type_display_name(plan_type)),
                     }),
                     Some(plan_type),
@@ -2399,6 +2402,7 @@ mod tests {
         let response = ThreadResumeResponse {
             thread: codex_app_server_protocol::Thread {
                 id: thread_id.to_string(),
+                extra: None,
                 session_id: ThreadId::new().to_string(),
                 forked_from_id: Some(forked_from_id.to_string()),
                 parent_thread_id: None,

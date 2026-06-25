@@ -91,6 +91,7 @@ mod loopback_responses_server;
 mod plugin_analytics_capture;
 mod plugin_analytics_mutation_smoke;
 mod plugin_analytics_smoke;
+mod request_user_input;
 
 const NOTIFICATIONS_TO_OPT_OUT: &[&str] = &[
     // v2 item deltas.
@@ -1222,6 +1223,7 @@ async fn thread_list(endpoint: &Endpoint, config_overrides: &[String], limit: u3
             thread_sources: None,
             archived: None,
             parent_thread_id: None,
+            ancestor_thread_id: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -2040,6 +2042,10 @@ impl CodexClient {
             }
             ServerRequest::FileChangeRequestApproval { request_id, params } => {
                 self.approve_file_change_request(request_id, params)?;
+            }
+            ServerRequest::ToolRequestUserInput { request_id, params } => {
+                let response = request_user_input::prompt_for_answers(&params)?;
+                self.send_server_request_response(request_id, &response)?;
             }
             other => {
                 bail!("received unsupported server request: {other:?}");

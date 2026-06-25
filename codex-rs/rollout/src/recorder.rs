@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use chrono::SecondsFormat;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
@@ -45,7 +46,6 @@ use super::list::parse_timestamp_uuid_from_filename;
 use super::metadata;
 use super::session_index::find_thread_names_by_ids;
 use crate::config::RolloutConfigView;
-use crate::default_client::originator;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
 use codex_git_utils::collect_git_info;
@@ -56,6 +56,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -81,14 +82,17 @@ pub struct RolloutRecorder {
 #[derive(Clone)]
 pub enum RolloutRecorderParams {
     Create {
+        session_id: SessionId,
         conversation_id: ThreadId,
         forked_from_id: Option<ThreadId>,
         parent_thread_id: Option<ThreadId>,
-        source: SessionSource,
+        source: Box<SessionSource>,
         thread_source: Option<ThreadSource>,
+        originator: String,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         multi_agent_version: Option<MultiAgentVersion>,
+        initial_window_id: Option<String>,
     },
     Resume {
         path: PathBuf,
@@ -157,25 +161,37 @@ fn clone_io_error(err: &IoError) -> IoError {
 }
 
 impl RolloutRecorderParams {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         conversation_id: ThreadId,
         forked_from_id: Option<ThreadId>,
         parent_thread_id: Option<ThreadId>,
         source: SessionSource,
         thread_source: Option<ThreadSource>,
+        originator: String,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
     ) -> Self {
         Self::Create {
+            session_id: conversation_id.into(),
             conversation_id,
             forked_from_id,
             parent_thread_id,
-            source,
+            source: Box::new(source),
             thread_source,
+            originator,
             base_instructions,
             dynamic_tools,
             multi_agent_version: None,
+            initial_window_id: None,
         }
+    }
+
+    pub fn with_session_id(mut self, session_id: SessionId) -> Self {
+        if let Self::Create { session_id: id, .. } = &mut self {
+            *id = session_id;
+        }
+        self
     }
 
     pub fn with_multi_agent_version(
@@ -188,6 +204,17 @@ impl RolloutRecorderParams {
         } = &mut self
         {
             *version = multi_agent_version;
+        }
+        self
+    }
+
+    pub fn with_initial_window_id(mut self, initial_window_id: String) -> Self {
+        if let Self::Create {
+            initial_window_id: window_id,
+            ..
+        } = &mut self
+        {
+            *window_id = Some(initial_window_id);
         }
         self
     }
@@ -376,7 +403,7 @@ impl RolloutRecorder {
                 allowed_sources,
                 model_providers,
                 cwd_filters,
-                /*parent_thread_id*/ None,
+                /*relation_filter*/ None,
                 archived,
                 search_term,
             )
@@ -485,7 +512,7 @@ impl RolloutRecorder {
             allowed_sources,
             model_providers,
             cwd_filters,
-            /*parent_thread_id*/ None,
+            /*relation_filter*/ None,
             archived,
             search_term,
         )
@@ -514,7 +541,7 @@ impl RolloutRecorder {
                     allowed_sources,
                     model_providers,
                     cwd_filters,
-                    /*parent_thread_id*/ None,
+                    /*relation_filter*/ None,
                     archived,
                     search_term,
                 )
@@ -554,7 +581,7 @@ impl RolloutRecorder {
                         allowed_sources,
                         model_providers,
                         cwd_filters,
-                        /*parent_thread_id*/ None,
+                        /*relation_filter*/ None,
                         archived,
                         search_term,
                     )
@@ -632,7 +659,7 @@ impl RolloutRecorder {
                     allowed_sources,
                     model_providers,
                     cwd_filter.as_ref().map(std::slice::from_ref),
-                    /*parent_thread_id*/ None,
+                    /*relation_filter*/ None,
                     /*archived*/ false,
                     /*search_term*/ None,
                 )
@@ -696,18 +723,21 @@ impl RolloutRecorder {
     ) -> std::io::Result<Self> {
         let (file, deferred_log_file_info, rollout_path, meta) = match params {
             RolloutRecorderParams::Create {
+                session_id,
                 conversation_id,
                 forked_from_id,
                 parent_thread_id,
                 source,
                 thread_source,
+                originator,
                 base_instructions,
                 dynamic_tools,
                 multi_agent_version,
+                initial_window_id,
             } => {
                 let log_file_info = precompute_log_file_info(config, conversation_id)?;
                 let path = log_file_info.path.clone();
-                let session_id = log_file_info.conversation_id;
+                let thread_id = log_file_info.conversation_id;
                 let started_at = log_file_info.timestamp;
 
                 let timestamp_format: &[FormatItem] = format_description!(
@@ -719,17 +749,18 @@ impl RolloutRecorder {
                     .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
 
                 let session_meta = SessionMeta {
-                    id: session_id,
+                    session_id,
+                    id: thread_id,
                     forked_from_id,
                     parent_thread_id,
                     timestamp,
                     cwd: config.cwd().to_path_buf(),
-                    originator: originator().value,
+                    originator,
                     cli_version: env!("CARGO_PKG_VERSION").to_string(),
                     agent_nickname: source.get_nickname(),
                     agent_role: source.get_agent_role(),
                     agent_path: source.get_agent_path().map(Into::into),
-                    source,
+                    source: *source,
                     thread_source,
                     model_provider: Some(config.model_provider_id().to_string()),
                     base_instructions: Some(base_instructions),
@@ -740,6 +771,7 @@ impl RolloutRecorder {
                     },
                     memory_mode: (!config.generate_memories()).then_some("disabled".to_string()),
                     multi_agent_version,
+                    context_window: initial_window_id.map(SessionContextWindow::new),
                 };
 
                 (None, Some(log_file_info), path, Some(session_meta))
@@ -935,7 +967,7 @@ impl RolloutRecorder {
         info!("Resumed rollout successfully from {path:?}");
         Ok(InitialHistory::Resumed(ResumedHistory {
             conversation_id,
-            history: items,
+            history: Arc::new(items),
             rollout_path: Some(compression::plain_rollout_path(path)),
         }))
     }
@@ -1051,7 +1083,10 @@ async fn fill_missing_thread_item_metadata_from_state_db(
                 continue;
             }
         };
-        fill_missing_thread_item_metadata(item, thread_item_from_state_metadata(metadata));
+        fill_missing_thread_item_metadata(
+            item,
+            thread_item_from_state_metadata(metadata, /*parent_thread_id*/ None),
+        );
     }
 
     page
@@ -1747,21 +1782,32 @@ impl JsonlWriter {
 
 impl From<codex_state::ThreadsPage> for ThreadsPage {
     fn from(db_page: codex_state::ThreadsPage) -> Self {
-        let items = db_page
-            .items
+        let codex_state::ThreadsPage {
+            items,
+            parent_thread_ids,
+            next_anchor,
+            num_scanned_rows,
+        } = db_page;
+        let items = items
             .into_iter()
-            .map(thread_item_from_state_metadata)
+            .map(|item| {
+                let parent_thread_id = parent_thread_ids.get(&item.id).copied();
+                thread_item_from_state_metadata(item, parent_thread_id)
+            })
             .collect();
         Self {
             items,
-            next_cursor: db_page.next_anchor.map(Into::into),
-            num_scanned_files: db_page.num_scanned_rows,
+            next_cursor: next_anchor.map(Into::into),
+            num_scanned_files: num_scanned_rows,
             reached_scan_cap: false,
         }
     }
 }
 
-fn thread_item_from_state_metadata(item: codex_state::ThreadMetadata) -> ThreadItem {
+fn thread_item_from_state_metadata(
+    item: codex_state::ThreadMetadata,
+    parent_thread_id: Option<ThreadId>,
+) -> ThreadItem {
     ThreadItem {
         path: item.rollout_path,
         thread_id: Some(item.id),
@@ -1776,8 +1822,7 @@ fn thread_item_from_state_metadata(item: codex_state::ThreadMetadata) -> ThreadI
                 .or_else(|_| serde_json::from_value(Value::String(item.source)))
                 .unwrap_or(SessionSource::Unknown),
         ),
-        thread_source: item.thread_source,
-        parent_thread_id: None,
+        parent_thread_id,
         agent_nickname: item.agent_nickname,
         agent_role: item.agent_role,
         model_provider: Some(item.model_provider),
@@ -1829,6 +1874,7 @@ async fn resume_candidate_matches_cwd(
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
             | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::Compacted(_)
             | RolloutItem::EventMsg(_) => None,
         })

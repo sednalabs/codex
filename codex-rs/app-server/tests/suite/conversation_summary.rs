@@ -136,66 +136,32 @@ async fn get_conversation_summary_by_thread_id_reads_rollout() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> Result<()> {
-    run_conversation_summary_test(|| async {
-        let codex_home = TempDir::new()?;
-        let store_id = Uuid::new_v4().to_string();
-        create_config_toml_with_in_memory_thread_store(codex_home.path(), &store_id)?;
-        let store = InMemoryThreadStore::for_id(store_id.clone());
-        let _in_memory_store = InMemoryThreadStoreId { store_id };
-        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000125")?;
-        store
-            .create_thread(CreateThreadParams {
-                thread_id,
-                extra_config: None,
-                forked_from_id: None,
-                parent_thread_id: None,
-                source: SessionSource::Cli,
-                thread_source: None,
-                base_instructions: BaseInstructions::default(),
-                dynamic_tools: Vec::new(),
-                multi_agent_version: None,
-                metadata: ThreadPersistenceMetadata {
-                    cwd: None,
-                    model_provider: "test-provider".to_string(),
-                    memory_mode: ThreadMemoryMode::Disabled,
-                },
-            })
-            .await?;
-
-        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
-        let config = ConfigBuilder::default()
-            .codex_home(codex_home.path().to_path_buf())
-            .fallback_cwd(Some(codex_home.path().to_path_buf()))
-            .loader_overrides(loader_overrides.clone())
-            .build()
-            .await?;
-        let client = in_process::start(InProcessStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides,
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Cli,
-            enable_codex_api_key_env: false,
-            initialize: InitializeParams {
-                client_info: ClientInfo {
-                    name: "codex-app-server-tests".to_string(),
-                    title: None,
-                    version: "0.1.0".to_string(),
-                },
-                capabilities: Some(InitializeCapabilities {
-                    experimental_api: true,
-                    ..Default::default()
-                }),
+#[tokio::test]
+async fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_in_memory_thread_store(codex_home.path(), &store_id)?;
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000125")?;
+    store
+        .create_thread(CreateThreadParams {
+            session_id: thread_id.into(),
+            thread_id,
+            extra_config: None,
+            forked_from_id: None,
+            parent_thread_id: None,
+            source: SessionSource::Cli,
+            thread_source: None,
+            originator: "test_originator".to_string(),
+            base_instructions: BaseInstructions::default(),
+            dynamic_tools: Vec::new(),
+            multi_agent_version: None,
+            initial_window_id: Uuid::now_v7().to_string(),
+            metadata: ThreadPersistenceMetadata {
+                cwd: None,
+                model_provider: "test-provider".to_string(),
+                memory_mode: ThreadMemoryMode::Disabled,
             },
             channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         })

@@ -97,6 +97,10 @@ jobs:
           echo "${output}"
           echo "${output}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   build:
     name: Build ${{ matrix.variant }} ${{ matrix.target }}
     needs: metadata
@@ -323,6 +327,10 @@ jobs:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-${{ matrix.variant }}-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*
 
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   build-windows-source:
     name: Build ptrcomp-sandbox ${{ matrix.target }} from source
     needs: metadata
@@ -460,3 +468,7 @@ jobs:
         with:
           name: v8-canary-${{ needs.metadata.outputs.v8_version }}-ptrcomp-sandbox-${{ matrix.target }}
           path: dist/${{ matrix.target }}/*
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree

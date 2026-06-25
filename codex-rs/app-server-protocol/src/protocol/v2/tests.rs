@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::FileChangeItem;
@@ -172,6 +173,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     let response = ThreadResumeResponse {
         thread: Thread {
             id: "thr_123".to_string(),
+            extra: None,
             session_id: "thr_123".to_string(),
             forked_from_id: None,
             parent_thread_id: None,
@@ -201,7 +203,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         cwd: absolute_path("tmp"),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
-        approval_policy: AskForApproval::OnFailure,
+        approval_policy: AskForApproval::OnRequest,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
@@ -229,10 +231,10 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 }
 
 #[test]
-fn thread_turns_items_list_round_trips() {
-    let params = ThreadTurnsItemsListParams {
+fn thread_items_list_round_trips() {
+    let params = ThreadItemsListParams {
         thread_id: "thr_123".to_string(),
-        turn_id: "turn_456".to_string(),
+        turn_id: Some("turn_456".to_string()),
         cursor: Some("cursor_1".to_string()),
         limit: Some(50),
         sort_direction: Some(SortDirection::Asc),
@@ -248,7 +250,7 @@ fn thread_turns_items_list_round_trips() {
             "sortDirection": "asc",
         })
     );
-    let response = ThreadTurnsItemsListResponse {
+    let response = ThreadItemsListResponse {
         data: vec![ThreadItem::ContextCompaction {
             id: "item_1".to_string(),
         }],
@@ -263,6 +265,32 @@ fn thread_turns_items_list_round_trips() {
             "nextCursor": null,
             "backwardsCursor": "cursor_0",
         })
+    );
+
+    let params_without_turn = ThreadItemsListParams {
+        thread_id: "thr_123".to_string(),
+        turn_id: None,
+        cursor: None,
+        limit: None,
+        sort_direction: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(&params_without_turn).expect("serialize params without turn"),
+        json!({
+            "threadId": "thr_123",
+            "turnId": null,
+            "cursor": null,
+            "limit": null,
+            "sortDirection": null,
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<ThreadItemsListParams>(json!({
+            "threadId": "thr_123",
+        }))
+        .expect("deserialize params without turn"),
+        params_without_turn
     );
 }
 
@@ -2555,14 +2583,14 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 
     let image_view_item = TurnItem::ImageView(ImageViewItem {
         id: "view-image-1".to_string(),
-        path: test_path_buf("/tmp/view-image.png").abs(),
+        path: PathUri::from_abs_path(&test_path_buf("/tmp/view-image.png").abs()),
     });
 
     assert_eq!(
         ThreadItem::from(image_view_item),
         ThreadItem::ImageView {
             id: "view-image-1".to_string(),
-            path: test_path_buf("/tmp/view-image.png").abs(),
+            path: LegacyAppPathString::from_abs_path(&test_path_buf("/tmp/view-image.png").abs()),
         }
     );
 
@@ -2877,6 +2905,13 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
     };
     let composer_icon = AbsolutePathBuf::try_from(PathBuf::from(composer_icon)).unwrap();
     let composer_icon_json = composer_icon.as_path().display().to_string();
+    let logo_dark = if cfg!(windows) {
+        r"C:\plugins\linear\logo-dark.png"
+    } else {
+        "/plugins/linear/logo-dark.png"
+    };
+    let logo_dark = AbsolutePathBuf::try_from(PathBuf::from(logo_dark)).unwrap();
+    let logo_dark_json = logo_dark.as_path().display().to_string();
 
     let interface = PluginInterface {
         display_name: Some("Linear".to_string()),
@@ -2893,7 +2928,9 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
         composer_icon: Some(composer_icon),
         composer_icon_url: Some("https://example.com/linear/icon.png".to_string()),
         logo: None,
+        logo_dark: Some(logo_dark),
         logo_url: Some("https://example.com/linear/logo.png".to_string()),
+        logo_url_dark: Some("https://example.com/linear/logo-dark.png".to_string()),
         screenshots: Vec::new(),
         screenshot_urls: vec!["https://example.com/linear/screenshot.png".to_string()],
     };
@@ -2915,7 +2952,9 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
             "composerIcon": composer_icon_json,
             "composerIconUrl": "https://example.com/linear/icon.png",
             "logo": null,
+            "logoDark": logo_dark_json,
             "logoUrl": "https://example.com/linear/logo.png",
+            "logoUrlDark": "https://example.com/linear/logo-dark.png",
             "screenshots": [],
             "screenshotUrls": ["https://example.com/linear/screenshot.png"],
         }),
@@ -3668,7 +3707,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         "modelProvider": "openai",
         "serviceTier": null,
         "cwd": absolute_path_string("tmp"),
-        "approvalPolicy": "on-failure",
+        "approvalPolicy": "on-request",
         "approvalsReviewer": "user",
         "sandbox": { "type": "dangerFullAccess" },
         "reasoningEffort": null
@@ -3691,6 +3730,54 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(resume.initial_turns_page, None);
     assert_eq!(fork.active_permission_profile, None);
+    assert_eq!(
+        (
+            start.multi_agent_mode,
+            resume.multi_agent_mode,
+            fork.multi_agent_mode,
+        ),
+        (
+            MultiAgentMode::ExplicitRequestOnly,
+            MultiAgentMode::ExplicitRequestOnly,
+            MultiAgentMode::ExplicitRequestOnly,
+        )
+    );
+
+    let foreign_source: LegacyAppPathString =
+        serde_json::from_value(json!(r"C:\workspace\AGENTS.md")).expect("foreign source");
+    let mut response_with_foreign_source = response;
+    response_with_foreign_source["instructionSources"] = json!([foreign_source.as_str()]);
+    let start: ThreadStartResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/start response with foreign source");
+    let resume: ThreadResumeResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/resume response with foreign source");
+    let fork: ThreadForkResponse = serde_json::from_value(response_with_foreign_source)
+        .expect("thread/fork response with foreign source");
+    assert_eq!(start.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(resume.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(fork.instruction_sources, vec![foreign_source]);
+    let foreign_source_uri =
+        PathUri::parse("file:///C:/workspace/AGENTS.md").expect("foreign source URI");
+    assert_eq!(
+        start.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        resume.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        fork.instruction_source_path_uris(),
+        vec![foreign_source_uri]
+    );
+}
+
+#[test]
+fn thread_recency_sort_key_serializes_as_snake_case() {
+    assert_eq!(
+        serde_json::to_value(ThreadSortKey::RecencyAt).expect("sort key should serialize"),
+        json!("recency_at")
+    );
 }
 
 #[test]

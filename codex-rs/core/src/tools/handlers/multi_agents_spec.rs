@@ -27,7 +27,6 @@ pub struct SpawnAgentToolOptions {
     pub available_models: Vec<ModelPreset>,
     pub agent_type_description: String,
     pub hide_agent_type_model_reasoning: bool,
-    pub include_usage_hint: bool,
     pub usage_hint_text: Option<String>,
 }
 
@@ -69,7 +68,6 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
                 available_models_description.as_deref(),
                 inherited_model_guidance,
                 return_value_description,
-                options.include_usage_hint,
                 options.usage_hint_text,
             ),
             strict: false,
@@ -102,7 +100,6 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         description: spawn_agent_tool_description_v2(
             available_models_description.as_deref(),
             inherited_model_guidance,
-            options.include_usage_hint,
             options.usage_hint_text,
         ),
         strict: false,
@@ -934,7 +931,6 @@ fn spawn_agent_tool_description(
     available_models_description: Option<&str>,
     inherited_model_guidance: Option<&str>,
     return_value_description: &str,
-    include_usage_hint: bool,
     usage_hint_text: Option<String>,
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
@@ -946,9 +942,6 @@ fn spawn_agent_tool_description(
         Spawn a sub-agent for a well-scoped task. {return_value_description} {inherited_model_guidance}"#
     );
 
-    if !include_usage_hint {
-        return tool_description;
-    }
     if let Some(usage_hint_text) = usage_hint_text {
         return format!(
             r#"
@@ -967,7 +960,6 @@ fn spawn_agent_tool_description(
 fn spawn_agent_tool_description_v2(
     available_models_description: Option<&str>,
     inherited_model_guidance: Option<&str>,
-    include_usage_hint: bool,
     usage_hint_text: Option<String>,
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
@@ -985,9 +977,6 @@ It will be able to send you and other running agents messages, and its final ans
 The new agent's canonical task name will be provided to it along with the message."#
     );
 
-    if !include_usage_hint {
-        return tool_description;
-    }
     if let Some(usage_hint_text) = usage_hint_text {
         return format!(
             r#"

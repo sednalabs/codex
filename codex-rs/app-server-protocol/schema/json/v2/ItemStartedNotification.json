@@ -1217,7 +1217,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
               "const": "imageView",
