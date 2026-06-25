@@ -2720,6 +2720,13 @@ impl Session {
             item.set_turn_id_if_missing(&turn_context.sub_id);
         }
 
+        if turn_context.config.features.enabled(Feature::ItemIds) {
+            Self::assign_missing_response_item_ids(items)
+        } else {
+            items
+        }
+    }
+
     fn assign_missing_response_item_ids(items: Cow<'_, [ResponseItem]>) -> Cow<'_, [ResponseItem]> {
         if items.iter().all(|item| item.id().is_some()) {
             return items;
