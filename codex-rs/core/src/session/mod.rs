@@ -912,9 +912,7 @@ impl Codex {
             .get_loaded()
             .await
             .as_ref()
-            .map_or_else(Vec::new, |instructions| {
-                instructions.sources().cloned().collect()
-            })
+            .map_or_else(Vec::new, |instructions| instructions.sources().collect())
     }
 
     pub(crate) async fn thread_environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
@@ -1947,7 +1945,8 @@ impl Session {
         if self.conversation.running_state().await.is_none() {
             return;
         }
-        if let Err(err) = self.conversation.handoff_out(text).await {
+        let (text, phase) = text;
+        if let Err(err) = self.conversation.handoff_out(text, phase).await {
             debug!("failed to mirror event text to realtime conversation: {err}");
         }
     }
@@ -2172,6 +2171,7 @@ impl Session {
         turn_context: &TurnContext,
         call_id: String,
         approval_id: Option<String>,
+        environment_id: Option<String>,
         command: Vec<String>,
         cwd: AbsolutePathBuf,
         reason: Option<String>,
@@ -2224,6 +2224,7 @@ impl Session {
             call_id,
             approval_id,
             turn_id: turn_context.sub_id.clone(),
+            environment_id,
             started_at_ms: now_unix_timestamp_ms(),
             command,
             cwd,
@@ -2315,6 +2316,17 @@ impl Session {
         }
 
         let requested_permissions = args.permissions;
+        let Ok(native_environment_cwd) = environment.cwd.to_abs_path() else {
+            warn!(
+                cwd = %environment.cwd,
+                "request_permissions requires a cwd native to the Codex host"
+            );
+            return Some(RequestPermissionsResponse {
+                permissions: RequestPermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: false,
+            });
+        };
 
         if crate::guardian::routes_approval_to_guardian(turn_context.as_ref()) {
             let originating_turn_state = {
@@ -2382,7 +2394,7 @@ impl Session {
             let response = Self::normalize_request_permissions_response(
                 requested_permissions,
                 response,
-                environment.cwd.as_path(),
+                native_environment_cwd.as_path(),
             );
             self.record_granted_request_permissions_for_turn(
                 &response,
@@ -2422,7 +2434,7 @@ impl Session {
             started_at_ms: now_unix_timestamp_ms(),
             reason: args.reason,
             permissions: requested_permissions,
-            cwd: Some(environment.cwd),
+            cwd: Some(native_environment_cwd),
         });
         self.send_event(turn_context.as_ref(), event).await;
         tokio::select! {
@@ -2463,7 +2475,7 @@ impl Session {
             });
         };
         let mut environment = turn_environment.selection();
-        environment.cwd = cwd;
+        environment.cwd = PathUri::from_abs_path(&cwd);
         self.request_permissions_for_environment(
             turn_context,
             call_id,
@@ -2505,6 +2517,7 @@ impl Session {
             call_id,
             turn_id: turn_context.sub_id.clone(),
             questions: args.questions,
+            auto_resolution_ms: args.auto_resolution_ms,
         });
         turn_context
             .turn_metadata_state
@@ -2565,10 +2578,23 @@ impl Session {
         };
         match entry {
             Some(entry) => {
+                let Ok(cwd) = entry.environment.cwd.to_abs_path() else {
+                    warn!(
+                        cwd = %entry.environment.cwd,
+                        "request_permissions response used non-native cwd"
+                    );
+                    let response = RequestPermissionsResponse {
+                        permissions: RequestPermissionProfile::default(),
+                        scope: PermissionGrantScope::Turn,
+                        strict_auto_review: false,
+                    };
+                    entry.tx_response.send(response).ok();
+                    return;
+                };
                 let response = Self::normalize_request_permissions_response(
                     entry.requested_permissions,
                     response,
-                    entry.environment.cwd.as_path(),
+                    cwd.as_path(),
                 );
                 self.record_granted_request_permissions_for_turn(
                     &response,
@@ -3215,9 +3241,11 @@ impl Session {
                     #[allow(deprecated)]
                     &turn_context.cwd,
                     turn_context
+                        .config
                         .features
                         .enabled(Feature::ExecPermissionApprovals),
                     turn_context
+                        .config
                         .features
                         .enabled(Feature::RequestPermissionsTool),
                 )
@@ -3281,7 +3309,7 @@ impl Session {
         }
         if turn_context.config.include_skill_instructions {
             let available_skills = build_available_skills(
-                &turn_context.turn_skills.outcome,
+                turn_context.turn_skills.snapshot.outcome(),
                 default_skill_metadata_budget(turn_context.model_info.context_window),
                 SkillRenderSideEffects::ThreadStart {
                     session_telemetry: &self.services.session_telemetry,
@@ -3313,25 +3341,20 @@ impl Session {
             developer_sections.push(plugin_instructions.render());
         }
         let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in context_contributors {
+        for contributor in &context_contributors {
             for fragment in contributor
-                .contribute(
+                .contribute_thread_context(
                     &self.services.session_extension_data,
                     &self.services.thread_extension_data,
                 )
                 .await
             {
-                match fragment.slot() {
-                    PromptSlot::DeveloperPolicy | PromptSlot::DeveloperCapabilities => {
-                        developer_sections.push(fragment.text().to_string());
-                    }
-                    PromptSlot::ContextualUser => {
-                        contextual_user_sections.push(fragment.text().to_string());
-                    }
-                    PromptSlot::SeparateDeveloper => {
-                        separate_developer_sections.push(fragment.text().to_string());
-                    }
-                }
+                push_prompt_fragment(
+                    fragment,
+                    &mut developer_sections,
+                    &mut contextual_user_sections,
+                    &mut separate_developer_sections,
+                );
             }
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.

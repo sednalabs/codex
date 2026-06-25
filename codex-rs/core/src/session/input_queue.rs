@@ -34,14 +34,17 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    mailbox_tx: watch::Sender<()>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
 }
 
 impl InputQueue {
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
+        let (mailbox_tx, _) = watch::channel(());
         Self {
             activity_tx,
+            mailbox_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
         }
     }
@@ -69,6 +72,10 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
+    pub(crate) async fn subscribe_mailbox(&self) -> watch::Receiver<()> {
+        self.mailbox_tx.subscribe()
+    }
+
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: InterAgentCommunication,
@@ -78,6 +85,7 @@ impl InputQueue {
             .await
             .push_back(communication);
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        self.mailbox_tx.send_replace(());
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {

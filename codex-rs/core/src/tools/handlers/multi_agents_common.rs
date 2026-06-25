@@ -320,6 +320,7 @@ pub(crate) async fn require_spawn_agent_approval_if_requested(
     };
     let args = RequestUserInputArgs {
         questions: vec![question],
+        auto_resolution_ms: None,
     };
     let approval_call_id = format!("spawn-agent-approval-{call_id}");
     let response = session

@@ -4,6 +4,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
+use crate::tools::effective_tool_mode;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -198,9 +199,39 @@ fn build_tool_specs_and_registry(
     };
     let mut planned_tools = PlannedTools::default();
     add_tool_sources(&context, &mut planned_tools);
+    apply_direct_model_only_namespace_overrides(turn_context, &mut planned_tools);
     append_tool_search_executor(&context, &mut planned_tools);
     prepend_code_mode_executors(&context, &mut planned_tools);
     build_model_visible_specs_and_registry(turn_context, planned_tools)
+}
+
+fn apply_direct_model_only_namespace_overrides(
+    turn_context: &TurnContext,
+    planned_tools: &mut PlannedTools,
+) {
+    for runtime in &mut planned_tools.runtimes {
+        let configured = runtime
+            .tool_name()
+            .namespace
+            .as_ref()
+            .is_some_and(|namespace| {
+                turn_context
+                    .config
+                    .code_mode
+                    .direct_only_tool_namespaces
+                    .contains(namespace)
+            });
+        match runtime.exposure() {
+            ToolExposure::Direct | ToolExposure::Deferred if configured => {
+                *runtime =
+                    override_tool_exposure(Arc::clone(runtime), ToolExposure::DirectModelOnly);
+            }
+            ToolExposure::Direct
+            | ToolExposure::Deferred
+            | ToolExposure::DirectModelOnly
+            | ToolExposure::Hidden => {}
+        }
+    }
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -250,8 +281,9 @@ fn spec_for_model_request(
     tool_name: &ToolName,
     spec: ToolSpec,
 ) -> ToolSpec {
+    let tool_mode = effective_tool_mode(turn_context);
     if matches!(
-        turn_context.tool_mode,
+        tool_mode,
         ToolMode::CodeMode | ToolMode::CodeModeOnly
     ) && exposure != ToolExposure::DirectModelOnly
         && !is_excluded_from_code_mode(turn_context, tool_name)
@@ -305,7 +337,7 @@ pub(crate) fn search_tool_enabled(turn_context: &TurnContext) -> bool {
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
-    let features = turn_context.features.get();
+    let features = turn_context.config.features.get();
     features.enabled(Feature::ToolSuggest)
         && features.enabled(Feature::Apps)
         && features.enabled(Feature::Plugins)
@@ -331,7 +363,12 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn agent_jobs_tools_enabled(turn_context: &TurnContext) -> bool {
-    turn_context.features.get().enabled(Feature::SpawnCsv) && collab_tools_enabled(turn_context)
+    turn_context
+        .config
+        .features
+        .get()
+        .enabled(Feature::SpawnCsv)
+        && collab_tools_enabled(turn_context)
 }
 
 fn agent_jobs_worker_tools_enabled(turn_context: &TurnContext) -> bool {
@@ -346,6 +383,7 @@ fn agent_jobs_worker_tools_enabled(turn_context: &TurnContext) -> bool {
 fn image_generation_tool_enabled(turn_context: &TurnContext) -> bool {
     image_generation_runtime_enabled(turn_context)
         && turn_context
+            .config
             .features
             .get()
             .enabled(Feature::ImageGeneration)
@@ -384,7 +422,11 @@ fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool
         return true;
     }
 
-    turn_context.features.get().enabled(Feature::ImageGenExt)
+    turn_context
+        .config
+        .features
+        .get()
+        .enabled(Feature::ImageGenExt)
 }
 
 fn standalone_image_generation_available(
@@ -431,7 +473,8 @@ fn is_hidden_by_code_mode_only(
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
-    turn_context.tool_mode == ToolMode::CodeModeOnly
+    let tool_mode = effective_tool_mode(turn_context);
+    tool_mode == ToolMode::CodeModeOnly
         && exposure != ToolExposure::DirectModelOnly
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
             tool_name,
@@ -452,14 +495,15 @@ fn build_code_mode_executors(
     turn_context: &TurnContext,
     executors: &[Arc<dyn CoreToolRuntime>],
 ) -> Vec<Arc<dyn CoreToolRuntime>> {
+    let tool_mode = effective_tool_mode(turn_context);
     if !matches!(
-        turn_context.tool_mode,
+        tool_mode,
         ToolMode::CodeMode | ToolMode::CodeModeOnly
     ) {
         return vec![];
     }
 
-    let code_mode_only = turn_context.tool_mode == ToolMode::CodeModeOnly;
+    let code_mode_only = tool_mode == ToolMode::CodeModeOnly;
     let mut code_mode_nested_tool_specs = Vec::new();
     let mut exec_prompt_tool_specs = Vec::new();
     let mut deferred_tools_available = false;
@@ -602,6 +646,7 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
     namespace_tools_enabled(turn_context)
         && (turn_context.model_info.use_responses_lite
             || turn_context
+                .config
                 .features
                 .get()
                 .enabled(Feature::StandaloneWebSearch))
@@ -957,10 +1002,8 @@ fn append_extension_tool_executors(
         .iter()
         .map(|executor| executor.tool_name())
         .collect::<HashSet<_>>();
-    if matches!(
-        turn_context.tool_mode,
-        ToolMode::CodeMode | ToolMode::CodeModeOnly
-    ) {
+    let tool_mode = effective_tool_mode(turn_context);
+    if matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly) {
         reserved_tool_names.insert(ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME));
         reserved_tool_names.insert(ToolName::plain(codex_code_mode::WAIT_TOOL_NAME));
     }
