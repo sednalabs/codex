@@ -9,6 +9,8 @@ use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::SpendControlLimitSnapshot as CoreSpendControlLimitSnapshot;
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -39,9 +41,7 @@ pub enum Account {
     },
 }
 
-fn nullable_string_schema(
-    generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+fn nullable_string_schema(generator: &mut SchemaGenerator) -> Schema {
     generator.subschema_for::<Option<String>>()
 }
 
