@@ -75,6 +75,9 @@ use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
 use codex_login::AuthRouteConfig;
 use codex_mcp::McpConfig;
+use codex_mcp::McpPluginAttribution;
+use codex_mcp::McpServerRegistration;
+use codex_mcp::ResolvedMcpCatalog;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -117,7 +120,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::hash_map::Entry;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -1485,12 +1487,12 @@ impl Config {
     ) -> McpConfig {
         let plugins_input = self.plugins_config_input();
         let loaded_plugins = plugins_manager.plugins_for_config(&plugins_input).await;
-        let mut configured_mcp_servers = self.mcp_servers.get().clone();
-        let mut plugin_ids_by_mcp_server_name = HashMap::new();
-        for plugin in loaded_plugins
+        let mut catalog = ResolvedMcpCatalog::builder();
+        for (plugin_order, plugin) in loaded_plugins
             .plugins()
             .iter()
             .filter(|plugin| plugin.is_active())
+            .enumerate()
         {
             let mut plugin_mcp_servers = plugin.mcp_servers.clone();
             filter_plugin_mcp_servers_by_requirements(
@@ -1498,22 +1500,32 @@ impl Config {
                 &mut plugin_mcp_servers,
                 self.config_layer_stack.requirements().plugins.as_ref(),
             );
+            let empty_mcp_allowlist = self
+                .config_layer_stack
+                .requirements()
+                .mcp_servers
+                .as_ref()
+                .filter(|requirements| requirements.value.is_empty());
+            filter_mcp_servers_by_requirements(&mut plugin_mcp_servers, empty_mcp_allowlist);
+            let attribution = McpPluginAttribution::new(
+                plugin.config_name.clone(),
+                plugin.display_name().to_string(),
+            );
             for (name, plugin_server) in plugin_mcp_servers {
-                if let Entry::Vacant(entry) = configured_mcp_servers.entry(name.clone()) {
-                    entry.insert(plugin_server);
-                    plugin_ids_by_mcp_server_name.insert(name, plugin.config_name.clone());
-                }
+                catalog.register(McpServerRegistration::from_plugin(
+                    name,
+                    attribution.clone(),
+                    plugin_order,
+                    plugin_server,
+                ));
             }
         }
-        if let Some(mcp_requirements) = self.config_layer_stack.requirements().mcp_servers.as_ref()
-            && mcp_requirements.value.is_empty()
-        {
-            // A present empty allowlist bans configurable MCPs, including plugin MCPs merged
-            // above.
-            filter_mcp_servers_by_requirements(&mut configured_mcp_servers, Some(mcp_requirements));
+        for (name, server) in self.mcp_servers.get() {
+            catalog.register(McpServerRegistration::from_config(
+                name.clone(),
+                server.clone(),
+            ));
         }
-        plugin_ids_by_mcp_server_name
-            .retain(|server_name, _| configured_mcp_servers.contains_key(server_name));
 
         McpConfig {
             chatgpt_base_url: self.chatgpt_base_url.clone(),

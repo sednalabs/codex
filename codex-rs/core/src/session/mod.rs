@@ -26,6 +26,7 @@ use crate::context::AvailablePluginsInstructions;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
+use crate::context::MultiAgentModeInstructions;
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
@@ -41,6 +42,7 @@ use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_subagent_notification_message;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
 use crate::turn_metadata::TurnMetadataState;
@@ -59,7 +61,9 @@ use codex_exec_server::EnvironmentManager;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::LoadedUserInstructions;
+use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
+use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_features::unstable_features_warning_event;
@@ -152,6 +156,7 @@ use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -926,6 +931,18 @@ fn new_submission_id() -> String {
     Uuid::now_v7().to_string()
 }
 
+fn should_restore_dynamic_tool_on_resume(
+    tool: &codex_protocol::dynamic_tools::DynamicToolSpec,
+) -> bool {
+    tool.persist_on_resume
+        && !matches!(
+            tool.capability
+                .as_ref()
+                .and_then(|capability| capability.capability_scope.as_deref()),
+            Some("environment")
+        )
+}
+
 fn get_service_tier(
     configured_service_tier: Option<String>,
     fast_mode_enabled: bool,
@@ -988,6 +1005,25 @@ async fn thread_title_from_thread_store(
 
     let title = thread.name.as_deref()?.trim();
     (!title.is_empty() && thread.preview.trim() != title).then(|| title.to_string())
+}
+
+fn push_prompt_fragment(
+    fragment: PromptFragment,
+    developer_sections: &mut Vec<String>,
+    contextual_user_sections: &mut Vec<String>,
+    separate_developer_sections: &mut Vec<String>,
+) {
+    match fragment.slot() {
+        PromptSlot::DeveloperPolicy | PromptSlot::DeveloperCapabilities => {
+            developer_sections.push(fragment.text().to_string());
+        }
+        PromptSlot::ContextualUser => {
+            contextual_user_sections.push(fragment.text().to_string());
+        }
+        PromptSlot::SeparateDeveloper => {
+            separate_developer_sections.push(fragment.text().to_string());
+        }
+    }
 }
 
 impl Session {
