@@ -1221,7 +1221,9 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
             "unused-api-key",
         ))),
+        thread_id.into(),
         thread_id,
+        TEST_INSTALLATION_ID.to_string(),
         provider,
         SessionSource::Exec,
         "test_originator".to_string(),
@@ -2834,7 +2836,9 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
+        thread_id.into(),
         thread_id,
+        TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         SessionSource::Exec,
         "test_originator".to_string(),

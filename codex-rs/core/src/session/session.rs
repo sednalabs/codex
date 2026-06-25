@@ -938,6 +938,16 @@ impl Session {
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
             export_config_lock_if_configured(&session_configuration, thread_id).await?;
+            let usage_logger = maybe_create_usage_logger(
+                state_db_ctx.clone(),
+                thread_id,
+                session_configuration.session_source.clone(),
+                session_configuration.thread_source.clone(),
+                forked_from_id,
+                session_configuration.session_source.get_nickname(),
+                session_configuration.session_source.get_agent_role(),
+            )
+            .await;
             let state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
@@ -1109,6 +1119,7 @@ impl Session {
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
+                    config.features.enabled(Feature::ItemIds),
                     attestation_provider,
                 )
                 .with_prompt_cache_key_override(

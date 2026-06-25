@@ -250,7 +250,9 @@ impl MemoryStartupContext {
         let session_id_string = session_id.to_string();
         let model_client = ModelClient::new(
             Some(Arc::clone(&self.auth_manager)),
+            session_id,
             self.thread_id,
+            installation_id.clone(),
             config.model_provider.clone(),
             session_source.clone(),
             config_snapshot.originator,
