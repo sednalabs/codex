@@ -6026,7 +6026,7 @@
         "multiAgentMode": {
           "$ref": "#/$defs/MultiAgentMode",
           "default": "explicitRequestOnly",
-          "description": "Current multi-agent mode for this thread."
+          "description": "@deprecated Always `explicitRequestOnly`. Use `effort` for Ultra behavior."
         },
         "personality": {
           "anyOf": [
