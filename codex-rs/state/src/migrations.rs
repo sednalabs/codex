@@ -46,6 +46,9 @@ pub(crate) fn runtime_memories_migrator() -> Migrator {
     runtime_migrator(&MEMORIES_MIGRATOR)
 }
 
+const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
+const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
+
 pub(crate) async fn repair_legacy_recency_migration_version(
     pool: &SqlitePool,
     migrator: &Migrator,
@@ -53,7 +56,7 @@ pub(crate) async fn repair_legacy_recency_migration_version(
     let Some(recency_migration) = migrator
         .migrations
         .iter()
-        .find(|migration| migration.version == 39)
+        .find(|migration| migration.version == CURRENT_RECENCY_MIGRATION_VERSION)
     else {
         return Ok(());
     };
@@ -80,7 +83,7 @@ WHERE version = ?
     )
     .bind(recency_migration.version)
     .bind(recency_migration.description.as_ref())
-    .bind(38_i64)
+    .bind(LEGACY_RECENCY_MIGRATION_VERSION)
     .bind(recency_migration.checksum.as_ref())
     .bind(recency_migration.version)
     .execute(pool)
