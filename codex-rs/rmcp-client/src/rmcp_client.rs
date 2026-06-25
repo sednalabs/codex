@@ -69,12 +69,12 @@ use crate::oauth::LoadedOAuthTokens;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
 use crate::oauth::StoredOAuthTokens;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
 use crate::utils::build_default_headers;
-use crate::utils::build_reqwest_client;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 #[path = "streamable_http_retry.rs"]
@@ -770,6 +770,12 @@ impl RmcpClient {
             } => {
                 let default_headers =
                     build_default_headers(http_headers.clone(), env_http_headers.clone())?;
+                let auth_provider =
+                    if bearer_token.is_some() || default_headers.contains_key(AUTHORIZATION) {
+                        None
+                    } else {
+                        auth_provider.clone()
+                    };
 
                 let initial_oauth_tokens = if bearer_token.is_none()
                     && auth_provider.is_none()
@@ -847,7 +853,7 @@ impl RmcpClient {
                         StreamableHttpClientAdapter::new(
                             Arc::clone(http_client),
                             default_headers,
-                            auth_provider.clone(),
+                            auth_provider,
                         ),
                         http_config,
                     );
@@ -1173,12 +1179,12 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let oauth_metadata_client = build_reqwest_client(reqwest::Client::builder(), &default_headers)?;
-    // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
-    // shared HTTP client abstraction instead of always creating the local
-    // reqwest metadata client here.
+    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
+        http_client.clone(),
+        default_headers.clone(),
+    ));
     let mut oauth_state =
-        OAuthState::new(url.to_string(), Some(oauth_metadata_client.clone())).await?;
+        OAuthState::new_with_oauth_http_client(url.to_string(), oauth_http_client).await?;
 
     oauth_state
         .set_credentials(

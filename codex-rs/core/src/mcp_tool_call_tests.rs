@@ -464,7 +464,7 @@ async fn mcp_tool_call_span_records_expected_fields() {
 }
 
 #[tokio::test]
-async fn mcp_tool_call_span_records_error_type_and_hosted_error_code() {
+async fn mcp_tool_call_span_records_error_type_and_error_code() {
     let buffer: &'static std::sync::Mutex<Vec<u8>> =
         Box::leak(Box::new(std::sync::Mutex::new(Vec::new())));
     let subscriber = tracing_subscriber::fmt()
@@ -497,11 +497,7 @@ async fn mcp_tool_call_span_records_error_type_and_hosted_error_code() {
     );
 
     async {
-        record_mcp_result_span_telemetry(
-            &Span::current(),
-            &result,
-            McpErrorCodeSource::HostedPluginService,
-        );
+        record_mcp_result_span_telemetry(&Span::current(), &result);
     }
     .instrument(span)
     .await;
@@ -549,11 +545,7 @@ async fn mcp_result_telemetry_span_logs(meta: Option<serde_json::Value>) -> Stri
         );
 
         async {
-            record_mcp_result_span_telemetry(
-                &Span::current(),
-                &result,
-                McpErrorCodeSource::Untrusted,
-            );
+            record_mcp_result_span_telemetry(&Span::current(), &result);
         }
         .instrument(span)
         .await;

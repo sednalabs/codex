@@ -1,8 +1,15 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
 use anyhow::Result;
+use codex_config::types::AuthKeyringBackendKind;
+use codex_config::types::OAuthCredentialsStoreMode;
+use codex_exec_server::HttpClient;
+use codex_exec_server::HttpHeader;
+use codex_exec_server::HttpRedirectPolicy;
+use codex_exec_server::HttpRequestParams;
 use codex_protocol::protocol::McpAuthStatus;
 use reqwest::Client;
 use reqwest::StatusCode;
@@ -16,7 +23,6 @@ use crate::oauth::StoredOAuthTokenStatus;
 use crate::oauth::oauth_token_status;
 use crate::utils::build_default_headers;
 use crate::utils::build_reqwest_client;
-use codex_config::types::OAuthCredentialsStoreMode;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const OAUTH_DISCOVERY_HEADER: &str = "MCP-Protocol-Version";
@@ -31,6 +37,11 @@ pub struct StreamableHttpOAuthDiscovery {
     pub grant_types_supported: Option<Vec<String>>,
 }
 
+enum AuthStatusCheck {
+    Complete(McpAuthStatus),
+    Discover(HeaderMap),
+}
+
 /// Determine the authentication status for a streamable HTTP MCP server.
 pub async fn determine_streamable_http_auth_status(
     server_name: &str,
@@ -39,25 +50,102 @@ pub async fn determine_streamable_http_auth_status(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<McpAuthStatus> {
+    let default_headers = match auth_status_before_discovery(
+        server_name,
+        url,
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        store_mode,
+        keyring_backend_kind,
+    )? {
+        AuthStatusCheck::Complete(status) => return Ok(status),
+        AuthStatusCheck::Discover(default_headers) => default_headers,
+    };
+
+    determine_auth_status_from_discovery(
+        server_name,
+        url,
+        discover_streamable_http_oauth_with_headers(url, &default_headers).await,
+    )
+}
+
+/// Determine authentication status while routing OAuth discovery through the
+/// provided HTTP client.
+#[allow(clippy::too_many_arguments)]
+pub async fn determine_streamable_http_auth_status_with_http_client(
+    server_name: &str,
+    url: &str,
+    bearer_token_env_var: Option<&str>,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    http_client: Arc<dyn HttpClient>,
+) -> Result<McpAuthStatus> {
+    let default_headers = match auth_status_before_discovery(
+        server_name,
+        url,
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        store_mode,
+        keyring_backend_kind,
+    )? {
+        AuthStatusCheck::Complete(status) => return Ok(status),
+        AuthStatusCheck::Discover(default_headers) => default_headers,
+    };
+    determine_auth_status_from_discovery(
+        server_name,
+        url,
+        discover_streamable_http_oauth_with_headers_and_http_client(
+            url,
+            default_headers,
+            http_client,
+        )
+        .await,
+    )
+}
+
+fn auth_status_before_discovery(
+    server_name: &str,
+    url: &str,
+    bearer_token_env_var: Option<&str>,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<AuthStatusCheck> {
     if bearer_token_env_var.is_some() {
-        return Ok(McpAuthStatus::BearerToken);
+        return Ok(AuthStatusCheck::Complete(McpAuthStatus::BearerToken));
     }
 
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     if default_headers.contains_key(AUTHORIZATION) {
-        return Ok(McpAuthStatus::BearerToken);
+        return Ok(AuthStatusCheck::Complete(McpAuthStatus::BearerToken));
     }
 
-    match oauth_token_status(server_name, url, store_mode)? {
-        StoredOAuthTokenStatus::Usable => return Ok(McpAuthStatus::OAuth),
+    match oauth_token_status(server_name, url, store_mode, keyring_backend_kind)? {
+        StoredOAuthTokenStatus::Usable => {
+            return Ok(AuthStatusCheck::Complete(McpAuthStatus::OAuth));
+        }
         StoredOAuthTokenStatus::AuthorizationRequired => {
-            return Ok(McpAuthStatus::NotLoggedIn);
+            return Ok(AuthStatusCheck::Complete(McpAuthStatus::NotLoggedIn));
         }
         StoredOAuthTokenStatus::Missing => {}
     }
 
-    match discover_streamable_http_oauth_with_headers(url, &default_headers).await {
+    Ok(AuthStatusCheck::Discover(default_headers))
+}
+
+fn determine_auth_status_from_discovery(
+    server_name: &str,
+    url: &str,
+    discovery: Result<Option<StreamableHttpOAuthDiscovery>>,
+) -> Result<McpAuthStatus> {
+    match discovery {
         Ok(Some(_)) => Ok(McpAuthStatus::NotLoggedIn),
         Ok(None) => Ok(McpAuthStatus::Unsupported),
         Err(error) => {
@@ -85,6 +173,17 @@ pub async fn discover_streamable_http_oauth(
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     discover_streamable_http_oauth_with_headers(url, &default_headers).await
+}
+
+pub async fn discover_streamable_http_oauth_with_http_client(
+    url: &str,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    http_client: Arc<dyn HttpClient>,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    let default_headers = build_default_headers(http_headers, env_http_headers)?;
+    discover_streamable_http_oauth_with_headers_and_http_client(url, default_headers, http_client)
+        .await
 }
 
 async fn discover_streamable_http_oauth_with_headers(
@@ -128,18 +227,66 @@ async fn discover_streamable_http_oauth_with_headers(
             }
         };
 
-        let authorization_endpoint = metadata.authorization_endpoint;
-        let device_authorization_endpoint = metadata.device_authorization_endpoint;
-        if let Some(token_endpoint) = metadata.token_endpoint
-            && (authorization_endpoint.is_some() || device_authorization_endpoint.is_some())
+        if let Some(discovery) = discovery_from_metadata(metadata) {
+            return Ok(Some(discovery));
+        }
+    }
+
+    if let Some(err) = last_error {
+        debug!("OAuth discovery requests failed for {url}: {err:?}");
+    }
+
+    Ok(None)
+}
+
+async fn discover_streamable_http_oauth_with_headers_and_http_client(
+    url: &str,
+    default_headers: HeaderMap,
+    http_client: Arc<dyn HttpClient>,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    let base_url = Url::parse(url)?;
+
+    let mut last_error: Option<Error> = None;
+    for (index, candidate_path) in discovery_paths(base_url.path()).into_iter().enumerate() {
+        let mut discovery_url = base_url.clone();
+        discovery_url.set_path(&candidate_path);
+
+        let response = match http_client
+            .http_request(HttpRequestParams {
+                method: "GET".to_string(),
+                url: discovery_url.to_string(),
+                headers: oauth_discovery_protocol_headers(&default_headers)?,
+                body: None,
+                timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
+                redirect_policy: HttpRedirectPolicy::Follow,
+                request_id: format!("oauth-discovery-{index}"),
+                stream_response: false,
+            })
+            .await
         {
-            return Ok(Some(StreamableHttpOAuthDiscovery {
-                authorization_endpoint,
-                token_endpoint,
-                scopes_supported: normalize_scopes(metadata.scopes_supported),
-                device_authorization_endpoint,
-                grant_types_supported: normalize_scopes(metadata.grant_types_supported),
-            }));
+            Ok(response) => response,
+            Err(err) => {
+                last_error = Some(err.into());
+                continue;
+            }
+        };
+
+        if response.status != StatusCode::OK.as_u16() {
+            continue;
+        }
+
+        let metadata = match serde_json::from_slice::<OAuthDiscoveryMetadata>(
+            &response.body.into_inner(),
+        ) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                last_error = Some(err.into());
+                continue;
+            }
+        };
+
+        if let Some(discovery) = discovery_from_metadata(metadata) {
+            return Ok(Some(discovery));
         }
     }
 
@@ -162,6 +309,42 @@ struct OAuthDiscoveryMetadata {
     device_authorization_endpoint: Option<String>,
     #[serde(default)]
     grant_types_supported: Option<Vec<String>>,
+}
+
+fn discovery_from_metadata(
+    metadata: OAuthDiscoveryMetadata,
+) -> Option<StreamableHttpOAuthDiscovery> {
+    let authorization_endpoint = metadata.authorization_endpoint;
+    let device_authorization_endpoint = metadata.device_authorization_endpoint;
+    let token_endpoint = metadata.token_endpoint?;
+    if authorization_endpoint.is_none() && device_authorization_endpoint.is_none() {
+        return None;
+    }
+
+    Some(StreamableHttpOAuthDiscovery {
+        authorization_endpoint,
+        token_endpoint,
+        scopes_supported: normalize_scopes(metadata.scopes_supported),
+        device_authorization_endpoint,
+        grant_types_supported: normalize_scopes(metadata.grant_types_supported),
+    })
+}
+
+fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<HttpHeader>> {
+    let mut headers = default_headers
+        .iter()
+        .map(|(name, value)| {
+            Ok(HttpHeader {
+                name: name.as_str().to_string(),
+                value: value.to_str()?.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    headers.push(HttpHeader {
+        name: OAUTH_DISCOVERY_HEADER.to_string(),
+        value: OAUTH_DISCOVERY_VERSION.to_string(),
+    });
+    Ok(headers)
 }
 
 fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -310,6 +493,7 @@ mod tests {
             )])),
             /*env_http_headers*/ None,
             OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::default(),
         )
         .await
         .expect("status should compute");
@@ -331,6 +515,7 @@ mod tests {
                 "CODEX_RMCP_CLIENT_AUTH_STATUS_TEST_TOKEN".to_string(),
             )])),
             OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::default(),
         )
         .await
         .expect("status should compute");

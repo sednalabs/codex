@@ -1272,6 +1272,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         (
             "stdio".to_string(),
             EffectiveMcpServer::configured(McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::Stdio {
                     command: "echo".to_string(),
                     args: Vec::new(),
@@ -1302,6 +1303,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         (
             "http".to_string(),
             EffectiveMcpServer::configured(McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "http://127.0.0.1:1".to_string(),
                     bearer_token_env_var: None,
@@ -1413,6 +1415,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
     let server_name = "github";
     let entry = McpAuthStatusEntry {
         config: Some(McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://api.githubcopilot.com/mcp/".to_string(),
                 bearer_token_env_var: None,
@@ -1470,6 +1473,7 @@ fn mcp_init_error_display_reports_generic_errors() {
     let server_name = "custom";
     let entry = McpAuthStatusEntry {
         config: Some(McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com".to_string(),
                 bearer_token_env_var: Some("TOKEN".to_string()),

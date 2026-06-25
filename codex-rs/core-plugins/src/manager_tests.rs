@@ -292,6 +292,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
             mcp_servers: HashMap::from([(
                 "sample".to_string(),
                 McpServerConfig {
+                    auth: Default::default(),
                     transport: McpServerTransportConfig::StreamableHttp {
                         url: "https://sample.example/mcp".to_string(),
                         bearer_token_env_var: None,
@@ -345,6 +346,70 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
     assert_eq!(
         outcome.effective_apps(),
         vec![AppConnectorId("connector_example".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn load_plugins_loads_manifest_mcp_server_objects() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/counter-sample/local");
+
+    write_file(
+        &plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{
+  "name": "counter-sample",
+  "version": "1.1.1",
+  "description": "Plugin that declares MCP servers in the manifest",
+  "mcpServers": {
+    "counter": {
+      "type": "http",
+      "url": "https://sample.example/counter/mcp"
+    }
+  }
+}"#,
+    );
+
+    let config_toml = r#"
+[features]
+plugins = true
+
+[plugins."counter-sample@test"]
+enabled = true
+"#;
+    let outcome = load_plugins_from_config(config_toml, codex_home.path()).await;
+
+    assert_eq!(outcome.plugins()[0].error, None);
+    assert_eq!(
+        outcome.plugins()[0].mcp_servers,
+        HashMap::from([(
+            "counter".to_string(),
+            McpServerConfig {
+                auth: Default::default(),
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "https://sample.example/counter/mcp".to_string(),
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                environment_id: "local".to_string(),
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            },
+        )])
     );
 }
 
@@ -1212,6 +1277,72 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
 }
 
 #[tokio::test]
+async fn load_plugin_skills_dedupes_overlapping_manifest_roots() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local")
+        .abs();
+    write_file(
+        &plugin_root.join("skills/abc/SKILL.md"),
+        "---\nname: abc\ndescription: abc skill\n---\n",
+    );
+    write_file(
+        &plugin_root.join("skills/edk/SKILL.md"),
+        "---\nname: edk\ndescription: edk skill\n---\n",
+    );
+    let manifest = crate::manifest::PluginManifest {
+        name: "sample".to_string(),
+        version: None,
+        description: None,
+        keywords: Vec::new(),
+        paths: crate::manifest::PluginManifestPaths {
+            skills: vec![
+                plugin_root.join("skills"),
+                plugin_root.join("skills/abc"),
+                plugin_root.join("skills/edk"),
+                plugin_root.join("skills/abc"),
+            ],
+            mcp_servers: None,
+            apps: None,
+            hooks: None,
+        },
+        interface: None,
+    };
+    let plugin_id = PluginId::parse("sample@test").expect("plugin id should parse");
+
+    let resolved = crate::loader::load_plugin_skills(
+        &plugin_root,
+        &plugin_id,
+        &manifest,
+        /*restriction_product*/ None,
+        &codex_core_skills::config_rules::SkillConfigRules::default(),
+        /*plugin_skill_snapshots*/ None,
+    )
+    .await;
+
+    let skill_paths = resolved
+        .skills
+        .iter()
+        .map(|skill| skill.path_to_skills_md.clone())
+        .collect::<Vec<_>>();
+    let canonical_skill_path = |path| {
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(
+            fs::canonicalize(plugin_root.join(path)).expect("canonical skill path"),
+        )
+        .expect("absolute skill path")
+    };
+    assert_eq!(
+        skill_paths,
+        vec![
+            canonical_skill_path("skills/abc/SKILL.md"),
+            canonical_skill_path("skills/edk/SKILL.md")
+        ]
+    );
+}
+
+#[tokio::test]
 async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
     let codex_home = TempDir::new().unwrap();
     let plugin_root = codex_home
@@ -1294,6 +1425,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
         HashMap::from([(
             "default".to_string(),
             McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "https://default.example/mcp".to_string(),
                     bearer_token_env_var: None,
@@ -1541,6 +1673,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
     let codex_home = TempDir::new().unwrap();
     let connector = |id: &str| AppConnectorId(id.to_string());
     let http_server = |url: &str| McpServerConfig {
+        auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: url.to_string(),
             bearer_token_env_var: None,
