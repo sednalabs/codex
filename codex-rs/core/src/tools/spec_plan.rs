@@ -701,6 +701,18 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add_with_exposure(GetContextRemainingHandler, ToolExposure::DirectModelOnly);
     }
 
+    if features.enabled(Feature::CurrentTimeReminder) {
+        planned_tools.add(CurrentTimeHandler);
+        if turn_context
+            .config
+            .current_time_reminder
+            .as_ref()
+            .is_some_and(|config| config.sleep_tool)
+        {
+            planned_tools.add(SleepHandler);
+        }
+    }
+
     if tool_suggest_enabled(turn_context)
         && let Some(candidates) = context
             .tool_suggest_candidates

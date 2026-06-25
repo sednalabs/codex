@@ -19,6 +19,7 @@
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::Result;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use oauth2::AccessToken;
 use oauth2::RefreshToken;
@@ -118,6 +119,7 @@ pub(crate) fn load_oauth_tokens(
     server_name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    _keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<Option<StoredOAuthTokens>> {
     Ok(load_oauth_tokens_with_source(server_name, url, store_mode)?.map(|loaded| loaded.tokens))
 }
@@ -186,9 +188,10 @@ pub(crate) fn oauth_token_status(
     server_name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<StoredOAuthTokenStatus> {
     Ok(
-        match load_oauth_tokens(server_name, url, store_mode)?.as_ref() {
+        match load_oauth_tokens(server_name, url, store_mode, keyring_backend_kind)?.as_ref() {
             None => StoredOAuthTokenStatus::Missing,
             Some(tokens) if oauth_tokens_are_usable(tokens) => StoredOAuthTokenStatus::Usable,
             Some(_) => StoredOAuthTokenStatus::AuthorizationRequired,
@@ -304,6 +307,7 @@ pub fn save_oauth_tokens(
     server_name: &str,
     tokens: &StoredOAuthTokens,
     store_mode: OAuthCredentialsStoreMode,
+    _keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<()> {
     let keyring_store = DefaultKeyringStore;
     match store_mode {
@@ -323,6 +327,7 @@ pub async fn save_oauth_tokens_locked(
     server_name: &str,
     tokens: &StoredOAuthTokens,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<()> {
     let _lock = RefreshCredentialLock::acquire_for_server_with_timeout(
         server_name,
@@ -330,7 +335,7 @@ pub async fn save_oauth_tokens_locked(
         LOCK_ACQUIRE_TIMEOUT,
     )
     .await?;
-    save_oauth_tokens(server_name, tokens, store_mode)
+    save_oauth_tokens(server_name, tokens, store_mode, keyring_backend_kind)
 }
 
 fn save_oauth_tokens_with_keyring<K: KeyringStore>(
@@ -379,6 +384,7 @@ pub fn delete_oauth_tokens(
     server_name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    _keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<bool> {
     let keyring_store = DefaultKeyringStore;
     delete_oauth_tokens_from_keyring_and_file(&keyring_store, store_mode, server_name, url)
@@ -388,6 +394,7 @@ pub async fn delete_oauth_tokens_locked(
     server_name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<bool> {
     let _lock = RefreshCredentialLock::acquire_for_server_with_timeout(
         server_name,
@@ -395,7 +402,7 @@ pub async fn delete_oauth_tokens_locked(
         LOCK_ACQUIRE_TIMEOUT,
     )
     .await?;
-    delete_oauth_tokens(server_name, url, store_mode)
+    delete_oauth_tokens(server_name, url, store_mode, keyring_backend_kind)
 }
 
 fn delete_oauth_tokens_from_keyring_and_file<K: KeyringStore>(
@@ -1641,6 +1648,7 @@ mod tests {
                 &tokens_for_save.server_name,
                 &tokens_for_save,
                 OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
             )
             .await
         });

@@ -22,6 +22,7 @@ use crate::perform_oauth_login::OAuthProviderError;
 use crate::save_oauth_tokens_locked;
 use crate::utils::build_default_headers;
 use crate::utils::build_reqwest_client;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -37,6 +38,7 @@ pub async fn perform_oauth_device_login(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -109,7 +111,7 @@ pub async fn perform_oauth_device_login(
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at,
     };
-    save_oauth_tokens_locked(server_name, &stored, store_mode).await
+    save_oauth_tokens_locked(server_name, &stored, store_mode, keyring_backend_kind).await
 }
 
 async fn resolve_device_oauth_client_id(

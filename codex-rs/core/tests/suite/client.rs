@@ -12,6 +12,7 @@ use codex_features::Feature;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::default_client::originator;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
@@ -1221,6 +1222,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
             "unused-api-key",
         ))),
+        AgentIdentityAuthPolicy::JwtOnly,
         thread_id.into(),
         thread_id,
         TEST_INSTALLATION_ID.to_string(),
@@ -2836,6 +2838,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 
     let client = ModelClient::new(
         /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
         thread_id.into(),
         thread_id,
         TEST_INSTALLATION_ID.to_string(),
