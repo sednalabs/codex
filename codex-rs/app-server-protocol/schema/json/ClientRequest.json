@@ -4944,7 +4944,7 @@
               "type": "null"
             }
           ],
-          "description": "Select the multi-agent mode for subsequent turns."
+          "description": "@deprecated Ignored. Use `effort: \"ultra\"` for proactive multi-agent behavior."
         },
         "permissions": {
           "description": "Select a named permissions profile id for subsequent turns. Cannot be\ncombined with `sandboxPolicy`.",
@@ -5046,6 +5046,10 @@
     },
     "ThreadStartParams": {
       "properties": {
+        "allowProviderModelFallback": {
+          "description": "Allow a provider with an authoritative static model catalog to replace an unavailable\nrequested model with its default.",
+          "type": "boolean"
+        },
         "approvalPolicy": {
           "anyOf": [
             {
