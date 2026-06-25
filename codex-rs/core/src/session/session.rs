@@ -1012,7 +1012,7 @@ impl Session {
             let hooks = build_hooks_for_config(
                 &config,
                 plugins_manager.as_ref(),
-                user_shell.as_ref(),
+                &default_shell,
             )
             .await;
             for warning in hooks.startup_warnings() {
