@@ -707,7 +707,7 @@
       ]
     },
     "MultiAgentMode": {
-      "description": "Controls whether the model receives multi-agent delegation instructions and, when it does, whether it should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help. `none` leaves the multi-agent tools available without injecting delegation instructions.",
+      "description": "Controls whether the model receives multi-agent delegation instructions and,\nwhen it does, whether it should only spawn sub-agents after an explicit user\nrequest or may delegate proactively when doing so would help. `none` leaves\nthe multi-agent tools available without injecting delegation instructions.",
       "enum": [
         "none",
         "explicitRequestOnly",
@@ -1088,6 +1088,17 @@
         "ephemeral": {
           "description": "Whether the thread is ephemeral and should not be materialized on disk.",
           "type": "boolean"
+        },
+        "extra": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadExtra"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional implementation-specific thread data."
         },
         "forkedFromId": {
           "description": "Source thread id when this thread was created by forking another thread.",
@@ -1858,7 +1869,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/LegacyAppPathString"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             "type": {
               "const": "imageView",

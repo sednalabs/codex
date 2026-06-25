@@ -19,8 +19,8 @@
         }
       },
       "required": [
-        "allowed",
-        "id"
+        "id",
+        "allowed"
       ],
       "type": "object"
     }

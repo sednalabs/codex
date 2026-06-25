@@ -1367,7 +1367,7 @@
       "type": "object"
     },
     "InternalChatMessageMetadataPassthrough": {
-      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
+      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
       "properties": {
         "turn_id": {
           "type": [
@@ -1771,7 +1771,7 @@
         "skills": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/SkillMigration"
+            "$ref": "#/$defs/SkillMigration"
           },
           "type": "array"
         },
@@ -1837,7 +1837,7 @@
       "type": "object"
     },
     "MultiAgentMode": {
-      "description": "Controls whether the model receives multi-agent delegation instructions and, when it does, whether it should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help. `none` leaves the multi-agent tools available without injecting delegation instructions.",
+      "description": "Controls whether the model receives multi-agent delegation instructions and,\nwhen it does, whether it should only spawn sub-agents after an explicit user\nrequest or may delegate proactively when doing so would help. `none` leaves\nthe multi-agent tools available without injecting delegation instructions.",
       "enum": [
         "none",
         "explicitRequestOnly",
@@ -2591,7 +2591,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2645,7 +2645,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2697,7 +2697,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2745,7 +2745,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2786,7 +2786,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2838,7 +2838,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2879,7 +2879,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2920,7 +2920,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -2965,7 +2965,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3015,7 +3015,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3065,7 +3065,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3101,7 +3101,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3148,7 +3148,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3199,7 +3199,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4068,6 +4068,51 @@
       ],
       "type": "object"
     },
+    "ThreadItemsListParams": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor to pass to the next call to continue after the last item.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional item page size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sortDirection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SortDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional item pagination direction; defaults to ascending."
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "description": "Optional turn id to filter by. When omitted, returns items across the thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadListCwdFilter": {
       "anyOf": [
         {
@@ -4083,6 +4128,13 @@
     },
     "ThreadListParams": {
       "properties": {
+        "ancestorThreadId": {
+          "description": "Optional ancestor thread filter. Returns spawned descendants at any depth, excluding the\nancestor itself. Mutually exclusive with `parentThreadId`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "archived": {
           "description": "Optional archived filter; when set to true, only archived threads are returned.\nIf false or null, only non-archived threads are returned.",
           "type": [
@@ -4128,7 +4180,7 @@
           ]
         },
         "parentThreadId": {
-          "description": "Optional direct parent thread filter.",
+          "description": "Optional direct parent thread filter. Mutually exclusive with `ancestorThreadId`.",
           "type": [
             "string",
             "null"
@@ -5091,7 +5143,7 @@
               "type": "null"
             }
           ],
-          "description": "Set the initial multi-agent mode for this thread.\nOmitted leaves the thread without a selected mode. Eligible multi-agent\nv2 turns still default to `explicitRequestOnly`."
+          "description": "Set the initial multi-agent mode for this thread. `none` leaves the\nmulti-agent tools available without injecting mode instructions.\nOmitted defaults to `explicitRequestOnly`."
         },
         "permissions": {
           "description": "Named profile id for this thread. Cannot be combined with `sandbox`.",
@@ -5182,48 +5234,6 @@
         "clear"
       ],
       "type": "string"
-    },
-    "ThreadTurnsItemsListParams": {
-      "properties": {
-        "cursor": {
-          "description": "Opaque cursor to pass to the next call to continue after the last item.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "description": "Optional item page size.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sortDirection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SortDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional item pagination direction; defaults to ascending."
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "turnId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "turnId"
-      ],
-      "type": "object"
     },
     "ThreadTurnsListParams": {
       "properties": {
@@ -5446,7 +5456,7 @@
               "type": "null"
             }
           ],
-          "description": "Controls whether multi-agent v2 delegation requires an explicit user request.\nOmitted keeps the loaded session's current mode."
+          "description": "Controls multi-agent v2 delegation instructions. `none` leaves the\nmulti-agent tools available without injecting mode instructions. Omitted\nkeeps the loaded session's current mode."
         },
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
@@ -7306,9 +7316,7 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "account/workspaceMessages/read"
-          ],
+          "const": "account/workspaceMessages/read",
           "title": "Account/workspaceMessages/readRequestMethod",
           "type": "string"
         },
@@ -7317,8 +7325,8 @@
         }
       },
       "required": [
-        "id",
-        "method"
+        "method",
+        "id"
       ],
       "title": "Account/workspaceMessages/readRequest",
       "type": "object"
@@ -7326,12 +7334,10 @@
     {
       "properties": {
         "id": {
-          "$ref": "#/definitions/RequestId"
+          "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "enum": [
-            "account/sendAddCreditsNudgeEmail"
-          ],
+          "const": "account/sendAddCreditsNudgeEmail",
           "title": "Account/sendAddCreditsNudgeEmailRequestMethod",
           "type": "string"
         },

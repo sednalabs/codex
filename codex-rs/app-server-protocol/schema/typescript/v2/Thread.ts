@@ -31,6 +31,12 @@ ephemeral: boolean, /**
  * Model provider used for this thread (for example, 'openai').
  */
 modelProvider: string, /**
+ * Latest observed model for this thread, if known.
+ */
+model: string | null, /**
+ * Latest observed reasoning effort for this thread, if known.
+ */
+reasoningEffort: ReasoningEffort | null, /**
  * Unix timestamp (in seconds) when the thread was created.
  */
 createdAt: number, /**
