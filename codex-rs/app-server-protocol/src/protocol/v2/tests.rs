@@ -36,6 +36,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
 use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -208,7 +209,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
-        multi_agent_mode: None,
+        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
             next_cursor: Some("cursor_next".to_string()),

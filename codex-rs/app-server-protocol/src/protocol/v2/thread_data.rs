@@ -3,6 +3,7 @@ use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
 use codex_experimental_api_macros::ExperimentalApi;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::ThreadSource as CoreThreadSource;
