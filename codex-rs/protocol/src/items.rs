@@ -739,7 +739,7 @@ mod tests {
                 text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
 
         assert_eq!(
@@ -765,7 +765,7 @@ mod tests {
                 text: format!("<subagent_notification>{payload}</subagent_notification>"),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
 
         assert_eq!(
@@ -786,7 +786,7 @@ mod tests {
                 text: "hello world".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
 
         assert_eq!(parse_subagent_notification_response_item(&item), None);
