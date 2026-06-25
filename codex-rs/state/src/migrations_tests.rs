@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use sqlx::Row;
 use sqlx::migrate::Migration;
@@ -7,6 +8,10 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
 use super::repair_legacy_recency_migration_version;
+
+const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
+const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
+const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -26,6 +31,21 @@ fn migrator_through(version: i64) -> Migrator {
     }
 }
 
+#[test]
+fn state_migration_versions_are_unique() {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = Vec::new();
+    for migration in STATE_MIGRATOR.iter() {
+        if !seen.insert(migration.version) {
+            duplicates.push(migration.version);
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "duplicate state migration versions: {duplicates:?}"
+    );
+}
+
 #[tokio::test]
 async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
     let pool = SqlitePoolOptions::new()
@@ -33,7 +53,7 @@ async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
         .connect("sqlite::memory:")
         .await
         .expect("in-memory database should open");
-    migrator_through(/*version*/ 37)
+    migrator_through(PRE_RECENCY_MIGRATION_VERSION)
         .run(&pool)
         .await
         .expect("pre-recency migrations should apply");
@@ -145,7 +165,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
     let recency_migration = STATE_MIGRATOR
         .migrations
         .iter()
-        .find(|migration| migration.version == 39)
+        .find(|migration| migration.version == CURRENT_RECENCY_MIGRATION_VERSION)
         .expect("recency migration should exist");
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
@@ -154,7 +174,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .cloned()
         .collect::<Vec<_>>();
     legacy_migrations.push(Migration::new(
-        38,
+        LEGACY_RECENCY_MIGRATION_VERSION,
         recency_migration.description.clone(),
         recency_migration.migration_type,
         recency_migration.sql.clone(),
