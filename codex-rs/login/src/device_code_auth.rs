@@ -1,3 +1,4 @@
+use codex_utils_version::DISPLAY_VERSION;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
