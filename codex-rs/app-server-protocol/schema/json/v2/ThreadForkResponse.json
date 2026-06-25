@@ -38,7 +38,6 @@
         {
           "enum": [
             "untrusted",
-            "on-failure",
             "on-request",
             "never"
           ],
@@ -108,6 +107,7 @@
         {
           "enum": [
             "contextWindowExceeded",
+            "sessionBudgetExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
             "cyberPolicy",
@@ -707,8 +707,9 @@
       ]
     },
     "MultiAgentMode": {
-      "description": "Controls whether the model should only spawn sub-agents after an explicit\nuser request or may delegate proactively when doing so would help.",
+      "description": "Controls whether the model receives multi-agent delegation instructions and, when it does, whether it should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help. `none` leaves the multi-agent tools available without injecting delegation instructions.",
       "enum": [
+        "none",
         "explicitRequestOnly",
         "proactive"
       ],
@@ -1107,6 +1108,7 @@
           "description": "Optional Git metadata captured when the thread was created."
         },
         "id": {
+          "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
         },
         "model": {
@@ -1222,6 +1224,10 @@
         "waitingOnUserInput"
       ],
       "type": "string"
+    },
+    "ThreadExtra": {
+      "description": "Extra app-server data for a thread.",
+      "type": "object"
     },
     "ThreadId": {
       "type": "string"
@@ -1852,7 +1858,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
               "const": "imageView",
@@ -2098,6 +2104,7 @@
           "description": "Only populated when the Turn's status is failed."
         },
         "id": {
+          "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
           "type": "string"
         },
         "items": {

@@ -71,7 +71,9 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::find_codex_home;
-use codex_core::config::load_config_as_toml_with_cli_and_load_options;
+use codex_core::config::load_config_toml_with_layer_stack;
+use codex_core::config::resolve_bootstrap_auth_keyring_backend_kind;
+use codex_core::config::resolve_bootstrap_auth_route_config;
 use codex_core::config::resolve_oss_provider;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_core::find_thread_meta_by_name_str;
@@ -353,6 +355,14 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .chatgpt_base_url
         .clone()
         .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string());
+    let auth_route_config = resolve_bootstrap_auth_route_config(
+        bootstrap_config_toml,
+        bootstrap_config
+            .config_layer_stack
+            .requirements()
+            .feature_requirements
+            .as_ref(),
+    )?;
     let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
@@ -360,6 +370,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             .cli_auth_credentials_store
             .unwrap_or_default(),
         chatgpt_base_url,
+        auth_route_config,
     )
     .await;
     let run_cli_overrides = cli_kv_overrides.clone();
@@ -471,12 +482,14 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     set_default_client_residency_requirement(config.enforce_residency.value());
 
+    let auth_route_config = config.auth_route_config();
     if let Err(err) = enforce_login_restrictions(&AuthConfig {
         codex_home: config.codex_home.to_path_buf(),
         auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
         forced_login_method: config.forced_login_method,
         forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
         chatgpt_base_url: Some(config.chatgpt_base_url.clone()),
+        auth_route_config,
     })
     .await
     {
@@ -1573,6 +1586,8 @@ async fn resolve_resume_thread_id(
                         source_kinds: Some(all_thread_source_kinds()),
                         thread_sources: None,
                         archived: Some(false),
+                        parent_thread_id: None,
+                        ancestor_thread_id: None,
                         cwd: None,
                         use_state_db_only: false,
                         search_term: None,
@@ -1639,6 +1654,8 @@ async fn resolve_resume_thread_id(
                     source_kinds: Some(all_thread_source_kinds()),
                     thread_sources: None,
                     archived: Some(false),
+                    parent_thread_id: None,
+                    ancestor_thread_id: None,
                     cwd: None,
                     // Thread names are attached separately from rollout titles, so name
                     // resolution must scan the filtered list client-side instead of relying

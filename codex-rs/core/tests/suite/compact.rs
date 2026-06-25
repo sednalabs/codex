@@ -1993,12 +1993,12 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
                 text: remote_summary.to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
     let compact_mock =
@@ -3993,12 +3993,12 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
                 text: "REMOTE_COMPACT_SUMMARY".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
     let compact_mock =
@@ -4121,12 +4121,12 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
                 text: "REMOTE_COMPACT_SUMMARY".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         },
     ];
     let compact_mock =
@@ -4233,7 +4233,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     )
     .await
     .expect("override thread settings");
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
         .to_string();
     codex
         .submit(Op::UserInput {

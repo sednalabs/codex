@@ -1814,7 +1814,6 @@ mod tests {
     use crate::transport::remote_control::protocol::StreamId;
     use crate::transport::remote_control::protocol::normalize_remote_control_url;
     use chrono::Utc;
-    use codex_app_server_protocol::AuthMode;
     use codex_app_server_protocol::ConfigWarningNotification;
     use codex_app_server_protocol::JSONRPCMessage;
     use codex_app_server_protocol::JSONRPCNotification;
@@ -1827,6 +1826,7 @@ mod tests {
     use codex_login::save_auth;
     use codex_login::token_data::TokenData;
     use codex_login::token_data::parse_chatgpt_jwt_claims;
+    use codex_protocol::auth::AuthMode;
     use codex_state::StateRuntime;
     use futures::StreamExt;
     use pretty_assertions::assert_eq;
@@ -2217,6 +2217,7 @@ mod tests {
             /*forced_chatgpt_workspace_id*/ None,
             /*chatgpt_base_url*/ None,
             AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();
@@ -2315,6 +2316,7 @@ mod tests {
             /*forced_chatgpt_workspace_id*/ None,
             /*chatgpt_base_url*/ None,
             AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();
@@ -2438,6 +2440,7 @@ mod tests {
             /*forced_chatgpt_workspace_id*/ None,
             /*chatgpt_base_url*/ None,
             AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
         )
         .await;
         let mut auth_recovery = auth_manager.unauthorized_recovery();

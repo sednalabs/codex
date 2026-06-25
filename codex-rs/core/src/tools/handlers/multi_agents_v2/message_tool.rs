@@ -7,7 +7,6 @@
 use super::*;
 use crate::tools::context::FunctionToolOutput;
 use crate::turn_timing::now_unix_timestamp_ms;
-use codex_protocol::models::ResponseItemMetadata;
 use codex_protocol::protocol::InterAgentCommunication;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,12 +157,8 @@ async fn handle_message_submission(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let mut communication =
+    let communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
-    communication
-        .metadata
-        .get_or_insert_with(ResponseItemMetadata::default)
-        .source_call_id = Some(call_id.clone());
     let result = session
         .services
         .agent_control

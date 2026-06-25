@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
@@ -25,6 +26,7 @@ use crate::tools::events::ToolEventStage;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use crate::tools::network_approval::finish_deferred_network_approval;
 use crate::tools::orchestrator::ToolOrchestrator;
+use crate::tools::runtimes::is_managed_proxy_env_var;
 use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolRequest;
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::SandboxAttempt;
@@ -142,10 +144,16 @@ fn exec_server_env_for_request(
     HashMap<String, String>,
 ) {
     if let Some(exec_server_env_config) = &request.exec_server_env_config {
-        (
-            Some(exec_server_env_config.policy.clone()),
-            env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env),
-        )
+        let mut env =
+            env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
+        if request.exec_server_managed_network.is_some() {
+            for (key, value) in &request.env {
+                if is_managed_proxy_env_var(key, value) {
+                    env.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        (Some(exec_server_env_config.policy.clone()), env)
     } else {
         (None, request.env.clone())
     }
@@ -157,8 +165,14 @@ fn exec_server_params_for_request(
     tty: bool,
 ) -> codex_exec_server::ExecParams {
     let (env_policy, env) = exec_server_env_for_request(request);
+    // Sandbox retries reuse the unified-exec ID but start a distinct executor process.
+    let exec_server_process_id = if request.exec_server_sandbox.is_some() {
+        format!("{process_id}-{}", Uuid::new_v4())
+    } else {
+        process_id.to_string()
+    };
     codex_exec_server::ExecParams {
-        process_id: exec_server_process_id(process_id).into(),
+        process_id: exec_server_process_id.into(),
         argv: request.command.clone(),
         cwd: request.cwd.clone(),
         env_policy,
@@ -166,6 +180,9 @@ fn exec_server_params_for_request(
         tty,
         pipe_stdin: false,
         arg0: request.arg0.clone(),
+        sandbox: request.exec_server_sandbox.clone(),
+        enforce_managed_network: request.exec_server_enforce_managed_network,
+        managed_network: request.exec_server_managed_network.clone(),
     }
 }
 
@@ -194,10 +211,6 @@ impl Drop for InitialExecCommandGuard {
     fn drop(&mut self) {
         self.active.store(false, Ordering::Release);
     }
-}
-
-fn exec_server_process_id(process_id: i32) -> String {
-    process_id.to_string()
 }
 
 async fn unregister_network_approval_for_entry(entry: &ProcessEntry) {
@@ -1039,7 +1052,7 @@ impl UnifiedExecProcessManager {
                 .await
                 .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started, request.sandbox).await;
+            return UnifiedExecProcess::from_exec_server_started(started).await;
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.

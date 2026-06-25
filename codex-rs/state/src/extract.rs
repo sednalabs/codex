@@ -22,7 +22,8 @@ pub fn apply_rollout_item(
         RolloutItem::TurnContext(turn_ctx) => apply_turn_context(metadata, turn_ctx),
         RolloutItem::EventMsg(event) => apply_event_msg(metadata, event),
         RolloutItem::ResponseItem(item) => apply_response_item(metadata, item),
-        RolloutItem::InterAgentCommunication(_) => {}
+        RolloutItem::InterAgentCommunication(_)
+        | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
         RolloutItem::Compacted(_) => {}
     }
     if metadata.model_provider.is_empty() {
@@ -40,6 +41,7 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
         RolloutItem::EventMsg(_)
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
+        | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_) => false,
     }
 }
@@ -191,7 +193,7 @@ mod tests {
                 text: "hello from response item".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         });
 
         apply_rollout_item(&mut metadata, &item, "test-provider");
@@ -321,6 +323,7 @@ mod tests {
             &mut metadata,
             &RolloutItem::SessionMeta(SessionMetaLine {
                 meta: SessionMeta {
+                    session_id: thread_id.into(),
                     id: thread_id,
                     forked_from_id: Some(
                         ThreadId::from_string(&Uuid::now_v7().to_string()).expect("thread id"),
@@ -340,6 +343,7 @@ mod tests {
                     dynamic_tools: None,
                     memory_mode: None,
                     multi_agent_version: None,
+                    context_window: None,
                 },
                 git: None,
             }),
@@ -513,6 +517,7 @@ mod tests {
             &mut metadata,
             &RolloutItem::SessionMeta(SessionMetaLine {
                 meta: SessionMeta {
+                    session_id: thread_id.into(),
                     id: thread_id,
                     forked_from_id: None,
                     parent_thread_id: None,
@@ -530,6 +535,7 @@ mod tests {
                     dynamic_tools: None,
                     memory_mode: None,
                     multi_agent_version: None,
+                    context_window: None,
                 },
                 git: None,
             }),

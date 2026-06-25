@@ -32,8 +32,9 @@ async fn sleep_emits_started_and_completed_items() -> Result<()> {
         vec![
             responses::sse(vec![
                 responses::ev_response_created("resp-1"),
-                responses::ev_function_call(
+                responses::ev_function_call_with_namespace(
                     CALL_ID,
+                    "clock",
                     "sleep",
                     &serde_json::json!({ "duration_ms": DURATION_MS }).to_string(),
                 ),
@@ -50,11 +51,11 @@ async fn sleep_emits_started_and_completed_items() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_start_id = mcp
-        .send_thread_start_request(ThreadStartParams {
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })

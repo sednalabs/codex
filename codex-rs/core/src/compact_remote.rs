@@ -7,8 +7,10 @@ use crate::client::CompactConversationRequestSettings;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
+use crate::compact::build_compaction_initial_context;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -17,13 +19,14 @@ use crate::hook_runtime::run_pre_compact_hooks;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn::built_tools;
 use crate::session::turn_context::TurnContext;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
-use codex_app_server_protocol::AuthMode;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
@@ -44,7 +47,7 @@ const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    step_context: Arc<StepContext>,
     turn_state: Arc<OnceLock<String>>,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
@@ -53,7 +56,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
-        &turn_context,
+        &step_context,
         Some(turn_state),
         initial_context_injection,
         CompactionTrigger::Auto,
@@ -70,6 +73,8 @@ pub(crate) async fn run_remote_compact_task(
     turn_context: Arc<TurnContext>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
+    // Standalone compaction is its own request boundary, so it captures a fresh step.
+    let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
         trace_id: turn_context.trace_id.clone(),
@@ -81,7 +86,7 @@ pub(crate) async fn run_remote_compact_task(
 
     run_remote_compact_task_inner(
         &sess,
-        &turn_context,
+        &step_context,
         /*turn_state*/ None,
         InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
@@ -95,7 +100,7 @@ pub(crate) async fn run_remote_compact_task(
 
 async fn run_remote_compact_task_inner(
     sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
+    step_context: &Arc<StepContext>,
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
@@ -103,6 +108,7 @@ async fn run_remote_compact_task_inner(
     phase: CompactionPhase,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
+    let turn_context = &step_context.turn;
     let compaction_metadata = CompactionTurnMetadata::new(
         trigger,
         reason,
@@ -140,7 +146,7 @@ async fn run_remote_compact_task_inner(
     }
     let result = run_remote_compact_task_inner_impl(
         sess,
-        turn_context,
+        step_context,
         turn_state,
         initial_context_injection,
         cancellation_token,
@@ -175,13 +181,14 @@ async fn run_remote_compact_task_inner(
 
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
+    step_context: &Arc<StepContext>,
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     cancellation_token: &CancellationToken,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<()> {
+    let turn_context = &step_context.turn;
     let context_compaction_item = ContextCompactionItem::new();
     // Use the UI compaction item ID as the trace compaction ID so protocol lifecycle events,
     // endpoint attempts, and the installed history checkpoint all have one join key.
@@ -225,7 +232,12 @@ async fn run_remote_compact_task_inner_impl(
     // request, whose prompt will repeat current developer/context prefix items.
     let trace_input_history = history.raw_items().to_vec();
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
-    let tool_router = built_tools(sess.as_ref(), turn_context.as_ref(), cancellation_token).await?;
+    let tool_router = built_tools(
+        sess.as_ref(),
+        step_context.as_ref(),
+        &CancellationToken::new(),
+    )
+    .await?;
     let prompt = Prompt {
         input: prompt_input,
         tools: tool_router.model_visible_specs(),
@@ -240,7 +252,7 @@ async fn run_remote_compact_task_inner_impl(
         window_id,
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
-    let mut new_history = sess
+    let new_history = sess
         .services
         .model_client
         .compact_conversation_history(
@@ -262,17 +274,19 @@ async fn run_remote_compact_task_inner_impl(
         )
         .await?;
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    new_history = process_compacted_history(
+    let (new_history, world_state_baseline) = process_compacted_history(
         sess.as_ref(),
         turn_context.as_ref(),
         new_history,
-        initial_context_injection,
+        &initial_context_injection,
     )
     .await;
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
+        InitialContextInjection::BeforeLastUserMessage(_) => {
+            Some(turn_context.to_turn_context_item())
+        }
     };
     let compacted_item = CompactedItem {
         message: String::new(),
@@ -293,6 +307,7 @@ async fn run_remote_compact_task_inner_impl(
         turn_context.as_ref(),
         new_history,
         reference_context_item,
+        world_state_baseline,
         compacted_item,
     )
     .await;
@@ -307,22 +322,19 @@ pub(crate) async fn process_compacted_history(
     sess: &Session,
     turn_context: &TurnContext,
     mut compacted_history: Vec<ResponseItem>,
-    initial_context_injection: InitialContextInjection,
-) -> Vec<ResponseItem> {
+    initial_context_injection: &InitialContextInjection,
+) -> (Vec<ResponseItem>, Option<Arc<WorldState>>) {
     // Mid-turn compaction is the only path that must inject initial context above the last user
     // message in the replacement history. Pre-turn compaction instead injects context after the
     // compaction item, but mid-turn compaction keeps the compaction item last for model training.
-    let initial_context = if matches!(
-        initial_context_injection,
-        InitialContextInjection::BeforeLastUserMessage
-    ) {
-        sess.build_initial_context(turn_context).await
-    } else {
-        Vec::new()
-    };
+    let (initial_context, world_state_baseline) =
+        build_compaction_initial_context(sess, turn_context, initial_context_injection).await;
 
     compacted_history.retain(should_keep_compacted_history_item);
-    insert_initial_context_before_last_real_user_or_summary(compacted_history, initial_context)
+    (
+        insert_initial_context_before_last_real_user_or_summary(compacted_history, initial_context),
+        world_state_baseline,
+    )
 }
 
 /// Returns whether an item from remote compaction output should be preserved.
@@ -355,7 +367,8 @@ pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
         ResponseItem::AgentMessage { .. } => true,
         ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => true,
         ResponseItem::CompactionTrigger { .. } => false,
-        ResponseItem::Reasoning { .. }
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::ToolSearchCall { .. }
@@ -417,31 +430,31 @@ fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseIt
             id,
             call_id,
             output,
-            metadata,
+            internal_chat_message_metadata_passthrough: metadata,
         } => ResponseItem::FunctionCallOutput {
             id: id.clone(),
             call_id: call_id.clone(),
             output: truncated_output_payload(output),
-            metadata: metadata.clone(),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
         },
         ResponseItem::CustomToolCallOutput {
             id,
             call_id,
             name,
             output,
-            metadata,
+            internal_chat_message_metadata_passthrough: metadata,
         } => ResponseItem::CustomToolCallOutput {
             id: id.clone(),
             call_id: call_id.clone(),
             name: name.clone(),
             output: truncated_output_payload(output),
-            metadata: metadata.clone(),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
         },
         ResponseItem::ToolSearchOutput {
             call_id,
             status,
             execution,
-            metadata,
+            internal_chat_message_metadata_passthrough: metadata,
             ..
         } => ResponseItem::ToolSearchOutput {
             id: item.id().map(str::to_string),
@@ -449,7 +462,7 @@ fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseIt
             status: status.clone(),
             execution: execution.clone(),
             tools: Vec::new(),
-            metadata: metadata.clone(),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
         },
         _ => return None,
     })
