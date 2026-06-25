@@ -450,7 +450,17 @@ fn is_generated_managed_ca_artifact_path(path: &Path, proxy_dir: &Path, prefix: 
     let Ok(trust_bundle) = fs::read(path) else {
         return false;
     };
-    format!("{:x}", Sha256::digest(trust_bundle)) == expected_hash
+    sha256_hex(&trust_bundle) == expected_hash
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let hash = Sha256::digest(bytes);
+    let mut hash_hex = String::with_capacity(hash.len() * 2);
+    for byte in hash {
+        use std::fmt::Write as _;
+        write!(&mut hash_hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    hash_hex
 }
 
 /// Returns whether `path` points at a current Codex-generated MITM CA bundle.
@@ -470,12 +480,7 @@ fn persist_managed_ca_trust_bundle(
         .ok_or_else(|| anyhow!("managed MITM CA cert path is missing a parent"))?;
     fs::create_dir_all(proxy_dir)
         .with_context(|| format!("failed to create {}", proxy_dir.display()))?;
-    let hash = Sha256::digest(trust_bundle.as_bytes());
-    let mut hash_hex = String::with_capacity(hash.len() * 2);
-    for byte in hash {
-        use std::fmt::Write as _;
-        write!(&mut hash_hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
+    let hash_hex = sha256_hex(trust_bundle.as_bytes());
     let trust_bundle_path = proxy_dir.join(format!(
         "{MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX}-{hash_hex}.pem"
     ));
@@ -517,8 +522,8 @@ fn push_certificate_pem(bundle: &mut String, der: &[u8]) {
 }
 
 fn persist_managed_ca_certificate(proxy_dir: &Path, cert_pem: &str) -> Result<PathBuf> {
-    let hash = Sha256::digest(cert_pem.as_bytes());
-    let cert_path = proxy_dir.join(format!("{MANAGED_MITM_CA_CERT_PREFIX}-{hash:x}.pem"));
+    let hash_hex = sha256_hex(cert_pem.as_bytes());
+    let cert_path = proxy_dir.join(format!("{MANAGED_MITM_CA_CERT_PREFIX}-{hash_hex}.pem"));
     write_atomic_create_new_or_reuse(&cert_path, cert_pem.as_bytes(), /*mode*/ 0o644)
         .with_context(|| {
             format!(
@@ -916,6 +921,25 @@ mod tests {
             &trust_bundle_path,
             dir.path()
         ));
+    }
+
+    #[test]
+    fn managed_ca_certificate_path_uses_matching_content_hash() {
+        let dir = tempdir().unwrap();
+        let cert_path = persist_managed_ca_certificate(dir.path(), "managed ca\n").unwrap();
+        let expected_name = format!(
+            "{MANAGED_MITM_CA_CERT_PREFIX}-{}.pem",
+            sha256_hex(b"managed ca\n")
+        );
+
+        assert_eq!(
+            cert_path.file_name().and_then(|name| name.to_str()),
+            Some(expected_name.as_str())
+        );
+        assert_eq!(
+            generated_managed_ca_artifact_paths(dir.path(), MANAGED_MITM_CA_CERT_PREFIX),
+            vec![cert_path]
+        );
     }
 
     #[test]
