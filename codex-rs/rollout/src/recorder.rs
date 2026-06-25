@@ -1808,6 +1808,7 @@ fn thread_item_from_state_metadata(
     item: codex_state::ThreadMetadata,
     parent_thread_id: Option<ThreadId>,
 ) -> ThreadItem {
+    let thread_source = item.thread_source.clone();
     ThreadItem {
         path: item.rollout_path,
         thread_id: Some(item.id),
@@ -1822,6 +1823,7 @@ fn thread_item_from_state_metadata(
                 .or_else(|_| serde_json::from_value(Value::String(item.source)))
                 .unwrap_or(SessionSource::Unknown),
         ),
+        thread_source,
         parent_thread_id,
         agent_nickname: item.agent_nickname,
         agent_role: item.agent_role,
