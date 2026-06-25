@@ -5154,7 +5154,7 @@
               "type": "null"
             }
           ],
-          "description": "Set the initial multi-agent mode for this thread. `none` leaves the\nmulti-agent tools available without injecting mode instructions.\nOmitted defaults to `explicitRequestOnly`."
+          "description": "@deprecated Ignored. Use Ultra reasoning effort for proactive multi-agent behavior."
         },
         "permissions": {
           "description": "Named profile id for this thread. Cannot be combined with `sandbox`.",
@@ -5467,7 +5467,7 @@
               "type": "null"
             }
           ],
-          "description": "Controls multi-agent v2 delegation instructions. `none` leaves the\nmulti-agent tools available without injecting mode instructions. Omitted\nkeeps the loaded session's current mode."
+          "description": "@deprecated Ignored. Use `effort: \"ultra\"` for proactive multi-agent behavior."
         },
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
