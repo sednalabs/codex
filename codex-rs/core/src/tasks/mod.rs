@@ -736,7 +736,7 @@ impl Session {
         }
         emit_turn_memory_metric(
             &self.services.session_telemetry,
-            turn_context.features.enabled(Feature::MemoryTool),
+            turn_context.config.features.enabled(Feature::MemoryTool),
             turn_context.config.memories.use_memories,
             turn_had_memory_citation,
         );
@@ -764,11 +764,6 @@ impl Session {
         } else {
             self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
                 .await;
-            let model_execution_identity = turn_context
-                .model_execution_identity
-                .lock()
-                .expect("model execution identity mutex poisoned")
-                .clone();
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_context.sub_id.clone(),
                 last_agent_message,
@@ -787,8 +782,8 @@ impl Session {
                         0
                     }
                 },
-                final_model: model_execution_identity.final_model,
-                model_snapshot: model_execution_identity.model_snapshot,
+                final_model: None,
+                model_snapshot: None,
                 completed_at,
                 duration_ms,
                 time_to_first_token_ms,

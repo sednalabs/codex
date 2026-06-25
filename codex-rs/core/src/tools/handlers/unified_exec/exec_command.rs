@@ -143,8 +143,8 @@ impl ExecCommandHandler {
             .as_deref()
             .filter(|workdir| !workdir.is_empty())
             .map_or_else(
-                || turn_environment.cwd.clone(),
-                |workdir| turn_environment.cwd.join(workdir),
+                || turn_environment.cwd().clone(),
+                |workdir| turn_environment.cwd().join(workdir),
             );
         let environment = Arc::clone(&turn_environment.environment);
         let fs = environment.get_filesystem();
@@ -186,7 +186,7 @@ impl ExecCommandHandler {
         } = args;
         let max_output_tokens = Some(effective_max_output_tokens(
             max_output_tokens,
-            turn.truncation_policy,
+            turn.config.truncation_policy,
         ));
         let terminal_wait = wait_until_terminal.then_some(TerminalWaitInfo {
             primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
@@ -271,7 +271,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.truncation_policy,
+                truncation_policy: turn.config.truncation_policy,
                 max_output_tokens,
                 process_id: None,
                 exit_code: None,
@@ -291,8 +291,8 @@ impl ExecCommandHandler {
                     yield_time_ms,
                     max_output_tokens,
                     cwd,
-                    sandbox_cwd: turn_environment.cwd.clone(),
-                    environment,
+                    sandbox_cwd: turn_environment.cwd().clone(),
+                    turn_environment: turn_environment.clone(),
                     shell_mode,
                     network: context.turn.network.clone(),
                     tty,
@@ -344,7 +344,7 @@ impl ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.truncation_policy,
+                    truncation_policy: turn.config.truncation_policy,
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.

@@ -6,6 +6,9 @@ use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
+use crate::config::RolloutBudgetConfig;
+use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
@@ -191,15 +194,24 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
+    rollout_budget: Arc<RolloutBudget>,
 }
 
 impl AgentControl {
     /// Construct a new `AgentControl` that can spawn/message agents via the given manager state.
-    pub(crate) fn new(manager: Weak<ThreadManagerState>) -> Self {
-        Self {
+    pub(crate) fn new(
+        manager: Weak<ThreadManagerState>,
+        rollout_budget: Option<RolloutBudgetConfig>,
+    ) -> Self {
+        let control = Self {
             manager,
             ..Default::default()
+        };
+        if let Some(rollout_budget) = rollout_budget {
+            control.rollout_budget.configure(rollout_budget);
         }
+        control
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
@@ -210,6 +222,10 @@ impl AgentControl {
 
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    pub(crate) fn rollout_budget(&self) -> &RolloutBudget {
+        self.rollout_budget.as_ref()
     }
 
     /// Send rich user input items to an existing agent thread.
@@ -960,6 +976,30 @@ impl AgentControl {
         self.manager
             .upgrade()
             .ok_or_else(|| CodexErr::UnsupportedOperation("thread manager dropped".to_string()))
+    }
+
+    async fn inherited_environments_for_source(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        session_source: Option<&SessionSource>,
+    ) -> Option<TurnEnvironmentSnapshot> {
+        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        })) = session_source
+        else {
+            return None;
+        };
+
+        let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
+        Some(
+            parent_thread
+                .codex
+                .session
+                .services
+                .turn_environments
+                .snapshot()
+                .await,
+        )
     }
 
     async fn inherited_exec_policy_for_source(

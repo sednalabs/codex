@@ -79,7 +79,7 @@ impl WriteStdinHandler {
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
         let max_output_tokens = Some(effective_max_output_tokens(
             args.max_output_tokens,
-            turn.truncation_policy,
+            turn.config.truncation_policy,
         ));
         let terminal_wait = if args.terminal_wait.wait_until_terminal {
             Some(TerminalWaitInfo {
@@ -105,7 +105,7 @@ impl WriteStdinHandler {
                 yield_time_ms: args.yield_time_ms,
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens,
-                truncation_policy: turn.truncation_policy,
+                truncation_policy: turn.config.truncation_policy,
             })
             .await
             .map_err(|err| {

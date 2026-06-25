@@ -29,7 +29,7 @@ impl SessionTask for CompactTask {
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
         _input: Vec<TurnInput>,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
         let session = session.clone_session();
         if ctx.config.features.enabled(Feature::TokenBudget) {
@@ -55,7 +55,12 @@ impl SessionTask for CompactTask {
                     "remote",
                     /*manual*/ true,
                 );
-                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
+                crate::compact_remote::run_remote_compact_task(
+                    session.clone(),
+                    ctx,
+                    &cancellation_token,
+                )
+                .await
             }
         } else {
             emit_compact_metric(
@@ -73,7 +78,7 @@ impl SessionTask for CompactTask {
                 // Compaction prompt is synthesized; no UI element ranges to preserve.
                 text_elements: Vec::new(),
             }];
-            crate::compact::run_compact_task(session.clone(), ctx, input).await
+            crate::compact::run_compact_task(session.clone(), ctx, input, &cancellation_token).await
         };
         if let Err(err @ CodexErr::TurnAborted) = result {
             return Err(err);

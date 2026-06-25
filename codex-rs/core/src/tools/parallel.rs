@@ -100,15 +100,8 @@ impl ToolCallRuntime {
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
-        let terminal_outcome_reached = registered_tool_runtime_capabilities()
-            .terminal_outcome
-            .map(|capability| {
-                capability
-                    .preserve_completed_lifecycle_after_cancellation
-                    .then(|| Arc::new(AtomicBool::new(false)))
-            })
-            .flatten();
-        let dispatch_terminal_outcome_reached = terminal_outcome_reached.clone();
+        let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
+        let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
 
         let dispatch_span = trace_span!(
@@ -147,7 +140,7 @@ impl ToolCallRuntime {
                 res = &mut handle => res.map_err(Self::tool_task_join_error)?,
                 _ = cancellation_token.cancelled() => {
                     if terminal_outcome_reached_or_finished(
-                        terminal_outcome_reached.as_ref(),
+                        Some(&terminal_outcome_reached),
                         handle.is_finished(),
                     ) {
                         handle.await.map_err(Self::tool_task_join_error)?
@@ -155,12 +148,8 @@ impl ToolCallRuntime {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
                         abort_dispatch_span.record("aborted", true);
                         if wait_for_runtime_cancellation {
-                            if let Some(terminal_outcome_reached) =
-                                terminal_outcome_reached.as_ref()
-                            {
-                                if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
-                                    return handle.await.map_err(Self::tool_task_join_error)?;
-                                }
+                            if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
+                                return handle.await.map_err(Self::tool_task_join_error)?;
                             }
                             // The abort owns the terminal outcome; await only so
                             // the runtime can finish process teardown.
