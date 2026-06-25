@@ -200,7 +200,7 @@
       "type": "string"
     },
     "InternalChatMessageMetadataPassthrough": {
-      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
+      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
       "properties": {
         "turn_id": {
           "type": [
@@ -377,7 +377,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -431,7 +431,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -483,7 +483,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -531,7 +531,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -572,7 +572,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -624,7 +624,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -665,7 +665,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -706,7 +706,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -751,7 +751,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -801,7 +801,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -851,7 +851,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -887,7 +887,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -934,7 +934,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -985,7 +985,7 @@
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"

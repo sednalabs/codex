@@ -119,7 +119,7 @@
         "skills": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/SkillMigration"
+            "$ref": "#/$defs/SkillMigration"
           },
           "type": "array"
         },

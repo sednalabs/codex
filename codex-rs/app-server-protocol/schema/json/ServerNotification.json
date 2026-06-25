@@ -2395,6 +2395,18 @@
       ],
       "type": "string"
     },
+    "InternalChatMessageMetadataPassthrough": {
+      "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
+      "properties": {
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ItemCompletedNotification": {
       "properties": {
         "completedAtMs": {
@@ -2886,12 +2898,12 @@
         }
       },
       "required": [
-        "model",
-        "reasons",
-        "showBufferingUi",
         "threadId",
         "turnId",
-        "useCases"
+        "model",
+        "useCases",
+        "reasons",
+        "showBufferingUi"
       ],
       "type": "object"
     },
@@ -2924,7 +2936,7 @@
       "type": "object"
     },
     "MultiAgentMode": {
-      "description": "Controls whether the model receives multi-agent delegation instructions and, when it does, whether it should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help. `none` leaves the multi-agent tools available without injecting delegation instructions.",
+      "description": "Controls whether the model receives multi-agent delegation instructions and,\nwhen it does, whether it should only spawn sub-agents after an explicit user\nrequest or may delegate proactively when doing so would help. `none` leaves\nthe multi-agent tools available without injecting delegation instructions.",
       "enum": [
         "none",
         "explicitRequestOnly",
@@ -3539,10 +3551,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3593,10 +3605,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3645,10 +3657,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3693,10 +3705,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3734,10 +3746,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3786,10 +3798,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3827,10 +3839,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3868,10 +3880,10 @@
             "input": {
               "type": "string"
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3913,10 +3925,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -3963,10 +3975,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4013,10 +4025,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4049,10 +4061,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4096,10 +4108,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4121,16 +4133,6 @@
         },
         {
           "properties": {
-            "metadata": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResponseItemMetadata"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
             "type": {
               "const": "compaction_trigger",
               "title": "CompactionTriggerResponseItemType",
@@ -4157,10 +4159,10 @@
                 "null"
               ]
             },
-            "metadata": {
+            "internal_chat_message_metadata_passthrough": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/ResponseItemMetadata"
+                  "$ref": "#/$defs/InternalChatMessageMetadataPassthrough"
                 },
                 {
                   "type": "null"
@@ -4194,23 +4196,6 @@
           "type": "object"
         }
       ]
-    },
-    "ResponseItemMetadata": {
-      "properties": {
-        "source_call_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "turn_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -4743,6 +4728,17 @@
         "ephemeral": {
           "description": "Whether the thread is ephemeral and should not be materialized on disk.",
           "type": "boolean"
+        },
+        "extra": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadExtra"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional implementation-specific thread data."
         },
         "forkedFromId": {
           "description": "Source thread id when this thread was created by forking another thread.",
@@ -5635,7 +5631,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/LegacyAppPathString"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             "type": {
               "const": "imageView",
@@ -6022,16 +6018,9 @@
           "type": "string"
         },
         "multiAgentMode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MultiAgentMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Current selected multi-agent mode for this thread, if one was selected."
+          "$ref": "#/$defs/MultiAgentMode",
+          "default": "explicitRequestOnly",
+          "description": "Current multi-agent mode for this thread."
         },
         "personality": {
           "anyOf": [
@@ -7731,14 +7720,12 @@
     {
       "properties": {
         "method": {
-          "enum": [
-            "model/safetyBuffering/updated"
-          ],
+          "const": "model/safetyBuffering/updated",
           "title": "Model/safetyBuffering/updatedNotificationMethod",
           "type": "string"
         },
         "params": {
-          "$ref": "#/definitions/ModelSafetyBufferingUpdatedNotification"
+          "$ref": "#/$defs/ModelSafetyBufferingUpdatedNotification"
         }
       },
       "required": [
@@ -7751,9 +7738,7 @@
     {
       "properties": {
         "method": {
-          "enum": [
-            "warning"
-          ],
+          "const": "warning",
           "title": "WarningNotificationMethod",
           "type": "string"
         },

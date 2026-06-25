@@ -908,6 +908,17 @@
           "description": "Whether the thread is ephemeral and should not be materialized on disk.",
           "type": "boolean"
         },
+        "extra": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadExtra"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional implementation-specific thread data."
+        },
         "forkedFromId": {
           "description": "Source thread id when this thread was created by forking another thread.",
           "type": [
@@ -1677,7 +1688,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/LegacyAppPathString"
+              "$ref": "#/$defs/LegacyAppPathString"
             },
             "type": {
               "const": "imageView",

@@ -1764,9 +1764,7 @@
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
-              "enum": [
-                "account/workspaceMessages/read"
-              ],
+              "const": "account/workspaceMessages/read",
               "title": "Account/workspaceMessages/readRequestMethod",
               "type": "string"
             },
@@ -1775,8 +1773,8 @@
             }
           },
           "required": [
-            "id",
-            "method"
+            "method",
+            "id"
           ],
           "title": "Account/workspaceMessages/readRequest",
           "type": "object"
@@ -1787,9 +1785,7 @@
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
-              "enum": [
-                "account/sendAddCreditsNudgeEmail"
-              ],
+              "const": "account/sendAddCreditsNudgeEmail",
               "title": "Account/sendAddCreditsNudgeEmailRequestMethod",
               "type": "string"
             },
@@ -4912,9 +4908,7 @@
         {
           "properties": {
             "method": {
-              "enum": [
-                "model/safetyBuffering/updated"
-              ],
+              "const": "model/safetyBuffering/updated",
               "title": "Model/safetyBuffering/updatedNotificationMethod",
               "type": "string"
             },
@@ -4932,9 +4926,7 @@
         {
           "properties": {
             "method": {
-              "enum": [
-                "warning"
-              ],
+              "const": "warning",
               "title": "WarningNotificationMethod",
               "type": "string"
             },
@@ -10015,7 +10007,7 @@
         "type": "object"
       },
       "GetWorkspaceMessagesResponse": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "featureEnabled": {
             "description": "Whether the workspace-message backend route is available for this client.",
@@ -10764,7 +10756,7 @@
         ]
       },
       "InternalChatMessageMetadataPassthrough": {
-        "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
+        "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
         "properties": {
           "turn_id": {
             "type": [
@@ -12248,7 +12240,7 @@
         "type": "object"
       },
       "ModelSafetyBufferingUpdatedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "fasterModel": {
             "type": [
@@ -12282,12 +12274,12 @@
           }
         },
         "required": [
-          "model",
-          "reasons",
-          "showBufferingUi",
           "threadId",
           "turnId",
-          "useCases"
+          "model",
+          "useCases",
+          "reasons",
+          "showBufferingUi"
         ],
         "title": "ModelSafetyBufferingUpdatedNotification",
         "type": "object"
@@ -12371,7 +12363,7 @@
         "type": "object"
       },
       "MultiAgentMode": {
-        "description": "Controls whether the model receives multi-agent delegation instructions and, when it does, whether it should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help. `none` leaves the multi-agent tools available without injecting delegation instructions.",
+        "description": "Controls whether the model receives multi-agent delegation instructions and,\nwhen it does, whether it should only spawn sub-agents after an explicit user\nrequest or may delegate proactively when doing so would help. `none` leaves\nthe multi-agent tools available without injecting delegation instructions.",
         "enum": [
           "none",
           "explicitRequestOnly",
@@ -12676,8 +12668,8 @@
           }
         },
         "required": [
-          "allowed",
-          "id"
+          "id",
+          "allowed"
         ],
         "type": "object"
       },
@@ -20211,9 +20203,9 @@
           }
         },
         "required": [
-          "messageBody",
           "messageId",
-          "messageType"
+          "messageType",
+          "messageBody"
         ],
         "type": "object"
       },

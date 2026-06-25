@@ -134,7 +134,7 @@
         "logoDark": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             {
               "type": "null"
