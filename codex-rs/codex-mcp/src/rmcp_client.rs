@@ -406,6 +406,37 @@ fn prepare_regular_mcp_tools_for_model(
     tools
 }
 
+async fn collect_tool_pages<F, Fut>(mut fetch_page: F) -> Result<Vec<ToolWithConnectorId>>
+where
+    F: FnMut(Option<PaginatedRequestParams>) -> Fut,
+    Fut: Future<Output = Result<ListToolsWithConnectorIdResult>>,
+{
+    let mut collected = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for _ in 0..MAX_TOOL_LIST_PAGES {
+        let params = cursor
+            .as_ref()
+            .map(|next| PaginatedRequestParams::default().with_cursor(Some(next.clone())));
+        let response = fetch_page(params).await?;
+        collected.extend(response.tools);
+        let Some(next_cursor) = response.next_cursor else {
+            return Ok(collected);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(anyhow!(
+                "tools/list returned duplicate cursor {next_cursor}"
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    Err(anyhow!(
+        "tools/list exceeded maximum page limit of {MAX_TOOL_LIST_PAGES}"
+    ))
+}
+
 fn tool_info_from_listed_tool(
     server_name: &str,
     is_codex_apps_mcp_server: bool,
