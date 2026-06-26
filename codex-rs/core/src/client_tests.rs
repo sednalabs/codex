@@ -32,6 +32,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::models::BaseInstructions;
@@ -140,7 +141,9 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
     let client = ModelClient::new(
         Some(auth_manager),
         AgentIdentityAuthPolicy::ChatGptAuth,
+        SessionId::from(thread_id),
         thread_id,
+        "test_installation_id".to_string(),
         provider,
         SessionSource::Cli,
         "test_originator".to_string(),

@@ -4929,17 +4929,13 @@ enabled = false
     let child_turn = session
         .new_default_turn_with_sub_id("role-skill-turn".to_string())
         .await;
-    let child_skill = child_turn
-        .turn_skills
-        .outcome
+    let child_skills = child_turn.turn_skills.snapshot.outcome();
+    let child_skill = child_skills
         .skills
         .iter()
         .find(|skill| skill.name == "demo-skill")
         .expect("demo skill should be discovered");
-    assert_eq!(
-        child_turn.turn_skills.outcome.is_skill_enabled(child_skill),
-        false
-    );
+    assert_eq!(child_skills.is_skill_enabled(child_skill), false);
 }
 
 #[tokio::test]
@@ -5161,7 +5157,7 @@ async fn cwd_update_rewrites_sticky_environment_cwd() {
     assert_eq!(state.session_configuration.cwd(), &updated_cwd);
     assert_eq!(
         state.session_configuration.environment_selections()[0].cwd,
-        updated_cwd
+        codex_utils_path_uri::PathUri::from_abs_path(&updated_cwd)
     );
     assert_ne!(environment_cwd, updated_cwd);
 }
@@ -5532,7 +5528,7 @@ model_reasoning_summary: config.model_reasoning_summary,
         turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
-        skills_outcome,
+        codex_core_skills::HostSkillsSnapshot::new(skills_outcome),
     );
     let session = Session {
         thread_id,
@@ -6163,8 +6159,13 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
             mcp_elicitations: true,
         }))
         .expect("test setup should allow updating approval policy");
-    turn_context_mut.environments.turn_environments[0].environment_id = "remote".to_string();
-    turn_context_mut.environments.turn_environments[0].cwd = environment_cwd.clone();
+    let environment = turn_context_mut.environments.turn_environments[0].clone();
+    turn_context_mut.environments.turn_environments[0] = TurnEnvironment::new(
+        "remote".to_string(),
+        environment.environment,
+        codex_utils_path_uri::PathUri::from_abs_path(&environment_cwd),
+        environment.shell,
+    );
 
     let call_id = "call-1".to_string();
     let handler = RequestPermissionsHandler;
@@ -6768,6 +6769,7 @@ async fn primary_environment_uses_first_turn_environment() {
             codex_utils_path_uri::PathUri::from_abs_path(&second_cwd),
             None,
         ));
+    let second_cwd_uri = codex_utils_path_uri::PathUri::from_abs_path(&second_cwd);
 
     assert_eq!(
         turn_context
@@ -6784,13 +6786,13 @@ async fn primary_environment_uses_first_turn_environment() {
             .iter()
             .find(|environment| environment.environment_id == "second")
             .expect("second environment")
-            .cwd,
-        second_cwd
+            .cwd(),
+        &second_cwd_uri
     );
     assert_eq!(turn_context.environments.turn_environments.len(), 2);
     assert_eq!(
-        turn_context.environments.turn_environments[1].cwd,
-        second_cwd
+        turn_context.environments.turn_environments[1].cwd(),
+        &second_cwd_uri
     );
 }
 
@@ -6836,7 +6838,9 @@ async fn unknown_turn_environment_returns_error() {
                     original_configuration.cwd().clone(),
                     vec![TurnEnvironmentSelection {
                         environment_id: "missing".to_string(),
-                        cwd: original_configuration.cwd().clone(),
+                        cwd: codex_utils_path_uri::PathUri::from_abs_path(
+                            original_configuration.cwd(),
+                        ),
                     }],
                 )),
                 ..Default::default()
@@ -7648,7 +7652,7 @@ model_reasoning_summary: config.model_reasoning_summary,
         turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
-        skills_outcome,
+        codex_core_skills::HostSkillsSnapshot::new(skills_outcome),
     ));
     let session = Arc::new(Session {
         thread_id,
@@ -8350,7 +8354,7 @@ async fn build_initial_context_omits_default_image_save_location_with_image_hist
     session
         .replace_history(
             vec![ResponseItem::ImageGenerationCall {
-                id: "ig-test".to_string(),
+                id: Some("ig-test".to_string()),
                 status: "completed".to_string(),
                 revised_prompt: Some("a tiny blue square".to_string()),
                 result: "Zm9v".to_string(),
@@ -8611,7 +8615,7 @@ async fn handle_output_item_done_records_image_save_history_message() {
     );
     let _ = std::fs::remove_file(&expected_saved_path);
     let item = ResponseItem::ImageGenerationCall {
-        id: call_id.to_string(),
+        id: Some(call_id.to_string()),
         status: "completed".to_string(),
         revised_prompt: Some("a tiny blue square".to_string()),
         result: "Zm9v".to_string(),
@@ -8668,7 +8672,7 @@ async fn handle_output_item_done_skips_image_save_message_when_save_fails() {
     );
     let _ = std::fs::remove_file(&expected_saved_path);
     let item = ResponseItem::ImageGenerationCall {
-        id: call_id.to_string(),
+        id: Some(call_id.to_string()),
         status: "completed".to_string(),
         revised_prompt: Some("broken payload".to_string()),
         result: "_-8".to_string(),
@@ -8759,14 +8763,13 @@ fn file_system_policy_with_unreadable_glob(turn_context: &TurnContext) -> FileSy
 }
 
 #[tokio::test]
-async fn turn_context_item_uses_turn_context_comp_hash_snapshot() {
+async fn turn_context_item_uses_model_info_comp_hash_snapshot() {
     let (_session, mut turn_context) = make_session_and_context().await;
-    turn_context.comp_hash = Some("turn-context-hash".to_string());
     turn_context.model_info.comp_hash = Some("model-info-hash".to_string());
 
     assert_eq!(
         turn_context.to_turn_context_item().comp_hash.as_deref(),
-        Some("turn-context-hash")
+        Some("model-info-hash")
     );
 }
 

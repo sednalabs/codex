@@ -1469,6 +1469,7 @@ async fn run_ratatui_app(
                 initial_config.codex_home.to_path_buf(),
                 /*enable_codex_api_key_env*/ false,
                 initial_config.cli_auth_credentials_store_mode,
+                initial_config.auth_keyring_backend_kind(),
                 initial_config.chatgpt_base_url.clone(),
                 initial_config.auth_route_config(),
             )
