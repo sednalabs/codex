@@ -613,7 +613,11 @@ impl ChatWidget {
                 Vec::new(),
                 SlashCommandDispatchSource::Live,
             );
-            self.queue_user_message_with_options(user_message, QueuedInputAction::Plain);
+            self.queue_user_message_with_options(
+                user_message,
+                QueuedInputAction::Plain,
+                Vec::new(),
+            );
             self.bottom_pane.drain_pending_submission_state();
             return;
         }

@@ -1947,6 +1947,7 @@ impl ThreadRequestProcessor {
             sort_direction,
             model_providers,
             source_kinds,
+            thread_sources,
             archived,
             cwd,
             use_state_db_only,
@@ -1954,7 +1955,6 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
-        let thread_sources = None;
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2053,10 +2053,10 @@ impl ThreadRequestProcessor {
             sort_key,
             sort_direction,
             source_kinds,
+            thread_sources,
             archived,
             search_term,
         } = params;
-        let thread_sources = None;
         let search_term = search_term.trim().to_string();
         let search_term = (!search_term.is_empty())
             .then_some(search_term)
