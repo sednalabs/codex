@@ -244,11 +244,13 @@ Why:
 - Keep MCP OAuth fallback credentials from becoming a brittle single point of failure when the keyring is unavailable or the fallback file is left empty/corrupt.
 - Reduce auth churn during login and reconnect flows by treating the fallback file as best-effort recovery state instead of authoritative required state.
 - Avoid partially-written replacement files by writing and syncing a temp file before the final rename.
+- Preserve the selected direct-vs-encrypted-secrets keyring backend while keeping downstream refresh locking tied to the store that originally supplied the tokens.
 
 User-visible behavior:
 - Empty fallback credential files are treated as absent instead of fatal.
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
+- MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; refresh rereads and persists through the resolved store instead of silently falling back to another backend mid-refresh.
 
 ### MCP OAuth: device-code login for headless servers
 

@@ -422,14 +422,15 @@
       "surface": [
         "oauth fallback credentials file",
         "best-effort fallback recovery",
-        "cached token expiry restoration"
+        "cached token expiry restoration",
+        "encrypted local secrets keyring backend"
       ],
       "files": [
         "codex-rs/rmcp-client/src/oauth.rs",
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, and restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and the selected direct-vs-secrets keyring backend is preserved through load, refresh, save, and delete paths.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -443,7 +444,7 @@
         "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken, partially-written, or expired fallback credential state from turning into hard auth failures during MCP login and reconnect flows.",
+      "notes": "Keeps broken, partially-written, expired, or backend-mismatched credential state from turning into hard auth failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking while also retaining upstream AuthKeyringBackendKind::Secrets support.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [],
