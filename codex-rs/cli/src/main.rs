@@ -23,6 +23,7 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
+use codex_home::CodexHomeUserInstructionsProvider;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
@@ -36,12 +37,12 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::ProfileV2Name;
 use codex_utils_cli::SharedCliOptions;
-use codex_utils_cli::resume_hint;
 use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use supports_color::Stream;
 
@@ -50,6 +51,7 @@ mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
@@ -700,10 +702,11 @@ fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
 }
 
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
+    let is_fatal = matches!(&exit_info.exit_reason, ExitReason::Fatal(_));
     let AppExitInfo {
         token_usage,
         thread_id: conversation_id,
-        thread_name,
+        resume_hint,
         ..
     } = exit_info;
 
@@ -712,13 +715,15 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
         lines.push(token_usage.to_string());
     }
 
-    if let Some(resume_cmd) = resume_hint(thread_name.as_deref(), conversation_id) {
+    if let Some(resume_cmd) = resume_hint {
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
         } else {
             resume_cmd
         };
         lines.push(format!("To continue this session, run {command}"));
+    } else if is_fatal && let Some(conversation_id) = conversation_id {
+        lines.push(format!("Session ID: {conversation_id}"));
     }
 
     lines
@@ -1111,7 +1116,11 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     };
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
-                        remote_control_enabled: remote_control,
+                        remote_control_startup_mode: if remote_control {
+                            codex_app_server::RemoteControlStartupMode::EnabledEphemeral
+                        } else {
+                            codex_app_server::RemoteControlStartupMode::ResolvePersisted
+                        },
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(
@@ -1943,7 +1952,15 @@ async fn run_debug_prompt_input_command(
         });
     }
 
-    let prompt_input = codex_core::build_prompt_input(config, input, /*state_db*/ None).await?;
+    let user_instructions_provider =
+        Arc::new(CodexHomeUserInstructionsProvider::new(config.codex_home.clone()));
+    let prompt_input = codex_core::build_prompt_input(
+        config,
+        input,
+        /*state_db*/ None,
+        user_instructions_provider,
+    )
+    .await?;
     println!("{}", serde_json::to_string_pretty(&prompt_input)?);
 
     Ok(())
@@ -3104,12 +3121,13 @@ mod tests {
             total_tokens: 2,
             ..Default::default()
         };
+        let thread_id = conversation_id
+            .map(ThreadId::from_string)
+            .map(Result::unwrap);
         AppExitInfo {
             token_usage,
-            thread_id: conversation_id
-                .map(ThreadId::from_string)
-                .map(Result::unwrap),
-            thread_name: thread_name.map(str::to_string),
+            thread_id,
+            resume_hint: codex_utils_cli::resume_hint(thread_name, thread_id),
             update_action: None,
             exit_reason: ExitReason::UserRequested,
         }
@@ -3120,7 +3138,7 @@ mod tests {
         let exit_info = AppExitInfo {
             token_usage: TokenUsage::default(),
             thread_id: None,
-            thread_name: None,
+            resume_hint: None,
             update_action: None,
             exit_reason: ExitReason::UserRequested,
         };

@@ -3893,6 +3893,17 @@
             "null"
           ]
         },
+        "dynamicTools": {
+          "default": null,
+          "description": "Optional client-supplied dynamic tools to install before the next turn.",
+          "items": {
+            "$ref": "#/$defs/DynamicToolSpec"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "ephemeral": {
           "type": "boolean"
         },
@@ -4225,6 +4236,16 @@
           "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
           "items": {
             "$ref": "#/$defs/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "threadSources": {
+          "description": "Optional per-thread source filter; when omitted, side threads are excluded.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
           },
           "type": [
             "array",
@@ -4676,6 +4697,17 @@
             "null"
           ]
         },
+        "dynamicTools": {
+          "default": null,
+          "description": "Optional client-supplied dynamic tools to install before the next turn.",
+          "items": {
+            "$ref": "#/$defs/DynamicToolSpec"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "excludeTurns": {
           "description": "When true, return only thread metadata and live-resume state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after resuming.",
           "type": "boolean"
@@ -4848,6 +4880,16 @@
           "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
           "items": {
             "$ref": "#/$defs/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "threadSources": {
+          "description": "Optional per-thread source filter; when omitted, side threads are excluded.",
+          "items": {
+            "$ref": "#/$defs/ThreadSource"
           },
           "type": [
             "array",
