@@ -1092,6 +1092,9 @@ pub struct ThreadListParams {
     /// are returned. When omitted or empty, defaults to interactive sources.
     #[ts(optional = nullable)]
     pub source_kinds: Option<Vec<ThreadSourceKind>>,
+    /// Optional per-thread source filter; when omitted, side threads are excluded.
+    #[ts(optional = nullable)]
+    pub thread_sources: Option<Vec<ThreadSource>>,
     /// Optional archived filter; when set to true, only archived threads are returned.
     /// If false or null, only non-archived threads are returned.
     #[ts(optional = nullable)]
@@ -1139,6 +1142,9 @@ pub struct ThreadSearchParams {
     /// are returned. When omitted or empty, defaults to interactive sources.
     #[ts(optional = nullable)]
     pub source_kinds: Option<Vec<ThreadSourceKind>>,
+    /// Optional per-thread source filter; when omitted, side threads are excluded.
+    #[ts(optional = nullable)]
+    pub thread_sources: Option<Vec<ThreadSource>>,
     /// Optional archived filter; when set to true, only archived threads are returned.
     /// If false or null, only non-archived threads are returned.
     #[ts(optional = nullable)]

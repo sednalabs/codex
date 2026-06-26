@@ -48,6 +48,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Usage,
     DebugConfig,
     Title,
     Statusline,

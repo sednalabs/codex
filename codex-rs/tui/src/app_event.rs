@@ -26,7 +26,6 @@ use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
-use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_connectors::AppInfo;
@@ -148,7 +147,7 @@ pub(crate) struct PluginRemoteSectionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RateLimitRefreshOrigin {
     /// Eagerly fetched after bootstrap so the first `/status` already has data.
-    StartupPrefetch,
+    StartupPrefetch { reset_hint_request_id: u64 },
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -329,6 +328,13 @@ pub(crate) enum AppEvent {
         mode: ThreadGoalSetMode,
     },
 
+    /// Set or replace the current thread goal from a validated draft.
+    SetThreadGoalDraft {
+        thread_id: ThreadId,
+        draft: crate::goal_files::GoalDraft,
+        mode: ThreadGoalSetMode,
+    },
+
     /// Pause or resume the current thread goal.
     SetThreadGoalStatus {
         thread_id: ThreadId,
@@ -343,7 +349,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<GetAccountRateLimitsResponse, String>,
     },
 
     /// Open the default token-activity view selected from the `/usage` menu.
@@ -1102,6 +1108,12 @@ pub(crate) enum AppEvent {
     SyntaxThemeSelected {
         name: String,
     },
+
+    /// The settings modal closed; wait for the queued follow-up surface to settle.
+    SettingsSelectionClosed,
+
+    /// The settings modal and any queued follow-up state has settled.
+    SettingsSelectionSettled,
 
     /// Runtime syntax theme preview changed; refresh theme-derived UI colors.
     SyntaxThemePreviewed,

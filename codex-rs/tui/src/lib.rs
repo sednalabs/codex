@@ -423,6 +423,7 @@ async fn connect_remote_app_server(
         endpoint,
         client_name: "codex-tui".to_string(),
         client_version: RELEASE_VERSION.to_string(),
+        mcp_server_openai_form_elicitation: false,
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -586,6 +587,7 @@ where
         enable_codex_api_key_env: false,
         client_name: "codex-tui".to_string(),
         client_version: RELEASE_VERSION.to_string(),
+        mcp_server_openai_form_elicitation: false,
         experimental_api: true,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -1030,7 +1032,7 @@ pub async fn run_main(
             .await;
             &config_toml_with_cloud_config
         } else {
-            &bootstrap_config_toml
+            &bootstrap_config
         };
 
         let resolved = resolve_oss_provider(cli.oss_provider.as_deref(), config_toml_for_oss);
@@ -1197,6 +1199,7 @@ pub async fn run_main(
         if let Err(err) = enforce_login_restrictions(&AuthConfig {
             codex_home: config.codex_home.to_path_buf(),
             auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
+            keyring_backend_kind: config.auth_keyring_backend_kind(),
             forced_login_method: config.forced_login_method,
             forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
             chatgpt_base_url: Some(config.chatgpt_base_url.clone()),
@@ -1356,7 +1359,7 @@ async fn run_ratatui_app(
                     return Ok(AppExitInfo {
                         token_usage: crate::token_usage::TokenUsage::default(),
                         thread_id: None,
-                        thread_name: None,
+                        resume_hint: None,
                         update_action: Some(action),
                         exit_reason: ExitReason::UserRequested,
                     });
@@ -1449,7 +1452,7 @@ async fn run_ratatui_app(
             return Ok(AppExitInfo {
                 token_usage: crate::token_usage::TokenUsage::default(),
                 thread_id: None,
-                thread_name: None,
+                resume_hint: None,
                 update_action: None,
                 exit_reason: ExitReason::UserRequested,
             });
@@ -1500,7 +1503,7 @@ async fn run_ratatui_app(
         Ok(AppExitInfo {
             token_usage: crate::token_usage::TokenUsage::default(),
             thread_id: None,
-            thread_name: None,
+            resume_hint: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(format!(
                 "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
@@ -1557,7 +1560,7 @@ async fn run_ratatui_app(
                     return Ok(AppExitInfo {
                         token_usage: crate::token_usage::TokenUsage::default(),
                         thread_id: None,
-                        thread_name: None,
+                        resume_hint: None,
                         update_action: None,
                         exit_reason: ExitReason::UserRequested,
                     });
@@ -1618,7 +1621,7 @@ async fn run_ratatui_app(
                 return Ok(AppExitInfo {
                     token_usage: crate::token_usage::TokenUsage::default(),
                     thread_id: None,
-                    thread_name: None,
+                    resume_hint: None,
                     update_action: None,
                     exit_reason: ExitReason::UserRequested,
                 });
@@ -1663,7 +1666,7 @@ async fn run_ratatui_app(
                         return Ok(AppExitInfo {
                             token_usage: crate::token_usage::TokenUsage::default(),
                             thread_id: None,
-                            thread_name: None,
+                            resume_hint: None,
                             update_action: None,
                             exit_reason: ExitReason::UserRequested,
                         });

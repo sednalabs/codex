@@ -447,6 +447,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_token_activity_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_token_activity_command_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub fn set_realtime_conversation_enabled(&mut self, enabled: bool) {
         self.composer.set_realtime_conversation_enabled(enabled);
         self.request_redraw();
@@ -902,7 +907,6 @@ impl BottomPane {
         self.composer.text_elements()
     }
 
-    #[cfg(test)]
     pub(crate) fn composer_local_images(&self) -> Vec<LocalImageAttachment> {
         self.composer.local_images()
     }
@@ -952,9 +956,23 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    #[cfg(test)]
     pub(crate) fn remote_image_urls(&self) -> Vec<String> {
         self.composer.remote_image_urls()
+    }
+
+    pub(crate) fn active_view_will_interrupt_turn_on_key_event(
+        &self,
+        key_event: KeyEvent,
+    ) -> bool {
+        self.active_view()
+            .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
+    }
+
+    pub(crate) fn should_interrupt_running_task(&mut self, key_event: KeyEvent) -> bool {
+        if self.active_view_will_interrupt_turn_on_key_event(key_event) {
+            return true;
+        }
+        self.composer.should_interrupt_running_task(key_event)
     }
 
     pub(crate) fn take_remote_image_urls(&mut self) -> Vec<String> {
@@ -1203,6 +1221,14 @@ impl BottomPane {
         true
     }
 
+    pub(crate) fn replace_selection_view_if_present(
+        &mut self,
+        view_id: &'static str,
+        params: list_selection_view::SelectionViewParams,
+    ) -> bool {
+        self.replace_selection_view_if_active(view_id, params)
+    }
+
     pub(crate) fn standard_popup_hint_line(&self) -> Line<'static> {
         popup_consts::standard_popup_hint_line_for_keymap(&self.keymap.list)
     }
@@ -1271,6 +1297,10 @@ impl BottomPane {
         self.view_stack.pop();
         self.request_redraw();
         true
+    }
+
+    pub(crate) fn dismiss_view_by_id(&mut self, view_id: &'static str) -> bool {
+        self.dismiss_active_view_if_id(view_id)
     }
 
     /// Update the pending-input preview shown above the composer.

@@ -309,7 +309,7 @@ impl Renderable for DelayedLoadingHeader {
             lines.push(Line::from(note.as_str().dim()));
         }
 
-        Paragraph::new(lines).render_ref(area, buf);
+        (&Paragraph::new(lines)).render_ref(area, buf);
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
