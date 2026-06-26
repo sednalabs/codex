@@ -1884,8 +1884,15 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
+#[test]
+fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
+    core_test_support::run_large_stack_test(
+        "unified-exec-write-stdin-test",
+        write_stdin_returns_exit_metadata_and_clears_session_impl(),
+    )
+}
+
+async fn write_stdin_returns_exit_metadata_and_clears_session_impl() -> Result<()> {
     // TODO(anp): Remove after unified-exec interactive fixtures support Windows/ConPTY.
     skip_if_target_windows!(Ok(()), "uses POSIX interactive-process and EOF semantics");
     skip_if_no_network!(Ok(()));
