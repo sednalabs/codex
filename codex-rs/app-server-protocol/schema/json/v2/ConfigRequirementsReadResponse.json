@@ -399,7 +399,7 @@
         "newThread": {
           "anyOf": [
             {
-              "$ref": "#/definitions/NewThreadModelDefaults"
+              "$ref": "#/$defs/NewThreadModelDefaults"
             },
             {
               "type": "null"
@@ -544,7 +544,7 @@
         "modelReasoningEffort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
