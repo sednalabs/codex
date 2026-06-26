@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_info::app_info_to_api;
+use crate::extensions::app_server_hooks;
 
 pub(crate) struct AppsRequestProcessor {
     auth_manager: Arc<AuthManager>,

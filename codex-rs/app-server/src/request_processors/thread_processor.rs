@@ -23,6 +23,12 @@ struct ThreadListFilters {
     relation_filter: Option<StoreThreadRelationFilter>,
 }
 
+fn core_thread_source_filter(
+    thread_sources: Option<Vec<ThreadSource>>,
+) -> Option<Vec<codex_protocol::protocol::ThreadSource>> {
+    thread_sources.map(|sources| sources.into_iter().map(Into::into).collect())
+}
+
 fn collect_resume_override_mismatches(
     request: &ThreadResumeParams,
     config_snapshot: &ThreadConfigSnapshot,
