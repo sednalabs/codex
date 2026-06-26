@@ -1286,7 +1286,11 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
     );
     assert_eq!(
         outcome.plugins()[0].apps,
-        vec![AppConnectorId("connector_custom".to_string())]
+        vec![AppDeclaration {
+            name: "custom".to_string(),
+            connector_id: AppConnectorId("connector_custom".to_string()),
+            category: None,
+        }]
     );
 }
 
@@ -1469,7 +1473,11 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
     );
     assert_eq!(
         outcome.plugins()[0].apps,
-        vec![AppConnectorId("connector_default".to_string())]
+        vec![AppDeclaration {
+            name: "default".to_string(),
+            connector_id: AppConnectorId("connector_default".to_string()),
+            category: None,
+        }]
     );
 }
 
@@ -1779,14 +1787,14 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
             },
             PluginCapabilitySummary {
                 mcp_server_names: vec!["alpha".to_string()],
-                app_connector_ids: vec![connector("connector_example")],
+                app_connector_ids: vec![AppConnectorId("connector_example".to_string())],
                 ..summary("alpha@test", "alpha-plugin")
             },
             PluginCapabilitySummary {
                 mcp_server_names: vec!["beta".to_string()],
                 app_connector_ids: vec![
-                    connector("connector_example"),
-                    connector("connector_gmail"),
+                    AppConnectorId("connector_example".to_string()),
+                    AppConnectorId("connector_gmail".to_string()),
                 ],
                 ..summary("beta@test", "beta-plugin")
             },

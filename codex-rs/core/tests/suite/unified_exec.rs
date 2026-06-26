@@ -1404,8 +1404,15 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
+#[test]
+fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
+    core_test_support::run_large_stack_test(
+        "unified-exec-metadata-test",
+        exec_command_reports_chunk_and_exit_metadata_impl(),
+    )
+}
+
+async fn exec_command_reports_chunk_and_exit_metadata_impl() -> Result<()> {
     // TODO(anp): Remove after unified-exec fixtures use target-native commands.
     skip_if_target_windows!(Ok(()), "uses a POSIX-only command fixture");
     skip_if_no_network!(Ok(()));
