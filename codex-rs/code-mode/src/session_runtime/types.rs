@@ -85,6 +85,8 @@ pub(crate) struct CreateCellRequest {
 pub(crate) struct ToolDefinition {
     pub(crate) name: String,
     pub(crate) tool_name: ToolName,
+    pub(crate) all_tools_name: Option<String>,
+    pub(crate) all_tools_module: Option<String>,
     pub(crate) description: String,
     pub(crate) kind: ToolKind,
 }
