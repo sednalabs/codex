@@ -357,6 +357,28 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream.md`
 
+### MCP OAuth Fallback Hardening And Keyring Backend Preservation
+
+- Downstream treats the MCP OAuth fallback credential file as best-effort
+  recovery state: empty files are absent, corrupt files after keyring failure
+  are warnings instead of hard startup failures, and writes use atomic temp-file
+  replacement with explicit syncs.
+- Cached expired tokens remain visibly expired when reloaded so the OAuth
+  manager refreshes them before reconnecting instead of treating stale access
+  tokens as usable.
+- The selected keyring backend is intentional carry now that upstream supports
+  encrypted local secrets storage. Syncs must preserve both upstream
+  `AuthKeyringBackendKind::Secrets` support and the downstream resolved-store
+  refresh lock that prevents replaying stale rotating refresh tokens from a
+  different backend.
+- During future syncs, do not "simplify" the OAuth helpers by dropping either
+  the secrets-backed keyring path or the downstream resolved-store reread/save
+  discipline unless an upstream replacement covers both behaviors.
+- Primary files:
+  - `codex-rs/rmcp-client/src/oauth.rs`
+  - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+
 ### MCP OAuth Device Login For Headless Servers
 
 - `codex mcp login --device-auth <server>` lets an operator complete MCP OAuth
