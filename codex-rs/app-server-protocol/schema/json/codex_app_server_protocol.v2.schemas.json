@@ -15602,6 +15602,16 @@
             "null"
           ]
         },
+        "threadSources": {
+          "description": "Optional per-thread source filter; when omitted, side threads are excluded.",
+          "items": {
+            "$ref": "#/definitions/ThreadSource"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "useStateDbOnly": {
           "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
           "type": "boolean"
