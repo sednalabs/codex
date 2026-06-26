@@ -138,23 +138,35 @@ impl ExecCommandHandler {
                 "unified exec is unavailable in this session".to_string(),
             ));
         };
-        let cwd = environment_args
+        let cwd_uri = match environment_args
             .workdir
             .as_deref()
             .filter(|workdir| !workdir.is_empty())
-            .map_or_else(
-                || turn_environment.cwd().clone(),
-                |workdir| turn_environment.cwd().join(workdir),
-            );
+        {
+            Some(workdir) => turn_environment.cwd().join(workdir).map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "invalid exec workdir `{workdir}` for cwd `{}`: {err}",
+                    turn_environment.cwd()
+                ))
+            })?,
+            None => turn_environment.cwd().clone(),
+        };
+        // Permission parsing still works in host-native paths; the process
+        // manager keeps the URI form for environment-aware execution.
+        let native_cwd = cwd_uri.to_abs_path().map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "exec_command cwd `{cwd_uri}` is not native to the Codex host: {err}"
+            ))
+        })?;
         let environment = Arc::clone(&turn_environment.environment);
         let fs = environment.get_filesystem();
-        let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &cwd)?;
+        let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &native_cwd)?;
         let hook_command = args.cmd.clone();
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             context.turn.as_ref(),
             &hook_command,
-            &cwd,
+            &native_cwd,
         )
         .await;
         let process_id = manager.allocate_process_id().await;
@@ -184,9 +196,10 @@ impl ExecCommandHandler {
             prefix_rule,
             ..
         } = args;
+        let truncation_policy = turn.model_info.truncation_policy.into();
         let max_output_tokens = Some(effective_max_output_tokens(
             max_output_tokens,
-            turn.config.truncation_policy,
+            truncation_policy,
         ));
         let terminal_wait = wait_until_terminal.then_some(TerminalWaitInfo {
             primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
@@ -200,7 +213,7 @@ impl ExecCommandHandler {
         let effective_additional_permissions = apply_granted_turn_permissions(
             context.session.as_ref(),
             &turn_environment.environment_id,
-            cwd.as_path(),
+            native_cwd.as_path(),
             sandbox_permissions,
             additional_permissions,
         )
@@ -240,7 +253,7 @@ impl ExecCommandHandler {
                     effective_additional_permissions.sandbox_permissions,
                     effective_additional_permissions.additional_permissions,
                     effective_additional_permissions.permissions_preapproved,
-                    &cwd,
+                    native_cwd.as_path(),
                 )
             },
             |permissions| Ok(Some(permissions)),
@@ -254,7 +267,7 @@ impl ExecCommandHandler {
 
         if let Some(output) = intercept_apply_patch(
             &command,
-            &cwd,
+            &cwd_uri,
             fs.as_ref(),
             turn_environment.clone(),
             context.session.clone(),
@@ -271,7 +284,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.config.truncation_policy,
+                truncation_policy,
                 max_output_tokens,
                 process_id: None,
                 exit_code: None,
@@ -290,7 +303,7 @@ impl ExecCommandHandler {
                     process_id,
                     yield_time_ms,
                     max_output_tokens,
-                    cwd,
+                    cwd: cwd_uri,
                     sandbox_cwd: turn_environment.cwd().clone(),
                     turn_environment: turn_environment.clone(),
                     shell_mode,
@@ -344,7 +357,7 @@ impl ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.config.truncation_policy,
+                    truncation_policy,
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.

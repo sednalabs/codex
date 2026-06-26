@@ -3958,7 +3958,7 @@ async fn includes_timed_out_message() {
     };
     let (_, turn_context) = make_session_and_context().await;
 
-    let out = format_exec_output_str(&exec, turn_context.config.truncation_policy);
+    let out = format_exec_output_str(&exec, turn_context.model_info.truncation_policy.into());
 
     assert_eq!(
         out,
@@ -10311,7 +10311,7 @@ async fn sample_rollout(
     }
     live_history.record_items(
         initial_context.iter(),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
 
     let user1 = ResponseItem::Message {
@@ -10325,7 +10325,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&user1),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
 
@@ -10340,7 +10340,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&assistant1),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
 
@@ -10372,7 +10372,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&user2),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
 
@@ -10387,7 +10387,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&assistant2),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
 
@@ -10419,7 +10419,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&user3),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user3));
 
@@ -10434,7 +10434,7 @@ async fn sample_rollout(
     };
     live_history.record_items(
         std::iter::once(&assistant3),
-        reconstruction_turn.config.truncation_policy,
+        reconstruction_turn.model_info.truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant3));
 
