@@ -2677,7 +2677,7 @@
         "failureReason": {
           "anyOf": [
             {
-              "$ref": "#/definitions/McpServerStartupFailureReason"
+              "$ref": "#/$defs/McpServerStartupFailureReason"
             },
             {
               "type": "null"
