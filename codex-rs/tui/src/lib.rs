@@ -150,6 +150,7 @@ mod frames;
 mod get_git_diff;
 mod git_action_directives;
 mod goal_display;
+mod goal_files;
 mod history_cell;
 mod hooks_rpc;
 mod ide_context;
@@ -969,7 +970,7 @@ pub async fn run_main(
         loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
 
-    let bootstrap_config_toml = load_config_toml_or_exit(
+    let bootstrap_config = load_config_toml_or_exit(
         &codex_home,
         config_cwd.as_ref(),
         cli_kv_overrides.clone(),
@@ -979,6 +980,7 @@ pub async fn run_main(
     )
     .await;
 
+    let bootstrap_config_toml = &bootstrap_config.config_toml;
     let chatgpt_base_url = bootstrap_config_toml
         .chatgpt_base_url
         .clone()
@@ -996,7 +998,9 @@ pub async fn run_main(
         /*enable_codex_api_key_env*/ false,
         bootstrap_config_toml
             .cli_auth_credentials_store
+            .clone()
             .unwrap_or_default(),
+        resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
         auth_route_config,
     )
@@ -1970,8 +1974,8 @@ async fn load_config_toml_or_exit(
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     cloud_config_bundle: CloudConfigBundleLoader,
-) -> codex_config::config_toml::ConfigToml {
-    match load_config_as_toml_with_cli_and_load_options(
+) -> ConfigTomlLoadResult {
+    match load_config_toml_with_layer_stack(
         codex_home,
         cwd,
         cli_kv_overrides,

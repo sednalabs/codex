@@ -755,6 +755,26 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
+        self.resume_thread_with_history_with_tools(
+            config,
+            initial_history,
+            auth_manager,
+            Vec::new(),
+            parent_trace,
+            supports_openai_form_elicitation,
+        )
+        .await
+    }
+
+    pub async fn resume_thread_with_history_with_tools(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        parent_trace: Option<W3cTraceContext>,
+        supports_openai_form_elicitation: bool,
+    ) -> CodexResult<NewThread> {
         let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -773,7 +793,7 @@ impl ThreadManager {
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             /*metrics_service_name*/ None,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
@@ -973,11 +993,37 @@ impl ThreadManager {
     where
         S: Into<ForkSnapshot>,
     {
+        self.fork_thread_from_history_with_tools(
+            snapshot,
+            config,
+            history,
+            thread_source,
+            Vec::new(),
+            parent_trace,
+            supports_openai_form_elicitation,
+        )
+        .await
+    }
+
+    pub async fn fork_thread_from_history_with_tools<S>(
+        &self,
+        snapshot: S,
+        config: Config,
+        history: InitialHistory,
+        thread_source: Option<ThreadSource>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        parent_trace: Option<W3cTraceContext>,
+        supports_openai_form_elicitation: bool,
+    ) -> CodexResult<NewThread>
+    where
+        S: Into<ForkSnapshot>,
+    {
         self.fork_thread_with_initial_history(
             snapshot.into(),
             config,
             history,
             thread_source,
+            dynamic_tools,
             parent_trace,
             supports_openai_form_elicitation,
         )
@@ -990,6 +1036,7 @@ impl ThreadManager {
         config: Config,
         history: InitialHistory,
         thread_source: Option<ThreadSource>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         parent_trace: Option<W3cTraceContext>,
         supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
@@ -1026,7 +1073,7 @@ impl ThreadManager {
             /*parent_thread_id*/ None,
             source_thread_id,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             /*metrics_service_name*/ None,
             parent_trace,
             environments,
