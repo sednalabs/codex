@@ -48,15 +48,40 @@ pub(crate) fn runtime_memories_migrator() -> Migrator {
 
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
 const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
+const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
+const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
 
-pub(crate) async fn repair_legacy_recency_migration_version(
+const MIGRATION_VERSION_REPAIRS: &[(i64, i64)] = &[
+    (
+        LEGACY_RECENCY_MIGRATION_VERSION,
+        CURRENT_RECENCY_MIGRATION_VERSION,
+    ),
+    (
+        LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
+        CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
+    ),
+];
+
+pub(crate) async fn repair_state_migration_version_collisions(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
-    let Some(recency_migration) = migrator
+    for (legacy_version, current_version) in MIGRATION_VERSION_REPAIRS {
+        repair_migration_version(pool, migrator, *legacy_version, *current_version).await?;
+    }
+    Ok(())
+}
+
+async fn repair_migration_version(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+    legacy_version: i64,
+    current_version: i64,
+) -> anyhow::Result<()> {
+    let Some(current_migration) = migrator
         .migrations
         .iter()
-        .find(|migration| migration.version == CURRENT_RECENCY_MIGRATION_VERSION)
+        .find(|migration| migration.version == current_version)
     else {
         return Ok(());
     };
@@ -81,11 +106,11 @@ WHERE version = ?
   )
         "#,
     )
-    .bind(recency_migration.version)
-    .bind(recency_migration.description.as_ref())
-    .bind(LEGACY_RECENCY_MIGRATION_VERSION)
-    .bind(recency_migration.checksum.as_ref())
-    .bind(recency_migration.version)
+    .bind(current_migration.version)
+    .bind(current_migration.description.as_ref())
+    .bind(legacy_version)
+    .bind(current_migration.checksum.as_ref())
+    .bind(current_migration.version)
     .execute(pool)
     .await?;
     Ok(())

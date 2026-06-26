@@ -248,6 +248,7 @@ async fn paginated_stored_thread_allows_metadata_discovery_and_rejects_legacy_hi
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
+            thread_sources: None,
             archived: None,
             cwd: None,
             use_state_db_only: false,

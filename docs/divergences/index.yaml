@@ -141,12 +141,15 @@
         "codex-rs/memories/write/src/phase2_attestation.rs",
         "codex-rs/memories/write/src/phase2_attestation_tests.rs",
         "codex-rs/memories/write/src/startup_tests.rs",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/runtime/migration_repair.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/phase2_attestation.rs",
         "codex-rs/state/migrations/0024_phase2_attestation_roots.sql",
         "codex-rs/state/migrations/0038_phase2_attested_baselines.sql",
         "codex-rs/state/migrations/0031_device_key_bindings.sql",
-        "codex-rs/state/migrations/0032_thread_goals.sql"
+        "codex-rs/state/migrations/0032_thread_goals.sql",
+        "codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql"
       ],
       "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers.",
       "upstream_equivalent": false,
@@ -162,7 +165,7 @@
         "runtime::phase2_attestation::*"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage.",
+      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage. For already-shipped downstream core state migrations, preserve upstream migration numbers where possible and move downstream additive carry to the next free version with checksum-gated runtime repair for databases that recorded the old downstream version.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [

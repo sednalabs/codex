@@ -146,17 +146,26 @@ docs-only refresh commit that records this snapshot.
   table (`0028_device_key_bindings.sql` upstream, `0031_device_key_bindings.sql`
   downstream) and upstream's thread-goals table (`0029_thread_goals.sql`
   upstream, `0032_thread_goals.sql` downstream), avoiding collisions with the
-  already-shipped downstream `0028` through `0031` migration versions.
+  already-shipped downstream `0028` through `0031` migration versions. When an
+  upstream sync collides with already-shipped downstream state migration
+  versions, keep upstream migration numbers when possible and move downstream
+  additive carry to the next free version with checksum-gated runtime repair
+  for databases that already recorded the old version. The current example is
+  preserving upstream `0040_threads_history_mode.sql` while moving downstream
+  visible-thread sort indexes to `0044_threads_visible_sort_indexes.sql`.
 - Primary files:
   - `codex-rs/memories/write/src/phase2.rs`
   - `codex-rs/memories/write/src/phase2_attestation.rs`
   - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
   - `codex-rs/memories/write/src/startup_tests.rs`
+  - `codex-rs/state/src/migrations.rs`
+  - `codex-rs/state/src/runtime/migration_repair.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
   - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
+  - `codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers

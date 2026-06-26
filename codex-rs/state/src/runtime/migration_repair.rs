@@ -3,6 +3,8 @@ use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
+use crate::migrations::repair_state_migration_version_collisions;
+
 struct ColumnMigrationRepair {
     version: i64,
     table_name: &'static str,
@@ -19,6 +21,7 @@ pub(super) async fn repair_state_migrations(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
+    repair_state_migration_version_collisions(pool, migrator).await?;
     for repair in COLUMN_MIGRATION_REPAIRS {
         repair_column_migration(pool, migrator, repair).await?;
     }
