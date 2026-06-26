@@ -3,6 +3,7 @@ use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::models::ResponseItem;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
