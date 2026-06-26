@@ -1229,7 +1229,7 @@ fn compute_secret_name(server_name: &str, server_url: &str) -> Result<SecretName
     let mut hasher = Sha256::new();
     hasher.update(key.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:X}");
+    let hex = digest_hex(digest).to_uppercase();
     SecretName::new(&format!("{MCP_OAUTH_SECRET_PREFIX}_{}", &hex[..32]))
 }
 
