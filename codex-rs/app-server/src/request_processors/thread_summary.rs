@@ -320,6 +320,7 @@ pub(crate) fn summary_to_thread(
         parent_thread_id: None,
         preview,
         ephemeral: false,
+        history_mode: ThreadHistoryMode::Legacy,
         model_provider,
         model: None,
         reasoning_effort: None,

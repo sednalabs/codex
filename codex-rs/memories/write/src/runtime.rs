@@ -333,6 +333,7 @@ impl MemoryStartupContext {
                 config,
                 allow_provider_model_fallback: false,
                 initial_history: InitialHistory::New,
+                history_mode: None,
                 session_source: Some(SessionSource::Internal(
                     InternalSessionSource::MemoryConsolidation,
                 )),
