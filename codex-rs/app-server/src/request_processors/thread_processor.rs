@@ -3881,6 +3881,7 @@ impl ThreadRequestProcessor {
             use_state_db_only,
             relation_filter,
         } = filters;
+        let thread_source_filter = core_thread_source_filter(thread_sources);
         let mut cursor_obj = cursor;
         let mut last_cursor = cursor_obj.clone();
         let mut remaining = requested_page_size;
