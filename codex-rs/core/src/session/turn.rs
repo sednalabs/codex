@@ -2178,6 +2178,7 @@ async fn try_run_sampling_request(
                         .store(true, Ordering::Relaxed);
                 }
             }
+            ResponseEvent::ServerModelIdentity(_) => {}
             ResponseEvent::ModelVerifications(verifications) => {
                 if !turn_context
                     .model_verification_emitted
