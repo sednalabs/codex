@@ -35,6 +35,7 @@ pub mod responses;
 pub mod streaming_sse;
 pub mod test_codex;
 pub mod test_codex_exec;
+mod test_environment;
 pub mod tracing;
 pub mod zsh_fork;
 
