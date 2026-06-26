@@ -62,6 +62,76 @@
         }
       ]
     },
+    "DynamicToolCapability": {
+      "properties": {
+        "capabilityScope": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "family": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "leaseMode": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "mutationClass": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DynamicToolSpec": {
+      "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicToolCapability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deferLoading": {
+          "default": false,
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": true,
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "persistOnResume": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "description",
+        "inputSchema",
+        "name"
+      ],
+      "type": "object"
+    },
     "SandboxMode": {
       "enum": [
         "read-only",
