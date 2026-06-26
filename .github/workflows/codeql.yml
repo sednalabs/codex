@@ -85,7 +85,7 @@ jobs:
       - name: Restore Rust dependency cache for CodeQL
         if: ${{ matrix.language == 'rust' }}
         id: cache_codeql_rust_cargo_home_restore
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -165,7 +165,7 @@ jobs:
       - name: Save Rust dependency cache for CodeQL
         if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ~/.cargo/registry/index/
