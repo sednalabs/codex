@@ -164,6 +164,7 @@ mod thread_rollout_truncation;
 mod tools;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;
+pub use turn_metadata::detached_memory_responses_metadata;
 mod turn_timing;
 pub use rollout::ARCHIVED_SESSIONS_SUBDIR;
 pub use rollout::Cursor;
