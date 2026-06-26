@@ -1072,6 +1072,8 @@ async fn thread_fork_side_source_persists_and_hides_from_default_list() -> Resul
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
+            ancestor_thread_id: None,
         })
         .await?;
     let default_list_resp: JSONRPCResponse = timeout(
