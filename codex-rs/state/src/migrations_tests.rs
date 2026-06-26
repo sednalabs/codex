@@ -7,11 +7,13 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
-use super::repair_legacy_recency_migration_version;
+use super::repair_state_migration_version_collisions;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
 const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
+const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
+const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -186,7 +188,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("legacy recency migration should apply as version 38");
 
-    repair_legacy_recency_migration_version(&pool, &STATE_MIGRATOR)
+    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
         .await
         .expect("legacy migration history should be repaired");
     STATE_MIGRATOR
@@ -212,6 +214,73 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .migrations
         .iter()
         .filter(|migration| migration.version >= 38)
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(applied, expected);
+}
+
+#[tokio::test]
+async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(/*version*/ 39)
+        .run(&pool)
+        .await
+        .expect("pre-visible-sort migrations should apply");
+
+    let visible_sort_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
+        .expect("visible sort migration should exist");
+    let mut legacy_migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version <= 39)
+        .cloned()
+        .collect::<Vec<_>>();
+    legacy_migrations.push(Migration::new(
+        LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
+        visible_sort_migration.description.clone(),
+        visible_sort_migration.migration_type,
+        visible_sort_migration.sql.clone(),
+        visible_sort_migration.no_tx,
+    ));
+    let legacy_visible_sort_migrator = Migrator::with_migrations(legacy_migrations);
+    legacy_visible_sort_migrator
+        .run(&pool)
+        .await
+        .expect("legacy visible sort migration should apply as version 40");
+
+    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("legacy visible sort migration history should be repaired");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("current migrations should apply after visible sort repair");
+
+    let applied = sqlx::query(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 40 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("applied migrations should load")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<i64, _>("version"),
+            row.get::<Vec<u8>, _>("checksum"),
+        )
+    })
+    .collect::<Vec<_>>();
+    let expected = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version >= 40)
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
