@@ -5175,6 +5175,17 @@
           "description": "If true, opt into emitting raw Responses API items on the event stream.\nThis is for internal use only (e.g. Codex Cloud).",
           "type": "boolean"
         },
+        "historyMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadHistoryMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Persisted thread history contract to use for this new thread."
+        },
         "mockExperimentalField": {
           "description": "Test-only experimental field used to validate experimental gating and\nschema filtering behavior in a stable way.",
           "type": [
