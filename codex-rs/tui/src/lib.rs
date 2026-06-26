@@ -217,6 +217,8 @@ mod update_prompt;
 #[cfg(any(not(debug_assertions), test))]
 mod update_versions;
 mod updates;
+#[cfg(any(not(debug_assertions), test))]
+mod updates_cache;
 mod version;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;

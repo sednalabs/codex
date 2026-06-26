@@ -2,6 +2,7 @@
 //   stdout is the final message (if any).
 // - In --json mode, stdout must be valid JSONL, one event per line.
 // For both modes, any other output must be written to stderr.
+#![recursion_limit = "256"]
 #![deny(clippy::print_stdout)]
 
 mod cli;
@@ -2404,7 +2405,10 @@ mod tests {
     fn turn_items_for_thread_returns_matching_turn_items() {
         let thread = AppServerThread {
             id: "thread-1".to_string(),
+            extra: None,
             session_id: "session-1".to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -2412,6 +2416,7 @@ mod tests {
             reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
+            recency_at: Some(0),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp/project").abs(),
@@ -2420,8 +2425,6 @@ mod tests {
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
-            forked_from_id: None,
-            parent_thread_id: None,
             git_info: None,
             name: None,
             turns: vec![
@@ -2629,7 +2632,10 @@ mod tests {
         let response = ThreadStartResponse {
             thread: codex_app_server_protocol::Thread {
                 id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                extra: None,
                 session_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                forked_from_id: None,
+                parent_thread_id: None,
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -2637,6 +2643,7 @@ mod tests {
                 reasoning_effort: None,
                 created_at: 0,
                 updated_at: 0,
+                recency_at: Some(0),
                 status: codex_app_server_protocol::ThreadStatus::Idle,
                 path: Some(PathBuf::from("/tmp/rollout.jsonl")),
                 cwd: test_path_buf("/tmp").abs(),
@@ -2645,8 +2652,6 @@ mod tests {
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
-                forked_from_id: None,
-                parent_thread_id: None,
                 git_info: None,
                 name: Some("thread".to_string()),
                 turns: vec![],
@@ -2667,6 +2672,7 @@ mod tests {
             },
             active_permission_profile: None,
             reasoning_effort: None,
+            multi_agent_mode: Default::default(),
         };
 
         let event = session_configured_from_thread_start_response(&response, &config)

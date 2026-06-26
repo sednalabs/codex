@@ -341,6 +341,8 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         preview: String::new(),
         ephemeral: false,
         model_provider: "openai".to_string(),
+        model: None,
+        reasoning_effort: None,
         created_at: 0,
         updated_at: 0,
         recency_at: Some(0),
@@ -413,6 +415,8 @@ fn should_backfill_turn_completed_items_skips_ephemeral_threads() {
                 completed_at: None,
                 duration_ms: None,
             },
+            final_model: None,
+            model_snapshot: None,
         });
 
     assert!(!should_backfill_turn_completed_items(
@@ -761,6 +765,8 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
             recency_at: Some(0),
