@@ -176,6 +176,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 1,
             updated_at: 1,
             recency_at: Some(1),
@@ -3715,6 +3717,7 @@ fn dynamic_tool_response_serializes_text_and_image_content_items() {
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
             },
         ],
         success: true,

@@ -22,12 +22,15 @@ use crate::protocol::v2::TurnItemsView;
 use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
+use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
+use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
@@ -884,6 +887,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -919,6 +923,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
+            timed_out: false,
             agents_states,
         });
     }
@@ -936,6 +941,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -960,6 +966,7 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         });
     }
@@ -993,6 +1000,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1019,6 +1027,8 @@ impl ThreadHistoryBuilder {
             .iter()
             .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
+        let timed_out = payload.timed_out
+            || payload.completion_reason == CollabWaitingCompletionReason::Timeout;
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
@@ -1028,6 +1038,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out,
             agents_states,
         });
     }
@@ -1045,6 +1056,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1071,6 +1083,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states,
         });
     }
@@ -1088,6 +1101,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1117,6 +1131,7 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states,
         });
     }
@@ -1484,7 +1499,8 @@ fn convert_dynamic_tool_content_items(
             }
             codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
-            } => DynamicToolCallOutputContentItem::InputImage { image_url },
+                detail,
+            } => DynamicToolCallOutputContentItem::InputImage { image_url, detail },
         })
         .collect()
 }
@@ -1794,6 +1810,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1845,6 +1864,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1903,6 +1925,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1981,6 +2006,9 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-image".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2332,6 +2360,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2772,11 +2803,9 @@ mod tests {
                 completed_at_ms: Some(1_042),
                 status: GuardianAssessmentStatus::Denied,
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
-                user_authorization: Some(codex_protocol::protocol::GuardianUserAuthorization::Low),
+                user_authorization: Some(GuardianUserAuthorization::Low),
                 rationale: Some("Would delete user data.".into()),
-                decision_source: Some(
-                    codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
-                ),
+                decision_source: Some(GuardianAssessmentDecisionSource::Agent),
                 action: serde_json::from_value(serde_json::json!({
                     "type": "command",
                     "source": "shell",
@@ -2900,6 +2929,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2942,6 +2974,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2998,6 +3033,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3040,6 +3078,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3228,6 +3269,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3250,6 +3294,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3262,6 +3309,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3300,6 +3350,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3365,6 +3418,9 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3429,6 +3485,7 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -3489,6 +3546,7 @@ mod tests {
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                timed_out: false,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -3561,6 +3619,7 @@ mod tests {
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
+                timed_out: false,
                 agents_states: [(
                     receiver.to_string(),
                     CollabAgentState {
@@ -3627,6 +3686,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3692,6 +3754,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3747,6 +3812,9 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3797,6 +3865,9 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -3965,6 +4036,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: Some(20),
                 duration_ms: Some(123),
                 time_to_first_token_ms: None,
@@ -4046,6 +4120,9 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: Some(20),
                 duration_ms: Some(123),
                 time_to_first_token_ms: None,
