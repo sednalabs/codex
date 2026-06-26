@@ -344,6 +344,30 @@ fn core_dynamic_tools_from_api(
         .collect())
 }
 
+fn dynamic_tools_require_thread_reload(dynamic_tools: Option<&[ApiDynamicToolSpec]>) -> bool {
+    dynamic_tools
+        .unwrap_or_default()
+        .iter()
+        .any(dynamic_tool_requires_thread_reload)
+}
+
+fn dynamic_tool_requires_thread_reload(tool: &ApiDynamicToolSpec) -> bool {
+    is_environment_scoped_dynamic_tool(tool) || is_bare_native_computer_use_dynamic_tool(tool)
+}
+
+fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.capability
+        .as_ref()
+        .and_then(|capability| capability.capability_scope.as_deref())
+        .is_some_and(|scope| scope.eq_ignore_ascii_case("environment"))
+}
+
+fn is_bare_native_computer_use_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.namespace.is_none()
+        && tool.capability.is_none()
+        && codex_tools::canonical_native_computer_use_dynamic_tool(tool).is_some()
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -2790,6 +2814,7 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
+            dynamic_tools,
             exclude_turns,
             initial_turns_page,
         } = params;
@@ -2854,13 +2879,21 @@ impl ThreadRequestProcessor {
         };
 
         let response_history = thread_history.clone();
+        let core_dynamic_tools = match core_dynamic_tools_from_api(dynamic_tools) {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return Ok(());
+            }
+        };
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_with_tools(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
+                core_dynamic_tools,
                 self.request_trace_context(&request_id).await,
                 supports_openai_form_elicitation,
             )
@@ -3057,7 +3090,8 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<RunningThreadResumeResult, JSONRPCErrorError> {
-        let requested_tools_require_reload = false;
+        let requested_tools_require_reload =
+            dynamic_tools_require_thread_reload(params.dynamic_tools.as_deref());
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
                 && self
@@ -3553,6 +3587,7 @@ impl ThreadRequestProcessor {
             developer_instructions,
             ephemeral,
             thread_source,
+            dynamic_tools,
             exclude_turns,
         } = params;
         let include_turns = !exclude_turns;
@@ -3626,6 +3661,7 @@ impl ThreadRequestProcessor {
             .map_err(|err| config_load_error(&err))?;
 
         let fallback_model_provider = config.model_provider_id.clone();
+        let core_dynamic_tools = core_dynamic_tools_from_api(dynamic_tools)?;
         let NewThread {
             thread_id,
             thread: forked_thread,
@@ -3633,7 +3669,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history(
+            .fork_thread_from_history_with_tools(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -3642,6 +3678,7 @@ impl ThreadRequestProcessor {
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
                 thread_source.map(Into::into),
+                core_dynamic_tools,
                 self.request_trace_context(&request_id).await,
                 supports_openai_form_elicitation,
             )
