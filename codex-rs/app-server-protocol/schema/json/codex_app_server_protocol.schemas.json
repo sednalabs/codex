@@ -8152,6 +8152,16 @@
               "object",
               "null"
             ]
+          },
+          "models": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelsRequirements"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -12408,6 +12418,21 @@
         "title": "ModelVerificationNotification",
         "type": "object"
       },
+      "ModelsRequirements": {
+        "properties": {
+          "newThread": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/NewThreadModelDefaults"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "MultiAgentMode": {
         "description": "Controls whether the model receives multi-agent delegation instructions and,\nwhen it does, whether it should only spawn sub-agents after an explicit user\nrequest or may delegate proactively when doing so would help. `none` leaves\nthe multi-agent tools available without injecting delegation instructions.",
         "enum": [
@@ -12556,6 +12581,33 @@
           "deny"
         ],
         "type": "string"
+      },
+      "NewThreadModelDefaults": {
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelReasoningEffort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serviceTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "NonSteerableTurnKind": {
         "enum": [
@@ -16758,6 +16810,13 @@
               }
             ],
             "description": "Optional client-supplied analytics source classification for this forked thread."
+          },
+        "lastTurnId": {
+          "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork. The referenced turn cannot be in progress.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

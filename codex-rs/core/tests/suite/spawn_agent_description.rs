@@ -196,6 +196,12 @@ fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Resul
             "expected inherited-model guidance in spawn_agent description: {description:?}"
         );
         assert!(
+            description.contains(
+                "Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason."
+            ),
+            "expected model override usage guidance in spawn_agent description: {description:?}"
+        );
+        assert!(
             description.contains("Reasoning efforts: low, medium (default), high."),
             "expected default reasoning effort in spawn_agent description: {description:?}"
         );
@@ -209,7 +215,7 @@ fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Resul
         );
         assert!(
             description.contains(
-                "Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work."
+                "Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work."
             ),
             "expected explicit authorization rule in spawn_agent description: {description:?}"
         );
@@ -218,6 +224,10 @@ fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Resul
                 "Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn."
             ),
             "expected non-authorization clarification in spawn_agent description: {description:?}"
+        );
+        assert!(
+            !description.contains("### When to delegate vs. do the subtask yourself"),
+            "spawn_agent description should not include extra when-to-use delegation guidance: {description:?}"
         );
         assert!(
             description.contains(

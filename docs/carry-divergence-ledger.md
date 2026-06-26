@@ -182,6 +182,12 @@ docs-only refresh commit that records this snapshot.
 ### Sub-agent orchestration override preservation, inventory metadata, and wait joins
 
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
+- Spawn-agent tool guidance should follow upstream's authorization wording that
+  a user request or applicable `AGENTS.md`/skill instruction can authorize
+  delegation, and should keep upstream's warning that `model` overrides are
+  exceptional. Downstream additionally keeps the guardrail that requests for
+  depth, thoroughness, research, investigation, or detailed codebase analysis
+  do not by themselves authorize spawning.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
