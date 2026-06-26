@@ -1187,8 +1187,6 @@ impl ThreadHistoryBuilder {
     fn handle_turn_aborted(&mut self, payload: &TurnAbortedEvent) {
         let apply_abort = |turn: &mut PendingTurn| {
             turn.status = TurnStatus::Interrupted;
-            turn.completed_at = payload.completed_at;
-            turn.duration_ms = payload.duration_ms;
             ThreadHistoryTurnChange::from_pending_turn(turn)
         };
         if let Some(turn_id) = payload.turn_id.as_deref() {
@@ -1201,8 +1199,6 @@ impl ThreadHistoryBuilder {
 
             if let Some(turn) = self.turns.iter_mut().find(|turn| turn.id == turn_id) {
                 turn.status = TurnStatus::Interrupted;
-                turn.completed_at = payload.completed_at;
-                turn.duration_ms = payload.duration_ms;
                 let changed_turn = ThreadHistoryTurnChange::from_turn(turn);
                 self.record_changed_turn(changed_turn);
                 return;
@@ -2121,8 +2117,6 @@ mod tests {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-1".into()),
                 reason: TurnAbortReason::Replaced,
-                completed_at: None,
-                duration_ms: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2437,6 +2431,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: String::new(),
                 aggregated_output: "hello world\n".into(),
@@ -2489,6 +2484,7 @@ mod tests {
                 command: "echo 'hello world'".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-1".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -2694,6 +2690,7 @@ mod tests {
                 parsed_cmd: vec![ParsedCommand::Unknown { cmd: "ls".into() }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: String::new(),
                 stderr: "exec command rejected by user".into(),
                 aggregated_output: "exec command rejected by user".into(),
@@ -2734,6 +2731,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-2".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2830,6 +2828,7 @@ mod tests {
                 command: "rm -rf /tmp/guardian".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
                 command_actions: vec![CommandAction::Unknown {
@@ -2896,6 +2895,7 @@ mod tests {
                 command: "/bin/rm -f /tmp/file.sqlite".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: None,
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
                 command_actions: vec![CommandAction::Unknown {
@@ -2963,6 +2963,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -3000,6 +3001,7 @@ mod tests {
                 command: "echo done".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-42".into()),
+                terminal_wait: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
@@ -3067,6 +3069,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "done\n".into(),
                 stderr: String::new(),
                 aggregated_output: "done\n".into(),
@@ -3375,8 +3378,6 @@ mod tests {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-a".into()),
                 reason: TurnAbortReason::Replaced,
-                completed_at: None,
-                duration_ms: None,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
