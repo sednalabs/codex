@@ -609,6 +609,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
+            detail: None,
         },
     ];
     let response = DynamicToolCallResponse {
@@ -639,6 +640,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: TINY_PNG_DATA_URL.to_string(),
+                detail: None,
             },
         ])
     );
@@ -674,6 +676,15 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         .iter()
         .find_map(|body| function_call_output_payload(body, call_id))
         .context("expected function_call_output in follow-up request")?;
+    let expected_model_content_items = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: "dynamic-ok".to_string(),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image_url: TINY_PNG_DATA_URL.to_string(),
+            detail: Some(DEFAULT_IMAGE_DETAIL),
+        },
+    ];
     assert_eq!(
         payload.body,
         FunctionCallOutputBody::ContentItems(expected_model_content_items.clone())
@@ -700,6 +711,7 @@ async fn dynamic_tool_remote_image_response_becomes_model_visible_error() -> Res
     let response = DynamicToolCallResponse {
         content_items: vec![DynamicToolCallOutputContentItem::InputImage {
             image_url: "https://example.com/tool.png".to_string(),
+            detail: None,
         }],
         success: true,
     };
