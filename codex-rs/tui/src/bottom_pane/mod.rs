@@ -452,13 +452,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub fn set_realtime_conversation_enabled(&mut self, enabled: bool) {
-        self.composer.set_realtime_conversation_enabled(enabled);
+    pub fn set_realtime_conversation_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
 
-    pub fn set_audio_device_selection_enabled(&mut self, enabled: bool) {
-        self.composer.set_audio_device_selection_enabled(enabled);
+    pub fn set_audio_device_selection_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
 
@@ -969,10 +967,7 @@ impl BottomPane {
     }
 
     pub(crate) fn should_interrupt_running_task(&mut self, key_event: KeyEvent) -> bool {
-        if self.active_view_will_interrupt_turn_on_key_event(key_event) {
-            return true;
-        }
-        self.composer.should_interrupt_running_task(key_event)
+        self.active_view_will_interrupt_turn_on_key_event(key_event)
     }
 
     pub(crate) fn take_remote_image_urls(&mut self) -> Vec<String> {

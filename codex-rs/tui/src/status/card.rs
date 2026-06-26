@@ -21,6 +21,7 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
@@ -256,7 +257,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle_for_instruction_sources(
     collaboration_mode: Option<&str>,
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
     refreshing_rate_limits: bool,
-    instruction_source_paths: &[AbsolutePathBuf],
+    instruction_source_paths: &[PathUri],
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
     let (card, handle) = StatusHistoryCell::new(
@@ -304,7 +305,7 @@ impl StatusHistoryCell {
         collaboration_mode: Option<&str>,
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
         refreshing_rate_limits: bool,
-        instruction_source_paths: &[AbsolutePathBuf],
+        instruction_source_paths: &[PathUri],
     ) -> (Self, StatusHistoryHandle) {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
         let permission_profile = config.permissions.effective_permission_profile();
