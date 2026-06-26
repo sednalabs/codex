@@ -3616,7 +3616,7 @@ async fn code_mode_excludes_configured_nested_tool_namespaces() -> Result<()> {
                 defer_loading: false,
                 persist_on_resume: true,
                 capability: None,
-            })],
+            }],
         )
         .await?;
     let mut test = base_test;
