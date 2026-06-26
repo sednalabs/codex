@@ -168,6 +168,8 @@ fn blocking_tool() -> ToolDefinition {
     ToolDefinition {
         name: "block".to_string(),
         tool_name: ToolName::plain("block"),
+        all_tools_name: None,
+        all_tools_module: None,
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,

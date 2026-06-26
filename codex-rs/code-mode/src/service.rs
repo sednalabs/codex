@@ -300,6 +300,8 @@ fn runtime_request(request: ExecuteRequest) -> runtime::CreateCellRequest {
                     name: definition.tool_name.name,
                     namespace: definition.tool_name.namespace,
                 },
+                all_tools_name: definition.all_tools_name,
+                all_tools_module: definition.all_tools_module,
                 description: definition.description,
                 kind: match definition.kind {
                     CodeModeToolKind::Function => runtime::ToolKind::Function,

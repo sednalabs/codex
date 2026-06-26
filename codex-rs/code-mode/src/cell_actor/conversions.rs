@@ -23,8 +23,8 @@ pub(super) fn runtime_request(request: CellRequest) -> ExecuteRequest {
                     namespace: definition.tool_name.namespace,
                 },
                 description: definition.description,
-                all_tools_name: None,
-                all_tools_module: None,
+                all_tools_name: definition.all_tools_name,
+                all_tools_module: definition.all_tools_module,
                 kind: match definition.kind {
                     CellToolKind::Function => CodeModeToolKind::Function,
                     CellToolKind::Freeform => CodeModeToolKind::Freeform,

@@ -3423,6 +3423,7 @@ text(JSON.stringify(tool));
                 "name": "echo",
                 "module": "tools/mcp/rmcp.js",
                 "description": concat!(
+                    "Use these tools to exercise the rmcp test server.\n\n",
                     "Echo back the provided message and include environment data.\n\n",
                     "exec tool declaration:\n",
                     "```ts\n",
