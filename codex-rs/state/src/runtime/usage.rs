@@ -1284,6 +1284,9 @@ ORDER BY rowid
                 connector_id: None,
                 mcp_app_resource_uri: None,
                 link_id: None,
+                app_name: None,
+                template_id: None,
+                action_name: None,
                 plugin_id: None,
             }),
         };
@@ -1297,6 +1300,9 @@ ORDER BY rowid
                 connector_id: None,
                 mcp_app_resource_uri: None,
                 link_id: None,
+                app_name: None,
+                template_id: None,
+                action_name: None,
                 plugin_id: None,
                 duration: Duration::from_millis(42),
                 result: Ok(CallToolResult {

@@ -2561,7 +2561,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in steps if step.get("name") == "Restore Rust dependency cache for CodeQL"
         )
         self.assertEqual(restore_rust_cache_step.get("if"), "${{ matrix.language == 'rust' }}")
-        self.assertEqual(restore_rust_cache_step.get("uses"), "actions/cache/restore@v5")
+        self.assertEqual(restore_rust_cache_step.get("uses"), "actions/cache/restore@v6")
         restore_cache_with = restore_rust_cache_step.get("with") or {}
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
@@ -2618,7 +2618,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
         )
         self.assertEqual(save_rust_cache_step.get("continue-on-error"), "true")
-        self.assertEqual(save_rust_cache_step.get("uses"), "actions/cache/save@v5")
+        self.assertEqual(save_rust_cache_step.get("uses"), "actions/cache/save@v6")
         self.assertIn("matrix.language == 'rust'", save_rust_cache_step.get("if") or "")
         self.assertIn("github.event_name != 'pull_request'", save_rust_cache_step.get("if") or "")
         self.assertIn("refs/heads/main", save_rust_cache_step.get("if") or "")
@@ -5079,12 +5079,12 @@ class HelperScriptTests(unittest.TestCase):
                 "sccache_save": named_steps["Save sccache cache (fallback)"].get("uses"),
             },
             {
-                "cargo_home_restore": "actions/cache/restore@v5",
+                "cargo_home_restore": "actions/cache/restore@v6",
                 "sccache_install": "taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9",
                 "sccache_configure_run": "bash .github/scripts/configure_sccache_backend.sh write-fallback",
-                "sccache_restore": "actions/cache/restore@v5",
-                "cargo_home_save": "actions/cache/save@v5",
-                "sccache_save": "actions/cache/save@v5",
+                "sccache_restore": "actions/cache/restore@v6",
+                "cargo_home_save": "actions/cache/save@v6",
+                "sccache_save": "actions/cache/save@v6",
             },
         )
 
