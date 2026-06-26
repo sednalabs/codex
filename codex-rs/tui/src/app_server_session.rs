@@ -2408,6 +2408,7 @@ mod tests {
                 parent_thread_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
+                history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 model: None,
                 reasoning_effort: None,

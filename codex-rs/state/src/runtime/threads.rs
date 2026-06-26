@@ -16,6 +16,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
     threads.agent_role,
@@ -587,6 +588,7 @@ INSERT INTO threads (
     updated_at_ms,
     recency_at_ms,
     source,
+    history_mode,
     thread_source,
     agent_nickname,
     agent_role,
@@ -608,7 +610,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -621,6 +623,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(datetime_to_epoch_millis(updated_at))
         .bind(datetime_to_epoch_millis(recency_at))
         .bind(metadata.source.as_str())
+        .bind(metadata.history_mode.as_str())
         .bind(
             metadata
                 .thread_source
@@ -839,6 +842,7 @@ INSERT INTO threads (
     updated_at_ms,
     recency_at_ms,
     source,
+    history_mode,
     thread_source,
     agent_nickname,
     agent_role,
@@ -860,7 +864,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -870,6 +874,7 @@ ON CONFLICT(id) DO UPDATE SET
     updated_at_ms = excluded.updated_at_ms,
     recency_at_ms = threads.recency_at_ms,
     source = excluded.source,
+    history_mode = excluded.history_mode,
     thread_source = excluded.thread_source,
     agent_nickname = excluded.agent_nickname,
     agent_role = excluded.agent_role,
@@ -901,6 +906,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(datetime_to_epoch_millis(updated_at))
         .bind(datetime_to_epoch_millis(insert_recency_at))
         .bind(metadata.source.as_str())
+        .bind(metadata.history_mode.as_str())
         .bind(
             metadata
                 .thread_source
@@ -1306,6 +1312,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
     threads.agent_role,
@@ -1521,6 +1528,7 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::TurnContextItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1562,6 +1570,30 @@ mod tests {
                 .await
                 .expect("memory mode should remain readable");
         assert_eq!(memory_mode, "disabled");
+    }
+
+    #[tokio::test]
+    async fn thread_metadata_round_trips_history_mode() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        metadata.history_mode = ThreadHistoryMode::Paginated;
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert should succeed");
+
+        let metadata = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(metadata.history_mode, ThreadHistoryMode::Paginated);
     }
 
     #[tokio::test]
@@ -2253,6 +2285,7 @@ mod tests {
                 dynamic_tools: None,
                 selected_capability_roots: Vec::new(),
                 memory_mode: Some("polluted".to_string()),
+                history_mode: Default::default(),
                 multi_agent_version: None,
                 context_window: None,
             },
@@ -2317,6 +2350,7 @@ mod tests {
                 dynamic_tools: None,
                 selected_capability_roots: Vec::new(),
                 memory_mode: None,
+                history_mode: Default::default(),
                 multi_agent_version: None,
                 context_window: None,
             },

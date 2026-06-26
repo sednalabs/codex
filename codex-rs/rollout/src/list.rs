@@ -26,8 +26,10 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
+use serde_json::Value;
 
 /// Returned page of thread (thread) summaries.
 #[derive(Debug, Default, PartialEq)]
@@ -65,6 +67,8 @@ pub struct ThreadItem {
     pub source: Option<SessionSource>,
     /// Thread source from session metadata.
     pub thread_source: Option<ThreadSource>,
+    /// Persisted thread history contract selected when this thread was created.
+    pub history_mode: ThreadHistoryMode,
     /// Immediate control/spawn parent thread id from session metadata.
     pub parent_thread_id: Option<ThreadId>,
     /// Random unique nickname from session metadata for AgentControl-spawned sub-agents.
@@ -103,6 +107,7 @@ struct HeadTailSummary {
     git_origin_url: Option<String>,
     source: Option<SessionSource>,
     thread_source: Option<ThreadSource>,
+    history_mode: ThreadHistoryMode,
     parent_thread_id: Option<ThreadId>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
@@ -811,6 +816,7 @@ async fn build_thread_item(
             git_origin_url,
             source,
             thread_source,
+            history_mode,
             parent_thread_id,
             agent_nickname,
             agent_role,
@@ -834,6 +840,7 @@ async fn build_thread_item(
             git_origin_url,
             source,
             thread_source,
+            history_mode,
             parent_thread_id,
             agent_nickname,
             agent_role,
@@ -1123,13 +1130,27 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         lines_scanned += 1;
 
         let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
-        let Ok(rollout_line) = parsed else { continue };
+        let rollout_line = match parsed {
+            Ok(rollout_line) => rollout_line,
+            Err(_) => {
+                if !summary.saw_session_meta
+                    && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+                {
+                    // The first SessionMeta belongs to this rollout. Later SessionMeta lines can
+                    // be copied from fork history, so only an unknown mode before the first parsed
+                    // SessionMeta should make this thread unreadable.
+                    crate::recorder::reject_unknown_thread_history_mode(&value)?;
+                }
+                continue;
+            }
+        };
 
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
                 if !summary.saw_session_meta {
                     summary.source = Some(session_meta_line.meta.source.clone());
                     summary.thread_source = session_meta_line.meta.thread_source;
+                    summary.history_mode = session_meta_line.meta.history_mode;
                     summary.parent_thread_id = session_meta_line.meta.parent_thread_id;
                     summary.agent_nickname = session_meta_line.meta.agent_nickname.clone();
                     summary.agent_role = session_meta_line.meta.agent_role.clone();

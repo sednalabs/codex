@@ -4052,6 +4052,13 @@
       ],
       "type": "string"
     },
+    "ThreadHistoryMode": {
+      "enum": [
+        "legacy",
+        "paginated"
+      ],
+      "type": "string"
+    },
     "ThreadId": {
       "type": "string"
     },
