@@ -1030,9 +1030,9 @@ pub async fn run_main(
                 cloud_config_bundle.clone(),
             )
             .await;
-            &config_toml_with_cloud_config
+            &config_toml_with_cloud_config.config_toml
         } else {
-            &bootstrap_config
+            &bootstrap_config.config_toml
         };
 
         let resolved = resolve_oss_provider(cli.oss_provider.as_deref(), config_toml_for_oss);

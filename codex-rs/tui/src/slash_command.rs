@@ -219,6 +219,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::DebugConfig
             | SlashCommand::Model
             | SlashCommand::Ps
@@ -233,7 +234,6 @@ impl SlashCommand {
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
             | SlashCommand::Ide
-            | SlashCommand::Model
             | SlashCommand::Permissions
             | SlashCommand::Plan
             | SlashCommand::Quit

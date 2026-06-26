@@ -264,6 +264,7 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
             text: "Resume this thread".to_string(),
         }],
         phase: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
     let thread_req = mcp

@@ -396,9 +396,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
                 cloud_config_bundle.clone(),
             )
             .await;
-            &config_toml_with_cloud_config
+            &config_toml_with_cloud_config.config_toml
         } else {
-            &bootstrap_config
+            &bootstrap_config.config_toml
         };
 
         let resolved = resolve_oss_provider(oss_provider.as_deref(), config_toml_for_oss);
@@ -1866,6 +1866,18 @@ async fn handle_server_request(
                 )
                 .await,
             }
+        }
+        ServerRequest::CurrentTimeRead { request_id, params } => {
+            reject_server_request(
+                client,
+                request_id,
+                &method,
+                format!(
+                    "current time reads are not supported in exec mode for thread `{}`",
+                    params.thread_id
+                ),
+            )
+            .await
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(

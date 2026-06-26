@@ -815,6 +815,22 @@ impl App {
             AppEvent::OpenThreadGoalEditor { thread_id } => {
                 self.open_thread_goal_editor(app_server, thread_id).await;
             }
+            AppEvent::SetThreadGoalObjective {
+                thread_id,
+                objective,
+                mode,
+            } => {
+                self.set_thread_goal_draft(
+                    app_server,
+                    thread_id,
+                    crate::goal_files::GoalDraft {
+                        objective,
+                        ..Default::default()
+                    },
+                    mode,
+                )
+                .await;
+            }
             AppEvent::SetThreadGoalDraft {
                 thread_id,
                 draft,
@@ -1038,6 +1054,16 @@ impl App {
                     self.chat_widget
                         .set_queue_autosend_suppressed(/*suppressed*/ false);
                     self.chat_widget.maybe_send_next_queued_input();
+                }
+            }
+            AppEvent::OpenRealtimeAudioDeviceSelection { .. }
+            | AppEvent::PersistRealtimeAudioDeviceSelection { .. }
+            | AppEvent::RestartRealtimeAudioDevice { .. }
+            | AppEvent::RealtimeWebrtcEvent(_)
+            | AppEvent::RealtimeWebrtcLocalAudioLevel(_) => {}
+            AppEvent::RealtimeWebrtcOfferCreated { result } => {
+                if let Err(err) = result {
+                    tracing::warn!("realtime WebRTC offer creation failed: {err}");
                 }
             }
             AppEvent::OpenReasoningPopup { model } => {

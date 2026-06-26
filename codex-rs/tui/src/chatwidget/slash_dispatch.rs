@@ -281,6 +281,16 @@ impl ChatWidget {
                 self.open_personality_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Realtime => {
+                self.add_error_message(
+                    "Realtime voice mode is unavailable in this build.".to_string(),
+                );
+            }
+            SlashCommand::Settings => {
+                self.add_error_message(
+                    "Realtime audio settings are unavailable in this build.".to_string(),
+                );
+            }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
@@ -1133,6 +1143,8 @@ impl ChatWidget {
             | SlashCommand::Hooks
             | SlashCommand::Title
             | SlashCommand::Statusline
+            | SlashCommand::Realtime
+            | SlashCommand::Settings
             | SlashCommand::Theme
             | SlashCommand::Pets => QueueDrain::Stop,
         }
