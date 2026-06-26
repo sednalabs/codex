@@ -1997,6 +1997,7 @@ mod tests {
         ApprovalRequest::Exec {
             thread_id: codex_protocol::ThreadId::new(),
             thread_label: None,
+            environment_id: None,
             id: "1".to_string(),
             command: vec!["echo".into(), "ok".into()],
             reason: None,
