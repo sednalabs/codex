@@ -60,7 +60,7 @@ fn decode_response(value: serde_json::Value) -> (DynamicToolCallResponse, Option
             if response.content_items.iter().any(|item| {
                 matches!(
                     item,
-                    DynamicToolCallOutputContentItem::InputImage { image_url }
+                    DynamicToolCallOutputContentItem::InputImage { image_url, .. }
                         if is_remote_image_url(image_url)
                 )
             }) =>
