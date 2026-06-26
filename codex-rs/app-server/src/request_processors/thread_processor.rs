@@ -1823,18 +1823,20 @@ impl ThreadRequestProcessor {
             .list_background_terminals()
             .await
             .into_iter()
-            .map(|terminal| ThreadBackgroundTerminal {
-                item_id: terminal.item_id,
-                process_id: terminal.process_id,
-                command: terminal.command,
-                cwd: terminal.cwd.to_abs_path().map_err(|err| {
-                    internal_error(format!("failed to render background terminal cwd: {err}"))
-                })?,
-                os_pid: None,
-                cpu_percent: None,
-                rss_kb: None,
+            .map(|terminal| {
+                Ok(ThreadBackgroundTerminal {
+                    item_id: terminal.item_id,
+                    process_id: terminal.process_id,
+                    command: terminal.command,
+                    cwd: terminal.cwd.to_abs_path().map_err(|err| {
+                        internal_error(format!("failed to render background terminal cwd: {err}"))
+                    })?,
+                    os_pid: None,
+                    cpu_percent: None,
+                    rss_kb: None,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, JSONRPCErrorError>>()?;
 
         let (data, next_cursor) = paginate_background_terminals(&terminals, cursor, limit)?;
 
@@ -1954,6 +1956,7 @@ impl ThreadRequestProcessor {
         let store_sort_key = match sort_key.unwrap_or(ThreadSortKey::CreatedAt) {
             ThreadSortKey::CreatedAt => StoreThreadSortKey::CreatedAt,
             ThreadSortKey::UpdatedAt => StoreThreadSortKey::UpdatedAt,
+            ThreadSortKey::RecencyAt => StoreThreadSortKey::RecencyAt,
         };
         let sort_direction = sort_direction.unwrap_or(SortDirection::Desc);
         let (stored_threads, next_cursor) = self
@@ -2041,6 +2044,7 @@ impl ThreadRequestProcessor {
         let store_sort_key = match sort_key.unwrap_or(ThreadSortKey::CreatedAt) {
             ThreadSortKey::CreatedAt => StoreThreadSortKey::CreatedAt,
             ThreadSortKey::UpdatedAt => StoreThreadSortKey::UpdatedAt,
+            ThreadSortKey::RecencyAt => StoreThreadSortKey::RecencyAt,
         };
         let store_sort_direction = sort_direction.unwrap_or(SortDirection::Desc);
         let (allowed_sources, source_kind_filter) = compute_source_filters(source_kinds);
@@ -3987,7 +3991,7 @@ fn thread_backwards_cursor_for_sort_key(
     let timestamp = match sort_key {
         StoreThreadSortKey::CreatedAt => thread.created_at,
         StoreThreadSortKey::UpdatedAt => thread.updated_at,
-        StoreThreadSortKey::RecencyAt => thread.recency_at.unwrap_or(thread.updated_at),
+        StoreThreadSortKey::RecencyAt => thread.recency_at,
     };
     // The state DB stores unique millisecond timestamps. Offset the reverse cursor by one
     // millisecond so the opposite-direction query includes the page anchor.
@@ -4435,7 +4439,7 @@ pub(crate) fn thread_from_stored_thread(
         reasoning_effort: thread.reasoning_effort,
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
-        recency_at: thread.recency_at.map(|time| time.timestamp()),
+        recency_at: Some(thread.recency_at.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
         cwd,
