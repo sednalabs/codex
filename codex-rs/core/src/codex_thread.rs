@@ -605,6 +605,17 @@ impl CodexThread {
         self.codex.session.runtime_mcp_config(config).await
     }
 
+    /// Returns the exact MCP config, environment bindings, and manager most recently published.
+    pub async fn current_mcp_runtime(&self) -> Arc<crate::session::McpRuntimeSnapshot> {
+        let turn_context = self.codex.session.new_default_turn().await;
+        self.codex
+            .session
+            .capture_step_context(turn_context)
+            .await
+            .mcp
+            .clone()
+    }
+
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.codex.session.multi_agent_version()
     }
@@ -626,8 +637,9 @@ impl CodexThread {
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let result = self
-            .codex
-            .session
+            .current_mcp_runtime()
+            .await
+            .manager_arc()
             .read_resource(server, ReadResourceRequestParams::new(uri))
             .await?;
 
@@ -641,8 +653,9 @@ impl CodexThread {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.codex
-            .session
+        self.current_mcp_runtime()
+            .await
+            .manager_arc()
             .call_tool(server, tool, arguments, meta)
             .await
     }

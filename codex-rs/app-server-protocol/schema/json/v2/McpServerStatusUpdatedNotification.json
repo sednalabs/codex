@@ -1,5 +1,12 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "McpServerStartupFailureReason": {
+      "enum": [
+        "reauthenticationRequired"
+      ],
+      "type": "string"
+    },
     "McpServerStartupState": {
       "enum": [
         "starting",
@@ -10,7 +17,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "error": {
       "type": [
@@ -18,11 +24,21 @@
         "null"
       ]
     },
+    "failureReason": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/McpServerStartupFailureReason"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "name": {
       "type": "string"
     },
     "status": {
-      "$ref": "#/$defs/McpServerStartupState"
+      "$ref": "#/definitions/McpServerStartupState"
     },
     "threadId": {
       "type": [

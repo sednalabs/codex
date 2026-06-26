@@ -2621,6 +2621,7 @@ dependencies = [
  "codex-code-mode-protocol",
  "codex-protocol",
  "deno_core_icudata",
+ "futures",
  "pretty_assertions",
  "serde_json",
  "tokio",
@@ -2632,6 +2633,17 @@ dependencies = [
 [[package]]
 name = "codex-code-mode-host"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-code-mode",
+ "codex-code-mode-protocol",
+ "codex-protocol",
+ "codex-utils-cargo-bin",
+ "pretty_assertions",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "codex-code-mode-protocol"
@@ -2675,6 +2687,7 @@ dependencies = [
  "multimap",
  "pretty_assertions",
  "prost 0.14.4",
+ "regex-lite",
  "schemars 1.2.1",
  "serde",
  "serde_ignored",
@@ -3043,7 +3056,9 @@ dependencies = [
  "opentelemetry_sdk",
  "pretty_assertions",
  "prost 0.14.4",
+ "rcgen",
  "reqwest 0.12.28",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",
@@ -3133,6 +3148,7 @@ dependencies = [
  "codex-tools",
  "codex-utils-absolute-path",
  "pretty_assertions",
+ "serde_json",
  "tokio",
 ]
 
@@ -3481,6 +3497,7 @@ name = "codex-mcp-extension"
 version = "0.0.0"
 dependencies = [
  "codex-config",
+ "codex-connectors-extension",
  "codex-core",
  "codex-core-plugins",
  "codex-exec-server",

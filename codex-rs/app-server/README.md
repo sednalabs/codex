@@ -1345,7 +1345,7 @@ Because audio is intentionally separate from `ThreadItem`, clients can opt out o
 
 ### MCP server startup events
 
-- `mcpServer/startupStatus/updated` — `{ threadId, name, status, error }` when app-server observes an MCP server startup transition. `threadId` identifies the owning thread when startup is thread-scoped and is `null` when startup is app-scoped. `status` is one of `starting`, `ready`, `failed`, or `cancelled`. `error` is `null` except for `failed`.
+- `mcpServer/startupStatus/updated` — `{ threadId, name, status, error, failureReason }` when app-server observes an MCP server startup transition. `threadId` identifies the owning thread when startup is thread-scoped and is `null` when startup is app-scoped. `status` is one of `starting`, `ready`, `failed`, or `cancelled`. `error` and `failureReason` are `null` except for `failed`; `failureReason` is `reauthenticationRequired` when stored OAuth credentials have expired and cannot be refreshed, so clients can prompt the user to reconnect the named server.
 
 ### Turn events
 
@@ -1372,7 +1372,7 @@ Today both notifications carry an empty `items` array even when item events were
 - `reasoning` — `{id, summary, content}` where `summary` holds streamed reasoning summaries (applicable for most OpenAI models) and `content` holds raw reasoning blocks (applicable for e.g. open source models).
 - `commandExecution` — `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}` for sandboxed commands; `status` is `inProgress`, `completed`, `failed`, or `declined`.
 - `fileChange` — `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}` and `status` is `inProgress`, `completed`, `failed`, or `declined`.
-- `mcpToolCall` — `{id, server, tool, status, arguments, appContext, mcpAppResourceUri?, pluginId, result?, error?}` describing MCP calls; `appContext` is `{connectorId, linkId, resourceUri}` for calls through a trusted MCP app, where `connectorId` identifies the connector that owns the tool, `linkId` identifies the app link, and `resourceUri` points to the widget template. The top-level `mcpAppResourceUri` is deprecated and temporarily duplicated for client migration. `tool` identifies the invoked action. `status` is `inProgress`, `completed`, or `failed`.
+- `mcpToolCall` — `{id, server, tool, status, arguments, appContext, mcpAppResourceUri?, pluginId, result?, error?}` describing MCP calls; `appContext` is `{connectorId, linkId, resourceUri, appName, templateId, actionName}` for calls through a trusted MCP app, where `connectorId` identifies the connector that owns the tool, `linkId` identifies the app link, `resourceUri` points to the widget template, `appName` is the connector's display name, `templateId` identifies the app template, and `actionName` is the stable connector `Action.name`. `appName`, `templateId`, and `actionName` may be null for older rollout entries. The top-level `mcpAppResourceUri` is deprecated and temporarily duplicated for client migration. `tool` identifies the raw MCP tool. `status` is `inProgress`, `completed`, or `failed`.
 - `collabToolCall` — `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}` describing collab tool calls (`spawn_agent`, `send_input`, `resume_agent`, `wait`, `close_agent`); `status` is `inProgress`, `completed`, or `failed`.
 - `webSearch` — `{id, query, action?}` for a web search request issued by the agent; `action` mirrors the Responses API web_search action payload (`search`, `open_page`, `find_in_page`) and may be omitted until completion.
 - `imageView` — `{id, path}` emitted when the agent invokes the image viewer tool.
@@ -1935,7 +1935,7 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change. This is a sparse rolling update; merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, threadId, success, error? }`.
-- `mcpServer/startupStatus/updated` (notify) — emitted when a configured MCP server's startup status changes; payload includes `{ threadId, name, status, error }`, where `threadId` is the owning thread when startup is thread-scoped and `null` when it is app-scoped, and `status` is `starting`, `ready`, `failed`, or `cancelled`.
+- `mcpServer/startupStatus/updated` (notify) — emitted when a configured MCP server's startup status changes; payload includes `{ threadId, name, status, error, failureReason }`, where `threadId` is the owning thread when startup is thread-scoped and `null` when it is app-scoped, and `status` is `starting`, `ready`, `failed`, or `cancelled`. `failureReason` is `reauthenticationRequired` when stored OAuth credentials have expired and cannot be refreshed, so clients can prompt the user to reconnect the named server.
 
 ### 1) Check auth state
 
