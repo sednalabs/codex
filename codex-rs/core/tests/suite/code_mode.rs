@@ -65,6 +65,14 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+fn run_code_mode_metadata_test<F, Fut>(test: F) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    core_test_support::run_large_stack_test("code-mode-metadata-test", test())
+}
+
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
     match req.custom_tool_call_output(call_id).get("output") {
         Some(Value::Array(items)) => items.clone(),
@@ -3343,86 +3351,90 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
-    skip_if_no_network!(Ok(()));
+#[test]
+fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
+    run_code_mode_metadata_test(|| async {
+        skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    let code = r#"
+        let server = responses::start_mock_server().await;
+        let code = r#"
 const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
 text(JSON.stringify(tool));
 "#;
 
-    let (_test, second_mock) =
-        run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code).await?;
+        let (_test, second_mock) =
+            run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
-    let req = second_mock.single_request();
-    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
-    assert_ne!(
-        success,
-        Some(false),
-        "exec ALL_TOOLS lookup failed unexpectedly: {output}"
-    );
+        let req = second_mock.single_request();
+        let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+        assert_ne!(
+            success,
+            Some(false),
+            "exec ALL_TOOLS lookup failed unexpectedly: {output}"
+        );
 
-    let parsed: Value = serde_json::from_str(
-        &custom_tool_output_last_non_empty_text(&req, "call-1")
-            .expect("exec ALL_TOOLS lookup should emit JSON"),
-    )?;
-    assert_eq!(
-        parsed,
-        serde_json::json!({
-            "name": "view_image",
-            "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file.\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.\n  detail: \"high\" | \"original\";\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
-        })
-    );
+        let parsed: Value = serde_json::from_str(
+            &custom_tool_output_last_non_empty_text(&req, "call-1")
+                .expect("exec ALL_TOOLS lookup should emit JSON"),
+        )?;
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "name": "view_image",
+                "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file.\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.\n  detail: \"high\" | \"original\";\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
+            })
+        );
 
-    Ok(())
+        Ok(())
+    })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
-    skip_if_no_network!(Ok(()));
+#[test]
+fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
+    run_code_mode_metadata_test(|| async {
+        skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    let code = r#"
+        let server = responses::start_mock_server().await;
+        let code = r#"
 const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__rmcp__echo"
+  ({ name, module }) => name === "echo" && module === "tools/mcp/rmcp.js"
 );
 text(JSON.stringify(tool));
 "#;
 
-    let (_test, second_mock) =
-        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
+        let (_test, second_mock) =
+            run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
-    let req = second_mock.single_request();
-    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
-    assert_ne!(
-        success,
-        Some(false),
-        "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
-    );
+        let req = second_mock.single_request();
+        let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+        assert_ne!(
+            success,
+            Some(false),
+            "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
+        );
 
-    let parsed: Value = serde_json::from_str(
-        &custom_tool_output_last_non_empty_text(&req, "call-1")
-            .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
-    )?;
-    assert_eq!(
-        parsed,
-        serde_json::json!({
-            "name": "mcp__rmcp__echo",
-            "description": concat!(
-                "Use these tools to exercise the rmcp test server.\n\n",
-                "Echo back the provided message and include environment data.\n\n",
-                "exec tool declaration:\n",
-                "```ts\n",
-                "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
-                "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
-                "```",
-            ),
-        })
-    );
+        let parsed: Value = serde_json::from_str(
+            &custom_tool_output_last_non_empty_text(&req, "call-1")
+                .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
+        )?;
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "name": "echo",
+                "module": "tools/mcp/rmcp.js",
+                "description": concat!(
+                    "Echo back the provided message and include environment data.\n\n",
+                    "exec tool declaration:\n",
+                    "```ts\n",
+                    "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
+                    "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
+                    "```",
+                ),
+            })
+        );
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
