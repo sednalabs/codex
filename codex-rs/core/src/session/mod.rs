@@ -2578,9 +2578,9 @@ impl Session {
         };
         match entry {
             Some(entry) => {
-                let Ok(cwd) = entry.environment.cwd.to_abs_path() else {
+                let Ok(cwd) = entry.environment.cwd().to_abs_path() else {
                     warn!(
-                        cwd = %entry.environment.cwd,
+                        cwd = %entry.environment.cwd(),
                         "request_permissions response used non-native cwd"
                     );
                     let response = RequestPermissionsResponse {

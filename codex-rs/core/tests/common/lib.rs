@@ -16,6 +16,8 @@ use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+pub use codex_core::test_support::TestCodexResponsesRequestKind;
+pub use codex_core::test_support::responses_metadata;
 #[cfg(target_os = "linux")]
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;

@@ -10455,7 +10455,6 @@ max_concurrent_threads_per_session = 4
 min_wait_timeout_ms = 3000
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
-usage_hint_enabled = true
 usage_hint_text = "base hint"
 root_agent_usage_hint_text = "base root hint"
 subagent_usage_hint_text = "base subagent hint"
@@ -10468,7 +10467,6 @@ max_concurrent_threads_per_session = 6
 min_wait_timeout_ms = 1500
 max_wait_timeout_ms = 90000
 default_wait_timeout_ms = 15000
-usage_hint_enabled = false
 usage_hint_text = "profile hint"
 root_agent_usage_hint_text = "profile root hint"
 subagent_usage_hint_text = "profile subagent hint"
@@ -10488,7 +10486,6 @@ non_code_mode_only = true
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 1500);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 90000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 15000);
-    assert!(!config.multi_agent_v2.usage_hint_enabled);
     assert_eq!(
         config.multi_agent_v2.usage_hint_text.as_deref(),
         Some("profile hint")
