@@ -76,6 +76,8 @@ fn runtime_warning_emits_a_non_fatal_error_item() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: None,
+                turn_id: None,
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::Error(ErrorItem {

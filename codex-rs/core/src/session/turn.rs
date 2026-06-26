@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
 use crate::build_skill_injections;
+use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -1108,6 +1109,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
@@ -1156,6 +1158,20 @@ async fn run_sampling_request(
 
         if original_input.is_none() {
             original_input = Some(prompt.input);
+        }
+
+        if matches!(&err, CodexErr::ServerOverloaded) {
+            capacity_retries += 1;
+            notify_and_wait_for_capacity_retry(
+                sess.as_ref(),
+                turn_context.as_ref(),
+                &cancellation_token,
+                capacity_retries,
+                "sampling request",
+                err,
+            )
+            .await?;
+            continue;
         }
 
         if !err.is_retryable() {

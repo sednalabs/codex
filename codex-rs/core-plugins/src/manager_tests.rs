@@ -1,6 +1,9 @@
 use super::*;
 use crate::LoadedPlugin;
+use crate::OPENAI_CURATED_MARKETPLACE_NAME;
 use crate::PluginLoadOutcome;
+use crate::ToolSuggestDiscoverablePlugin;
+use crate::ToolSuggestPluginDiscoveryInput;
 use crate::installed_marketplaces::marketplace_install_root;
 use crate::loader::load_plugins_from_layer_stack;
 use crate::loader::refresh_non_curated_plugin_cache;
@@ -14,6 +17,7 @@ use crate::startup_sync::curated_plugins_repo_path;
 use crate::test_support::TEST_CURATED_PLUGIN_CACHE_VERSION;
 use crate::test_support::TEST_CURATED_PLUGIN_SHA;
 use crate::test_support::load_plugins_config as load_plugins_config_input;
+use crate::test_support::write_curated_plugin;
 use crate::test_support::write_curated_plugin_sha_with as write_curated_plugin_sha;
 use crate::test_support::write_file;
 use crate::test_support::write_openai_curated_marketplace;
@@ -281,6 +285,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
         vec![LoadedPlugin {
             config_name: "sample@test".to_string(),
             manifest_name: Some("sample".to_string()),
+            plugin_namespace: Some("sample".to_string()),
             manifest_description: Some(
                 "Plugin that includes the sample MCP server and Skills".to_string(),
             ),
@@ -321,7 +326,11 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
                     tools: HashMap::new(),
                 },
             )]),
-            apps: vec![AppConnectorId("connector_example".to_string())],
+            apps: vec![AppDeclaration {
+                name: "example".to_string(),
+                connector_id: AppConnectorId("connector_example".to_string()),
+                category: None,
+            }],
             hook_sources: Vec::new(),
             hook_load_warnings: Vec::new(),
             error: None,
@@ -404,6 +413,10 @@ enabled = true
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
                 scopes: None,
                 oauth: None,
                 oauth_resource: None,
@@ -1243,6 +1256,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
         HashMap::from([(
             "custom".to_string(),
             McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "https://custom.example/mcp".to_string(),
                     bearer_token_env_var: None,
@@ -1533,6 +1547,7 @@ async fn load_plugins_preserves_disabled_plugins_without_effective_contributions
         vec![LoadedPlugin {
             config_name: "sample@test".to_string(),
             manifest_name: None,
+            plugin_namespace: None,
             manifest_description: None,
             root: AbsolutePathBuf::try_from(plugin_root).unwrap(),
             enabled: false,
@@ -1671,7 +1686,11 @@ async fn effective_apps_preserves_app_config_order() {
 #[test]
 fn capability_index_filters_inactive_and_zero_capability_plugins() {
     let codex_home = TempDir::new().unwrap();
-    let connector = |id: &str| AppConnectorId(id.to_string());
+    let connector = |id: &str| AppDeclaration {
+        name: id.to_string(),
+        connector_id: AppConnectorId(id.to_string()),
+        category: None,
+    };
     let http_server = |url: &str| McpServerConfig {
         auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
@@ -1702,6 +1721,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
     let plugin = |config_name: &str, dir_name: &str, manifest_name: &str| LoadedPlugin {
         config_name: config_name.to_string(),
         manifest_name: Some(manifest_name.to_string()),
+        plugin_namespace: Some(manifest_name.to_string()),
         manifest_description: None,
         root: AbsolutePathBuf::try_from(codex_home.path().join(dir_name)).unwrap(),
         enabled: true,
@@ -1884,16 +1904,17 @@ fn plugin_cache_invalidation_rejects_stale_load_completion() {
         skill_config_rules: SkillConfigRules::default(),
         remote_global_catalog_active: false,
     };
-    let stale_generation = manager.enabled_outcome_cache_generation();
+    let stale_generation = manager.loaded_plugins_cache_generation();
 
-    manager.clear_enabled_outcome_cache();
-    manager.cache_enabled_outcome_if_current(
+    manager.clear_loaded_plugins_cache();
+    manager.cache_loaded_plugins_if_current(
         stale_generation,
         cache_key.clone(),
-        PluginLoadOutcome::default(),
+        Vec::new(),
+        PluginSkillSnapshots::for_plugin_load(),
     );
 
-    assert_eq!(manager.cached_enabled_outcome(&cache_key), None);
+    assert_eq!(manager.cached_loaded_plugins(&cache_key), None);
 }
 
 #[tokio::test]
@@ -2512,6 +2533,7 @@ enabled = false
                     },
                     interface: None,
                     keywords: Vec::new(),
+                    manifest_fallback: None,
                     installed: true,
                     enabled: true,
                 },
@@ -2531,6 +2553,7 @@ enabled = false
                     },
                     interface: None,
                     keywords: Vec::new(),
+                    manifest_fallback: None,
                     installed: true,
                     enabled: false,
                 },
@@ -2660,6 +2683,7 @@ plugins = true
             },
             interface: None,
             keywords: Vec::new(),
+            manifest_fallback: None,
             installed: false,
             enabled: false,
         }]
@@ -3115,6 +3139,7 @@ enabled = true
                 ..Default::default()
             }),
             keywords: Vec::new(),
+            manifest_fallback: None,
             installed: true,
             enabled: true,
         }]
@@ -3195,6 +3220,7 @@ plugins = true
                 },
                 interface: None,
                 keywords: Vec::new(),
+                manifest_fallback: None,
                 installed: false,
                 enabled: false,
             }],
@@ -3620,6 +3646,7 @@ enabled = false
             },
             interface: None,
             keywords: Vec::new(),
+            manifest_fallback: None,
             installed: false,
             enabled: true,
         }]
@@ -3652,6 +3679,7 @@ enabled = false
             },
             interface: None,
             keywords: Vec::new(),
+            manifest_fallback: None,
             installed: false,
             enabled: false,
         }]
@@ -3742,6 +3770,7 @@ enabled = true
                 },
                 interface: None,
                 keywords: Vec::new(),
+                manifest_fallback: None,
                 installed: false,
                 enabled: true,
             }],
@@ -3771,9 +3800,10 @@ plugins = true
 
     let mut config = load_config(tmp.path(), tmp.path()).await;
     config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new_with_restriction_product(
+    let manager = PluginsManager::new_with_options(
         tmp.path().to_path_buf(),
         Some(Product::Chatgpt),
+        /*auth_mode*/ None,
     );
 
     let featured_plugin_ids = manager
@@ -3807,9 +3837,10 @@ plugins = true
 
     let mut config = load_config(tmp.path(), tmp.path()).await;
     config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
-    let manager = PluginsManager::new_with_restriction_product(
+    let manager = PluginsManager::new_with_options(
         tmp.path().to_path_buf(),
         /*restriction_product*/ None,
+        /*auth_mode*/ None,
     );
 
     let featured_plugin_ids = manager
@@ -4368,12 +4399,13 @@ async fn load_plugins_ignores_project_config_files() {
         &stack,
         std::collections::HashMap::new(),
         &PluginStore::new(codex_home.path().to_path_buf()),
+        /*plugin_skill_snapshots*/ None,
         Some(Product::Codex),
         /*remote_global_catalog_active*/ false,
     )
     .await;
 
-    assert_eq!(outcome, PluginLoadOutcome::default());
+    assert_eq!(outcome, Vec::<LoadedPlugin>::new());
 }
 
 #[tokio::test]
