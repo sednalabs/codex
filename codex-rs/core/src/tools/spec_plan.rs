@@ -94,9 +94,11 @@ use codex_tools::shell_type_for_model_and_features;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::thread;
 use tracing::instrument;
 use tracing::warn;
 
+const CODE_MODE_METADATA_STACK_SIZE: usize = 16 * 1024 * 1024;
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 const IMAGE_GEN_NAMESPACE: &str = "image_gen";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
@@ -108,6 +110,11 @@ type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 struct PlannedTools {
     runtimes: Vec<PlannedRuntime>,
     hosted_specs: Vec<ToolSpec>,
+}
+
+struct ModelSpecCandidate {
+    spec: ToolSpec,
+    augment_for_code_mode: bool,
 }
 
 impl PlannedTools {
@@ -244,6 +251,7 @@ fn build_model_visible_specs_and_registry(
         hosted_specs,
     } = planned_tools;
     let mut specs = Vec::new();
+    let mut spec_candidates = Vec::new();
     let mut seen_tool_names = HashSet::new();
     for runtime in &runtimes {
         let tool_name = runtime.tool_name();
@@ -254,14 +262,39 @@ fn build_model_visible_specs_and_registry(
         if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
         {
             let spec = runtime.spec();
-            specs.push(spec_for_model_request(
-                turn_context,
-                exposure,
-                &tool_name,
+            spec_candidates.push(ModelSpecCandidate {
+                augment_for_code_mode: should_augment_spec_for_code_mode(
+                    turn_context,
+                    exposure,
+                    &tool_name,
+                    &spec,
+                ),
                 spec,
-            ));
+            });
         }
     }
+    let fallback_specs = spec_candidates
+        .iter()
+        .map(|candidate| candidate.spec.clone())
+        .collect::<Vec<_>>();
+    specs.extend(
+        with_code_mode_metadata_stack("code-mode-model-tool-metadata", move || {
+            spec_candidates
+                .into_iter()
+                .map(|candidate| {
+                    if candidate.augment_for_code_mode {
+                        codex_tools::augment_tool_spec_for_code_mode(candidate.spec)
+                    } else {
+                        candidate.spec
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|err| {
+            warn!("Failed to augment model tool specs for code mode: {err}");
+            fallback_specs
+        }),
+    );
     specs.extend(hosted_specs);
 
     let registry = ToolRegistry::from_tools(runtimes);
@@ -275,24 +308,19 @@ fn build_model_visible_specs_and_registry(
     (model_visible_specs, registry)
 }
 
-fn spec_for_model_request(
+fn should_augment_spec_for_code_mode(
     turn_context: &TurnContext,
     exposure: ToolExposure,
     tool_name: &ToolName,
-    spec: ToolSpec,
-) -> ToolSpec {
+    spec: &ToolSpec,
+) -> bool {
     let tool_mode = effective_tool_mode(turn_context);
-    if matches!(
+    matches!(
         tool_mode,
         ToolMode::CodeMode | ToolMode::CodeModeOnly
     ) && exposure != ToolExposure::DirectModelOnly
         && !is_excluded_from_code_mode(turn_context, tool_name)
         && codex_code_mode::is_code_mode_nested_tool(spec.name())
-    {
-        codex_tools::augment_tool_spec_for_code_mode(spec)
-    } else {
-        spec
-    }
 }
 
 fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
@@ -526,9 +554,20 @@ fn build_code_mode_executors(
 
         if exposure == ToolExposure::Deferred {
             // Only show deferred-tool guidance when supported and an included spec is usable by code mode.
+            let deferred_tool_has_code_mode_metadata = if deferred_tools_guidance_enabled {
+                with_code_mode_metadata_stack("code-mode-deferred-tool-metadata", || {
+                    !collect_code_mode_exec_prompt_tool_definitions(std::iter::once(&spec))
+                        .is_empty()
+                })
+                .unwrap_or_else(|err| {
+                    warn!("Failed to collect deferred code mode tool metadata: {err}");
+                    false
+                })
+            } else {
+                false
+            };
             deferred_tools_available |= deferred_tools_guidance_enabled
-                && !collect_code_mode_exec_prompt_tool_definitions(std::iter::once(&spec))
-                    .is_empty();
+                && deferred_tool_has_code_mode_metadata;
         } else {
             exec_prompt_tool_specs.push(spec.clone());
         }
@@ -538,7 +577,13 @@ fn build_code_mode_executors(
     let (namespace_descriptions, enabled_tools) = if code_mode_only {
         let namespace_descriptions = code_mode_namespace_descriptions(&exec_prompt_tool_specs);
         let mut enabled_tools =
-            collect_code_mode_exec_prompt_tool_definitions(exec_prompt_tool_specs.iter());
+            with_code_mode_metadata_stack("code-mode-exec-prompt-metadata", || {
+                collect_code_mode_exec_prompt_tool_definitions(exec_prompt_tool_specs.iter())
+            })
+            .unwrap_or_else(|err| {
+                warn!("Failed to collect code mode prompt metadata: {err}");
+                Vec::new()
+            });
         enabled_tools
             .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
         (namespace_descriptions, enabled_tools)
@@ -604,6 +649,24 @@ fn merge_into_namespaces(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
     }
 
     merged_specs
+}
+
+fn with_code_mode_metadata_stack<T, F>(thread_name: &str, f: F) -> Result<T, String>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    thread::scope(|scope| {
+        let handle = thread::Builder::new()
+            .name(thread_name.to_string())
+            .stack_size(CODE_MODE_METADATA_STACK_SIZE)
+            .spawn_scoped(scope, f)
+            .map_err(|err| format!("failed to start {thread_name}: {err}"))?;
+
+        handle
+            .join()
+            .map_err(|_| format!("{thread_name} panicked"))
+    })
 }
 
 fn code_mode_namespace_descriptions(
