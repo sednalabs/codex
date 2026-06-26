@@ -2229,14 +2229,10 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                let budget_result = sess
-                    .record_token_usage_info(&turn_context, token_usage.as_ref())
+                sess.record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
-                if let Err(err) = budget_result {
-                    break Err(err);
-                }
                 if let Some(false) = end_turn {
                     needs_follow_up = true;
                 }
