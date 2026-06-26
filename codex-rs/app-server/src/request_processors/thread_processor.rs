@@ -344,38 +344,6 @@ fn core_dynamic_tools_from_api(
         .collect())
 }
 
-fn dynamic_tools_require_thread_reload(dynamic_tools: Option<&[ApiDynamicToolSpec]>) -> bool {
-    dynamic_tools
-        .unwrap_or_default()
-        .iter()
-        .any(dynamic_tool_requires_thread_reload)
-}
-
-fn dynamic_tool_requires_thread_reload(tool: &ApiDynamicToolSpec) -> bool {
-    is_environment_scoped_dynamic_tool(tool) || is_bare_native_computer_use_dynamic_tool(tool)
-}
-
-fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
-    tool.capability
-        .as_ref()
-        .and_then(|capability| capability.capability_scope.as_deref())
-        .is_some_and(|scope| scope.eq_ignore_ascii_case("environment"))
-}
-
-fn is_bare_native_computer_use_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
-    tool.namespace.is_none()
-        && matches!(
-            tool.name.as_str(),
-            codex_tools::ANDROID_OBSERVE_TOOL_NAME
-                | codex_tools::ANDROID_STEP_TOOL_NAME
-                | codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME
-                | codex_tools::BROWSER_OBSERVE_TOOL_NAME
-                | codex_tools::BROWSER_STEP_TOOL_NAME
-                | codex_tools::DESKTOP_OBSERVE_TOOL_NAME
-                | codex_tools::DESKTOP_STEP_TOOL_NAME
-        )
-}
-
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -452,6 +420,7 @@ impl ThreadRequestProcessor {
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
         request_context: RequestContext,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_start_inner(
@@ -459,6 +428,7 @@ impl ThreadRequestProcessor {
             params,
             app_server_client_name,
             app_server_client_version,
+            supports_openai_form_elicitation,
             request_context,
         )
         .await
@@ -481,12 +451,14 @@ impl ThreadRequestProcessor {
         params: ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_resume_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
+            supports_openai_form_elicitation,
         )
         .await
         .map(|()| None)
@@ -498,12 +470,14 @@ impl ThreadRequestProcessor {
         params: ThreadForkParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_fork_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
+            supports_openai_form_elicitation,
         )
         .await
         .map(|()| None)
@@ -923,6 +897,7 @@ impl ThreadRequestProcessor {
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadStartParams {
@@ -1006,6 +981,7 @@ impl ThreadRequestProcessor {
                 allow_provider_model_fallback,
                 experimental_raw_events,
                 request_trace,
+                supports_openai_form_elicitation,
             )
             .await
             {
@@ -1080,6 +1056,7 @@ impl ThreadRequestProcessor {
         allow_provider_model_fallback: bool,
         experimental_raw_events: bool,
         request_trace: Option<W3cTraceContext>,
+        supports_openai_form_elicitation: bool,
     ) -> Result<(), JSONRPCErrorError> {
         let thread_start_started_at = std::time::Instant::now();
         let requested_cwd = typesafe_overrides.cwd.clone();
@@ -1188,6 +1165,7 @@ impl ThreadRequestProcessor {
                 parent_trace: request_trace,
                 environments,
                 thread_extension_init,
+                supports_openai_form_elicitation,
             })
             .instrument(tracing::info_span!(
                 "app_server.thread_start.create_thread",
@@ -1283,7 +1261,7 @@ impl ThreadRequestProcessor {
             service_tier: config_snapshot.service_tier,
             cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
-            instruction_sources,
+            instruction_sources: instruction_sources.into_iter().map(Into::into).collect(),
             approval_policy: config_snapshot.approval_policy.into(),
             approvals_reviewer: config_snapshot.approvals_reviewer.into(),
             sandbox,
@@ -1358,15 +1336,26 @@ impl ThreadRequestProcessor {
         &self,
         environments: Option<Vec<TurnEnvironmentParams>>,
     ) -> Result<Option<Vec<TurnEnvironmentSelection>>, JSONRPCErrorError> {
-        let environment_selections = environments.map(|environments| {
-            environments
-                .into_iter()
-                .map(|environment| TurnEnvironmentSelection {
-                    environment_id: environment.environment_id,
-                    cwd: environment.cwd,
-                })
-                .collect::<Vec<_>>()
-        });
+        let environment_selections = environments
+            .map(|environments| {
+                environments
+                    .into_iter()
+                    .map(|environment| {
+                        let environment_id = environment.environment_id;
+                        let cwd = environment.cwd.to_inferred_path_uri().ok_or_else(|| {
+                            invalid_request(format!(
+                                "invalid cwd for environment `{environment_id}`: path `{}` does not use absolute POSIX or Windows path syntax",
+                                environment.cwd
+                            ))
+                        })?;
+                        Ok(TurnEnvironmentSelection {
+                            environment_id,
+                            cwd,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, JSONRPCErrorError>>()
+            })
+            .transpose()?;
         if let Some(environment_selections) = environment_selections.as_ref() {
             self.thread_manager
                 .validate_environment_selections(environment_selections)
@@ -1838,7 +1827,9 @@ impl ThreadRequestProcessor {
                 item_id: terminal.item_id,
                 process_id: terminal.process_id,
                 command: terminal.command,
-                cwd: terminal.cwd,
+                cwd: terminal.cwd.to_abs_path().map_err(|err| {
+                    internal_error(format!("failed to render background terminal cwd: {err}"))
+                })?,
                 os_pid: None,
                 cpu_percent: None,
                 rss_kb: None,
@@ -1930,7 +1921,6 @@ impl ThreadRequestProcessor {
             sort_direction,
             model_providers,
             source_kinds,
-            thread_sources,
             archived,
             cwd,
             use_state_db_only,
@@ -1938,6 +1928,7 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        let thread_sources = None;
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2035,10 +2026,10 @@ impl ThreadRequestProcessor {
             sort_key,
             sort_direction,
             source_kinds,
-            thread_sources,
             archived,
             search_term,
         } = params;
+        let thread_sources = None;
         let search_term = search_term.trim().to_string();
         let search_term = (!search_term.is_empty())
             .then_some(search_term)
@@ -2722,6 +2713,7 @@ impl ThreadRequestProcessor {
         params: ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
     ) -> Result<(), JSONRPCErrorError> {
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
@@ -2794,7 +2786,6 @@ impl ThreadRequestProcessor {
             base_instructions,
             developer_instructions,
             personality,
-            dynamic_tools,
             exclude_turns,
             initial_turns_page,
         } = params;
@@ -2859,22 +2850,15 @@ impl ThreadRequestProcessor {
         };
 
         let response_history = thread_history.clone();
-        let core_dynamic_tools = match core_dynamic_tools_from_api(dynamic_tools) {
-            Ok(tools) => tools,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return Ok(());
-            }
-        };
 
         match self
             .thread_manager
-            .resume_thread_with_history_with_tools(
+            .resume_thread_with_history(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
-                core_dynamic_tools,
                 self.request_trace_context(&request_id).await,
+                supports_openai_form_elicitation,
             )
             .await
         {
@@ -2999,7 +2983,7 @@ impl ThreadRequestProcessor {
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
                     runtime_workspace_roots: config_snapshot.workspace_roots,
-                    instruction_sources,
+                    instruction_sources: instruction_sources.into_iter().map(Into::into).collect(),
                     approval_policy: session_configured.approval_policy.into(),
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
                     sandbox,
@@ -3069,8 +3053,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<RunningThreadResumeResult, JSONRPCErrorError> {
-        let requested_tools_require_reload =
-            dynamic_tools_require_thread_reload(params.dynamic_tools.as_deref());
+        let requested_tools_require_reload = false;
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
                 && self
@@ -3237,7 +3220,7 @@ impl ThreadRequestProcessor {
                     request_id: request_id.clone(),
                     history_items,
                     config_snapshot,
-                    instruction_sources,
+                    instruction_sources: instruction_sources.into_iter().map(Into::into).collect(),
                     thread_summary,
                     emit_thread_goal_update,
                     thread_goal_state_db,
@@ -3547,6 +3530,7 @@ impl ThreadRequestProcessor {
         params: ThreadForkParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        supports_openai_form_elicitation: bool,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadForkParams {
             thread_id,
@@ -3565,7 +3549,6 @@ impl ThreadRequestProcessor {
             developer_instructions,
             ephemeral,
             thread_source,
-            dynamic_tools,
             exclude_turns,
         } = params;
         let include_turns = !exclude_turns;
@@ -3639,8 +3622,6 @@ impl ThreadRequestProcessor {
             .map_err(|err| config_load_error(&err))?;
 
         let fallback_model_provider = config.model_provider_id.clone();
-        let core_dynamic_tools = core_dynamic_tools_from_api(dynamic_tools)?;
-
         let NewThread {
             thread_id,
             thread: forked_thread,
@@ -3648,7 +3629,7 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .fork_thread_from_history_with_tools(
+            .fork_thread_from_history(
                 ForkSnapshot::Interrupted,
                 config,
                 InitialHistory::Resumed(ResumedHistory {
@@ -3657,8 +3638,8 @@ impl ThreadRequestProcessor {
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
                 thread_source.map(Into::into),
-                core_dynamic_tools,
                 self.request_trace_context(&request_id).await,
+                supports_openai_form_elicitation,
             )
             .await
             .map_err(|err| match err {
@@ -3782,7 +3763,7 @@ impl ThreadRequestProcessor {
             service_tier: session_configured.service_tier,
             cwd: session_configured.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
-            instruction_sources,
+            instruction_sources: instruction_sources.into_iter().map(Into::into).collect(),
             approval_policy: session_configured.approval_policy.into(),
             approvals_reviewer: session_configured.approvals_reviewer.into(),
             sandbox,
@@ -4006,6 +3987,7 @@ fn thread_backwards_cursor_for_sort_key(
     let timestamp = match sort_key {
         StoreThreadSortKey::CreatedAt => thread.created_at,
         StoreThreadSortKey::UpdatedAt => thread.updated_at,
+        StoreThreadSortKey::RecencyAt => thread.recency_at.unwrap_or(thread.updated_at),
     };
     // The state DB stores unique millisecond timestamps. Offset the reverse cursor by one
     // millisecond so the opposite-direction query includes the page anchor.
@@ -4453,6 +4435,7 @@ pub(crate) fn thread_from_stored_thread(
         reasoning_effort: thread.reasoning_effort,
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
+        recency_at: thread.recency_at.map(|time| time.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
         cwd,
@@ -4661,6 +4644,7 @@ fn build_thread_from_snapshot(
         reasoning_effort: config_snapshot.reasoning_effort.clone(),
         created_at: now,
         updated_at: now,
+        recency_at: Some(now),
         status: ThreadStatus::NotLoaded,
         path,
         cwd: config_snapshot.cwd().clone(),

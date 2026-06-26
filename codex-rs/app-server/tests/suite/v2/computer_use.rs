@@ -26,11 +26,9 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_protocol::dynamic_tools::DynamicToolCapability;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ResponseItem;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -245,7 +243,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
 }
 
 #[tokio::test]
-async fn thread_resume_injects_native_android_tools_into_model_requests() -> Result<()> {
+async fn thread_resume_preserves_native_android_tools_in_model_requests() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
@@ -255,20 +253,22 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let resume_history = vec![ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: "Resume this thread".to_string(),
-        }],
-        phase: None,
-    }];
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![android_observe_tool()]),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
 
     let resume_req = mcp
         .send_thread_resume_request(ThreadResumeParams {
-            thread_id: "thread_resume_seed".to_string(),
-            history: Some(resume_history),
-            dynamic_tools: Some(vec![android_observe_tool()]),
+            thread_id: thread.id,
             ..Default::default()
         })
         .await?;
@@ -312,7 +312,7 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
 }
 
 #[tokio::test]
-async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested() -> Result<()>
+async fn thread_resume_preserves_loaded_thread_native_android_tools() -> Result<()>
 {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
@@ -327,7 +327,10 @@ async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requ
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams::default())
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![android_observe_tool()]),
+            ..Default::default()
+        })
         .await?;
     let thread_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -362,7 +365,6 @@ async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requ
     let resume_req = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
-            dynamic_tools: Some(vec![android_observe_tool()]),
             ..Default::default()
         })
         .await?;
@@ -420,7 +422,10 @@ async fn thread_fork_injects_native_android_tools_into_model_requests() -> Resul
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams::default())
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![android_step_tool()]),
+            ..Default::default()
+        })
         .await?;
     let thread_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -455,7 +460,6 @@ async fn thread_fork_injects_native_android_tools_into_model_requests() -> Resul
     let fork_req = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: thread.id,
-            dynamic_tools: Some(vec![android_step_tool()]),
             ..Default::default()
         })
         .await?;

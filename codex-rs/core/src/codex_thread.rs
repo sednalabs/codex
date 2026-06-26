@@ -193,6 +193,17 @@ impl CodexThread {
         self.codex.submit(op).await
     }
 
+    pub async fn notify_computer_use_response(
+        &self,
+        call_id: &str,
+        response: codex_protocol::computer_use::ComputerUseResponse,
+    ) {
+        self.codex
+            .session
+            .notify_computer_use_response(call_id, response)
+            .await;
+    }
+
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.codex.session.services.session_telemetry.clone()

@@ -133,7 +133,7 @@ enum CommandExecutionApprovalPresentation {
 #[derive(Debug, PartialEq)]
 struct CommandExecutionCompletionItem {
     command: String,
-    cwd: AbsolutePathBuf,
+    cwd: codex_utils_path_uri::LegacyAppPathString,
     command_actions: Vec<V2ParsedCommand>,
 }
 
@@ -569,6 +569,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             let ExecApprovalRequestEvent {
                 call_id,
                 approval_id,
+                environment_id,
                 turn_id,
                 started_at_ms,
                 command,
@@ -594,7 +595,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let command_string = shlex_join(&command);
                 let completion_item = CommandExecutionCompletionItem {
                     command: command_string,
-                    cwd: cwd.clone(),
+                    cwd: cwd.clone().into(),
                     command_actions: command_actions.clone(),
                 };
                 CommandExecutionApprovalPresentation::Command(completion_item)
@@ -649,12 +650,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 reason,
                 network_approval_context,
                 command,
-                cwd,
+                cwd: cwd.map(Into::into),
                 command_actions,
                 additional_permissions,
                 proposed_execpolicy_amendment: proposed_execpolicy_amendment_v2,
                 proposed_network_policy_amendments: proposed_network_policy_amendments_v2,
                 available_decisions: Some(available_decisions),
+                environment_id,
             };
             let (pending_request_id, rx) = outgoing
                 .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
@@ -707,6 +709,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 turn_id: request.turn_id,
                 item_id: request.call_id,
                 questions,
+                auto_resolution_ms: request.auto_resolution_ms,
             };
             let (pending_request_id, rx) = outgoing
                 .send_request(ServerRequestPayload::ToolRequestUserInput(params))
@@ -1458,7 +1461,7 @@ async fn start_command_execution_item(
     turn_id: String,
     item_id: String,
     command: String,
-    cwd: AbsolutePathBuf,
+    cwd: codex_utils_path_uri::LegacyAppPathString,
     command_actions: Vec<V2ParsedCommand>,
     source: CommandExecutionSource,
     outgoing: &ThreadScopedOutgoingMessageSender,
@@ -1503,7 +1506,7 @@ async fn complete_command_execution_item(
     turn_id: String,
     item_id: String,
     command: String,
-    cwd: AbsolutePathBuf,
+    cwd: codex_utils_path_uri::LegacyAppPathString,
     process_id: Option<String>,
     source: CommandExecutionSource,
     command_actions: Vec<V2ParsedCommand>,
@@ -2003,7 +2006,17 @@ fn request_permissions_response_from_client_result(
             strict_auto_review: false,
         });
     }
-    let granted_permissions: CoreAdditionalPermissionProfile = response.permissions.into();
+    let granted_permissions = match CoreAdditionalPermissionProfile::try_from(response.permissions)
+    {
+        Ok(permissions) => permissions,
+        Err(err) => {
+            error!("failed to decode granted permissions: {err}");
+            CoreAdditionalPermissionProfile {
+                network: None,
+                file_system: None,
+            }
+        }
+    };
     let permissions = if granted_permissions.is_empty() {
         CoreRequestPermissionProfile::default()
     } else {
@@ -2394,7 +2407,7 @@ mod tests {
     fn command_execution_completion_item(command: &str) -> CommandExecutionCompletionItem {
         CommandExecutionCompletionItem {
             command: command.to_string(),
-            cwd: test_path_buf("/tmp").abs(),
+            cwd: test_path_buf("/tmp").abs().into(),
             command_actions: vec![V2ParsedCommand::Unknown {
                 command: command.to_string(),
             }],
