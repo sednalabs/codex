@@ -17,6 +17,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::assert_regex_match;
 use core_test_support::managed_network_requirements_loader;
@@ -175,6 +176,7 @@ async fn wait_for_raw_unified_exec_output(
             ResponseItem::FunctionCallOutput {
                 call_id: output_call_id,
                 output,
+                ..
             } if output_call_id == call_id => output.text_content().map(str::to_string),
             _ => None,
         },
@@ -233,7 +235,7 @@ async fn create_workspace_directory(
     let abs_path_uri = PathUri::from_host_native_path(&abs_path)?;
     test.fs()
         .create_directory(
-            &abs_path,
+            &abs_path_uri,
             CreateDirectoryOptions { recursive: true },
             /*sandbox*/ None,
         )

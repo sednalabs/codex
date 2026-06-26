@@ -42,6 +42,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -1685,7 +1686,7 @@ async fn reconstruct_history_matches_live_compactions() {
         .await;
 
     assert_eq!(expected, reconstructed.history);
-    assert_eq!(2, reconstructed.window_id);
+    assert_eq!(2, reconstructed.window_number);
 }
 
 #[tokio::test]
@@ -1915,6 +1916,7 @@ async fn prepares_image_failures_before_history_insertion() {
     )
     .await;
     let item = ResponseItem::FunctionCallOutput {
+        id: None,
         call_id: "call-1".to_string(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![
@@ -3053,7 +3055,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
         #[allow(deprecated)]
-        cwd: turn_context.cwd.to_path_buf(),
+        cwd: turn_context.cwd.clone(),
         workspace_roots: None,
         current_date: turn_context.current_date.clone(),
         timezone: turn_context.timezone.clone(),
@@ -3067,6 +3069,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         multi_agent_version: None,
+        multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -3998,8 +4001,8 @@ async fn turn_context_with_model_updates_model_fields() {
         Some(ReasoningEffortConfig::Medium)
     );
     assert_eq!(
-        updated.truncation_policy,
-        expected_model_info.truncation_policy.into()
+        updated.model_info.truncation_policy,
+        expected_model_info.truncation_policy
     );
 }
 
@@ -7705,6 +7708,7 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
     let refresh_config = McpServerRefreshConfig {
         mcp_servers: json!({}),
         mcp_oauth_credentials_store_mode,
+        auth_keyring_backend_kind: json!(null),
     };
     {
         let mut guard = session.pending_mcp_server_refresh_config.lock().await;
@@ -8074,13 +8078,11 @@ struct PromptExtensionTestContributor;
 struct PromptExtensionTestState;
 
 impl codex_extension_api::ContextContributor for PromptExtensionTestContributor {
-    fn contribute<'a>(
+    fn contribute_thread_context<'a>(
         &'a self,
         _session_store: &'a codex_extension_api::ExtensionData,
         thread_store: &'a codex_extension_api::ExtensionData,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Vec<codex_extension_api::PromptFragment>> + Send + 'a>,
-    > {
+    ) -> codex_extension_api::ExtensionFuture<'a, Vec<codex_extension_api::PromptFragment>> {
         Box::pin(async move {
             thread_store
                 .get::<PromptExtensionTestState>()
@@ -8092,6 +8094,31 @@ impl codex_extension_api::ContextContributor for PromptExtensionTestContributor 
                 })
                 .into_iter()
                 .collect()
+        })
+    }
+}
+
+struct TurnContextExtensionTestContributor;
+struct TurnContextExtensionTestState {
+    expected_model_context_window: Option<i64>,
+}
+
+impl codex_extension_api::ContextContributor for TurnContextExtensionTestContributor {
+    fn contribute_turn_context<'a>(
+        &'a self,
+        input: codex_extension_api::TurnContextContributionInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, Vec<codex_extension_api::PromptFragment>> {
+        Box::pin(async move {
+            input
+                .turn_store
+                .get::<TurnContextExtensionTestState>()
+                .filter(|state| state.expected_model_context_window == input.model_context_window)
+                .map(|_| {
+                    vec![codex_extension_api::PromptFragment::developer_policy(
+                        "turn context extension enabled",
+                    )]
+                })
+                .unwrap_or_default()
         })
     }
 }

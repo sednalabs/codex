@@ -23,7 +23,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -269,23 +268,6 @@ impl AgentControl {
             }
         }
         result
-    }
-
-    /// Append a prebuilt message to an existing agent thread outside the normal user-input path.
-    #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) async fn append_message(
-        &self,
-        agent_id: ThreadId,
-        message: ResponseItem,
-    ) -> CodexResult<String> {
-        let state = self.upgrade()?;
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            state.append_message(agent_id, message).await,
-        )
-        .await
     }
 
     pub(crate) async fn send_inter_agent_communication(

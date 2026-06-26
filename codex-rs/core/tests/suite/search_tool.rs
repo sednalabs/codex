@@ -6,9 +6,6 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_login::CodexAuth;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
-use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
-use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
-use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -918,18 +915,15 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
         "required": ["mode"],
         "additionalProperties": false,
     });
-    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
-        name: "codex_app".to_string(),
-        description: "Automation tools.".to_string(),
-        tools: vec![DynamicToolNamespaceTool::Function(
-            DynamicToolFunctionSpec {
-                name: tool_name.to_string(),
-                description: tool_description.to_string(),
-                input_schema: input_schema.clone(),
-                defer_loading: true,
-            },
-        )],
-    });
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: tool_name.to_string(),
+        description: tool_description.to_string(),
+        input_schema: input_schema.clone(),
+        defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
+    };
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let base_test = builder.build(&server).await?;
@@ -1107,6 +1101,10 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string(), "image".to_string()]),
                     disabled_tools: Some(vec!["image".to_string()]),
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                     scopes: None,
                     oauth: None,
                     oauth_resource: None,
@@ -1234,6 +1232,10 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                     scopes: None,
                     oauth: None,
                     oauth_resource: None,
@@ -1383,6 +1385,10 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     default_tools_approval_mode: None,
                     enabled_tools: Some(vec!["echo".to_string()]),
                     disabled_tools: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
                     scopes: None,
                     oauth: None,
                     oauth_resource: None,
@@ -1541,27 +1547,23 @@ async fn tool_search_matches_dynamic_tools_by_name_description_namespace_and_sch
     )
     .await;
 
-    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
-        name: "orbit_ops".to_string(),
-        description: "Orbital reminder operations.".to_string(),
-        tools: vec![DynamicToolNamespaceTool::Function(
-            DynamicToolFunctionSpec {
-                name: "quasar_ping_beacon".to_string(),
-                description: "Trigger the saffron metronome workflow for reminder follow-ups."
-                    .to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "chrono_spec": { "type": "string" },
-                        "targetThreadId": { "type": "string" },
-                    },
-                    "required": ["chrono_spec"],
-                    "additionalProperties": false,
-                }),
-                defer_loading: true,
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("orbit_ops".to_string()),
+        name: "quasar_ping_beacon".to_string(),
+        description: "Trigger the saffron metronome workflow for reminder follow-ups.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "chrono_spec": { "type": "string" },
+                "targetThreadId": { "type": "string" },
             },
-        )],
-    });
+            "required": ["chrono_spec"],
+            "additionalProperties": false,
+        }),
+        defer_loading: true,
+        persist_on_resume: true,
+        capability: None,
+    };
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let base_test = builder.build(&server).await?;

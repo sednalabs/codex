@@ -155,21 +155,14 @@ mod thread_processor_behavior_tests {
         input_schema: Value,
         defer_loading: bool,
     ) -> DynamicToolSpec {
-        let function = DynamicToolFunctionSpec {
+        DynamicToolSpec {
+            namespace: namespace.map(ToString::to_string),
             name: name.into(),
             description: "test".to_string(),
             input_schema,
             defer_loading,
-        };
-        match namespace {
-            Some(namespace) => {
-                DynamicToolSpec::Namespace(codex_app_server_protocol::DynamicToolNamespaceSpec {
-                    name: namespace.to_string(),
-                    description: "test namespace".to_string(),
-                    tools: vec![DynamicToolNamespaceTool::Function(function)],
-                })
-            }
-            None => DynamicToolSpec::Function(function),
+            persist_on_resume: true,
+            capability: None,
         }
     }
 
@@ -259,26 +252,15 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_duplicate_name_in_same_namespace() {
-        let function = || DynamicToolFunctionSpec {
-            name: "my_tool".to_string(),
-            description: "test".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-            defer_loading: true,
-        };
-        let tools = vec![DynamicToolSpec::Namespace(
-            codex_app_server_protocol::DynamicToolNamespaceSpec {
-                name: "codex_app".to_string(),
-                description: "test namespace".to_string(),
-                tools: vec![
-                    DynamicToolNamespaceTool::Function(function()),
-                    DynamicToolNamespaceTool::Function(function()),
-                ],
-            },
-        )];
+        let schema = json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        });
+        let tools = vec![
+            dynamic_tool(Some("codex_app"), "my_tool", schema.clone(), true),
+            dynamic_tool(Some("codex_app"), "my_tool", schema, true),
+        ];
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
@@ -430,14 +412,6 @@ mod thread_processor_behavior_tests {
         let err = validate_dynamic_tools(&tools).expect_err("namespace too long");
         assert!(err.contains("at most 64"), "unexpected error: {err}");
         assert!(err.contains(&long_namespace), "unexpected error: {err}");
-
-        let DynamicToolSpec::Namespace(namespace) = &mut tools[0] else {
-            unreachable!("expected namespace")
-        };
-        namespace.name = "tickets".to_string();
-        namespace.description = "a".repeat(1025);
-        let err = validate_dynamic_tools(&tools).expect_err("namespace description too long");
-        assert!(err.contains("at most 1024"), "unexpected error: {err}");
     }
 
     #[test]

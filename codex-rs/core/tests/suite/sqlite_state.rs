@@ -7,9 +7,6 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::WebSearchMode;
-use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
-use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
-use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -130,18 +127,15 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         "required": ["query"],
         "additionalProperties": false,
     });
-    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
-        name: namespace.to_string(),
-        description: namespace_description.to_string(),
-        tools: vec![DynamicToolNamespaceTool::Function(
-            DynamicToolFunctionSpec {
-                name: tool_name.to_string(),
-                description: tool_description.to_string(),
-                input_schema: input_schema.clone(),
-                defer_loading: false,
-            },
-        )],
-    });
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some(namespace.to_string()),
+        name: tool_name.to_string(),
+        description: tool_description.to_string(),
+        input_schema: input_schema.clone(),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
     let mut builder = test_codex().with_config(|config| {
         config
             .features
@@ -679,6 +673,10 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
+                enable_elicitation: false,
+                read_only: false,
+                strict_tool_classification: false,
+                require_approval_for_mutating: false,
                 scopes: None,
                 oauth: None,
                 oauth_resource: None,
