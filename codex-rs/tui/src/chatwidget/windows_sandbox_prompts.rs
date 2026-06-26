@@ -15,7 +15,8 @@ impl ChatWidget {
 
     #[cfg(any(target_os = "windows", test))]
     pub(super) fn elevated_windows_sandbox_setup_required(&self) -> bool {
-        crate::windows_sandbox::level_from_config(&self.config) == WindowsSandboxLevel::Elevated
+        crate::legacy_core::windows_sandbox::level_from_config(&self.config)
+            == WindowsSandboxLevel::Elevated
             && self
                 .config
                 .config_layer_stack
@@ -23,7 +24,9 @@ impl ChatWidget {
                 .windows_sandbox_mode
                 .source
                 .is_some()
-            && !crate::windows_sandbox::sandbox_setup_is_complete(self.config.codex_home.as_path())
+            && !crate::legacy_core::windows_sandbox::sandbox_setup_is_complete(
+                self.config.codex_home.as_path(),
+            )
     }
 
     #[cfg(target_os = "windows")]
@@ -458,7 +461,8 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, show_now: bool) {
-        let windows_sandbox_level = crate::windows_sandbox::level_from_config(&self.config);
+        let windows_sandbox_level =
+            crate::legacy_core::windows_sandbox::level_from_config(&self.config);
         let setup_is_required = windows_sandbox_level == WindowsSandboxLevel::Disabled
             || self.elevated_windows_sandbox_setup_required();
         if show_now
