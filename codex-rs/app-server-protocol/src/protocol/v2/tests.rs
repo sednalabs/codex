@@ -1,4 +1,5 @@
 use super::*;
+use crate::ServerNotification;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
@@ -28,6 +29,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandbox
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
+use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
@@ -56,12 +58,6 @@ fn absolute_path(path: &str) -> AbsolutePathBuf {
     test_path_buf(&path).abs()
 }
 
-fn legacy_app_path_from_str(path: &str) -> LegacyAppPathString {
-    LegacyAppPathString::from_abs_path(
-        &AbsolutePathBuf::try_from(PathBuf::from(path)).expect("path must be absolute"),
-    )
-}
-
 fn test_absolute_path() -> AbsolutePathBuf {
     absolute_path("readable")
 }
@@ -76,7 +72,6 @@ fn thread_sources_round_trip_as_scalar_labels() {
             "automation",
         ),
         (ThreadSource::MemoryConsolidation, "memory_consolidation"),
-        (ThreadSource::Side, "side"),
     ] {
         let value = serde_json::to_value(&source).expect("serialize thread source");
 
@@ -181,11 +176,9 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
-            model: None,
-            reasoning_effort: None,
             created_at: 1,
             updated_at: 1,
-            recency_at: None,
+            recency_at: Some(1),
             status: ThreadStatus::Idle,
             path: None,
             cwd: absolute_path("tmp"),
@@ -209,7 +202,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
-        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
+        multi_agent_mode: Default::default(),
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
             next_cursor: Some("cursor_next".to_string()),
@@ -336,16 +329,6 @@ fn thread_list_params_accepts_state_db_only_flag() {
 }
 
 #[test]
-fn thread_list_params_accepts_source_kind_filter() {
-    let params = serde_json::from_value::<ThreadListParams>(json!({
-        "sourceKinds": ["subAgent"],
-    }))
-    .expect("thread source kind filter should deserialize");
-
-    assert_eq!(params.source_kinds, Some(vec![ThreadSourceKind::SubAgent]));
-}
-
-#[test]
 fn collab_agent_state_maps_interrupted_status() {
     assert_eq!(
         CollabAgentState::from(CoreAgentStatus::Interrupted),
@@ -430,7 +413,7 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
 }
 
 #[test]
-fn command_execution_request_approval_defers_relative_additional_permission_path_validation() {
+fn command_execution_request_approval_localization_rejects_relative_additional_permission_paths() {
     let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
         "threadId": "thr_123",
         "turnId": "turn_123",
@@ -452,18 +435,14 @@ fn command_execution_request_approval_defers_relative_additional_permission_path
         "proposedNetworkPolicyAmendments": null,
         "availableDecisions": null
     }))
-    .expect("legacy path strings should deserialize");
+    .expect("API paths should deserialize before localization");
+    let additional_permissions = params
+        .additional_permissions
+        .expect("additional permissions should be present");
 
-    let err = CoreAdditionalPermissionProfile::try_from(
-        params
-            .additional_permissions
-            .expect("additional permissions should be present"),
-    )
-    .expect_err("relative additional permission paths should fail conversion");
-    assert!(
-        err.to_string().contains("not absolute"),
-        "unexpected error: {err}"
-    );
+    let err = CoreAdditionalPermissionProfile::try_from(additional_permissions)
+        .expect_err("relative additional permission paths should fail localization");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -507,8 +486,14 @@ fn permissions_request_approval_uses_request_permission_profile() {
                 enabled: Some(true),
             }),
             file_system: Some(AdditionalFileSystemPermissions {
-                read: Some(vec![legacy_app_path_from_str(read_only_path)]),
-                write: Some(vec![legacy_app_path_from_str(read_write_path)]),
+                read: Some(vec![
+                    serde_json::from_value(json!(read_only_path))
+                        .expect("API path string should deserialize")
+                ]),
+                write: Some(vec![
+                    serde_json::from_value(json!(read_write_path))
+                        .expect("API path string should deserialize")
+                ]),
                 glob_scan_max_depth: None,
                 entries: None,
             }),
@@ -517,7 +502,7 @@ fn permissions_request_approval_uses_request_permission_profile() {
 
     assert_eq!(
         CoreRequestPermissionProfile::try_from(params.permissions)
-            .expect("permissions should convert to core"),
+            .expect("API paths should convert to native paths"),
         CoreRequestPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -612,7 +597,7 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
     );
     assert_eq!(
         CoreFileSystemPermissions::try_from(permissions)
-            .expect("permissions should convert to core"),
+            .expect("API paths should convert to native paths"),
         core_permissions
     );
 }
@@ -621,31 +606,31 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
 fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     let read_only_path = absolute_path("read-only");
     let read_write_path = absolute_path("read-write");
-    let read_only_legacy = LegacyAppPathString::from_abs_path(&read_only_path);
-    let read_write_legacy = LegacyAppPathString::from_abs_path(&read_write_path);
     let core_permissions = CoreFileSystemPermissions::from_read_write_roots(
         Some(vec![read_only_path.clone()]),
         Some(vec![read_write_path.clone()]),
     );
 
     let permissions = AdditionalFileSystemPermissions::from(core_permissions.clone());
+    let read_only_api_path = LegacyAppPathString::from_abs_path(&read_only_path);
+    let read_write_api_path = LegacyAppPathString::from_abs_path(&read_write_path);
 
     assert_eq!(
         permissions,
         AdditionalFileSystemPermissions {
-            read: Some(vec![read_only_legacy.clone()]),
-            write: Some(vec![read_write_legacy.clone()]),
+            read: Some(vec![read_only_api_path.clone()]),
+            write: Some(vec![read_write_api_path.clone()]),
             glob_scan_max_depth: None,
             entries: Some(vec![
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_only_legacy,
+                        path: read_only_api_path,
                     },
                     access: FileSystemAccessMode::Read,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_write_legacy,
+                        path: read_write_api_path,
                     },
                     access: FileSystemAccessMode::Write,
                 },
@@ -654,7 +639,7 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     );
     assert_eq!(
         CoreFileSystemPermissions::try_from(permissions)
-            .expect("permissions should convert to core"),
+            .expect("API paths should convert to native paths"),
         core_permissions
     );
 }
@@ -722,8 +707,14 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
                 enabled: Some(true),
             }),
             file_system: Some(AdditionalFileSystemPermissions {
-                read: Some(vec![legacy_app_path_from_str(read_only_path)]),
-                write: Some(vec![legacy_app_path_from_str(read_write_path)]),
+                read: Some(vec![
+                    serde_json::from_value(json!(read_only_path))
+                        .expect("API path string should deserialize")
+                ]),
+                write: Some(vec![
+                    serde_json::from_value(json!(read_write_path))
+                        .expect("API path string should deserialize")
+                ]),
                 glob_scan_max_depth: None,
                 entries: None,
             }),
@@ -732,7 +723,7 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
 
     assert_eq!(
         CoreAdditionalPermissionProfile::try_from(response.permissions)
-            .expect("permissions should convert to core"),
+            .expect("API paths should convert to native paths"),
         CoreAdditionalPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -1857,18 +1848,12 @@ fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
 
 #[test]
 fn mcp_server_elicitation_response_round_trips_rmcp_result() {
-    let JsonValue::Object(rmcp_meta) = json!({
-        "trace": "1",
-    }) else {
-        panic!("test meta must be an object");
-    };
-
     let rmcp_result = rmcp::model::CreateElicitationResult {
         action: rmcp::model::ElicitationAction::Accept,
         content: Some(json!({
             "confirmed": true,
         })),
-        meta: Some(rmcp::model::Meta(rmcp_meta)),
+        meta: None,
     };
 
     let v2_response = McpServerElicitationRequestResponse::from(rmcp_result.clone());
@@ -1879,9 +1864,7 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
             content: Some(json!({
                 "confirmed": true,
             })),
-            meta: Some(json!({
-                "trace": "1",
-            })),
+            meta: None,
         }
     );
     assert_eq!(
@@ -1945,6 +1928,40 @@ fn mcp_server_elicitation_request_from_core_form_request() {
             meta: None,
             message: "Allow this request?".to_string(),
             requested_schema: expected_schema,
+        }
+    );
+}
+
+#[test]
+fn mcp_server_elicitation_request_from_core_openai_form_request() {
+    let requested_schema = json!({
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "openai/imagePicker",
+                "title": "Template",
+                "items": [{
+                    "id": "monthly-review",
+                    "title": "Monthly review",
+                    "image": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=",
+                }],
+            },
+        },
+        "required": ["template"],
+    });
+    let request = McpServerElicitationRequest::try_from(CoreElicitationRequest::OpenAiForm {
+        meta: None,
+        message: "Choose a report".to_string(),
+        requested_schema: requested_schema.clone(),
+    })
+    .expect("OpenAI form request should convert");
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequest::OpenAiForm {
+            meta: None,
+            message: "Choose a report".to_string(),
+            requested_schema,
         }
     );
 }
@@ -2139,6 +2156,7 @@ fn mcp_server_status_updated_accepts_missing_thread_id() {
         name: "optional_broken".to_string(),
         status: McpServerStartupState::Failed,
         error: Some("handshake failed".to_string()),
+        failure_reason: None,
     };
     assert_eq!(notification, expected);
     assert_eq!(
@@ -2148,6 +2166,33 @@ fn mcp_server_status_updated_accepts_missing_thread_id() {
             "name": "optional_broken",
             "status": "failed",
             "error": "handshake failed",
+            "failureReason": null,
+        })
+    );
+}
+
+#[test]
+fn mcp_server_status_updated_serializes_failure_reason() {
+    let notification =
+        ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
+            thread_id: Some("thread-1".to_string()),
+            name: "expired-oauth".to_string(),
+            status: McpServerStartupState::Failed,
+            error: Some("OAuth credentials expired".to_string()),
+            failure_reason: Some(McpServerStartupFailureReason::ReauthenticationRequired),
+        });
+
+    assert_eq!(
+        serde_json::to_value(notification).expect("notification should serialize"),
+        json!({
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+                "threadId": "thread-1",
+                "name": "expired-oauth",
+                "status": "failed",
+                "error": "OAuth credentials expired",
+                "failureReason": "reauthenticationRequired",
+            },
         })
     );
 }
@@ -2629,9 +2674,12 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         server: "server".to_string(),
         tool: "tool".to_string(),
         arguments: json!({"arg": "value"}),
-        connector_id: Some("connector".to_string()),
+        connector_id: Some("calendar".to_string()),
         mcp_app_resource_uri: Some("app://connector".to_string()),
-        link_id: Some("link-1".to_string()),
+        link_id: Some("link_calendar".to_string()),
+        app_name: Some("Calendar".to_string()),
+        template_id: Some("calendar_template".to_string()),
+        action_name: Some("create_event".to_string()),
         plugin_id: Some("sample@test".to_string()),
         status: CoreMcpToolCallStatus::InProgress,
         result: None,
@@ -2648,9 +2696,12 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             status: McpToolCallStatus::InProgress,
             arguments: json!({"arg": "value"}),
             app_context: Some(McpToolCallAppContext {
-                connector_id: "connector".to_string(),
-                link_id: Some("link-1".to_string()),
+                connector_id: "calendar".to_string(),
+                link_id: Some("link_calendar".to_string()),
                 resource_uri: Some("app://connector".to_string()),
+                app_name: Some("Calendar".to_string()),
+                template_id: Some("calendar_template".to_string()),
+                action_name: Some("create_event".to_string()),
             }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
             plugin_id: Some("sample@test".to_string()),
@@ -2668,6 +2719,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         connector_id: None,
         mcp_app_resource_uri: None,
         link_id: None,
+        app_name: None,
+        template_id: None,
+        action_name: None,
         plugin_id: None,
         status: CoreMcpToolCallStatus::Completed,
         result: Some(CallToolResult {
@@ -2699,6 +2753,78 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             error: None,
             duration_ms: Some(42),
         }
+    );
+}
+
+#[test]
+fn mcp_tool_call_app_context_serializes_connector_id() {
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "codex_apps".to_string(),
+        tool: "calendar.create_event".to_string(),
+        status: McpToolCallStatus::InProgress,
+        arguments: json!({}),
+        app_context: Some(McpToolCallAppContext {
+            connector_id: "calendar".to_string(),
+            link_id: Some("link_calendar".to_string()),
+            resource_uri: Some("app://connector".to_string()),
+            app_name: Some("Calendar".to_string()),
+            template_id: Some("calendar_template".to_string()),
+            action_name: Some("create_event".to_string()),
+        }),
+        mcp_app_resource_uri: Some("app://connector".to_string()),
+        plugin_id: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(item).expect("MCP tool call should serialize"),
+        json!({
+            "type": "mcpToolCall",
+            "id": "mcp-1",
+            "server": "codex_apps",
+            "tool": "calendar.create_event",
+            "status": "inProgress",
+            "arguments": {},
+            "appContext": {
+                "connectorId": "calendar",
+                "linkId": "link_calendar",
+                "resourceUri": "app://connector",
+                "appName": "Calendar",
+                "templateId": "calendar_template",
+                "actionName": "create_event",
+            },
+            "mcpAppResourceUri": "app://connector",
+            "pluginId": null,
+            "result": null,
+            "error": null,
+            "durationMs": null,
+        })
+    );
+}
+
+#[test]
+fn mcp_tool_call_app_context_serializes_missing_mixed_version_fields_as_null() {
+    assert_eq!(
+        serde_json::to_value(McpToolCallAppContext {
+            connector_id: "calendar".to_string(),
+            link_id: None,
+            resource_uri: None,
+            app_name: None,
+            template_id: None,
+            action_name: None,
+        })
+        .expect("MCP tool call app context should serialize"),
+        json!({
+            "connectorId": "calendar",
+            "linkId": null,
+            "resourceUri": null,
+            "appName": null,
+            "templateId": null,
+            "actionName": null,
+        })
     );
 }
 
@@ -2987,6 +3113,7 @@ fn plugin_list_params_serializes_marketplace_kind_filter() {
                 PluginListMarketplaceKind::Vertical,
                 PluginListMarketplaceKind::WorkspaceDirectory,
                 PluginListMarketplaceKind::SharedWithMe,
+                PluginListMarketplaceKind::CreatedByMeRemote,
             ]),
         })
         .unwrap(),
@@ -2997,6 +3124,7 @@ fn plugin_list_params_serializes_marketplace_kind_filter() {
                 "vertical",
                 "workspace-directory",
                 "shared-with-me",
+                "created-by-me-remote",
             ],
         }),
     );
@@ -3587,7 +3715,6 @@ fn dynamic_tool_response_serializes_text_and_image_content_items() {
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
-                detail: None,
             },
         ],
         success: true,
@@ -3610,58 +3737,6 @@ fn dynamic_tool_response_serializes_text_and_image_content_items() {
             "success": true,
         })
     );
-}
-
-#[test]
-fn dynamic_tool_spec_deserializes_defer_loading() {
-    let value = json!({
-        "name": "lookup_ticket",
-        "description": "Fetch a ticket",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" }
-            }
-        },
-        "deferLoading": true,
-    });
-
-    let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
-
-    assert_eq!(
-        actual,
-        DynamicToolSpec {
-            namespace: None,
-            name: "lookup_ticket".to_string(),
-            description: "Fetch a ticket".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" }
-                }
-            }),
-            defer_loading: true,
-            persist_on_resume: true,
-            capability: None,
-        }
-    );
-}
-
-#[test]
-fn dynamic_tool_spec_legacy_expose_to_context_inverts_to_defer_loading() {
-    let value = json!({
-        "name": "lookup_ticket",
-        "description": "Fetch a ticket",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        },
-        "exposeToContext": false,
-    });
-
-    let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
-
-    assert!(actual.defer_loading);
 }
 
 #[test]
@@ -3723,6 +3798,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
 
     assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.thread.parent_thread_id, None);
+    assert_eq!(start.thread.recency_at, None);
     assert_eq!(
         resume.instruction_sources,
         Vec::<LegacyAppPathString>::new()
@@ -3826,6 +3902,50 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn turn_start_params_round_trip_multi_agent_mode() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("turn/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
+    );
+}
+
+#[test]
+fn thread_start_params_round_trip_multi_agent_mode() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("thread/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
+    );
+}
+
+#[test]
 fn thread_settings_update_params_preserve_explicit_null_service_tier() {
     let params: ThreadSettingsUpdateParams = serde_json::from_value(json!({
         "threadId": "thread_123",
@@ -3898,7 +4018,14 @@ fn thread_settings_update_params_preserve_field_level_experimental_gates() {
 
 #[test]
 fn turn_start_params_round_trip_environments() {
-    let cwd = test_absolute_path();
+    // Use a path foreign to the test host so this exercises syntax preservation instead of the
+    // host-native conversion performed by test_absolute_path().
+    #[cfg(windows)]
+    let raw_cwd = "/workspace";
+    #[cfg(not(windows))]
+    let raw_cwd = r"C:\workspace";
+    let cwd: LegacyAppPathString =
+        serde_json::from_value(json!(raw_cwd)).expect("API path should deserialize");
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
@@ -3915,7 +4042,7 @@ fn turn_start_params_round_trip_environments() {
         params.environments,
         Some(vec![TurnEnvironmentParams {
             environment_id: "local".to_string(),
-            cwd: LegacyAppPathString::from_abs_path(&cwd),
+            cwd: cwd.clone(),
         }])
     );
     assert_eq!(
@@ -3981,23 +4108,19 @@ fn turn_start_params_treat_null_or_omitted_environments_as_default() {
 }
 
 #[test]
-fn turn_start_params_defers_relative_environment_cwd_validation() {
-    let params = serde_json::from_value::<TurnStartParams>(json!({
+fn realtime_append_text_defaults_role_to_user() {
+    let params = serde_json::from_value::<ThreadRealtimeAppendTextParams>(json!({
         "threadId": "thread_123",
-        "input": [],
-        "environments": [
-            {
-                "environmentId": "local",
-                "cwd": "relative"
-            }
-        ],
+        "text": "hello",
     }))
-    .expect("legacy path strings should deserialize");
+    .expect("params should deserialize");
 
-    let cwd = &params.environments.expect("environment should be present")[0].cwd;
-    assert_eq!(cwd.as_str(), "relative");
-    assert!(
-        cwd.to_inferred_path_uri().is_none(),
-        "relative environment cwd should fail path URI conversion"
+    assert_eq!(
+        params,
+        ThreadRealtimeAppendTextParams {
+            thread_id: "thread_123".to_string(),
+            text: "hello".to_string(),
+            role: ConversationTextRole::User,
+        }
     );
 }

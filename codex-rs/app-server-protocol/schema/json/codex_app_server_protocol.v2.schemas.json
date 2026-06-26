@@ -8144,6 +8144,12 @@
       "title": "McpServerRefreshResponse",
       "type": "object"
     },
+    "McpServerStartupFailureReason": {
+      "enum": [
+        "reauthenticationRequired"
+      ],
+      "type": "string"
+    },
     "McpServerStartupState": {
       "enum": [
         "starting",
@@ -8215,6 +8221,16 @@
             "null"
           ]
         },
+        "failureReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpServerStartupFailureReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -8282,6 +8298,18 @@
     },
     "McpToolCallAppContext": {
       "properties": {
+        "actionName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "appName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "connectorId": {
           "type": "string"
         },
@@ -8292,6 +8320,12 @@
           ]
         },
         "resourceUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "templateId": {
           "type": [
             "string",
             "null"

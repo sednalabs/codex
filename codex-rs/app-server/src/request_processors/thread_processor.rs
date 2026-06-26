@@ -9,6 +9,7 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
@@ -658,9 +659,12 @@ impl ThreadRequestProcessor {
         &self,
         request_id: &ConnectionRequestId,
         params: ThreadRollbackParams,
+        app_server_client_name: Option<&str>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.send_thread_rollback_deprecation_notice(request_id.connection_id)
-            .await;
+        if app_server_client_name != Some(CODEX_TUI_CLIENT_NAME) {
+            self.send_thread_rollback_deprecation_notice(request_id.connection_id)
+                .await;
+        }
         self.thread_rollback_inner(request_id, params)
             .await
             .map(|()| None)
@@ -1277,6 +1281,7 @@ impl ThreadRequestProcessor {
         let cwd = config_snapshot.cwd().clone();
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
+        let thread_originator = config_snapshot.originator.clone();
 
         let response = ThreadStartResponse {
             thread: thread.clone(),
@@ -1296,7 +1301,7 @@ impl ThreadRequestProcessor {
         let notif = thread_started_notification(thread);
         listener_task_context
             .outgoing
-            .send_response(request_id, response)
+            .send_response_with_thread_originator(request_id, response, thread_originator)
             .instrument(tracing::info_span!(
                 "app_server.thread_start.send_response",
                 otel.name = "app_server.thread_start.send_response",
@@ -3013,6 +3018,7 @@ impl ThreadRequestProcessor {
                     }
                 }
 
+                let thread_originator = config_snapshot.originator.clone();
                 let response = ThreadResumeResponse {
                     thread,
                     model: session_configured.model,
@@ -3031,7 +3037,9 @@ impl ThreadRequestProcessor {
                 };
 
                 let connection_id = request_id.connection_id;
-                self.outgoing.send_response(request_id, response).await;
+                self.outgoing
+                    .send_response_with_thread_originator(request_id, response, thread_originator)
+                    .await;
                 // `excludeTurns` is explicitly the cheap resume path, so avoid
                 // rebuilding history only to attribute a replayed usage update.
                 if let Some(token_usage_thread) = token_usage_thread {
@@ -3796,6 +3804,7 @@ impl ThreadRequestProcessor {
         );
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
+        let thread_originator = config_snapshot.originator.clone();
 
         let response = ThreadForkResponse {
             thread: thread.clone(),
@@ -3816,7 +3825,9 @@ impl ThreadRequestProcessor {
         let notif = thread_started_notification(thread);
         let connection_id = request_id.connection_id;
         let token_usage_thread = include_turns.then(|| response.thread.clone());
-        self.outgoing.send_response(request_id, response).await;
+        self.outgoing
+            .send_response_with_thread_originator(request_id, response, thread_originator)
+            .await;
         // `excludeTurns` is the cheap fork path, so skip restored usage replay
         // instead of rebuilding history only to attribute a historical update.
         if let Some(token_usage_thread) = token_usage_thread {
