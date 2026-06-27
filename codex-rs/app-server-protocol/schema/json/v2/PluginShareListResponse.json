@@ -16,12 +16,16 @@
       "oneOf": [
         {
           "type": "string",
-          "const": "DISABLED_BY_ADMIN"
+          "enum": [
+            "DISABLED_BY_ADMIN"
+          ]
         },
         {
           "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins.\nCodex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps\ndecoding compatible with that upstream response.",
           "type": "string",
-          "const": "AVAILABLE"
+          "enum": [
+            "AVAILABLE"
+          ]
         }
       ]
     },
