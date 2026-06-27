@@ -1183,8 +1183,14 @@ mod tests {
 
         for schema in schemas {
             let schema: Value = serde_json::from_slice(&schema).expect("parse hook input schema");
-            assert_eq!(schema["properties"]["agent_id"]["type"], "string");
-            assert_eq!(schema["properties"]["agent_type"]["type"], "string");
+            assert_eq!(
+                schema["properties"]["agent_id"]["type"],
+                json!(["string", "null"])
+            );
+            assert_eq!(
+                schema["properties"]["agent_type"]["type"],
+                json!(["string", "null"])
+            );
             let required = schema["required"]
                 .as_array()
                 .expect("schema required fields");

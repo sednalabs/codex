@@ -3090,6 +3090,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         jobs = payload.get("jobs") or {}
 
         archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
+        disk_reclaim_step = next(
+            step for step in archive_steps if step.get("name") == "Reclaim runner disk headroom"
+        )
+        self.assertEqual(disk_reclaim_step.get("if"), "${{ runner.os == 'Linux' }}")
+        self.assertIn("/usr/share/dotnet", disk_reclaim_step.get("run") or "")
+        self.assertIn("6 GiB safety floor", disk_reclaim_step.get("run") or "")
+
         archive_run = next(
             step for step in archive_steps if step.get("name") == "Build nextest archive"
         ).get("run") or ""
