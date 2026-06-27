@@ -684,12 +684,11 @@ mod tests {
 
     #[test]
     fn remote_control_pairing_json_output_preserves_pairing_artifacts() {
-        let output =
-            format_remote_control_pairing_output(
-                &pairing_response(Some("ABCD-EFGH")),
-                /*json*/ true,
-            )
-                .expect("pairing JSON output");
+        let output = format_remote_control_pairing_output(
+            &pairing_response(Some("ABCD-EFGH")),
+            /*json*/ true,
+        )
+        .expect("pairing JSON output");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&output).expect("valid JSON"),
             json!({
@@ -708,8 +707,8 @@ mod tests {
                 &pairing_response(/*manual_pairing_code*/ None),
                 /*json*/ false,
             )
-                .expect_err("missing manual pairing code should fail")
-                .to_string(),
+            .expect_err("missing manual pairing code should fail")
+            .to_string(),
             "remote-control pairing response did not include a manual pairing code"
         );
     }

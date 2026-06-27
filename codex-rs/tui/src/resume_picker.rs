@@ -3179,7 +3179,9 @@ mod tests {
         );
         assert_eq!(
             params.source_kinds,
-            Some(crate::resume_source_kinds(/*include_non_interactive*/ false))
+            Some(crate::resume_source_kinds(
+                /*include_non_interactive*/ false
+            ))
         );
         assert_eq!(params.thread_sources, None);
     }

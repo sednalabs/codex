@@ -51,6 +51,10 @@ pub(crate) struct Stage1OutputRow {
 }
 
 impl Stage1OutputRow {
+    #[expect(
+        dead_code,
+        reason = "reserved for hydrated stage-1 output row mappings once memory queries can share a single DB row shape"
+    )]
     pub(crate) fn try_from_row(row: &SqliteRow) -> Result<Self> {
         Ok(Self {
             thread_id: row.try_get("thread_id")?,
