@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ from typing import Any
 
 RETRY_RUSTY_V8_RE = re.compile(r"rusty_v8", re.IGNORECASE)
 RETRY_HTTP_502_RE = re.compile(r"HTTP Error 502", re.IGNORECASE)
+DISK_HEADROOM_FLOOR_BYTES = 12 * 1024 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,12 +113,35 @@ def clean_workspace(repo_root: Path) -> None:
     )
 
 
+def reclaim_batch_disk_headroom(repo_root: Path, lane_id: str) -> None:
+    free_bytes = shutil.disk_usage(repo_root).free
+    if free_bytes >= DISK_HEADROOM_FLOOR_BYTES:
+        return
+
+    target_dir = repo_root / "codex-rs" / "target"
+    if not target_dir.exists():
+        print(
+            "::warning title=Validation workspace disk headroom low::"
+            f"{free_bytes // (1024 * 1024)} MiB free before {lane_id}, "
+            "but codex-rs/target was not present to reclaim."
+        )
+        return
+
+    print(
+        "::warning title=Reclaiming validation workspace disk headroom::"
+        f"{free_bytes // (1024 * 1024)} MiB free before {lane_id}; "
+        "removing codex-rs/target while preserving .sccache."
+    )
+    shutil.rmtree(target_dir)
+
+
 def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[str, Any], index: int) -> dict[str, Any]:
     lane_id = lane["lane_id"]
     lane_slug = slugify(lane_id)
     log_path = output_dir / f"validation-lane-{index + 1:02d}-{lane_slug}.log"
     if index > 0:
         clean_workspace(repo_root)
+        reclaim_batch_disk_headroom(repo_root, lane_id)
 
     started_at_ms = int(time.time() * 1000)
     attempt = 1

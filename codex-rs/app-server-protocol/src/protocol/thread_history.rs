@@ -22,8 +22,6 @@ use crate::protocol::v2::TurnItemsView;
 use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
-use codex_protocol::approvals::GuardianAssessmentDecisionSource;
-use codex_protocol::approvals::GuardianUserAuthorization;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentReasoningEvent;
@@ -70,6 +68,10 @@ use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::PatchApplyStatus;
 #[cfg(test)]
 use crate::protocol::v2::PatchChangeKind;
+#[cfg(test)]
+use codex_protocol::approvals::GuardianAssessmentDecisionSource;
+#[cfg(test)]
+use codex_protocol::approvals::GuardianUserAuthorization;
 #[cfg(test)]
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 #[cfg(test)]

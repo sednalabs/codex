@@ -7,8 +7,8 @@ use crate::terminal_palette::default_fg;
 use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 
 const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
 // Decorative table rules should remain visible without competing with cell content.
@@ -50,9 +50,13 @@ pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 /// Returns the shared accent style for the provided terminal background.
 pub(crate) fn accent_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     if terminal_bg.is_some_and(is_light) {
-        Style::default().fg(best_color(LIGHT_BG_ACCENT_RGB)).bold()
+        Style::default()
+            .fg(best_color(LIGHT_BG_ACCENT_RGB))
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Cyan).bold()
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     }
 }
 
@@ -62,13 +66,15 @@ fn table_separator_style_for(
     color_level: StdoutColorLevel,
 ) -> Style {
     let (Some(fg), Some(bg)) = (terminal_fg, terminal_bg) else {
-        return Style::default().dim();
+        return Style::default().add_modifier(Modifier::DIM);
     };
     let separator_rgb = blend(fg, bg, TABLE_SEPARATOR_FG_ALPHA);
     match color_level {
         StdoutColorLevel::TrueColor => Style::default().fg(rgb_color(separator_rgb)),
         StdoutColorLevel::Ansi256 => Style::default().fg(best_color(separator_rgb)),
-        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Style::default().dim(),
+        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => {
+            Style::default().add_modifier(Modifier::DIM)
+        }
     }
 }
 
@@ -91,7 +97,6 @@ pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use ratatui::style::Modifier;
 
     #[test]
     fn accent_style_uses_darker_cyan_on_light_backgrounds() {
@@ -103,7 +108,9 @@ mod tests {
 
     #[test]
     fn accent_style_uses_cyan_on_dark_or_unknown_backgrounds() {
-        let expected = Style::default().fg(Color::Cyan).bold();
+        let expected = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
 
         assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
         assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);
@@ -133,7 +140,7 @@ mod tests {
 
     #[test]
     fn table_separator_dims_when_palette_aware_color_is_unavailable() {
-        let expected = Style::default().dim();
+        let expected = Style::default().add_modifier(Modifier::DIM);
 
         assert_eq!(
             table_separator_style_for(

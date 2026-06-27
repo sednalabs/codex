@@ -54,6 +54,10 @@ use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
 use crate::history_cell::HistoryCell;
 
+#[expect(
+    dead_code,
+    reason = "non-Linux realtime voice carry keeps device-selection events available"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioDeviceKind {
     Microphone,
@@ -78,6 +82,10 @@ pub(crate) struct HistoryLookupResponse {
 }
 
 impl RealtimeAudioDeviceKind {
+    #[expect(
+        dead_code,
+        reason = "non-Linux realtime voice carry uses this label when device selection is enabled"
+    )]
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Microphone => "Microphone",
@@ -165,6 +173,10 @@ pub(crate) enum KeymapEditIntent {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[expect(
+    dead_code,
+    reason = "downstream TUI event bus includes feature- and platform-gated carry variants"
+)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.

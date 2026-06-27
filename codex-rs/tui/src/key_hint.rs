@@ -18,8 +18,8 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 #[cfg(test)]
@@ -195,7 +195,7 @@ impl From<&KeyBinding> for Span<'static> {
 }
 
 fn key_hint_style() -> Style {
-    Style::default().dim()
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 pub(crate) fn has_ctrl_or_alt(mods: KeyModifiers) -> bool {
