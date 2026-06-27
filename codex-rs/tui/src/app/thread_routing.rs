@@ -720,6 +720,12 @@ impl App {
                 store.active_turn_id = Some(response.turn.id);
                 Ok(true)
             }
+            AppCommand::RealtimeConversationAudio { audio } => {
+                app_server
+                    .thread_realtime_append_audio(thread_id, audio.clone())
+                    .await?;
+                Ok(true)
+            }
             AppCommand::CleanBackgroundTerminals => {
                 app_server
                     .thread_background_terminals_clean(thread_id)

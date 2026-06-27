@@ -1402,7 +1402,36 @@ impl TextArea {
             return false;
         };
 
-        let range = self.elements[idx].range.clone();
+        self.replace_element_payload_at_index(idx, new)
+    }
+
+    pub fn replace_element_payload_by_id(&mut self, id: u64, new: &str) -> bool {
+        let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
+            return false;
+        };
+
+        self.replace_element_payload_at_index(idx, new)
+    }
+
+    pub fn remove_element_by_id(&mut self, id: u64) -> bool {
+        let Some(range) = self
+            .elements
+            .iter()
+            .find(|element| element.id == id)
+            .map(|element| element.range.clone())
+        else {
+            return false;
+        };
+
+        self.replace_range(range, "");
+        true
+    }
+
+    fn replace_element_payload_at_index(&mut self, idx: usize, new: &str) -> bool {
+        let Some(element) = self.elements.get(idx) else {
+            return false;
+        };
+        let range = element.range.clone();
         let start = range.start;
         let end = range.end;
         if start > end || end > self.text.len() {

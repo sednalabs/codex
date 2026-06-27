@@ -4069,6 +4069,26 @@ fn find_next_mention_token_range(text: &str, token: &str, from: usize) -> Option
     None
 }
 
+#[cfg(not(target_os = "linux"))]
+impl ChatComposer {
+    pub fn update_recording_meter_in_place(&mut self, id: &str, text: &str) -> bool {
+        let Ok(id) = id.parse::<u64>() else {
+            return false;
+        };
+        self.draft.textarea.replace_element_payload_by_id(id, text)
+    }
+
+    pub fn insert_recording_meter_placeholder(&mut self, text: &str) -> String {
+        self.draft.textarea.insert_element(text).to_string()
+    }
+
+    pub fn remove_recording_meter_placeholder(&mut self, id: &str) {
+        if let Ok(id) = id.parse::<u64>() {
+            let _ = self.draft.textarea.remove_element_by_id(id);
+        }
+    }
+}
+
 impl Renderable for ChatComposer {
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.cursor_pos_with_textarea_right_reserve(area, /*textarea_right_reserve*/ 0)

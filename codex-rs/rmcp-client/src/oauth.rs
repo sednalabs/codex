@@ -1832,7 +1832,7 @@ mod tests {
                 .contains("failed to reread OAuth tokens from resolved keyring storage"),
             "unexpected error: {error:#}"
         );
-        #[expect(
+        #[allow(
             clippy::await_holding_invalid_type,
             reason = "test verifies refresh leaves the serialized OAuth manager unchanged"
         )]
