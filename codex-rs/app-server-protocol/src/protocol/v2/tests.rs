@@ -2678,6 +2678,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             aggregated_output: Some("done\n".to_string()),
             exit_code: Some(0),
             duration_ms: Some(5),
+            terminal_wait: None,
         }
     );
 
@@ -2741,6 +2742,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            timed_out: false,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {

@@ -946,6 +946,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 duration_ms: command
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
+                terminal_wait: None,
             },
             CoreTurnItem::DynamicToolCall(call) => ThreadItem::DynamicToolCall {
                 id: call.id,
@@ -977,6 +978,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 prompt: call.prompt,
                 model: call.model,
                 reasoning_effort: call.reasoning_effort,
+                timed_out: false,
                 agents_states: call
                     .agents_states
                     .into_iter()
@@ -1736,7 +1738,8 @@ impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
             }
             codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
-            } => Self::InputImage { image_url },
+                detail,
+            } => Self::InputImage { image_url, detail },
         }
     }
 }
