@@ -913,7 +913,7 @@ pub async fn run_main_with_transport_options(
         async move {
             let mut listen_for_threads = true;
             let mut shutdown_state = ShutdownState::default();
-            loop {
+            let exit_reason = loop {
                 let running_turn_count = {
                     let running_turn_count = running_turn_count_rx.borrow();
                     *running_turn_count
@@ -926,7 +926,7 @@ pub async fn run_main_with_transport_options(
                     let _ = outbound_control_tx
                         .send(OutboundControlEvent::DisconnectAll)
                         .await;
-                    break;
+                    break "shutdown_requested";
                 }
 
                 tokio::select! {
@@ -948,7 +948,7 @@ pub async fn run_main_with_transport_options(
                     }
                     event = transport_event_rx.recv() => {
                         let Some(event) = event else {
-                            break;
+                            break "transport_channel_closed";
                         };
                         match event {
                             TransportEvent::ConnectionOpened {
@@ -978,7 +978,7 @@ pub async fn run_main_with_transport_options(
                                     .await
                                     .is_err()
                                 {
-                                    break;
+                                    break "outbound_router_closed";
                                 }
                                 connections.insert(
                                     connection_id,
@@ -1006,10 +1006,10 @@ pub async fn run_main_with_transport_options(
                                         .await;
                                 });
                                 if !outbound_closed {
-                                    break;
+                                    break "outbound_router_closed";
                                 }
                                 if shutdown_when_no_connections && connections.is_empty() {
-                                    break;
+                                    break "last_connection_closed";
                                 }
                             }
                             TransportEvent::IncomingMessage { connection_id, message } => {
@@ -1148,7 +1148,7 @@ pub async fn run_main_with_transport_options(
                         }
                     }
                 }
-            }
+            };
 
             if !shutdown_state.forced() {
                 futures::future::join_all(
@@ -1163,7 +1163,12 @@ pub async fn run_main_with_transport_options(
             } else {
                 connection_cleanup_tasks.abort();
             }
-            info!("processor task exited (channel closed)");
+            info!(
+                exit_reason,
+                remaining_connection_count = connections.len(),
+                shutdown_forced = shutdown_state.forced(),
+                "processor task exited"
+            );
         }
     });
 
