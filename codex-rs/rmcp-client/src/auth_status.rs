@@ -302,15 +302,14 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
             continue;
         }
 
-        let metadata = match serde_json::from_slice::<OAuthDiscoveryMetadata>(
-            &response.body.into_inner(),
-        ) {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                last_error = Some(err.into());
-                continue;
-            }
-        };
+        let metadata =
+            match serde_json::from_slice::<OAuthDiscoveryMetadata>(&response.body.into_inner()) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    last_error = Some(err.into());
+                    continue;
+                }
+            };
 
         if let Some(discovery) = discovery_from_metadata(metadata) {
             return Ok(Some(discovery));

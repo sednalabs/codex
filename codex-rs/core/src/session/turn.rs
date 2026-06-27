@@ -154,9 +154,13 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) =
-        run_pre_sampling_compact(&sess, &turn_context, &mut client_session, &cancellation_token)
-            .await
+    if let Err(err) = run_pre_sampling_compact(
+        &sess,
+        &turn_context,
+        &mut client_session,
+        &cancellation_token,
+    )
+    .await
     {
         if matches!(err, CodexErr::TurnAborted) {
             return Err(err);

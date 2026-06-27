@@ -314,10 +314,8 @@ fn should_augment_spec_for_code_mode(
     spec: &ToolSpec,
 ) -> bool {
     let tool_mode = effective_tool_mode(turn_context);
-    matches!(
-        tool_mode,
-        ToolMode::CodeMode | ToolMode::CodeModeOnly
-    ) && exposure != ToolExposure::DirectModelOnly
+    matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
+        && exposure != ToolExposure::DirectModelOnly
         && !is_excluded_from_code_mode(turn_context, tool_name)
         && codex_code_mode::is_code_mode_nested_tool(spec.name())
 }
@@ -516,10 +514,7 @@ fn build_code_mode_executors(
     executors: &[Arc<dyn CoreToolRuntime>],
 ) -> Vec<Arc<dyn CoreToolRuntime>> {
     let tool_mode = effective_tool_mode(turn_context);
-    if !matches!(
-        tool_mode,
-        ToolMode::CodeMode | ToolMode::CodeModeOnly
-    ) {
+    if !matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly) {
         return vec![];
     }
 
@@ -558,8 +553,8 @@ fn build_code_mode_executors(
             } else {
                 false
             };
-            deferred_tools_available |= deferred_tools_guidance_enabled
-                && deferred_tool_has_code_mode_metadata;
+            deferred_tools_available |=
+                deferred_tools_guidance_enabled && deferred_tool_has_code_mode_metadata;
         } else {
             exec_prompt_tool_specs.push(spec.clone());
         }
@@ -655,9 +650,7 @@ where
             .spawn_scoped(scope, f)
             .map_err(|err| format!("failed to start {thread_name}: {err}"))?;
 
-        handle
-            .join()
-            .map_err(|_| format!("{thread_name} panicked"))
+        handle.join().map_err(|_| format!("{thread_name} panicked"))
     })
 }
 

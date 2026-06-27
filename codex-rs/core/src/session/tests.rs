@@ -3733,7 +3733,7 @@ async fn set_rate_limits_retains_previous_credits() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -3840,7 +3840,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -4377,7 +4377,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
     SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5231,7 +5231,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5362,7 +5362,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5608,7 +5608,7 @@ async fn make_session_with_config_and_rx(
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -5715,7 +5715,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -7535,7 +7535,7 @@ where
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
-model_reasoning_summary: config.model_reasoning_summary,
+        model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         service_tier: None,
         personality: config.personality,
@@ -8566,9 +8566,9 @@ async fn build_initial_context_trims_skill_metadata_from_context_window_budget()
         },
     ];
     turn_context.model_info.context_window = Some(100);
-    turn_context.turn_skills = TurnSkillsContext::new(
-        codex_core_skills::HostSkillsSnapshot::new(Arc::new(outcome)),
-    );
+    turn_context.turn_skills = TurnSkillsContext::new(codex_core_skills::HostSkillsSnapshot::new(
+        Arc::new(outcome),
+    ));
     let turn_context = Arc::new(turn_context);
 
     let initial_context = build_initial_context(&session, &turn_context).await;
@@ -8720,9 +8720,9 @@ async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_buil
         },
     ];
     turn_context.model_info.context_window = Some(100);
-    turn_context.turn_skills = TurnSkillsContext::new(
-        codex_core_skills::HostSkillsSnapshot::new(Arc::new(outcome)),
-    );
+    turn_context.turn_skills = TurnSkillsContext::new(codex_core_skills::HostSkillsSnapshot::new(
+        Arc::new(outcome),
+    ));
     let turn_context = Arc::new(turn_context);
 
     let _ = build_initial_context(&session, &turn_context).await;

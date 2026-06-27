@@ -458,7 +458,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hash_hex = String::with_capacity(hash.len() * 2);
     for byte in hash {
         use std::fmt::Write as _;
-        write!(&mut hash_hex, "{byte:02x}").expect("writing to a String cannot fail");
+        let _ = write!(&mut hash_hex, "{byte:02x}");
     }
     hash_hex
 }

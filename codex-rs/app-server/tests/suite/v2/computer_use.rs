@@ -315,8 +315,8 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
 }
 
 #[tokio::test]
-async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested(
-) -> Result<()> {
+async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested() -> Result<()>
+{
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
         create_final_assistant_message_sse_response("Done")?,

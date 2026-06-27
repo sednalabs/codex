@@ -120,7 +120,8 @@ def main() -> int:
         args.mirror_ref,
     )
     mirror_mismatch = bool(
-        args.expected_mirror_sha and snapshot_1["mirror"].sha != args.expected_mirror_sha
+        args.expected_mirror_sha
+        and snapshot_1["mirror"].sha != args.expected_mirror_sha
     )
 
     fetch_live_refs(repo, snapshot_1)
@@ -130,17 +131,29 @@ def main() -> int:
     mirror_tree = tree_sha(repo, snapshot_1["mirror"].sha)
     upstream_tree = tree_sha(repo, snapshot_1["upstream"].sha)
 
-    diff_items = diff_items_between(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
+    diff_items = diff_items_between(
+        repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha
+    )
     code_items = [item for item in diff_items if item.is_code]
 
     mirror_health, mirror_counts = classify_mirror_health(
         repo, snapshot_1["mirror"].sha, snapshot_1["upstream"].sha
     )
-    downstream_counts = rev_list_counts(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
-    cherry_counts = cherry_counts_between(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
-    merge_base = merge_base_sha(repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha)
-    downstream_carry_items = diff_items_between(repo, merge_base, snapshot_1["downstream"].sha)
-    downstream_carry_code_items = [item for item in downstream_carry_items if item.is_code]
+    downstream_counts = rev_list_counts(
+        repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha
+    )
+    cherry_counts = cherry_counts_between(
+        repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha
+    )
+    merge_base = merge_base_sha(
+        repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha
+    )
+    downstream_carry_items = diff_items_between(
+        repo, merge_base, snapshot_1["downstream"].sha
+    )
+    downstream_carry_code_items = [
+        item for item in downstream_carry_items if item.is_code
+    ]
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
     annotated_all_items = annotate_diff_items(
@@ -151,7 +164,9 @@ def main() -> int:
         registry_state["path_registry_boundary_types"],
     )
     annotated_code_items = [item for item in annotated_all_items if item["is_code"]]
-    annotated_non_code_items = [item for item in annotated_all_items if not item["is_code"]]
+    annotated_non_code_items = [
+        item for item in annotated_all_items if not item["is_code"]
+    ]
 
     snapshot_2 = resolve_snapshot(
         repo,
@@ -166,7 +181,9 @@ def main() -> int:
     )
 
     unstable = snapshot_changed(snapshot_1, snapshot_2)
-    invalid_mirror = mirror_health in {"illegal_ahead", "illegal_diverged"} or mirror_mismatch
+    invalid_mirror = (
+        mirror_health in {"illegal_ahead", "illegal_diverged"} or mirror_mismatch
+    )
     stale_registry = bool(registry_state["stale_entry_ids"])
     uncovered_live_code = bool(registry_state["uncovered_code_paths"])
 
@@ -205,7 +222,9 @@ def main() -> int:
             "usable_as_compare_baseline": mirror_health == "exact" and not unstable,
         },
         "tree_diff": {
-            "comparison_basis": "mirror" if mirror_health == "exact" and not unstable else "upstream",
+            "comparison_basis": "mirror"
+            if mirror_health == "exact" and not unstable
+            else "upstream",
             "downstream_tree_sha": downstream_tree,
             "upstream_tree_sha": upstream_tree,
             "tree_equal": downstream_tree == upstream_tree,
@@ -214,7 +233,9 @@ def main() -> int:
                 "downstream_ahead": downstream_counts[1],
             },
             "merge_base": merge_base,
-            "patch_equivalent_downstream_commits": cherry_counts["patch_equivalent_downstream_commits"],
+            "patch_equivalent_downstream_commits": cherry_counts[
+                "patch_equivalent_downstream_commits"
+            ],
             "unique_downstream_commits": cherry_counts["unique_downstream_commits"],
             "registry_enforcement_basis": "merge-base...downstream",
             "downstream_carry_code_path_count": len(
@@ -243,8 +264,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Authoritative downstream divergence audit against live upstream and the synced mirror.",
     )
     parser.add_argument("--repo", default=".", help="Path to the repository root.")
-    parser.add_argument("--downstream-remote", default="origin", help="Remote that hosts the downstream branch.")
-    parser.add_argument("--downstream-branch", default="main", help="Downstream branch name.")
+    parser.add_argument(
+        "--downstream-remote",
+        default="origin",
+        help="Remote that hosts the downstream branch.",
+    )
+    parser.add_argument(
+        "--downstream-branch", default="main", help="Downstream branch name."
+    )
     parser.add_argument(
         "--downstream-ref",
         help=(
@@ -252,8 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
             "--downstream-remote/--downstream-branch. Useful for PR-head CI."
         ),
     )
-    parser.add_argument("--mirror-remote", default="origin", help="Remote that hosts the upstream mirror branch.")
-    parser.add_argument("--mirror-branch", default="upstream-main", help="Mirror branch name.")
+    parser.add_argument(
+        "--mirror-remote",
+        default="origin",
+        help="Remote that hosts the upstream mirror branch.",
+    )
+    parser.add_argument(
+        "--mirror-branch", default="upstream-main", help="Mirror branch name."
+    )
     parser.add_argument(
         "--mirror-ref",
         help=(
@@ -262,9 +295,16 @@ def build_parser() -> argparse.ArgumentParser:
             "when the live mirror can be refreshed only by a separate privileged job."
         ),
     )
-    parser.add_argument("--upstream-remote", default="upstream", help="Remote that hosts live upstream.")
-    parser.add_argument("--upstream-branch", default="main", help="Upstream branch name.")
-    parser.add_argument("--expected-mirror-sha", help="Exact upstream SHA that the mirror should match after sync.")
+    parser.add_argument(
+        "--upstream-remote", default="upstream", help="Remote that hosts live upstream."
+    )
+    parser.add_argument(
+        "--upstream-branch", default="main", help="Upstream branch name."
+    )
+    parser.add_argument(
+        "--expected-mirror-sha",
+        help="Exact upstream SHA that the mirror should match after sync.",
+    )
     parser.add_argument(
         "--registry-path",
         default="docs/divergences/index.yaml",
@@ -368,7 +408,9 @@ def parse_single_sha(stdout: str, remote: str, ref: str) -> str:
         raise RuntimeError(f"missing remote ref {remote} {ref}")
     sha, got_ref = lines[0].split("\t", 1)
     if got_ref != ref:
-        raise RuntimeError(f"unexpected ref from {remote}: expected {ref}, got {got_ref}")
+        raise RuntimeError(
+            f"unexpected ref from {remote}: expected {ref}, got {got_ref}"
+        )
     return sha
 
 
@@ -381,7 +423,11 @@ def fetch_live_refs(repo: Path, snapshot: dict[str, RemoteTip]) -> None:
 
     for remote, tips in grouped.items():
         branches = [tip.branch for tip in tips]
-        run_git(repo, ["fetch", "--no-tags", "--prune", remote, *branches], capture_stdout=True)
+        run_git(
+            repo,
+            ["fetch", "--no-tags", "--prune", remote, *branches],
+            capture_stdout=True,
+        )
         for tip in tips:
             local_sha = local_tracking_sha(repo, tip)
             if local_sha != tip.sha:
@@ -436,7 +482,9 @@ def diff_items_between(repo: Path, left_sha: str, right_sha: str) -> list[DiffIt
             raise RuntimeError(f"unexpected raw diff header: {header}")
         meta, status = header[1:].rsplit(" ", 1)
         old_mode, new_mode, _old_sha, _new_sha = meta.split(" ")
-        rename_score = status[1:] if len(status) > 1 and status[0] in {"R", "C"} else None
+        rename_score = (
+            status[1:] if len(status) > 1 and status[0] in {"R", "C"} else None
+        )
         if status and status[0] in {"R", "C"}:
             if index + 1 >= len(chunks):
                 raise RuntimeError(f"missing rename paths for diff entry: {header}")
@@ -505,7 +553,9 @@ def merge_base_sha(repo: Path, left_sha: str, right_sha: str) -> str:
     return result.stdout.strip()
 
 
-def classify_mirror_health(repo: Path, mirror_sha: str, upstream_sha: str) -> tuple[str, tuple[int, int]]:
+def classify_mirror_health(
+    repo: Path, mirror_sha: str, upstream_sha: str
+) -> tuple[str, tuple[int, int]]:
     counts = rev_list_counts(repo, upstream_sha, mirror_sha)
     if mirror_sha == upstream_sha:
         return "exact", counts
@@ -539,7 +589,9 @@ def validate_registry(registry: dict[str, Any]) -> None:
         if str(entry.get("status", "live")) != "live":
             continue
 
-        missing = [field for field in REQUIRED_LIVE_REGISTRY_FIELDS if field not in entry]
+        missing = [
+            field for field in REQUIRED_LIVE_REGISTRY_FIELDS if field not in entry
+        ]
         for field in missing:
             errors.append(f"{entry_id}: missing required live field {field}")
 
@@ -564,7 +616,9 @@ def validate_registry(registry: dict[str, Any]) -> None:
         if isinstance(hotspot_files, list):
             for hotspot in hotspot_files:
                 if not non_empty_string(hotspot):
-                    errors.append(f"{entry_id}: hotspot_files entries must be non-empty strings")
+                    errors.append(
+                        f"{entry_id}: hotspot_files entries must be non-empty strings"
+                    )
                     break
 
         matched_hot_patterns = matched_hotspots(files)
@@ -605,7 +659,9 @@ def specs_overlap(spec: str, pattern: str) -> bool:
     )
 
 
-def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]) -> dict[str, Any]:
+def reconcile_registry(
+    registry: dict[str, Any], live_code_items: list[DiffItem]
+) -> dict[str, Any]:
     entries = registry.get("divergences", [])
     live_entries: list[dict[str, Any]] = []
     stale_entry_ids: list[str] = []
@@ -620,7 +676,12 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
         entry_id = str(entry.get("id", ""))
         files = entry.get("files", [])
         matched_paths = sorted(
-            {path for path in live_code_paths for spec in files if matches_spec(spec, path)}
+            {
+                path
+                for path in live_code_paths
+                for spec in files
+                if matches_spec(spec, path)
+            }
         )
         status = str(entry.get("status", "live"))
         surface_type = entry.get("surface_type")
@@ -642,17 +703,27 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
                     "category": entry.get("category", ""),
                 }
             )
-            uncovered_code_paths = [path for path in uncovered_code_paths if path not in matched_paths]
+            uncovered_code_paths = [
+                path for path in uncovered_code_paths if path not in matched_paths
+            ]
             for path in matched_paths:
                 path_registry_ids.setdefault(path, []).append(entry_id)
                 if surface_type:
-                    path_registry_surface_types.setdefault(path, []).append(surface_type)
+                    path_registry_surface_types.setdefault(path, []).append(
+                        surface_type
+                    )
                 if upstreamability_tier:
-                    path_registry_upstreamability_tiers.setdefault(path, []).append(upstreamability_tier)
+                    path_registry_upstreamability_tiers.setdefault(path, []).append(
+                        upstreamability_tier
+                    )
                 if boundary_type:
-                    path_registry_boundary_types.setdefault(path, []).append(boundary_type)
+                    path_registry_boundary_types.setdefault(path, []).append(
+                        boundary_type
+                    )
         else:
-            derived_status = "upstream-equivalent" if status == "upstream-equivalent" else "stale"
+            derived_status = (
+                "upstream-equivalent" if status == "upstream-equivalent" else "stale"
+            )
             live_entries.append(
                 {
                     "id": entry_id,
@@ -674,15 +745,21 @@ def reconcile_registry(registry: dict[str, Any], live_code_items: list[DiffItem]
     return {
         "registry_path": str(registry.get("_path", "docs/divergences/index.yaml")),
         "entries": live_entries,
-        "live_entry_ids": [entry["id"] for entry in live_entries if entry["status"] == "live"],
+        "live_entry_ids": [
+            entry["id"] for entry in live_entries if entry["status"] == "live"
+        ],
         "stale_entry_ids": stale_entry_ids,
         "uncovered_code_paths": uncovered_code_paths,
-        "path_registry_ids": {path: sorted(set(ids)) for path, ids in path_registry_ids.items()},
+        "path_registry_ids": {
+            path: sorted(set(ids)) for path, ids in path_registry_ids.items()
+        },
         "path_registry_surface_types": {
-            path: sorted(set(surface_types)) for path, surface_types in path_registry_surface_types.items()
+            path: sorted(set(surface_types))
+            for path, surface_types in path_registry_surface_types.items()
         },
         "path_registry_upstreamability_tiers": {
-            path: sorted(set(tiers)) for path, tiers in path_registry_upstreamability_tiers.items()
+            path: sorted(set(tiers))
+            for path, tiers in path_registry_upstreamability_tiers.items()
         },
         "path_registry_boundary_types": {
             path: sorted(set(boundary_types))
@@ -708,7 +785,9 @@ def snapshot_to_json(snapshot: dict[str, RemoteTip]) -> dict[str, Any]:
     }
 
 
-def snapshot_changed(snapshot_1: dict[str, RemoteTip], snapshot_2: dict[str, RemoteTip]) -> bool:
+def snapshot_changed(
+    snapshot_1: dict[str, RemoteTip], snapshot_2: dict[str, RemoteTip]
+) -> bool:
     for key in snapshot_1:
         if snapshot_1[key].sha != snapshot_2[key].sha:
             return True
@@ -811,7 +890,9 @@ def render_markdown(audit: dict[str, Any]) -> str:
     lines.append(f"- Comparison basis: `{audit['tree_diff']['comparison_basis']}`")
     lines.append(f"- Verdict: `{audit['verdict']['exit_code']}`")
     if audit["verdict"]["reasons"]:
-        lines.append(f"- Reasons: {', '.join(f'`{reason}`' for reason in audit['verdict']['reasons'])}")
+        lines.append(
+            f"- Reasons: {', '.join(f'`{reason}`' for reason in audit['verdict']['reasons'])}"
+        )
     lines.append("")
     lines.append("## Tree diff")
     lines.append("")
