@@ -1120,6 +1120,7 @@ mod tests {
                     AbsolutePathBuf::try_from(PathBuf::from(".")).unwrap(),
                     HashMap::new(),
                     /*network*/ None,
+                    /*network_environment_id*/ None,
                     ExecExpiration::DefaultTimeout,
                     codex_core::exec::ExecCapturePolicy::ShellTool,
                     SandboxType::None,

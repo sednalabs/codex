@@ -492,7 +492,7 @@ fn current_test_target_dir() -> Option<PathBuf> {
     if profile_dir.ends_with("deps") {
         profile_dir.pop();
     }
-    profile_dir.parent().map(|path| path.to_path_buf())
+    profile_dir.parent().map(std::path::Path::to_path_buf)
 }
 
 pub mod fs_wait {

@@ -25,7 +25,7 @@ Options:
   --ref <remote-ref>           Branch/tag/commit ref to validate (required)
   --repo <owner/name>          GitHub repo (default: sednalabs/codex)
   --host-ref <ref>             Workflow host ref for validation-lab and branch build (default: main)
-  --platform-scope <scope>     rust-ci platform scope (default: full-cross-platform)
+  --platform-scope <scope>     rust-ci platform scope (default: linux-x86_64-only)
   --heavy-lane <lane>          sedna-heavy-tests lane (default: all)
   --include-explicit-lanes     Include explicit-only validation-lab seams (default: true)
   --dry-run                    Print commands without executing them
@@ -40,7 +40,7 @@ EOF
 ref=""
 repo="sednalabs/codex"
 host_ref="main"
-platform_scope="full-cross-platform"
+platform_scope="linux-x86_64-only"
 heavy_lane="all"
 include_explicit_lanes="true"
 dry_run="false"
@@ -68,8 +68,13 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --include-explicit-lanes)
-      include_explicit_lanes="${2:-true}"
-      shift 2
+      if [[ $# -gt 1 && "$2" != --* ]]; then
+        include_explicit_lanes="$2"
+        shift 2
+      else
+        include_explicit_lanes="true"
+        shift
+      fi
       ;;
     --dry-run)
       dry_run="true"
@@ -97,7 +102,7 @@ dispatches=(
   "gh workflow run rust-ci.yml --repo ${repo} --ref ${ref} -f platform_scope=${platform_scope}"
   "gh workflow run rust-ci-full.yml --repo ${repo} --ref ${ref} -f platform_scope=${platform_scope}"
   "gh workflow run sedna-branch-build.yml --repo ${repo} --ref ${host_ref} -f ref=${ref}"
-  "gh workflow run sedna-heavy-tests.yml --repo ${repo} --ref ${ref} -f ref=${ref} -f lane=${heavy_lane}"
+  "gh workflow run sedna-heavy-tests.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f lane=${heavy_lane}"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=full -f lane_set=all -f artifact_build=true -f supersession_mode=compare"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=broad -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"

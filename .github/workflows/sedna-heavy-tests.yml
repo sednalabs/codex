@@ -267,8 +267,13 @@ jobs:
             esac
           done
 
-          files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name "${GITHUB_EVENT_NAME}" --requested-lane "${REQUESTED_LANE}" --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}" --rust-batching "${INPUT_RUST_BATCHING}" --rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}")"
+          changed_files_json_path="${RUNNER_TEMP:-.}/sedna-heavy-changed-files.json"
+          if ((${#files[@]} == 0)); then
+            printf '[]\n' > "${changed_files_json_path}"
+          else
+            printf '%s\n' "${files[@]}" | jq -R . | jq -sc . > "${changed_files_json_path}"
+          fi
+          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name "${GITHUB_EVENT_NAME}" --requested-lane "${REQUESTED_LANE}" --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json-file "${changed_files_json_path}" --rust-batching "${INPUT_RUST_BATCHING}" --rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}")"
 
           parse_meta() {
             local field="$1"
