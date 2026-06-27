@@ -1990,6 +1990,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "codex-protocol",
+ "codex-utils-rustls-provider",
  "crypto_box",
  "ed25519-dalek",
  "jsonwebtoken",

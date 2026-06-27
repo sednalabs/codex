@@ -193,7 +193,8 @@ impl ChatWidget {
             self.transcript.saw_plan_item_this_turn = false;
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
-        let follow_up_started = self.maybe_send_next_queued_input();
+        // Snapshot replay resumes restored queues once after all replayed events are applied.
+        let follow_up_started = !from_replay && self.maybe_send_next_queued_input();
         let active_goal_continuing = self
             .current_goal_status
             .as_ref()

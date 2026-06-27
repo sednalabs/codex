@@ -623,6 +623,33 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
           fi
 
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          before_bytes="$(available_bytes)"
+          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
+            echo "::warning title=Low runner disk before nextest archive::Available disk is $(numfmt --to=iec "${before_bytes}") before archive setup; reclaiming headroom."
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo apt-get clean || true
+            sudo rm -rf /var/lib/apt/lists/* || true
+          fi
+
+          after_bytes="$(available_bytes)"
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for rust-ci-full nextest archives."
+            exit 1
+          fi
+
       # Some integration tests rely on DotSlash being installed.
       # See https://github.com/openai/codex/pull/7617.
       - name: Install DotSlash

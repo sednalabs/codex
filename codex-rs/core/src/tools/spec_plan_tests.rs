@@ -1153,7 +1153,7 @@ async fn excluded_deferred_namespaces_do_not_enable_nested_tool_guidance() {
     assert!(
         !exec
             .description
-            .contains("Some deferred nested tools may be omitted")
+            .contains("Some nested MCP/app tools may be omitted")
     );
     plan.assert_registered_contains(&[
         &ToolName::namespaced("excluded", "lookup").to_string(),

@@ -110,6 +110,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     bundle.
   - Workflow and route-map edits also run cheap planner fixture tests so
     follow-up lane selection does not silently drift.
+  - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
+    headroom before archive creation, then fail early if the hosted runner is
+    still below the archive safety floor.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.

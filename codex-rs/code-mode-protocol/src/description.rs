@@ -1276,7 +1276,7 @@ bar"
             /*deferred_tools_available*/ true,
         );
 
-        assert!(description.contains("Some deferred nested tools may be omitted"));
+        assert!(description.contains("Some nested MCP/app tools may be omitted"));
         assert!(description.contains("filter `ALL_TOOLS` by `name` and `description`"));
         assert!(!description.contains("do not print the full `ALL_TOOLS` array"));
     }
