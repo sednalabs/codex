@@ -18,10 +18,10 @@ provider seams:
 The current cleanroom discovery lane inspected legally obtained distributable
 artifacts and reduced them to behavioral requirements:
 
-| Artifact | Version or role | SHA-256 |
-| --- | --- | --- |
-| Codex macOS DMG | `26.519.41501` app bundle | `3101c05dfd40314115418c4ad87edee02419d097f7164c677ddbdd4559ad8a42` |
-| Codex Chrome extension CRX | `1.1.5` Manifest V3 extension | `54e8d5c26f0e47ee9e33b56276b7e1305991dd5de7b046a4c74e57e076f0545f` |
+| Artifact                      | Version or role                              | SHA-256                                                            |
+| ----------------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
+| Codex macOS DMG               | `26.519.41501` app bundle                    | `3101c05dfd40314115418c4ad87edee02419d097f7164c677ddbdd4559ad8a42` |
+| Codex Chrome extension CRX    | `1.1.5` Manifest V3 extension                | `54e8d5c26f0e47ee9e33b56276b7e1305991dd5de7b046a4c74e57e076f0545f` |
 | Codex Windows Store installer | Store installer/delegator, not app internals | `d85a5efcff0719ff4508f1fcbabd1d7c09249a44a68520ea52fd6d3b71ee0feb` |
 
 The Windows installer evidence did not expose the Windows in-app-browser

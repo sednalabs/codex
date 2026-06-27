@@ -162,9 +162,7 @@ pub async fn handle_browser_computer_use_for_codex_home(
 }
 
 fn default_codex_home() -> Option<PathBuf> {
-    codex_utils_home_dir::find_codex_home()
-        .ok()
-        .map(|path| path.into_path_buf())
+    codex_utils_home_dir::find_codex_home().ok().map(PathBuf::from)
 }
 
 async fn handle_with_provider(
@@ -174,7 +172,7 @@ async fn handle_with_provider(
     let mut response = match provider.provider {
         BrowserProvider::Command(command) => run_command_provider(params, &command).await,
         BrowserProvider::Playwright(playwright) => {
-            run_playwright_provider(params, &playwright).await
+            run_playwright_provider(params, playwright.as_ref()).await
         }
     }?;
 
@@ -474,7 +472,7 @@ impl BrowserRuntimeConfig {
                         service_profiles: merge_service_profiles(
                             file.as_ref()
                                 .and_then(|config| config.service_profiles.clone()),
-                            env.service_profiles.clone(),
+                            env.service_profiles,
                         ),
                     },
                     default_playwright_backends(),
@@ -530,7 +528,7 @@ impl ConfiguredBrowserProvider {
     ) -> Self {
         Self {
             id: id.into(),
-            provider: BrowserProvider::Playwright(config),
+            provider: BrowserProvider::Playwright(Box::new(config)),
             backends,
             timeout,
         }
@@ -547,7 +545,7 @@ impl ConfiguredBrowserProvider {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BrowserProvider {
     Command(CommandProviderConfig),
-    Playwright(PlaywrightProviderConfig),
+    Playwright(Box<PlaywrightProviderConfig>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

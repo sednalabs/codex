@@ -6,6 +6,7 @@ Source:
 https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
 
 ### Diff
+
 ```diff
 --- codex-rs/models-manager/models.json	2026-04-25 09:26:43.411462563 +0000
 +++ upstream-models.json	2026-04-25 09:26:43.694211318 +0000

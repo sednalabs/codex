@@ -19,13 +19,13 @@ It now reflects the carry implementation, not just the initial rollout decision 
 
 ## Candidate Variants
 
-| Variant | Type | Example | Pros | Cons |
-| --- | --- | --- | --- | --- |
-| A | Compact | `weekly 44% (over 6%)` | Short, low truncation risk, no sign parsing needed | Slightly less explicit than saying "pace" |
-| B | Compact | `weekly 44% · pace -6%` | Very compact, mathematically direct | Sign semantics are easy to misread (`-` means over pace) |
-| C | Expressive | `weekly 44% remaining · over pace by 6%` | Maximum clarity in plain language | Long; high truncation pressure in multi-item status lines |
-| D | Expressive | `weekly remaining 44% · over by 6% vs time` | Explicit comparison target | Verbose and noisy in narrow widths |
-| E | Ratio | `weekly 44%/50%` | Shows usage remaining and week remaining directly | Less explicit about over/under classification |
+| Variant | Type       | Example                                     | Pros                                               | Cons                                                      |
+| ------- | ---------- | ------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| A       | Compact    | `weekly 44% (over 6%)`                      | Short, low truncation risk, no sign parsing needed | Slightly less explicit than saying "pace"                 |
+| B       | Compact    | `weekly 44% · pace -6%`                     | Very compact, mathematically direct                | Sign semantics are easy to misread (`-` means over pace)  |
+| C       | Expressive | `weekly 44% remaining · over pace by 6%`    | Maximum clarity in plain language                  | Long; high truncation pressure in multi-item status lines |
+| D       | Expressive | `weekly remaining 44% · over by 6% vs time` | Explicit comparison target                         | Verbose and noisy in narrow widths                        |
+| E       | Ratio      | `weekly 44%/50%`                            | Shows usage remaining and week remaining directly  | Less explicit about over/under classification             |
 
 ## Decision
 

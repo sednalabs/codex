@@ -134,7 +134,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
 
     for (name, server_config) in added {
         let oauth_config = match oauth_login_support(&server_config.transport).await {
-            McpOAuthLoginSupport::Supported(config) => config,
+            McpOAuthLoginSupport::Supported(config) => *config,
             McpOAuthLoginSupport::Unsupported => continue,
             McpOAuthLoginSupport::Unknown(err) => {
                 warn!("MCP server may or may not require login for dependency {name}: {err}");

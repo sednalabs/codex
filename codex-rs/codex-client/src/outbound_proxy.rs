@@ -339,7 +339,14 @@ fn system_proxy_cache_key(request_url: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"system-proxy-cache-v1\0");
         hasher.update(request_url.as_bytes());
-        format!("{:x}", hasher.finalize())
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        hex
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]

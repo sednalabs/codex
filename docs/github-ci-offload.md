@@ -139,20 +139,20 @@ artifacts.
      workflow files plus `.github/validation-lanes.json`, so small CI-only
      follow-ups can stay on planner/workflow proof instead of broad Rust PR
      gates.
-7. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
+8. Use `validation-lab` `profile=targeted` with `lane_set=release` when the question is Linux
    release-build dependency or lockfile readiness under `--locked`.
    - `sedna.release-linux-smoke` is a plain locked release build preflight: it keeps
      Linux build deps and `sccache`, but not DotSlash or release-publish steps.
-8. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
+9. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
    heavy validation, or a named heavy lane.
-9. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
-   not as a routine post-merge rerun. Its scheduled path follows the scheduled
-   `rust-ci` run and starts only if that upstream gate passed on `main`. Both
-   scheduled Rust workflows skip when an equivalent same-branch, same-commit
-   success already exists, so idle branches do not spend runner time proving
-   the same SHA again.
-10. Use `sedna-branch-build` only when you intentionally want a preview binary.
-11. Use `sedna-release` only for official releases.
+10. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
+    not as a routine post-merge rerun. Its scheduled path follows the scheduled
+    `rust-ci` run and starts only if that upstream gate passed on `main`. Both
+    scheduled Rust workflows skip when an equivalent same-branch, same-commit
+    success already exists, so idle branches do not spend runner time proving
+    the same SHA again.
+11. Use `sedna-branch-build` only when you intentionally want a preview binary.
+12. Use `sedna-release` only for official releases.
 
 ## Current downstream platform policy
 
@@ -300,23 +300,23 @@ replaying an older ref, migrate it to the explicit lane schema used on `main`
 
 ## Workflow replacement matrix
 
-| Workflow | Status | Sedna role |
-| --- | --- | --- |
-| `rust-ci.yml` | rewrite in place | Stable required Rust CI for PRs with guarded incremental follow-ups |
-| `rust-ci-full.yml` | keep but narrow | Scheduled/manual Cargo-native checkpoint workflow |
-| `ci.yml` | rewrite in place | JS/docs/root checks on the Sedna branch model |
-| `cargo-deny.yml` | keep with new branch topology | Dependency policy on `main` and `upstream-main` |
-| `codespell.yml` | keep with new branch topology | Fast text hygiene on `main` and `upstream-main` |
-| `docs-sanity.yml` | new | Cheap docs-only markdown link proof |
-| `bazel.yml` | keep with new branch topology | Experimental Bazel validation |
-| `sdk.yml` | rewrite in place | SDK checks on GitHub-hosted Linux for the Sedna branch model |
-| `v8-canary.yml` | rewrite in place | V8 canary validation on `main` and `upstream-main` |
-| `validation-lab.yml` | new | Dispatch-only remote validation lab for scratch/integration/orphan refs |
-| `sedna-branch-build.yml` | new | Preview binary offload lane |
-| `sedna-heavy-tests.yml` | new | Expensive Linux validation lane |
-| `sedna-sync-upstream.yml` | new | Mirror maintenance lane |
-| `sedna-release.yml` | keep and harden | Official Sedna release publisher |
-| `rust-release.yml` | superseded | Upstream release contract, no longer the Sedna publisher |
+| Workflow                  | Status                        | Sedna role                                                              |
+| ------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+| `rust-ci.yml`             | rewrite in place              | Stable required Rust CI for PRs with guarded incremental follow-ups     |
+| `rust-ci-full.yml`        | keep but narrow               | Scheduled/manual Cargo-native checkpoint workflow                       |
+| `ci.yml`                  | rewrite in place              | JS/docs/root checks on the Sedna branch model                           |
+| `cargo-deny.yml`          | keep with new branch topology | Dependency policy on `main` and `upstream-main`                         |
+| `codespell.yml`           | keep with new branch topology | Fast text hygiene on `main` and `upstream-main`                         |
+| `docs-sanity.yml`         | new                           | Cheap docs-only markdown link proof                                     |
+| `bazel.yml`               | keep with new branch topology | Experimental Bazel validation                                           |
+| `sdk.yml`                 | rewrite in place              | SDK checks on GitHub-hosted Linux for the Sedna branch model            |
+| `v8-canary.yml`           | rewrite in place              | V8 canary validation on `main` and `upstream-main`                      |
+| `validation-lab.yml`      | new                           | Dispatch-only remote validation lab for scratch/integration/orphan refs |
+| `sedna-branch-build.yml`  | new                           | Preview binary offload lane                                             |
+| `sedna-heavy-tests.yml`   | new                           | Expensive Linux validation lane                                         |
+| `sedna-sync-upstream.yml` | new                           | Mirror maintenance lane                                                 |
+| `sedna-release.yml`       | keep and harden               | Official Sedna release publisher                                        |
+| `rust-release.yml`        | superseded                    | Upstream release contract, no longer the Sedna publisher                |
 
 ## Retention and cleanup
 

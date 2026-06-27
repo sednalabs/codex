@@ -199,8 +199,8 @@ fn digest_hex(digest: impl AsRef<[u8]>) -> String {
 
     let digest = digest.as_ref();
     let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut hex, "{:02x}", *byte).expect("writing to a String cannot fail");
+    for &byte in digest {
+        let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
 }

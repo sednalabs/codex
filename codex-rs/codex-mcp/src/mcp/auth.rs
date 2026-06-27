@@ -36,7 +36,7 @@ pub struct McpOAuthLoginConfig {
 
 #[derive(Debug)]
 pub enum McpOAuthLoginSupport {
-    Supported(McpOAuthLoginConfig),
+    Supported(Box<McpOAuthLoginConfig>),
     Unsupported,
     Unknown(anyhow::Error),
 }
@@ -78,7 +78,7 @@ pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAu
             config.discovered_scopes = discovery.scopes_supported;
             config.device_authorization_endpoint = discovery.device_authorization_endpoint;
             config.grant_types_supported = discovery.grant_types_supported;
-            McpOAuthLoginSupport::Supported(config)
+            McpOAuthLoginSupport::Supported(Box::new(config))
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
@@ -106,7 +106,7 @@ pub async fn oauth_login_support_with_http_client(
             config.discovered_scopes = discovery.scopes_supported;
             config.device_authorization_endpoint = discovery.device_authorization_endpoint;
             config.grant_types_supported = discovery.grant_types_supported;
-            McpOAuthLoginSupport::Supported(config)
+            McpOAuthLoginSupport::Supported(Box::new(config))
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
@@ -142,7 +142,7 @@ pub async fn discover_supported_scopes(
     transport: &McpServerTransportConfig,
 ) -> Option<Vec<String>> {
     match oauth_login_support(transport).await {
-        McpOAuthLoginSupport::Supported(config) => config.discovered_scopes,
+        McpOAuthLoginSupport::Supported(config) => (*config).discovered_scopes,
         McpOAuthLoginSupport::Unsupported | McpOAuthLoginSupport::Unknown(_) => None,
     }
 }
@@ -152,7 +152,7 @@ pub async fn discover_supported_scopes_with_http_client(
     http_client: Arc<dyn HttpClient>,
 ) -> Option<Vec<String>> {
     match oauth_login_support_with_http_client(transport, http_client).await {
-        McpOAuthLoginSupport::Supported(config) => config.discovered_scopes,
+        McpOAuthLoginSupport::Supported(config) => (*config).discovered_scopes,
         McpOAuthLoginSupport::Unsupported | McpOAuthLoginSupport::Unknown(_) => None,
     }
 }
