@@ -2083,10 +2083,7 @@ impl App {
                     let Ok(cwd) = AbsolutePathBuf::from_absolute_path(cwd.as_path()) else {
                         return Ok(AppRunControl::Continue);
                     };
-                    let diff_summary = DiffSummary::new(
-                        changes,
-                        cwd,
-                    );
+                    let diff_summary = DiffSummary::new(changes, cwd);
                     self.overlay = Some(Overlay::new_static_with_renderables(
                         vec![diff_summary.into()],
                         "P A T C H".to_string(),
