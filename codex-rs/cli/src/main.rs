@@ -1956,8 +1956,9 @@ async fn run_debug_prompt_input_command(
         });
     }
 
-    let user_instructions_provider =
-        Arc::new(CodexHomeUserInstructionsProvider::new(config.codex_home.clone()));
+    let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(
+        config.codex_home.clone(),
+    ));
     let prompt_input = codex_core::build_prompt_input(
         config,
         input,

@@ -1,10 +1,12 @@
 set working-directory := "codex-rs"
-set positional-arguments
+set positional-arguments := true
+
 export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
+
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 
-rust_min_stack := "8388608" # 8 MiB
+rust_min_stack := "8388608"
 python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help
@@ -12,7 +14,9 @@ help:
     just -l
 
 # `codex`
+
 alias c := codex
+
 codex *args:
     cargo run --bin codex -- {args}
 
@@ -84,6 +88,7 @@ install:
 #
 # Run `cargo install --locked cargo-nextest` if you don't have it installed.
 # Prefer this for routine local runs. Workspace crate features are banned, so
+
 # there should be no need to add `--all-features`.
 [unix]
 test *args:
@@ -94,6 +99,7 @@ test *args:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; $env:NEXTEST_PROFILE = "local"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
 
 # Run from the repository root so scripts that resolve paths from `cwd` see
+
 # the same layout they use in GitHub Actions.
 [no-cd]
 test-github-scripts:
@@ -142,6 +148,7 @@ core-subagent-notification-contract-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- format_subagent_notification_message_round_trips_completed_status classifies_memory_excluded_fragments drop_last_n_user_turns_ignores_session_prefix_user_messages serializes_memory_rollout_with_agents_removed_but_environment_kept
 
 # Focused sub-agent completion-notification parser + TUI render slice after the
+
 # tui_app_server -> tui cutover.
 core-subagent-notification-visibility-targeted:
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
@@ -169,12 +176,14 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
+
 # visibility without widening to the TUI/app-server build graph.
 spawn-agent-tool-model-surface-targeted:
     cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
     cargo test -p codex-tools spawn_agent_tool_v2_lists_upgradeable_legacy_models --lib -- --exact --test-threads=1
 
 # Focused shared picker-model spawned-agent-description slice for upgradeable
+
 # legacy visibility without widening to the TUI/app-server build graph.
 spawn-agent-description-model-surface-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
@@ -182,6 +191,7 @@ spawn-agent-description-model-surface-targeted:
 # Compatibility wrapper for the picker-model shared surface. The interactive
 # TUI consumer still shares the same protocol helper, but this exact lane
 # intentionally avoids compiling codex-tui while app-server drift contaminates
+
 # small mapped picker-model runs.
 tui-agent-picker-model-surface-targeted:
     just --justfile ../justfile spawn-agent-tool-model-surface-targeted
@@ -247,6 +257,7 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1
 
 # Focused brokered-tool replay slice for app-server dynamic-tool begin/end
+
 # projection and TUI replay visibility.
 tui-brokered-tool-replay-targeted:
     cargo test -p codex-tui bridges_dynamic_tool_items_from_server_notifications --lib -- --exact --test-threads=1
@@ -263,6 +274,7 @@ core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
 
 # Focused blocking-wait slices split by compile surface so hosted validation
+
 # does not accumulate every target artifact in one runner workspace.
 blocking-waits-core-targeted:
     cargo test -p codex-core capacity_retry::tests --lib -- --test-threads=1
@@ -294,6 +306,7 @@ custom-prompts-targeted:
     cargo test -p codex-tui chatwidget::tests::review_mode::review_custom_prompt_escape_navigates_back_then_dismisses --lib -- --exact --test-threads=1
 
 # Focused downstream MCP safety slice for config mutability and OAuth fallback
+
 # hardening.
 mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1
@@ -368,6 +381,7 @@ cli-surface-targeted:
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
+
 # client response handling, and Android tool lifecycle injection.
 app-server-computer-use-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::computer_use:: -- --test-threads=1
@@ -385,12 +399,14 @@ tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
 
 # Focused exec native computer-use slice for configured browser tool
+
 # advertisement and provider request handling in non-interactive sessions.
 exec-native-computer-use-targeted:
     cargo test --locked -p codex-exec tests::thread_lifecycle_params_include_configured_native_dynamic_tools --lib -- --exact --test-threads=1
     cargo test --locked -p codex-exec --test all event_processor_with_json_output::computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
 
 # Focused native computer-use tool registry slice for canonical schema conversion
+
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-core-plugins bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable --lib -- --test-threads=1
@@ -419,31 +435,31 @@ native-computer-use-doctor-targeted:
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
 agent-workflow-sanity:
-    cd "{{justfile_directory()}}" && python3 -m py_compile \
+    cd "{{ justfile_directory() }}" && python3 -m py_compile \
         .codex/skills/babysit-pr/scripts/gh_pr_watch.py \
         .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py \
         .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py \
         .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py
-    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
-    cd "{{justfile_directory()}}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py
-    cd "{{justfile_directory()}}" && python3 .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py --help >/dev/null
+    cd "{{ justfile_directory() }}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
+    cd "{{ justfile_directory() }}" && python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py
+    cd "{{ justfile_directory() }}" && python3 .codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py --help >/dev/null
 
 # Focused shell-tool-mcp package sanity slice.
 [no-cd]
 shell-tool-mcp-ci:
-    cd "{{justfile_directory()}}" && corepack enable
-    cd "{{justfile_directory()}}" && pnpm install --frozen-lockfile
-    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run format
-    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp test
-    cd "{{justfile_directory()}}" && pnpm --filter @openai/codex-shell-tool-mcp run build
+    cd "{{ justfile_directory() }}" && corepack enable
+    cd "{{ justfile_directory() }}" && pnpm install --frozen-lockfile
+    cd "{{ justfile_directory() }}" && pnpm --filter @openai/codex-shell-tool-mcp run format
+    cd "{{ justfile_directory() }}" && pnpm --filter @openai/codex-shell-tool-mcp test
+    cd "{{ justfile_directory() }}" && pnpm --filter @openai/codex-shell-tool-mcp run build
 
 # Focused build/config policy sanity slice for install and workspace checks.
 [no-cd]
 build-policy-sanity:
-    cd "{{justfile_directory()}}" && bash -n scripts/install/install.sh
-    cd "{{justfile_directory()}}" && python3 -m py_compile scripts/stage_npm_packages.py .github/scripts/verify_bazel_clippy_lints.py .github/scripts/verify_cargo_workspace_manifests.py
-    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_bazel_clippy_lints.py
-    cd "{{justfile_directory()}}" && python3 .github/scripts/verify_cargo_workspace_manifests.py
+    cd "{{ justfile_directory() }}" && bash -n scripts/install/install.sh
+    cd "{{ justfile_directory() }}" && python3 -m py_compile scripts/stage_npm_packages.py .github/scripts/verify_bazel_clippy_lints.py .github/scripts/verify_cargo_workspace_manifests.py
+    cd "{{ justfile_directory() }}" && python3 .github/scripts/verify_bazel_clippy_lints.py
+    cd "{{ justfile_directory() }}" && python3 .github/scripts/verify_cargo_workspace_manifests.py
 
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:
@@ -464,6 +480,7 @@ core-attestation-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-state phase2_attestation --lib -- --test-threads=1
 
 # Focused startup repair slice for state DBs with schema changes applied but
+
 # missing SQLx migration records.
 state-migration-repair-targeted:
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
@@ -473,6 +490,7 @@ core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
+
 # one bounded runtime shard.
 core-runtime-surface-smoke:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
@@ -512,18 +530,18 @@ downstream-ledger-seam:
 [no-cd]
 downstream-docs-check:
     git diff --check -- docs/downstream.md docs/native-computer-use.md docs/native-computer-use-cleanroom.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
-    cd "{{justfile_directory()}}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
-    cd "{{justfile_directory()}}" && python3 .github/scripts/check_markdown_links.py
+    cd "{{ justfile_directory() }}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
+    cd "{{ justfile_directory() }}" && python3 .github/scripts/check_markdown_links.py
 
 [no-cd]
 workflow-ci-sanity:
-    cd "{{justfile_directory()}}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py scripts/downstream-divergence-audit.py
-    cd "{{justfile_directory()}}" && python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
-    cd "{{justfile_directory()}}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/codeql.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/sedna-release.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
+    cd "{{ justfile_directory() }}" && python3 -m py_compile .github/scripts/aggregate_validation_summary.py .github/scripts/check_markdown_links.py .github/scripts/resolve_rust_ci_mode.py .github/scripts/resolve_sedna_release_version.py .github/scripts/resolve_validation_plan.py .github/scripts/test_ci_planners.py scripts/downstream-divergence-audit.py
+    cd "{{ justfile_directory() }}" && python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
+    cd "{{ justfile_directory() }}" && ruby -e 'require "yaml"; %w[.github/workflows/_sedna-linux-rust.yml .github/workflows/codeql.yml .github/workflows/docs-sanity.yml .github/workflows/rust-ci-full.yml .github/workflows/rust-ci.yml .github/workflows/sedna-heavy-tests.yml .github/workflows/sedna-release.yml .github/workflows/validation-lab.yml].each { |path| YAML.load_file(path) }; puts "yaml-ok"'
 
 [no-cd]
 downstream-divergence-audit:
-    cd "{{justfile_directory()}}" && python3 scripts/downstream-divergence-audit.py --repo . --downstream-remote origin --downstream-branch main --mirror-remote origin --mirror-branch upstream-main --upstream-remote upstream --upstream-branch main --registry-path docs/divergences/index.yaml --output-dir target/downstream-divergence-audit --format both --code-only --enforce-registry
+    cd "{{ justfile_directory() }}" && python3 scripts/downstream-divergence-audit.py --repo . --downstream-remote origin --downstream-branch main --mirror-remote origin --mirror-branch upstream-main --upstream-remote upstream --upstream-branch main --registry-path docs/divergences/index.yaml --output-dir target/downstream-divergence-audit --format both --code-only --enforce-registry
 
 # Early non-publishing Linux release-build smoke coverage.
 sedna-release-linux-smoke:
@@ -538,6 +556,7 @@ core-test-smoke:
     just core-runtime-surface-smoke
 
 # Progressive codex-core ladder:
+
 # 1) smoke gate, 2) high-churn buckets, 3) full suite.
 core-test-progressive:
     just core-test-smoke
@@ -549,6 +568,7 @@ core-test-progressive:
 
 # Build and run Codex from source using Bazel.
 # On Unix, use `[no-cd]` and `--run_under="cd $PWD &&"` to ensure Bazel runs
+
 # the command in the current working directory.
 [no-cd]
 [unix]
@@ -618,7 +638,7 @@ write-hooks-schema:
 [no-cd]
 [unix]
 _run-bazel-argument-comment-lint:
-    cd "{{justfile_directory()}}" && bazel build --config=argument-comment-lint -- $("{{justfile_directory()}}"/tools/argument-comment-lint/list-bazel-targets.sh)
+    cd "{{ justfile_directory() }}" && bazel build --config=argument-comment-lint -- $("{{ justfile_directory() }}"/tools/argument-comment-lint/list-bazel-targets.sh)
 
 [no-cd]
 [unix]

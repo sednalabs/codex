@@ -127,8 +127,10 @@ pub(crate) fn load_oauth_tokens(
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<Option<StoredOAuthTokens>> {
-    Ok(load_oauth_tokens_with_source(server_name, url, store_mode, keyring_backend_kind)?
-        .map(|loaded| loaded.tokens))
+    Ok(
+        load_oauth_tokens_with_source(server_name, url, store_mode, keyring_backend_kind)?
+            .map(|loaded| loaded.tokens),
+    )
 }
 
 pub(crate) fn load_oauth_tokens_with_source(
@@ -170,9 +172,13 @@ fn load_oauth_tokens_with_keyring_store<K: KeyringStore + Clone + 'static>(
             },
         )),
         OAuthCredentialsStoreMode::Keyring => {
-            let tokens =
-                load_oauth_tokens_from_keyring(keyring_store, keyring_backend_kind, server_name, url)
-                    .with_context(|| "failed to read OAuth tokens from keyring".to_string())?;
+            let tokens = load_oauth_tokens_from_keyring(
+                keyring_store,
+                keyring_backend_kind,
+                server_name,
+                url,
+            )
+            .with_context(|| "failed to read OAuth tokens from keyring".to_string())?;
             Ok(tokens.map(|tokens| LoadedOAuthTokens {
                 tokens,
                 store: ResolvedOAuthCredentialStore::Keyring,
@@ -675,14 +681,12 @@ impl OAuthPersistor {
         let keyring_store = DefaultKeyringStore;
         match self.inner.credential_store {
             ResolvedOAuthCredentialStore::File => save_oauth_tokens_to_file(tokens),
-            ResolvedOAuthCredentialStore::Keyring => {
-                save_oauth_tokens_with_keyring(
-                    &keyring_store,
-                    self.inner.keyring_backend_kind,
-                    &self.inner.server_name,
-                    tokens,
-                )
-            }
+            ResolvedOAuthCredentialStore::Keyring => save_oauth_tokens_with_keyring(
+                &keyring_store,
+                self.inner.keyring_backend_kind,
+                &self.inner.server_name,
+                tokens,
+            ),
         }
     }
 

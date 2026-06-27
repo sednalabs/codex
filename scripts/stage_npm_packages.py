@@ -18,7 +18,9 @@ from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "codex-cli" / "scripts" / "build_npm_package.py"
-WORKFLOW_NAME = os.environ.get("CODEX_RELEASE_WORKFLOW", ".github/workflows/rust-release.yml")
+WORKFLOW_NAME = os.environ.get(
+    "CODEX_RELEASE_WORKFLOW", ".github/workflows/rust-release.yml"
+)
 RELEASE_TAG_PREFIX = os.environ.get("CODEX_RELEASE_TAG_PREFIX", "rust-v")
 GITHUB_REPO = os.environ.get("CODEX_RELEASE_REPOSITORY", "openai/codex")
 BINARY_TARGETS = (

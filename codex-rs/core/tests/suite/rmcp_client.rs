@@ -2317,16 +2317,15 @@ async fn streamable_http_configured_auth_precedes_chatgpt_auth() -> anyhow::Resu
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let Some(configured_auth_server) =
-        start_streamable_http_test_server(
-            "configured-auth",
-            Some(StreamableHttpAuth {
-                expected_bearer_token: "configured-token",
-                expected_refresh_token: None,
-                refreshed_access_token: None,
-            }),
-        )
-        .await?
+    let Some(configured_auth_server) = start_streamable_http_test_server(
+        "configured-auth",
+        Some(StreamableHttpAuth {
+            expected_bearer_token: "configured-token",
+            expected_refresh_token: None,
+            refreshed_access_token: None,
+        }),
+    )
+    .await?
     else {
         return Ok(());
     };
