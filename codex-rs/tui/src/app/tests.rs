@@ -117,6 +117,39 @@ macro_rules! assert_app_snapshot {
     };
 }
 
+const APP_TEST_WORKER_THREADS: usize = 1;
+const APP_TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+fn run_large_stack_app_test<F, Fut>(test_body: F) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<()>> + 'static,
+{
+    std::thread::Builder::new()
+        .name("tui-app-large-stack-test".to_string())
+        .stack_size(APP_TEST_STACK_SIZE_BYTES)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(APP_TEST_WORKER_THREADS)
+                .thread_stack_size(APP_TEST_STACK_SIZE_BYTES)
+                .enable_all()
+                .build()?;
+
+            runtime.block_on(test_body())
+        })?
+        .join()
+        .map_err(|panic| {
+            let panic_message = if let Some(message) = panic.downcast_ref::<&str>() {
+                (*message).to_string()
+            } else if let Some(message) = panic.downcast_ref::<String>() {
+                message.clone()
+            } else {
+                "large-stack app test thread panicked".to_string()
+            };
+            color_eyre::eyre::eyre!("{panic_message}")
+        })?
+}
+
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
 }
@@ -1431,16 +1464,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
 
 #[test]
 fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
-    const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
-        .thread_stack_size(TEST_STACK_SIZE_BYTES)
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
+    run_large_stack_app_test(|| async {
         let mut app = Box::pin(make_test_app()).await;
         let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
             app.chat_widget.config_ref(),
@@ -1473,16 +1497,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 
 #[test]
 fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads() -> Result<()> {
-    const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
-        .thread_stack_size(TEST_STACK_SIZE_BYTES)
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
+    run_large_stack_app_test(|| async {
         let config = {
             let app = make_test_app().await;
             app.chat_widget.config_ref().clone()
@@ -1518,16 +1533,7 @@ fn attach_live_thread_for_selection_rejects_empty_non_ephemeral_fallback_threads
 
 #[test]
 fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() -> Result<()> {
-    const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
-        .thread_stack_size(TEST_STACK_SIZE_BYTES)
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
+    run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
@@ -1692,16 +1698,7 @@ async fn update_memory_settings_persists_and_updates_widget_config() -> Result<(
 
 #[test]
 fn update_memory_settings_updates_current_thread_memory_mode() -> Result<()> {
-    const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
-        .thread_stack_size(TEST_STACK_SIZE_BYTES)
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async {
+    run_large_stack_app_test(|| async {
         let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
         let codex_home = tempdir()?;
         app.config.codex_home = codex_home.path().to_path_buf().abs();
