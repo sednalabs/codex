@@ -1835,7 +1835,7 @@ mod tests {
             "unexpected error: {error:#}"
         );
         drop(persistor);
-        let mut manager = Arc::try_unwrap(manager)
+        let manager = Arc::try_unwrap(manager)
             .unwrap_or_else(|_| panic!("persistor should be the only cloned OAuth manager owner"))
             .into_inner();
         let access_token = manager.get_access_token().await?;

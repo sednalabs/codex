@@ -254,7 +254,16 @@ docs-only refresh commit that records this snapshot.
 - Sub-agent delegate forwarding should continue to surface `TokenCount` events
   back to the parent session; preserve this behavior even when re-homing the
   delegate code onto newer upstream structure.
+- Provider `ServerOverloaded` responses use cancellable capacity-retry backoff
+  for sampling, inline compaction, and remote compaction instead of terminating
+  the turn immediately. Preserve the `capacity_retry` loops in
+  `session/turn.rs`, `compact.rs`, and `compact_remote.rs` during upstream
+  syncs.
 - Primary files:
+  - `codex-rs/core/src/capacity_retry.rs`
+  - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/compact.rs`
+  - `codex-rs/core/src/compact_remote.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/codex.rs`

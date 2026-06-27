@@ -194,9 +194,9 @@ fn session_telemetry_for_request(
 /// configuration is per turn and is passed explicitly to streaming/unary methods.
 #[derive(Debug)]
 struct ModelClientState {
-    session_id: SessionId,
+    _session_id: SessionId,
     thread_id: ThreadId,
-    installation_id: String,
+    _installation_id: String,
     provider: SharedModelProvider,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -372,9 +372,9 @@ impl ModelClient {
         let include_attestation = model_provider.supports_attestation();
         Self {
             state: Arc::new(ModelClientState {
-                session_id,
+                _session_id: session_id,
                 thread_id,
-                installation_id,
+                _installation_id: installation_id,
                 provider: model_provider,
                 auth_env_telemetry,
                 session_source,

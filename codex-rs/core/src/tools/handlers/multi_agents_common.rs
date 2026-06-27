@@ -162,6 +162,7 @@ pub(crate) fn pending_wait_thread_ids(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_wait_end_event(
     session: &Session,
     turn: &TurnContext,

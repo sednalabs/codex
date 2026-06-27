@@ -301,9 +301,14 @@
         "wait_agent blocking joins",
         "app-server command execution completion ordering",
         "MCP task completion ordering",
+        "model capacity retry",
         "turn completion metadata"
       ],
       "files": [
+        "codex-rs/core/src/capacity_retry.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote.rs",
         "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
@@ -313,14 +318,19 @@
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/core/src/codex.rs"
       ],
-      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation.",
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.blocking-waits-core-targeted",
+      "guardrail_lane": "codex.blocking-waits-core-targeted; codex.blocking-waits-app-server-targeted",
       "tests": [
+        "capacity_retry::tests",
+        "server_overloaded_retries_beyond_stream_retry_budget",
+        "server_overloaded_backoff_is_interruptible",
+        "auto_remote_compact_retries_server_overloaded",
+        "live_app_server_retrying_server_overloaded_error_keeps_task_running",
         "exec_command_wait_until_terminal_defers_provider_resume_until_exit",
         "exec_command_wait_until_terminal_timeout_is_not_clamped_to_background_poll_minimum",
         "wait_until_terminal_uses_two_hour_default_cap",
@@ -340,10 +350,14 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
+        "codex-rs/core/src/capacity_retry.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote.rs",
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
