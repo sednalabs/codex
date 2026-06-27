@@ -429,6 +429,7 @@ async fn wait_for_final_status(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_wake_source(
     session: std::sync::Arc<Session>,
     mailbox_rx: &mut tokio::sync::watch::Receiver<()>,

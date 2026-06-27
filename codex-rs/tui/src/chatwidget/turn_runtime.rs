@@ -203,7 +203,7 @@ impl ChatWidget {
         // Queued follow-up input and active goal continuation both start the
         // next turn immediately, so notifying at that boundary would feel like
         // a false "needs attention".
-        if !follow_up_started && !active_goal_continuing {
+        if !from_replay && !follow_up_started && !active_goal_continuing {
             self.notify(Notification::AgentTurnComplete {
                 response: notification_response,
             });
