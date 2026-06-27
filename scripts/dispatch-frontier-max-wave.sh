@@ -102,7 +102,7 @@ dispatches=(
   "gh workflow run rust-ci.yml --repo ${repo} --ref ${ref} -f platform_scope=${platform_scope}"
   "gh workflow run rust-ci-full.yml --repo ${repo} --ref ${ref} -f platform_scope=${platform_scope}"
   "gh workflow run sedna-branch-build.yml --repo ${repo} --ref ${host_ref} -f ref=${ref}"
-  "gh workflow run sedna-heavy-tests.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f lane=${heavy_lane}"
+  "gh workflow run sedna-heavy-tests.yml --repo ${repo} --ref ${ref} -f ref=${ref} -f lane=${heavy_lane}"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=full -f lane_set=all -f artifact_build=true -f supersession_mode=compare"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=broad -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
   "gh workflow run validation-lab.yml --repo ${repo} --ref ${host_ref} -f ref=${ref} -f profile=frontier -f lane_set=all -f artifact_build=false -f include_explicit_lanes=${include_explicit_lanes} -f supersession_mode=compare"
