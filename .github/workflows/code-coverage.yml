@@ -101,7 +101,7 @@ jobs:
         working-directory: sdk/python
         run: |
           set -euo pipefail
-          uv run --extra dev --frozen --with pytest-cov \
+          uv run --group dev --frozen --with pytest-cov \
             pytest \
               tests/test_async_client_behavior.py \
               tests/test_client_rpc_methods.py \
