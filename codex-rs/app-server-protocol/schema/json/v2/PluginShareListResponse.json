@@ -382,9 +382,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "npm"
-              ],
+              "const": "npm",
               "title": "NpmPluginSourceType",
               "type": "string"
             },
@@ -404,7 +402,7 @@
           "type": "object"
         },
         {
-          "description": "The plugin is available in the remote catalog. Download metadata is kept server-side and is not exposed through the app-server API.",
+          "description": "The plugin is available in the remote catalog. Download metadata is\nkept server-side and is not exposed through the app-server API.",
           "properties": {
             "type": {
               "enum": [
