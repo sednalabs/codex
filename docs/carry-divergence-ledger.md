@@ -37,6 +37,10 @@ docs-only refresh commit that records this snapshot.
 - `main` is now the default PR and integration branch, while `upstream-main`
   is the exact upstream mirror.
 - Downstream sync policy is merge-based, not rebase-based.
+- Upstream now groups PR-blocking checks through reusable leaf workflows called
+  by `blocking-ci.yml`. Downstream preserves that upstream topology and carries
+  only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
+  pushes, instead of reintroducing direct triggers on every child workflow.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -48,6 +52,7 @@ docs-only refresh commit that records this snapshot.
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
+  - `.github/workflows/blocking-ci.yml`
   - `docs/contributing.md`
   - `docs/downstream.md`
 

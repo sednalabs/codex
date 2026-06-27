@@ -1,13 +1,7 @@
-name: ci
+name: repo-checks
 
 on:
-  pull_request: {}
-  merge_group: {}
-  push: { branches: [main, upstream-main] }
-
-concurrency:
-  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ (github.ref_name == 'main' || github.ref_name == 'upstream-main') && format('::{0}', github.run_id) || '' }}
-  cancel-in-progress: ${{ github.ref_name != 'main' && github.ref_name != 'upstream-main' }}
+  workflow_call:
 
 jobs:
   build-test:
@@ -47,15 +41,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # stage_npm_packages.py requires DotSlash when staging releases.
-      # On forks, skip staging since release artifacts may not exist.
-      - name: Install DotSlash (upstream release staging only)
-        if: ${{ github.repository_owner == 'openai' }}
-        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
-
       - name: Stage npm package
         id: stage_npm_package
-        if: ${{ github.repository_owner == 'openai' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -76,7 +63,6 @@ jobs:
           echo "pack_output=$PACK_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged npm package artifact
-        if: ${{ github.repository_owner == 'openai' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: codex-npm-staging
@@ -87,11 +73,11 @@ jobs:
       - name: Check root README ToC
         run: python3 scripts/readme_toc.py README.md
 
-      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: just@1.51.0
       - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.3"
       - name: Install DotSlash
