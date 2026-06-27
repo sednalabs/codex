@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -113,26 +112,39 @@ def clean_workspace(repo_root: Path) -> None:
     )
 
 
-def reclaim_batch_disk_headroom(repo_root: Path, lane_id: str) -> None:
-    free_bytes = shutil.disk_usage(repo_root).free
-    if free_bytes >= DISK_HEADROOM_FLOOR_BYTES:
-        return
+def workspace_free_bytes(repo_root: Path) -> int:
+    result = subprocess.run(
+        ["df", "-Pk", "."],
+        cwd=repo_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines = result.stdout.splitlines()
+    if len(lines) < 2:
+        raise SystemExit(f"unable to read workspace disk usage: {result.stdout!r}")
+    fields = lines[1].split()
+    if len(fields) < 4:
+        raise SystemExit(f"unexpected workspace disk usage output: {result.stdout!r}")
+    return int(fields[3]) * 1024
 
-    target_dir = repo_root / "codex-rs" / "target"
-    if not target_dir.exists():
-        print(
-            "::warning title=Validation workspace disk headroom low::"
-            f"{free_bytes // (1024 * 1024)} MiB free before {lane_id}, "
-            "but codex-rs/target was not present to reclaim."
-        )
+
+def reclaim_batch_disk_headroom(repo_root: Path, lane_id: str) -> None:
+    free_bytes = workspace_free_bytes(repo_root)
+    if free_bytes >= DISK_HEADROOM_FLOOR_BYTES:
         return
 
     print(
         "::warning title=Reclaiming validation workspace disk headroom::"
         f"{free_bytes // (1024 * 1024)} MiB free before {lane_id}; "
-        "removing codex-rs/target while preserving .sccache."
+        "removing codex-rs/target via git clean while preserving .sccache."
     )
-    shutil.rmtree(target_dir)
+    subprocess.run(
+        ["git", "clean", "-ffdx", "--", "codex-rs/target"],
+        cwd=repo_root,
+        check=True,
+    )
 
 
 def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[str, Any], index: int) -> dict[str, Any]:
