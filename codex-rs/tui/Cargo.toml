@@ -131,6 +131,9 @@ uuid = { workspace = true }
 codex-windows-sandbox = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = "0.15"
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

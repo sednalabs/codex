@@ -258,8 +258,18 @@ mod thread_processor_behavior_tests {
             "additionalProperties": false
         });
         let tools = vec![
-            dynamic_tool(Some("codex_app"), "my_tool", schema.clone(), true),
-            dynamic_tool(Some("codex_app"), "my_tool", schema, true),
+            dynamic_tool(
+                Some("codex_app"),
+                "my_tool",
+                schema.clone(),
+                /*defer_loading*/ true,
+            ),
+            dynamic_tool(
+                Some("codex_app"),
+                "my_tool",
+                schema,
+                /*defer_loading*/ true,
+            ),
         ];
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
@@ -399,7 +409,7 @@ mod thread_processor_behavior_tests {
     #[test]
     fn validate_dynamic_tools_rejects_namespace_fields_over_limits() {
         let long_namespace = "a".repeat(65);
-        let mut tools = vec![dynamic_tool(
+        let tools = vec![dynamic_tool(
             Some(&long_namespace),
             "lookup_ticket",
             json!({

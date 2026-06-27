@@ -458,7 +458,9 @@ docs-only refresh commit that records this snapshot.
 - TUI realtime voice remains a downstream carry on non-Linux targets even
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
-  `audio_device.rs` or the Linux `voice` stub as stale code.
+  `audio_device.rs` or the Linux `voice` stub as stale code. The non-Linux
+  split also depends on the target-scoped `cpal` entry in
+  `codex-rs/tui/Cargo.toml` and its `codex-rs/Cargo.lock` graph.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - `/quit` and `/exit` inside an active `/side` conversation close only that side
@@ -469,6 +471,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
   - `codex-rs/tui/src/app_event.rs`
+  - `codex-rs/tui/Cargo.toml`
+  - `codex-rs/Cargo.lock`
   - `codex-rs/tui/src/audio_device.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/voice.rs`

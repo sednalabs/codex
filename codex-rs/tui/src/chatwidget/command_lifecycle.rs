@@ -481,7 +481,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
-                    terminal_wait.clone(),
+                    terminal_wait,
                     self.config.animations,
                 );
                 let completed = orphan.complete_call(&id, output, duration);

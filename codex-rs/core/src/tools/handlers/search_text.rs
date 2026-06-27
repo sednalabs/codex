@@ -136,7 +136,7 @@ fn starts_new_token(chars: &[char], idx: usize) -> bool {
         && prev.is_ascii_uppercase()
         && chars
             .get(idx + 1)
-            .is_some_and(|next| next.is_ascii_lowercase())
+            .is_some_and(char::is_ascii_lowercase)
     {
         return true;
     }

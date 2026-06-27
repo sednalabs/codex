@@ -6,6 +6,7 @@ use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
+use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::ApprovalsReviewer;
@@ -98,6 +99,10 @@ pub(crate) enum AppCommand {
     },
     Review {
         target: ReviewTarget,
+    },
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    RealtimeConversationAudio {
+        audio: ThreadRealtimeAudioChunk,
     },
     ApproveGuardianDeniedAction {
         event: GuardianAssessmentEvent,
@@ -262,6 +267,11 @@ impl AppCommand {
 
     pub(crate) fn review(target: ReviewTarget) -> Self {
         Self::Review { target }
+    }
+
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub(crate) fn realtime_conversation_audio(audio: ThreadRealtimeAudioChunk) -> Self {
+        Self::RealtimeConversationAudio { audio }
     }
 
     pub(crate) fn approve_guardian_denied_action(event: GuardianAssessmentEvent) -> Self {

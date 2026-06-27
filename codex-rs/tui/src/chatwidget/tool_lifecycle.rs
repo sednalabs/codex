@@ -87,7 +87,7 @@ impl ChatWidget {
     pub(super) fn on_context_compaction_started(&mut self, item: ThreadItem) {
         self.defer_or_handle(
             |q| q.push_item_started(item),
-            |s| s.handle_context_compaction_started_now(),
+            super::ChatWidget::handle_context_compaction_started_now,
         );
     }
 
@@ -99,7 +99,7 @@ impl ChatWidget {
     pub(super) fn on_context_compaction_completed(&mut self, item: ThreadItem) {
         self.defer_or_handle(
             |q| q.push_item_completed(item),
-            |s| s.handle_context_compaction_completed_now(),
+            super::ChatWidget::handle_context_compaction_completed_now,
         );
     }
 

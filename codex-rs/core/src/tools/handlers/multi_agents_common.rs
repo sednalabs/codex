@@ -585,7 +585,7 @@ async fn normalize_spawn_agent_reasoning_effort(
                     validate_spawn_agent_reasoning_effort(
                         &model,
                         &model_info.supported_reasoning_levels,
-                        &reasoning_effort,
+                        reasoning_effort,
                     )?;
                 }
 
