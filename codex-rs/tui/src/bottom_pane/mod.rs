@@ -958,10 +958,7 @@ impl BottomPane {
         self.composer.remote_image_urls()
     }
 
-    pub(crate) fn active_view_will_interrupt_turn_on_key_event(
-        &self,
-        key_event: KeyEvent,
-    ) -> bool {
+    pub(crate) fn active_view_will_interrupt_turn_on_key_event(&self, key_event: KeyEvent) -> bool {
         self.active_view()
             .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
     }
