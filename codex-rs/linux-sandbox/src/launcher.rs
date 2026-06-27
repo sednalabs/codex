@@ -14,8 +14,6 @@ use crate::exec_util::make_files_inheritable;
 use codex_sandboxing::find_system_bwrap_in_path;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
-const TRUSTED_SYSTEM_BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BubblewrapLauncher {
     System(SystemBwrapLauncher),

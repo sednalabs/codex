@@ -455,6 +455,10 @@ docs-only refresh commit that records this snapshot.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
+- TUI realtime voice remains a downstream carry on non-Linux targets even
+  though upstream removed that surface; Linux keeps explicit unavailable stubs,
+  so syncs should preserve the platform split instead of deleting
+  `audio_device.rs` or the Linux `voice` stub as stale code.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - `/quit` and `/exit` inside an active `/side` conversation close only that side
@@ -465,7 +469,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
   - `codex-rs/tui/src/app_event.rs`
+  - `codex-rs/tui/src/audio_device.rs`
   - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/voice.rs`
   - `codex-rs/tui/src/slash_command.rs`
   - `codex-rs/tui/src/bottom_pane/chat_composer.rs`
   - `codex-rs/tui/src/bottom_pane/slash_commands.rs`

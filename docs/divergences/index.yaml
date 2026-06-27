@@ -562,15 +562,17 @@
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, thread policy, and user-visible active-turn status labels aligned.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, and the carried non-Linux realtime voice platform split aligned.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/audio_device.rs",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/protocol.rs",
-        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs"
+        "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+        "codex-rs/tui/src/voice.rs"
       ],
       "extraction_target": "TUI status/session contributor slots"
     },
@@ -792,7 +794,7 @@
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
