@@ -3177,7 +3177,10 @@ mod tests {
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
-        assert_eq!(params.source_kinds, Some(crate::resume_source_kinds(false)));
+        assert_eq!(
+            params.source_kinds,
+            Some(crate::resume_source_kinds(/*include_non_interactive*/ false))
+        );
         assert_eq!(params.thread_sources, None);
     }
 

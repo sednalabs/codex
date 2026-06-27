@@ -4501,7 +4501,7 @@ fn turn_environments_for_tests(
             codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             Arc::clone(environment),
             codex_utils_path_uri::PathUri::from_abs_path(cwd),
-            None,
+            /*shell*/ None,
         )],
         starting: Vec::new(),
     }
@@ -6782,7 +6782,7 @@ async fn primary_environment_uses_first_turn_environment() {
             "second".to_string(),
             Arc::clone(&first_environment.environment),
             codex_utils_path_uri::PathUri::from_abs_path(&second_cwd),
-            None,
+            /*shell*/ None,
         ));
     let second_cwd_uri = codex_utils_path_uri::PathUri::from_abs_path(&second_cwd);
 
