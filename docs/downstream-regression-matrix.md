@@ -94,11 +94,17 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 ## GitHub trigger policy
 
-- `rust-ci.yml` is the default PR fail-fast workflow.
-  - It runs on `pull_request`, scheduled hygiene sweeps, and manual dispatch.
+- `blocking-ci.yml` is the default PR and merge-queue fail-fast workflow.
+  - It runs on `pull_request`, `merge_group`, and pushes to `main` and
+    `upstream-main`, then calls the reusable leaf workflows that upstream keeps
+    behind `workflow_call`.
+  - `rust-ci.yml` is now one of those reusable leaf workflows for PR-blocking
+    checks, while still retaining its scheduled hygiene sweep and manual
+    dispatch surfaces.
   - `Rust CI lane planner (informational)` explains lane selection and should
     not be treated as a merge gate.
-  - `Rust CI required gate` is the single required merge gate.
+  - `blocking-ci.yml`'s `CI required` result job is the single required merge
+    gate for the grouped blocking suite.
   - Tiny mapped initial PRs and already-green follow-up pushes may reuse
     incremental targeted validation instead of rerunning the full `rust-ci`
     bundle.

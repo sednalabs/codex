@@ -102,6 +102,15 @@ fn marketplace_plugin_source_to_info(source: MarketplacePluginSource) -> PluginS
             ref_name,
             sha,
         },
+        MarketplacePluginSource::Npm {
+            package,
+            version,
+            registry,
+        } => PluginSource::Npm {
+            package,
+            version,
+            registry,
+        },
     }
 }
 
@@ -135,7 +144,7 @@ fn share_context_for_source(
                 creator_name: None,
                 share_principals: None,
             }),
-        MarketplacePluginSource::Git { .. } => None,
+        MarketplacePluginSource::Git { .. } | MarketplacePluginSource::Npm { .. } => None,
     }
 }
 
