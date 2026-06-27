@@ -422,8 +422,8 @@ fn append_desktop_computer_use_details(
                             continue;
                         }
                         match parsed.command.as_ref().and_then(DoctorCommandSpec::argv) {
-                            Some(argv) if argv.first().is_some() => {
-                                let program = argv.first().cloned().unwrap_or_default();
+                            Some(argv) if !argv.is_empty() => {
+                                let program = argv[0].clone();
                                 configured = true;
                                 details.push(format!(
                                     "desktop provider config {file_name} command: {program}"

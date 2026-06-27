@@ -4,8 +4,8 @@
 //! keeping chart-specific glyph policy local to the token activity renderer.
 
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 
 use super::TokenActivityView;
 use crate::color::blend;
@@ -91,7 +91,7 @@ impl TokenActivityPalette {
     }
 
     fn fallback(active_style: Style) -> Self {
-        let empty_style = Style::default().dim();
+        let empty_style = Style::default().add_modifier(Modifier::DIM);
         Self {
             styles: [
                 empty_style,
@@ -137,7 +137,7 @@ impl TokenActivityPalette {
 fn theme_activity_style() -> Style {
     foreground_style_for_scopes(&["entity.name.type", "support.type", "variable"])
         .unwrap_or_else(accent_style)
-        .bold()
+        .add_modifier(Modifier::BOLD)
 }
 
 fn activity_anchor_rgb(style: Style) -> Option<(u8, u8, u8)> {

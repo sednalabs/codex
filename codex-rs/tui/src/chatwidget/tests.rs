@@ -153,7 +153,6 @@ pub(super) use codex_protocol::openai_models::ModelInfo;
 pub(super) use codex_protocol::openai_models::ModelPreset;
 pub(super) use codex_protocol::openai_models::ModelsResponse;
 pub(super) use codex_protocol::openai_models::ReasoningEffortPreset;
-pub(super) use codex_protocol::openai_models::SPEED_TIER_FAST;
 pub(super) use codex_protocol::openai_models::default_input_modalities;
 pub(super) use codex_protocol::parse_command::ParsedCommand;
 pub(super) use codex_protocol::plan_tool::PlanItemArg;
