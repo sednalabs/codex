@@ -64,6 +64,7 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::Agent,
         interaction_input: None,
+        terminal_wait: None,
     });
     let end = EventMsg::ExecCommandEnd(ExecCommandEndEvent {
         call_id: "call-end".to_string(),
@@ -75,6 +76,7 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UnifiedExecInteraction,
         interaction_input: Some("input".to_string()),
+        terminal_wait: None,
         stdout: "output".to_string(),
         stderr: String::new(),
         aggregated_output: "output".to_string(),

@@ -291,6 +291,8 @@ text(result.value);
     callback_request.enabled_tools = vec![ToolDefinition {
         name: "echo".to_string(),
         tool_name: ToolName::plain("echo"),
+        all_tools_name: None,
+        all_tools_module: None,
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
@@ -456,6 +458,8 @@ return;
     .map(|name| ToolDefinition {
         name: name.to_string(),
         tool_name: ToolName::plain(name),
+        all_tools_name: None,
+        all_tools_module: None,
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
@@ -572,6 +576,8 @@ async fn oversized_delegate_payloads_fail_only_the_tool_call() {
     let tool = |name: &str| ToolDefinition {
         name: name.to_string(),
         tool_name: ToolName::plain(name),
+        all_tools_name: None,
+        all_tools_module: None,
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
@@ -716,6 +722,8 @@ async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
     request_a.enabled_tools = vec![ToolDefinition {
         name: "tool_call_slow".to_string(),
         tool_name: ToolName::plain("tool_call_slow"),
+        all_tools_name: None,
+        all_tools_module: None,
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,

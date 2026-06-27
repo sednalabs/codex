@@ -1,5 +1,6 @@
 use super::*;
 use crate::SkillMetadata;
+use crate::SkillsService;
 use crate::config_rules::resolve_disabled_skill_paths;
 use crate::config_rules::skill_config_rules_from_stack;
 use codex_config::CONFIG_TOML_FILE;

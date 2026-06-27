@@ -449,6 +449,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     match oauth_login_support(&transport).await {
         McpOAuthLoginSupport::Supported(oauth_config) => {
+            let oauth_config = *oauth_config;
             if oauth_config.authorization_endpoint.is_none()
                 && oauth_config.device_authorization_endpoint.is_some()
             {
@@ -565,7 +566,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
 
     if device_auth {
         let oauth_config = match oauth_login_support(&server.transport).await {
-            McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
+            McpOAuthLoginSupport::Supported(oauth_config) => *oauth_config,
             McpOAuthLoginSupport::Unsupported => {
                 bail!("No authorization support detected for MCP server '{name}'.")
             }

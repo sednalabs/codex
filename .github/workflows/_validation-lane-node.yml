@@ -97,7 +97,6 @@ on:
 permissions:
   contents: read
 
-
 jobs:
   run:
     name: ${{ inputs.summary_title }}

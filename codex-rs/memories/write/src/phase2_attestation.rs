@@ -118,8 +118,7 @@ async fn validate_required_outputs(root: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("read required memory index {}", index_path.display()))?;
     anyhow::ensure!(
         !index.trim().is_empty(),
-        "{} must not be empty after phase-2 consolidation",
-        MEMORY_INDEX_FILENAME
+        "{MEMORY_INDEX_FILENAME} must not be empty after phase-2 consolidation"
     );
 
     let summary = tokio::fs::read_to_string(&summary_path)
@@ -127,13 +126,11 @@ async fn validate_required_outputs(root: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("read required memory summary {}", summary_path.display()))?;
     anyhow::ensure!(
         !summary.trim().is_empty(),
-        "{} must not be empty after phase-2 consolidation",
-        MEMORY_SUMMARY_FILENAME
+        "{MEMORY_SUMMARY_FILENAME} must not be empty after phase-2 consolidation"
     );
     anyhow::ensure!(
         summary.lines().next() == Some("v1"),
-        "{} must start with schema line `v1`",
-        MEMORY_SUMMARY_FILENAME
+        "{MEMORY_SUMMARY_FILENAME} must start with schema line `v1`"
     );
 
     Ok(())
@@ -366,7 +363,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;
-        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+        let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
 }

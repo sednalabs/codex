@@ -40,16 +40,16 @@ Sedna keeps the fork intentionally narrow in hot upstream code and moves
 downstream behavior behind explicit seams where possible. The main additions
 are:
 
-| Area | What changes in this fork |
-| --- | --- |
-| Release ownership | Sedna publishes its own GitHub releases, version naming, and Linux x86_64 release policy. |
-| Validation | Heavy validation and buildability checks are GitHub-first, with lane docs for targeted, frontier, and release workflows. |
-| Native computer use | The open-source Sedna adapter layer promotes bare Android, browser, and desktop tool names to Codex-owned native computer-use tools with transcript, app-server, TUI, rollout, and trace support. |
-| Browser use | The repo includes a built-in Playwright browser provider for local Chrome/Chromium; command providers can supply signed-in Chrome, in-app-browser, remote, or hosted browser runtimes. |
-| Model-visible screenshots | Successful visual browser, Android, and desktop observations must return native image content to the model. Artifact paths are diagnostics, not the primary visual channel. |
-| Agent orchestration | Downstream carries blocking wait patterns, richer sub-agent inventory, usage/accounting projection, and continuity improvements for long-running local workflows. |
-| Runtime accounting | The fork maintains first-party local usage/accounting surfaces so live CLI, TUI, and app-server views can explain active-thread and combined-session usage. |
-| MCP and config safety | Downstream preserves safety controls around MCP configuration, OAuth fallback behavior, headless device login with dynamic client registration, approval memory, and related runtime guardrails. |
+| Area                      | What changes in this fork                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Release ownership         | Sedna publishes its own GitHub releases, version naming, and Linux x86_64 release policy.                                                                                                         |
+| Validation                | Heavy validation and buildability checks are GitHub-first, with lane docs for targeted, frontier, and release workflows.                                                                          |
+| Native computer use       | The open-source Sedna adapter layer promotes bare Android, browser, and desktop tool names to Codex-owned native computer-use tools with transcript, app-server, TUI, rollout, and trace support. |
+| Browser use               | The repo includes a built-in Playwright browser provider for local Chrome/Chromium; command providers can supply signed-in Chrome, in-app-browser, remote, or hosted browser runtimes.            |
+| Model-visible screenshots | Successful visual browser, Android, and desktop observations must return native image content to the model. Artifact paths are diagnostics, not the primary visual channel.                       |
+| Agent orchestration       | Downstream carries blocking wait patterns, richer sub-agent inventory, usage/accounting projection, and continuity improvements for long-running local workflows.                                 |
+| Runtime accounting        | The fork maintains first-party local usage/accounting surfaces so live CLI, TUI, and app-server views can explain active-thread and combined-session usage.                                       |
+| MCP and config safety     | Downstream preserves safety controls around MCP configuration, OAuth fallback behavior, headless device login with dynamic client registration, approval memory, and related runtime guardrails.  |
 
 For the full inventory, read [Downstream / fork notes](./docs/downstream.md)
 and the [Downstream regression matrix](./docs/downstream-regression-matrix.md).
@@ -138,18 +138,18 @@ are buildability and regression evidence, not release artifacts.
 
 ## Documentation Map
 
-| Need | Start here |
-| --- | --- |
-| Fork identity, branch policy, and divergence inventory | [Downstream / fork notes](./docs/downstream.md) |
-| Release naming, release artifacts, and supported targets | [Sedna release policy](./docs/sedna-release.md) |
-| Native browser, Android, and desktop computer-use contracts | [Native computer-use adapter tooling](./docs/native-computer-use.md) |
-| Cleanroom provider requirements | [Native computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md) |
-| GitHub-first validation lanes and remote offload | [GitHub CI offload](./docs/github-ci-offload.md) |
-| Multi-step validation workflow | [Validation workflow](./docs/validation_workflow.md) |
-| Downstream tool and regression coverage | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md) and [Regression matrix](./docs/downstream-regression-matrix.md) |
-| Installing or building from source | [Installing and building](./docs/install.md) |
-| Local memories behavior | [Memories](./docs/memories.md) |
-| Contributing guidelines | [Contributing](./docs/contributing.md) |
+| Need                                                        | Start here                                                                                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Fork identity, branch policy, and divergence inventory      | [Downstream / fork notes](./docs/downstream.md)                                                                                 |
+| Release naming, release artifacts, and supported targets    | [Sedna release policy](./docs/sedna-release.md)                                                                                 |
+| Native browser, Android, and desktop computer-use contracts | [Native computer-use adapter tooling](./docs/native-computer-use.md)                                                            |
+| Cleanroom provider requirements                             | [Native computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md)                                              |
+| GitHub-first validation lanes and remote offload            | [GitHub CI offload](./docs/github-ci-offload.md)                                                                                |
+| Multi-step validation workflow                              | [Validation workflow](./docs/validation_workflow.md)                                                                            |
+| Downstream tool and regression coverage                     | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md) and [Regression matrix](./docs/downstream-regression-matrix.md) |
+| Installing or building from source                          | [Installing and building](./docs/install.md)                                                                                    |
+| Local memories behavior                                     | [Memories](./docs/memories.md)                                                                                                  |
+| Contributing guidelines                                     | [Contributing](./docs/contributing.md)                                                                                          |
 
 ## License
 

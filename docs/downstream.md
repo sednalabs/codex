@@ -63,6 +63,7 @@ baselines and should be read as prior names for the maintained downstream
 branch.
 
 Current downstream audit baseline (validated on `2026-04-28`):
+
 - downstream branch `main` (`origin/main`):
   `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
 - comparison basis: `mirror`
@@ -79,6 +80,7 @@ These counts intentionally anchor to the audited code tree before the
 docs-only refresh commit that records this snapshot.
 
 Supporting docs:
+
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
 - [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use adapter contract, including Android, browser, app-server, TUI, rollout, and validation boundaries.
@@ -86,6 +88,7 @@ Supporting docs:
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
 Why:
+
 - Support "wait until terminal" semantics directly on `exec_command` and `write_stdin` for long-running exact/tool-driven command flows.
 - Avoid model-layer short-poll loops that waste turns, duplicate context, and make orchestration look busy without changing state.
 - Let downstream interactive automation treat long-running shell work as an actual blocking join instead of repeated "check again" tool chatter.
@@ -93,6 +96,7 @@ Why:
 - Expose compaction count on turn completion so clients can distinguish "normal turn complete" from "turn completed after one or more compactions".
 
 User-visible behavior:
+
 - `exec_command` and `write_stdin` support blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
 - `wait_until_terminal` gates provider resume until the process reaches a terminal state or the wait budget expires. The default and maximum wait budget is two hours.
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
@@ -109,11 +113,13 @@ User-visible behavior:
 ### Core + app-server: native computer-use adapter bridge
 
 Why:
+
 - Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
 - Let runtime providers supply Android or browser capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
 User-visible behavior:
+
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
@@ -148,11 +154,13 @@ User-visible behavior:
 ### Usage ledger: first-party local `usage.sqlite`
 
 Why:
+
 - Downstream keeps usage-ledger ownership in this repo so the CLI and runtime can emit authoritative local facts without depending on transcript reconstruction or an external sibling repository.
 - Usage-ledger ownership stays here: any upstream-native reimplementation must replicate the canonical per-turn ledger, rate/provider metadata, and billing-turn reporting semantics before the ledger can move out of this repo.
 - Billing turns still need stable canonical identities and historical AUD cost reporting that upstream does not provide.
 
 User-visible behavior:
+
 - Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
 - `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
 - Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
@@ -161,12 +169,14 @@ User-visible behavior:
 ### MCP tool orchestration: blocking waits before task support matured
 
 Why:
+
 - Validation and release work are more reliable when they run through a task-oriented tool surface instead of ad hoc shell commands.
 - The same downstream execution model should apply to build/test orchestration: prefer a blocking wait on a real task over repeated status polling from the model layer.
 - Downstream automation benefits when long-running MCP tool calls can block on a real state transition instead of relying on repeated model-driven status polling.
 - This fork implemented blocking wait semantics before task support was fully operational, so agents could coordinate against terminal states without transcript churn.
 
 User-visible behavior:
+
 - Helper presets, when used, are environment-local convenience configuration rather than a tracked repo contract.
 - When local presets are present, downstream instructions can reference them for reproducible validation and release steps in that environment.
 - The default progressive path remains `just core-test-progressive`, which runs compile, carry-divergence, and usage-ledger smoke gates before the larger codex-core suite.
@@ -178,10 +188,12 @@ User-visible behavior:
 ### Code mode: imported tool declarations instead of inline `tools` const examples
 
 Why:
+
 - Keep downstream code-mode declarations aligned with the imported namespace pattern used by the current carry branch tool metadata exporter.
 - Preserve the downstream formatting that pairs builtin and namespaced MCP tool metadata with a shared imported `tools` namespace instead of an inline `declare const tools` example.
 
 User-visible behavior:
+
 - Code-mode declarations use the imported form `import { tools } from "..."; declare function ...`.
 - Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
@@ -189,6 +201,7 @@ User-visible behavior:
 ### Sub-agent orchestration: override preservation, richer inventory, and blocking joins
 
 Why:
+
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
 - Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
@@ -196,6 +209,7 @@ Why:
 - Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream visibility model.
 
 User-visible behavior:
+
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
 - `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting callers see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
@@ -207,6 +221,7 @@ User-visible behavior:
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
+
 - `codex-rs/core/src/agent/role.rs`
 - `codex-rs/core/src/agent/control.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
@@ -221,9 +236,11 @@ Primary files:
 ### TUI: safer interrupt handling for Alt/meta terminals (double-`Esc` by default)
 
 Why:
+
 - Some terminals (especially mobile/SSH flows) encode Alt/meta as an `Esc` prefix, which can accidentally interrupt running turns.
 
 User-visible behavior:
+
 - Running-turn interrupt defaults to `Esc Esc` confirmation.
 - First `Esc` shows a confirmation hint (`Esc again to interrupt`) instead of interrupting immediately.
 - Bare `Esc` release events and `Esc`-prefixed Alt sequences do not trigger unintended interrupts.
@@ -232,21 +249,25 @@ User-visible behavior:
 ### MCP config: retain downstream safety controls while supporting upstream OAuth resource
 
 Why:
+
 - Preserve downstream MCP mutability controls while remaining compatible with upstream OAuth improvements.
 
 User-visible behavior:
+
 - Downstream safety fields remain available per server (`enable_elicitation`, `read_only`, `strict_tool_classification`, `require_approval_for_mutating`).
 - Upstream `oauth_resource` is also supported in the same server config entry.
 
 ### MCP OAuth: best-effort fallback credential recovery and atomic writes
 
 Why:
+
 - Keep MCP OAuth fallback credentials from becoming a brittle single point of failure when the keyring is unavailable or the fallback file is left empty/corrupt.
 - Reduce auth churn during login and reconnect flows by treating the fallback file as best-effort recovery state instead of authoritative required state.
 - Avoid partially-written replacement files by writing and syncing a temp file before the final rename.
 - Preserve the selected direct-vs-encrypted-secrets keyring backend while keeping downstream refresh locking tied to the store that originally supplied the tokens.
 
 User-visible behavior:
+
 - Empty fallback credential files are treated as absent instead of fatal.
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
@@ -255,12 +276,14 @@ User-visible behavior:
 ### MCP OAuth: device-code login for headless servers
 
 Why:
+
 - Let operators authenticate MCP servers from SSH-only or browserless hosts without installing temporary login helpers or copying fallback credential files by hand.
 - Preserve OAuth discovery metadata needed for standards-based Device Authorization Grant flows instead of flattening the authorization-server response down to browser-only fields.
 - Keep headless MCP server login on a normal `codex mcp login --device-auth <server>` contract, with either an explicitly configured public client id or standards-based dynamic client registration when the authorization server advertises a registration endpoint.
 - Preserve grant-aware registration shape so device-login DCR asks for the Device Authorization Grant, keeps `token_endpoint_auth_method=none`, and only requests `refresh_token` when server metadata does not rule it out.
 
 User-visible behavior:
+
 - `codex mcp login --device-auth <server>` uses the discovered `device_authorization_endpoint` and requires `grant_types_supported` to include `urn:ietf:params:oauth:grant-type:device_code`.
 - The command uses the configured public MCP OAuth `client_id` when one is present; otherwise it performs dynamic client registration from OAuth discovery before requesting the device code.
 - Dynamic registration keeps the request public-client shaped (`token_endpoint_auth_method=none`), uses `grant_types=["urn:ietf:params:oauth:grant-type:device_code"]`, adds `refresh_token` only when server metadata permits or omits grant support, and forwards the configured scope string when scopes are requested.
@@ -272,10 +295,12 @@ User-visible behavior:
 ### App-server transport: raw-byte websocket auth secrets
 
 Why:
+
 - Preserve support for binary websocket auth secret material instead of forcing UTF-8 text decoding and trimming.
 - Keep the signed-bearer shared-secret path compatible with raw-byte secrets generated by external tooling.
 
 User-visible behavior:
+
 - Websocket auth secret files are read as raw bytes and ASCII-trimmed rather than decoded with `read_to_string`.
 - Empty/whitespace-only secrets are still rejected.
 - Capability-token auth continues to hash the trimmed secret bytes for comparison.
@@ -283,11 +308,13 @@ User-visible behavior:
 ### App-server delivery/runtime: non-blocking output deltas and rich fs/watch policy
 
 Why:
+
 - Keep command streaming responsive by enqueueing output-delta notifications without waiting for transport write completion.
 - Preserve watch-before-create registration, parent-event remapping, recursive directory watching, and changed-path dedupe for `fs/watch`.
 - Keep these policy choices isolated behind the app-server extension seam rather than scattering the carry through protocol/replay code.
 
 User-visible behavior:
+
 - Streamed `command/exec/outputDelta` and `fs/changed` notifications are enqueue-only rather than transport-blocking.
 - `fs/watch` can register a recursive parent watcher for not-yet-created targets, map parent events back onto the requested watch target, and dedupe repeated changed paths before notification delivery.
 - The no-op upstream-style behavior still exists conceptually in `codex-rs/app-server/src/extensions.rs`, but downstream opts into the richer delivery/watch policy by default.
@@ -295,9 +322,11 @@ User-visible behavior:
 ### TUI: Queue slash metadata preparation and recall
 
 Why:
+
 - Preserve slash-command arguments/metadata and make queued recall/edit paths consistent.
 
 User-visible behavior:
+
 - Queued slash commands and queued message drafts are shown in one queue preview.
 - `Alt+Up` dequeues the newest queued item back into the composer in strict reverse-chronological order across both entry types.
 - Recalled items disappear from the queued preview until they are re-queued or re-submitted.
@@ -308,11 +337,13 @@ User-visible behavior:
 ### TUI: thread-session continuity and `/agent` / status accounting
 
 Why:
+
 - Preserve per-thread approval/sandbox/reviewer choices while moving between the main thread and subagents.
 - Keep config refresh and fresh-session cloning from silently resetting the active thread's mutable session policy.
 - Surface enough `/agent` and status-line accounting to explain per-thread versus combined-session usage without requiring a broader context/history pass.
 
 User-visible behavior:
+
 - Per-thread approval/sandbox/reviewer overrides survive thread switches.
 - Active-thread session state survives config refresh and fresh-session clones keep policy mutability before new-thread/fork flows.
 - `/agent` picker rows show per-thread used-token totals from cached thread usage.
@@ -321,9 +352,11 @@ User-visible behavior:
 ### TUI: Weekly usage pacing signal + stale handling
 
 Why:
+
 - Show a compact weekly pacing indicator without displaying misleading percentages when snapshot data is stale.
 
 User-visible behavior:
+
 - Weekly status line shows `weekly {remaining:.0}%` as the base value.
 - Fresh snapshot supports two pacing render modes:
   - default `qualitative`: `(on pace)`, `(over {n}%)`, or `(under {n}%)`
@@ -335,11 +368,13 @@ User-visible behavior:
 ### TUI: Interrupted-turn queue handling and queued model ordering
 
 Why:
+
 - Keep `Esc` interrupts from auto-submitting queued turns while still applying queued model switches promptly.
 - Avoid stale model/effort on the next queued command when interrupt cleanup overlaps with MCP startup running-state.
 - Keep explicit task-control commands immediate only when they should be.
 
 User-visible behavior:
+
 - On interrupt, queued user drafts are restored to the composer; non-model queued slash commands remain queued.
 - Queued model selections are applied immediately during interrupt cleanup.
 - Queued `/clear` remains queued while a task is running and is not executed during interrupt cleanup.
@@ -348,11 +383,13 @@ User-visible behavior:
 ### TUI: Side conversation local exit
 
 Why:
+
 - Keep `/side` conversations scoped to their parent session so closing a side
   question does not end the whole TUI session.
 - Preserve the existing main-thread `/quit` and `/exit` behavior.
 
 User-visible behavior:
+
 - `/quit` and `/exit` in an active side conversation close that side conversation
   and return to the parent thread.
 - `/quit` and `/exit` in the main conversation remain application exits.
@@ -360,25 +397,31 @@ User-visible behavior:
 ### Review + history: downstream accounting and runtime-context alignment
 
 Why:
+
 - Keep review token summaries, app-server history, and review-mode effort selection aligned with the live turn state rather than stale defaults.
 
 User-visible behavior:
+
 - Review token usage is aligned across live flows and app-server/history views.
 - Review flows reuse the runtime turn effort and preserve downstream sampling rollout context needed for faithful reconstruction.
 
 ### Core: MCP forced approvals still participate in session remember keys
 
 Why:
+
 - Preserve Auto-mode approval-key caching even when a call is force-prompted.
 
 User-visible behavior:
+
 - Auto approval mode continues to use per-session remembered approvals for matching MCP tool calls, including force-prompted calls.
 - Repeated calls can still be approved from the current session memory instead of always re-prompting.
 
 ### Core tests: unified_exec race-tolerant completed-process polling (test-only)
 
 Why:
+
 - Post-`exit` polling can race between final terminal response and process-store removal in test runs.
 
 User-visible behavior:
+
 - No product behavior change; this divergence only makes downstream core tests more tolerant of completion/polling races.

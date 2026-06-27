@@ -664,7 +664,7 @@ mod tests {
         let client = Client::builder().no_proxy().build().expect("client");
         let details = request_device_authorization(
             &client,
-            &format!("{}/device", server),
+            &format!("{server}/device"),
             "codex-device",
             &["ops:read".to_string(), "ops:write".to_string()],
             /*oauth_resource*/ None,
@@ -705,7 +705,7 @@ mod tests {
 
         let (details, pkce) = request_device_authorization_with_pkce_fallback(
             &client,
-            &format!("{}/device", server),
+            &format!("{server}/device"),
             "codex-device",
             &["ops:read".to_string()],
             /*oauth_resource*/ None,

@@ -1836,7 +1836,7 @@ impl PluginRequestProcessor {
     ) {
         for (name, server) in plugin_mcp_servers {
             let oauth_config = match oauth_login_support(&server.transport).await {
-                McpOAuthLoginSupport::Supported(config) => config,
+                McpOAuthLoginSupport::Supported(config) => *config,
                 McpOAuthLoginSupport::Unsupported => continue,
                 McpOAuthLoginSupport::Unknown(err) => {
                     warn!(

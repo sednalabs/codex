@@ -1261,7 +1261,7 @@ jobs:
       artifact_path: dist/*
       working_directory: .
       script_path: .github/scripts/validation-lanes/artifact-build.sh
-      script_args_json: '[]'
+      script_args_json: "[]"
       needs_just: false
       needs_node: false
       needs_nextest: false

@@ -1403,8 +1403,8 @@ fn digest_hex(digest: impl AsRef<[u8]>) -> String {
 
     let digest = digest.as_ref();
     let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut hex, "{:02x}", *byte).expect("writing to a String cannot fail");
+    for &byte in digest {
+        let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
 }
@@ -1832,6 +1832,10 @@ mod tests {
                 .contains("failed to reread OAuth tokens from resolved keyring storage"),
             "unexpected error: {error:#}"
         );
+        #[expect(
+            clippy::await_holding_invalid_type,
+            reason = "test verifies refresh leaves the serialized OAuth manager unchanged"
+        )]
         let access_token = manager.lock().await.get_access_token().await?;
         assert_eq!(
             access_token,

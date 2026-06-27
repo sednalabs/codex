@@ -129,9 +129,7 @@ pub async fn handle_android_computer_use_for_codex_home(
 }
 
 fn default_codex_home() -> Option<PathBuf> {
-    codex_utils_home_dir::find_codex_home()
-        .ok()
-        .map(|path| path.into_path_buf())
+    codex_utils_home_dir::find_codex_home().ok().map(PathBuf::from)
 }
 
 fn is_supported_android_tool(tool: &str) -> bool {

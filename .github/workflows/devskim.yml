@@ -7,11 +7,11 @@ name: DevSkim
 
 on:
   push:
-    branches: [ "main", "upstream-main" ]
+    branches: ["main", "upstream-main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   schedule:
-    - cron: '21 18 * * 4'
+    - cron: "21 18 * * 4"
 
 jobs:
   lint:
