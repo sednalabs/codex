@@ -89,6 +89,8 @@ fn dispatch_usage_and_expect_refresh(
     chat: &mut ChatWidget,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> u64 {
+    chat.bottom_pane
+        .set_composer_text(String::new(), Vec::new(), Vec::new());
     chat.dispatch_command_with_args(SlashCommand::Usage, "daily".to_string(), Vec::new());
     expect_token_activity_refresh(rx)
 }

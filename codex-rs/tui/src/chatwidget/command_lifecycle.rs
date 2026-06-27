@@ -95,18 +95,18 @@ impl ChatWidget {
         if !self.bottom_pane.is_task_running() {
             return;
         }
-        let terminal_wait = terminal_wait.or_else(|| {
-            stdin.is_empty().then_some(TerminalWaitInfo {
-                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
-                max_wait_ms: None,
-                heartbeat_interval_ms: None,
-            })
-        });
         let command_display = self
             .unified_exec_processes
             .iter()
             .find(|process| process.key == process_id)
             .map(|process| process.command_display.clone());
+        let terminal_wait = terminal_wait.or_else(|| {
+            (stdin.is_empty() && command_display.is_some()).then_some(TerminalWaitInfo {
+                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
+                max_wait_ms: None,
+                heartbeat_interval_ms: None,
+            })
+        });
         if stdin.is_empty() && command_display.is_none() && terminal_wait.is_none() {
             return;
         }

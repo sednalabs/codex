@@ -1832,11 +1832,11 @@ mod tests {
                 .contains("failed to reread OAuth tokens from resolved keyring storage"),
             "unexpected error: {error:#}"
         );
-        #[allow(
-            clippy::await_holding_invalid_type,
-            reason = "test verifies refresh leaves the serialized OAuth manager unchanged"
-        )]
-        let access_token = manager.lock().await.get_access_token().await?;
+        drop(persistor);
+        let mut manager = Arc::try_unwrap(manager)
+            .unwrap_or_else(|_| panic!("persistor should be the only cloned OAuth manager owner"))
+            .into_inner();
+        let access_token = manager.get_access_token().await?;
         assert_eq!(
             access_token,
             tokens.token_response.0.access_token().secret().as_str()
