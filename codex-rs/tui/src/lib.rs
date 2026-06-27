@@ -222,11 +222,11 @@ mod updates;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
 mod version;
-#[cfg(any(target_os = "windows", test))]
-mod windows_sandbox;
 #[cfg(not(target_os = "linux"))]
 mod voice;
 mod width;
+#[cfg(any(target_os = "windows", test))]
+mod windows_sandbox;
 mod workspace_command;
 mod workspace_messages;
 #[cfg(target_os = "linux")]

@@ -2260,7 +2260,6 @@ dependencies = [
  "clap",
  "codex-api",
  "codex-app-server-protocol",
- "codex-config",
  "codex-core",
  "codex-login",
  "codex-model-provider",
