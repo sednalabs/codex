@@ -1903,6 +1903,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1931,6 +1934,7 @@ mod tests {
                 aggregated_output: Some("hello world\n".to_string()),
                 exit_code: Some(0),
                 duration_ms: Some(12),
+                terminal_wait: None,
             }]
         );
     }
