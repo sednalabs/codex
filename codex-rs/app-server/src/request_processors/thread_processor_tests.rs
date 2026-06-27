@@ -154,8 +154,8 @@ mod thread_processor_behavior_tests {
         name: impl Into<String>,
         input_schema: Value,
         defer_loading: bool,
-    ) -> DynamicToolSpec {
-        DynamicToolSpec {
+    ) -> ApiDynamicToolSpec {
+        ApiDynamicToolSpec {
             namespace: namespace.map(ToString::to_string),
             name: name.into(),
             description: "test".to_string(),
@@ -725,6 +725,7 @@ mod thread_processor_behavior_tests {
             base_instructions: None,
             developer_instructions: None,
             personality: None,
+            dynamic_tools: None,
             exclude_turns: false,
             initial_turns_page: None,
         };

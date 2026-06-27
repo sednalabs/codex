@@ -444,7 +444,7 @@ impl UnifiedExecProcessManager {
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
-            None,
+            /*terminal_wait*/ None,
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 

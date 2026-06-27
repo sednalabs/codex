@@ -115,11 +115,12 @@ common:ci-bazel --test_env=CODEX_BAZEL_TEST_SKIP_FILTERS=suite::code_mode::,test
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
 build:clippy --@rules_rust//rust/settings:clippy.toml=//codex-rs:clippy.toml
-# Keep this deny-list in sync with `codex-rs/Cargo.toml` `[workspace.lints.clippy]`.
-# Cargo applies those lint levels to member crates that opt into `[lints] workspace = true`
-# in their own `Cargo.toml`, but `rules_rust` Bazel clippy does not read Cargo lint levels.
-# `clippy.toml` can configure lint behavior, but it cannot set allow/warn/deny/forbid levels.
-build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+# Keep this explicit deny-list in sync with `codex-rs/Cargo.toml`
+# `[workspace.lints.clippy]`. Cargo applies those lint levels to member crates
+# that opt into `[lints] workspace = true` in their own `Cargo.toml`, but
+# `rules_rust` Bazel clippy does not read Cargo lint levels. Do not promote all
+# rustc warnings here; that makes Bazel stricter than Cargo and turns dormant
+# upstream targets into unrelated sync blockers.
 build:clippy --@rules_rust//rust/settings:clippy_flag=--deny=clippy::await_holding_invalid_type
 build:clippy --@rules_rust//rust/settings:clippy_flag=--deny=clippy::await_holding_lock
 build:clippy --@rules_rust//rust/settings:clippy_flag=--deny=clippy::expect_used

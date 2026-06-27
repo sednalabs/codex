@@ -557,6 +557,7 @@ mod tests {
                 interface: None,
                 keywords: vec![],
             },
+            share_url: None,
             description: None,
             skills: vec![],
             hooks: vec![],
