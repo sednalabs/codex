@@ -261,6 +261,7 @@ fn refresh_expires_in_from_timestamp(tokens: &mut StoredOAuthTokens) {
     }
 }
 
+#[cfg(test)]
 fn load_oauth_tokens_from_keyring_with_fallback_to_file<K: KeyringStore + Clone + 'static>(
     keyring_store: &K,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -1241,6 +1242,7 @@ fn fallback_file_path() -> Result<PathBuf> {
     Ok(find_codex_home()?.join(FALLBACK_FILENAME).to_path_buf())
 }
 
+#[cfg(test)]
 fn read_fallback_file() -> Result<Option<FallbackFile>> {
     let _store_lock = OAuthStoreLock::acquire(OAuthStore::File)?;
     read_fallback_file_unlocked()

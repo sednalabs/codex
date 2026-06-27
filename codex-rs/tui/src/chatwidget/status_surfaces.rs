@@ -712,7 +712,7 @@ impl ChatWidget {
                 let (window, is_secondary) = snapshot.and_then(weekly_status_window)?;
                 let captured_at = snapshot.map(|s| s.captured_at);
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
-                self.status_line_weekly_limit_display(window, captured_at, &label)
+                self.status_line_weekly_limit_display(Some(window), captured_at, &label)
             }
             StatusLineItem::CodexVersion => Some(crate::version::CODEX_DISPLAY_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
