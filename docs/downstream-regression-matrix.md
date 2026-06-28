@@ -113,8 +113,12 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
     headroom and skip archive-job sccache before archive creation, then fail
     early if the hosted runner is still below the archive safety floor.
-  - `v8-canary.yml` staging keeps hosted macOS Bazel client fanout below the
-    runner process/thread ceiling while remote execution handles the V8 build.
+  - `v8-canary.yml` staging and macOS Bazel clippy keep hosted macOS Bazel
+    client fanout below the runner process/thread ceiling while remote
+    execution handles the heavy Bazel work.
+  - `core-carry-ui-smoke` uses the same hosted test stack floor as
+    `core-carry-core-smoke` so stack-heavy TUI replay checks fail on behavior,
+    not on runner-default stack limits.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.

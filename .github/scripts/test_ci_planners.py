@@ -797,6 +797,18 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertFalse(lane["needs_sccache"])
         self.assertEqual(lane["timeout_minutes"], 120)
 
+    def test_bazel_macos_clippy_caps_hosted_runner_fanout(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get("steps") or []
+        clippy_run = next(
+            step
+            for step in clippy_steps
+            if step.get("name") == "bazel build --config=clippy lint targets"
+        ).get("run") or ""
+        self.assertIn('[[ "${RUNNER_OS}" == "macOS" ]]', clippy_run)
+        self.assertIn("--jobs=96", clippy_run)
+        self.assertIn("--loading_phase_threads=8", clippy_run)
+
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
     def run_git(self, repo: Path, *args: str) -> str:

@@ -3487,7 +3487,7 @@ fn server_overloaded_backoff_is_interruptible() -> anyhow::Result<()> {
         .expect("capacity retry backoff did not observe interrupt promptly");
         assert!(matches!(aborted, EventMsg::TurnAborted(_)));
         assert!(
-            responses_mock.requests().len() >= 1,
+            !responses_mock.requests().is_empty(),
             "expected at least one capacity request"
         );
 

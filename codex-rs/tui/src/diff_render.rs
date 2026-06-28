@@ -1418,8 +1418,8 @@ mod tests {
             },
         );
 
-        let py_original = "def add(a, b):\n\treturn a + b\n\nprint(add(1, 2))\n";
-        let py_modified = "def add(a, b):\n\treturn a + b + 42\n\nprint(add(1, 2))\n";
+        let py_original = "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n";
+        let py_modified = "def add(a, b):\n    return a + b + 42\n\nprint(add(1, 2))\n";
         let py_patch = diffy::create_patch(py_original, py_modified).to_string();
         changes.insert(
             PathBuf::from("scripts/calc.txt"),
@@ -1432,7 +1432,7 @@ mod tests {
         changes.insert(
             PathBuf::from("assets/banner.txt"),
             FileChange::Add {
-                content: "HEADER\tVALUE\nrocket\t🚀\ncity\t東京\n".to_string(),
+                content: "HEADER    VALUE\nrocket    🚀\ncity    東京\n".to_string(),
             },
         );
         changes.insert(

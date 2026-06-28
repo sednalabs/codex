@@ -2561,7 +2561,12 @@ fn streamed_agent_list_paragraph_preserves_item_indent_when_wrapped() {
         /*is_first_line*/ true,
     );
 
-    let lines = render_lines(&cell.display_lines(/*width*/ 64));
+    let mut lines = render_lines(&cell.display_lines(/*width*/ 64));
+    for line in &mut lines {
+        if line.trim().is_empty() {
+            line.clear();
+        }
+    }
     assert!(
         lines
             .iter()

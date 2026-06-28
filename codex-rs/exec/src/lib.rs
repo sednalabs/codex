@@ -1448,6 +1448,10 @@ fn should_process_notification(
         ServerNotification::TurnStarted(notification) => {
             notification.thread_id == thread_id && notification.turn.id == turn_id
         }
+        ServerNotification::Warning(notification) => notification
+            .thread_id
+            .as_deref()
+            .is_none_or(|candidate| candidate == thread_id),
         _ => false,
     }
 }
