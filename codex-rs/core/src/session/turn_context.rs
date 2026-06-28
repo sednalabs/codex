@@ -40,6 +40,12 @@ impl TurnSkillsContext {
 
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TurnResponseModelIdentity {
+    pub(crate) final_model: Option<String>,
+    pub(crate) model_snapshot: Option<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct TurnEnvironment {
     pub(crate) environment_id: String,
@@ -140,6 +146,7 @@ pub struct TurnContext {
     pub(crate) turn_skills: TurnSkillsContext,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<String>>>,
+    pub(crate) terminal_response_model_identity: Arc<Mutex<TurnResponseModelIdentity>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
 }
@@ -152,6 +159,21 @@ enum TurnMultiAgentRuntime {
 impl TurnContext {
     pub(crate) fn permission_profile(&self) -> PermissionProfile {
         self.permission_profile.clone()
+    }
+
+    pub(crate) async fn reset_terminal_response_model_identity(&self) {
+        *self.terminal_response_model_identity.lock().await = TurnResponseModelIdentity::default();
+    }
+
+    pub(crate) async fn set_terminal_response_model_identity(
+        &self,
+        identity: TurnResponseModelIdentity,
+    ) {
+        *self.terminal_response_model_identity.lock().await = identity;
+    }
+
+    pub(crate) async fn terminal_response_model_identity(&self) -> TurnResponseModelIdentity {
+        self.terminal_response_model_identity.lock().await.clone()
     }
 
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
@@ -288,6 +310,9 @@ impl TurnContext {
             turn_skills: self.turn_skills.clone(),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             terminal_error: Arc::clone(&self.terminal_error),
+            terminal_response_model_identity: Arc::new(Mutex::new(
+                TurnResponseModelIdentity::default(),
+            )),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
             ),
@@ -566,6 +591,9 @@ impl Session {
             turn_skills: TurnSkillsContext::new(skills_snapshot),
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            terminal_response_model_identity: Arc::new(Mutex::new(
+                TurnResponseModelIdentity::default(),
+            )),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
         }
