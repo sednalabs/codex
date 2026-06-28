@@ -721,7 +721,7 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
         .expect("wait primitive cell should be active");
     assert_eq!(
         lines_to_single_string(&active_lines),
-        "• Waiting via background terminal · sleep 5\n"
+        "• Waiting · primitive: write_stdin(empty stdin poll) · sleep 5\n"
     );
     assert_eq!(
         chat.status_state.current_status.header,
@@ -833,13 +833,16 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
     terminal_interaction(&mut chat, "call-wait-3b", "proc-3", "");
     assert_eq!(
         chat.status_state.current_status.header,
-        "Waiting for background terminal"
+        "Waiting · primitive: write_stdin(empty stdin poll)"
     );
     let status = chat
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Waiting for background terminal");
+    assert_eq!(
+        status.header(),
+        "Waiting · primitive: write_stdin(empty stdin poll)"
+    );
     assert_eq!(status.details(), Some("just fix"));
     let pre_cells = drain_insert_history(&mut rx);
     let active_combined = pre_cells
