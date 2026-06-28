@@ -748,6 +748,8 @@ impl Session {
             .turn_timing_state
             .time_to_first_token_ms()
             .await;
+        let terminal_response_model_identity =
+            turn_context.terminal_response_model_identity().await;
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {
@@ -782,8 +784,8 @@ impl Session {
                         0
                     }
                 },
-                final_model: None,
-                model_snapshot: None,
+                final_model: terminal_response_model_identity.final_model,
+                model_snapshot: terminal_response_model_identity.model_snapshot,
                 completed_at,
                 duration_ms,
                 time_to_first_token_ms,

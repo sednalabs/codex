@@ -1,3 +1,4 @@
+use super::turn_context::TurnResponseModelIdentity;
 use super::*;
 use std::sync::atomic::AtomicBool;
 
@@ -142,6 +143,9 @@ pub(super) async fn spawn_review_thread(
         turn_skills: TurnSkillsContext::new(parent_turn_context.turn_skills.snapshot.clone()),
         turn_timing_state: Arc::new(TurnTimingState::default()),
         terminal_error: Arc::new(Mutex::new(None)),
+        terminal_response_model_identity: Arc::new(
+            Mutex::new(TurnResponseModelIdentity::default()),
+        ),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),
     };
