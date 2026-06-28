@@ -2023,7 +2023,7 @@ impl AuthManager {
         self.inner.read().ok().and_then(|c| c.auth.clone())
     }
 
-    /// Subscribes to cached auth changes that can affect request recovery.
+    /// Subscribes to cached auth changes that can affect account-scoped request recovery.
     pub fn auth_change_receiver(&self) -> watch::Receiver<u64> {
         self.auth_change_tx.subscribe()
     }
@@ -2241,7 +2241,7 @@ impl AuthManager {
             }
             tracing::info!("Reloaded auth, changed: {changed}");
             guard.auth = new_auth;
-            if auth_changed_for_refresh {
+            if changed {
                 self.auth_change_tx.send_modify(|revision| *revision += 1);
             }
             changed

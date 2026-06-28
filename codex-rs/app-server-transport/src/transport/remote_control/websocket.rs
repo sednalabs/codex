@@ -656,6 +656,13 @@ impl RemoteControlWebsocket {
         tokio::select! {
             _ = self.shutdown_token.cancelled() => false,
             changed = self.desired_state_rx.changed() => changed.is_ok(),
+            changed = self.auth_change_rx.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+                self.auth_recovery = self.auth_manager.unauthorized_recovery();
+                true
+            }
             _ = tokio::time::sleep(REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL) => true,
         }
     }

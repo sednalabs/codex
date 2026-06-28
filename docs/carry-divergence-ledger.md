@@ -295,6 +295,20 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### App-Server Remote Control Account Wake
+
+- Remote-control enrollment waits must wake when cached ChatGPT auth changes
+  the account id, not only when refresh-token material changes.
+- `AuthManager::auth_change_receiver()` is therefore account-scoped for
+  request recovery, while `auth_changed_for_refresh` remains the narrower
+  token-refresh decision.
+- This prevents remote control from sleeping until the retry interval after an
+  account-id-only reload, and keeps `UnauthorizedRecovery` aligned with the
+  fresh auth state before reconnect/enroll attempts.
+- Primary files:
+  - `codex-rs/app-server-transport/src/transport/remote_control/websocket.rs`
+  - `codex-rs/login/src/auth/manager.rs`
+
 ### Native Computer-Use Adapter Bridge
 
 - Downstream promotes bare `android_observe`, `android_step`,
