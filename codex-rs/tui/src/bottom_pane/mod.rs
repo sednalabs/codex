@@ -977,8 +977,32 @@ impl BottomPane {
             .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
     }
 
-    pub(crate) fn should_interrupt_running_task(&mut self, key_event: KeyEvent) -> bool {
-        self.active_view_will_interrupt_turn_on_key_event(key_event)
+    pub(crate) fn should_interrupt_running_task(&self, key_event: KeyEvent) -> bool {
+        if self.active_view_will_interrupt_turn_on_key_event(key_event) {
+            return true;
+        }
+        let is_agent_command = self
+            .composer_text()
+            .lines()
+            .next()
+            .and_then(parse_slash_name)
+            .is_some_and(|(name, _, _)| name == "agent");
+        let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
+        if !self.keymap.chat.interrupt_turn.is_pressed(key_event)
+            || !self.is_task_running
+            || (is_agent_command && key_event.code == KeyCode::Esc)
+            || self.composer.popup_active()
+            || self.composer_should_handle_vim_insert_escape(key_event)
+            || self.status.is_none()
+        {
+            return false;
+        }
+
+        !(self.esc_interrupt_requires_double_press
+            && is_bare_esc
+            && !self
+                .pending_esc_interrupt_deadline
+                .is_some_and(|deadline| Instant::now() <= deadline))
     }
 
     pub(crate) fn take_remote_image_urls(&mut self) -> Vec<String> {
