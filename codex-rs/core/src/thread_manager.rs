@@ -1834,11 +1834,22 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
     }
     let active_turn_id = builder.active_turn_id_if_explicit();
     if builder.has_active_turn() {
+        let active_turn_start_index = builder.active_turn_start_index();
         let active_turn_snapshot = builder.active_turn_snapshot();
         if active_turn_snapshot
             .as_ref()
             .is_some_and(|turn| turn.status != TurnStatus::InProgress)
         {
+            if active_turn_id.is_none()
+                && implicit_legacy_tail_is_mid_turn(rollout_items, active_turn_start_index)
+            {
+                return SnapshotTurnState {
+                    ends_mid_turn: true,
+                    active_turn_id: None,
+                    active_turn_start_index,
+                };
+            }
+
             return SnapshotTurnState {
                 ends_mid_turn: false,
                 active_turn_id: None,
@@ -1849,7 +1860,7 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
         return SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id,
-            active_turn_start_index: builder.active_turn_start_index(),
+            active_turn_start_index,
         };
     }
 
@@ -1878,6 +1889,33 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
         active_turn_id: None,
         active_turn_start_index: ends_mid_turn.then_some(last_user_position),
     }
+}
+
+fn implicit_legacy_tail_is_mid_turn(
+    rollout_items: &[RolloutItem],
+    active_turn_start_index: Option<usize>,
+) -> bool {
+    let Some(last_user_position) = snapshot_user_message_positions(rollout_items)
+        .last()
+        .copied()
+    else {
+        return false;
+    };
+    if active_turn_start_index != Some(last_user_position) {
+        return false;
+    }
+
+    !rollout_items[last_user_position + 1..].iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(
+                EventMsg::AgentMessage(_)
+                    | EventMsg::Error(_)
+                    | EventMsg::TurnComplete(_)
+                    | EventMsg::TurnAborted(_)
+            )
+        )
+    })
 }
 
 fn snapshot_user_message_positions(rollout_items: &[RolloutItem]) -> Vec<usize> {
