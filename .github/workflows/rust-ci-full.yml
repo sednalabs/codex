@@ -295,7 +295,7 @@ jobs:
       # mixed-architecture archives under sccache.
       USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 512M
+      SCCACHE_CACHE_SIZE: 2G
       SCCACHE_FALLBACK_CACHE_POLICY: restore-only
       # In rust-ci, representative release-profile checks use thin LTO for faster feedback.
       CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || 'fat' }}
@@ -600,10 +600,10 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-      USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
+      # Archive creation is disk-bound on hosted Linux runners; skip local-disk
+      # sccache here so the archive has maximum workspace headroom.
+      USE_SCCACHE: "false"
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 2G
-      SCCACHE_FALLBACK_CACHE_POLICY: restore-only
 
     strategy:
       fail-fast: false
@@ -685,34 +685,6 @@ jobs:
           restore-keys: |
             cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-
 
-      - name: Install sccache
-        if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
-        with:
-          tool: sccache
-
-      - name: Configure sccache backend
-        id: sccache_backend
-        if: ${{ env.USE_SCCACHE == 'true' }}
-        shell: bash
-        run: bash "${{ github.workspace }}/.github/scripts/configure_sccache_backend.sh" "${SCCACHE_FALLBACK_CACHE_POLICY:-restore-only}"
-
-      - name: Enable sccache wrapper
-        if: ${{ env.USE_SCCACHE == 'true' }}
-        shell: bash
-        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-
-      - name: Restore sccache cache (fallback)
-        if: ${{ env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' }}
-        id: cache_sccache_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ github.workspace }}/.sccache/
-          key: sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
-          restore-keys: |
-            sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-
-            sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-
-
       - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
           tool: nextest@0.9.103
@@ -761,31 +733,6 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: cargo-home-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-
-      - name: Save sccache cache (fallback)
-        if: always() && !cancelled() && env.USE_SCCACHE == 'true' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ${{ github.workspace }}/.sccache/
-          key: sccache-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
-
-      - name: sccache stats
-        if: always() && env.USE_SCCACHE == 'true'
-        continue-on-error: true
-        run: sccache --show-stats || true
-
-      - name: sccache summary
-        if: always() && env.USE_SCCACHE == 'true'
-        shell: bash
-        run: |
-          {
-            echo "### sccache stats — ${{ matrix.target }} (nextest archive)";
-            echo;
-            echo '```';
-            sccache --show-stats || true;
-            echo '```';
-          } >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
@@ -1147,4 +1094,4 @@ jobs:
       - name: sccache summary note
         if: always()
         run: |
-          echo "Per-job sccache stats are attached to each matrix job's Step Summary."
+          echo "Per-job sccache stats are attached for sccache-enabled matrix jobs."

@@ -42,8 +42,8 @@ docs-only refresh commit that records this snapshot.
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
-  `cargo nextest archive`, cap archive-job sccache footprint, and keep hosted
-  macOS V8 Bazel client fanout below runner process/thread ceilings so
+  `cargo nextest archive`, skip archive-job sccache, and keep hosted macOS V8
+  Bazel client fanout below runner process/thread ceilings so
   frontier/checkpoint validation can stay on GitHub hosted compute instead of
   falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,

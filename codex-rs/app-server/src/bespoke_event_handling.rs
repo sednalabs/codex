@@ -653,7 +653,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 reason,
                 network_approval_context,
                 command,
-                cwd: cwd.map(Into::into),
+                cwd,
                 command_actions,
                 additional_permissions,
                 proposed_execpolicy_amendment: proposed_execpolicy_amendment_v2,
@@ -1206,14 +1206,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                     .command_execution_started
                     .insert(item_id.clone())
             };
-            if first_start {
-                if let Some(notification) = item_event_to_server_notification(
+            if first_start
+                && let Some(notification) = item_event_to_server_notification(
                     EventMsg::ExecCommandBegin(exec_command_begin_event),
                     &conversation_id.to_string(),
                     &event_turn_id,
-                ) {
-                    outgoing.send_server_notification(notification).await;
-                }
+                )
+            {
+                outgoing.send_server_notification(notification).await;
             }
         }
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
@@ -2253,7 +2253,6 @@ mod tests {
     use anyhow::anyhow;
     use anyhow::bail;
     use chrono::Utc;
-    use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::TurnPlanStepStatus;
