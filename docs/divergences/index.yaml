@@ -200,7 +200,9 @@
       "notes": "Keeps version stamping tied to live git state.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "build-metadata-hook",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "CLI build metadata rebuild hook"
     },
     {
@@ -288,7 +290,9 @@
       "notes": "Preserves path resolution after the cwd goes away.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "upstreamable absolute-path utility fix"
     },
     {
@@ -473,7 +477,9 @@
       "notes": "Preserves the downstream mutability guardrails.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "config-policy-adapter",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "MCP safety policy config adapter"
     },
     {
@@ -511,7 +517,9 @@
       "notes": "Keeps broken, partially-written, expired, refresh-missing, or backend-mismatched credential state from turning into opaque MCP startup failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking while also retaining upstream AuthKeyringBackendKind::Secrets support.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "upstreamable OAuth fallback-file hardening"
     },
     {
@@ -583,7 +591,9 @@
       "notes": "No live code diff remains after the 2026-04-24 upstream sync; keep this as historical registry context only.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "upstream-equivalent-history",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "historical upstream-equivalent startup sync fix"
     },
     {
@@ -780,7 +790,9 @@
       "notes": "Keeps code-mode declarations namespaced and legible.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "upstream-equivalent-history",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "historical upstream-equivalent code-mode formatting"
     },
     {
@@ -823,7 +835,9 @@
       "notes": "Keeps the downstream agent orchestration surface explicit and discoverable.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "agent-workflow-skill",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "operator-owned agent workflow skills"
     },
     {
@@ -862,7 +876,7 @@
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
@@ -1230,7 +1244,9 @@
       "notes": "Documents the additional npm project that feeds MCP workflows. Upstream has removed shell-tool-mcp, so treat this divergence as under audit until we decide whether the helper is still needed.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "helper-package",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "operator-owned shell helper package"
     },
     {
@@ -1263,7 +1279,9 @@
       "notes": "Covers all downstream docs (carry policies, how-tos, matrices) so they are treated as intentional content. Public docs should describe upstream-neutral architecture, validation, release assets, and generalized handoffs; operator deployment routing belongs outside tracked public surfaces.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "documentation-policy",
-      "hotspot_files": [],
+      "hotspot_files": [
+
+      ],
       "extraction_target": "operator-owned downstream documentation"
     },
     {
@@ -1306,7 +1324,7 @@
         "package.json",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork\u2019s CI and release policy.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
