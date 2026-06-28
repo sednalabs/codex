@@ -166,6 +166,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Rust-integration lane batches reclaim `codex-rs/target` before the first
     lane as well as between later lanes when hosted workspace disk falls below
     the safety floor.
+  - Rust lane batches retry once on narrow Cargo registry transport failures
+    such as crates.io HTTP/2 or EOF download flakes, so frontier harvests do
+    not report dependency-fetch noise as the next product blocker.
   - `profile=smoke` and `profile=targeted` are the default inner-loop remote
     validation tools.
   - `profile=frontier` is the bounded next-blocker harvest mode to use only

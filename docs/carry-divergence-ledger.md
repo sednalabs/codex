@@ -51,7 +51,9 @@ docs-only refresh commit that records this snapshot.
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
   the first lane and between later lanes when hosted disk falls below the safety
-  floor, and archive jobs skip sccache. The workspace JWT dependency uses
+  floor, archive jobs skip sccache, and validation-lab Rust batches retry once
+  on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF
+  download flakes. The workspace JWT dependency uses
   `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging and Bazel clippy keep fanout

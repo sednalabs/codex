@@ -1000,9 +1000,9 @@ impl BottomPane {
 
         !(self.esc_interrupt_requires_double_press
             && is_bare_esc
-            && !self
+            && self
                 .pending_esc_interrupt_deadline
-                .is_some_and(|deadline| Instant::now() <= deadline))
+                .is_none_or(|deadline| Instant::now() > deadline))
     }
 
     pub(crate) fn take_remote_image_urls(&mut self) -> Vec<String> {
