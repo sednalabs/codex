@@ -2849,7 +2849,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
-        for job_name in ["lint_build", "nextest_archive"]:
+        for job_name in ["lint_build"]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 workflow_text = (REPO_ROOT / ".github/workflows/rust-ci-full.yml").read_text(
@@ -2896,6 +2896,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
                             "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py",
                             step.get("run") or "",
                         )
+
+        archive_job = jobs.get("nextest_archive") or {}
+        archive_env = archive_job.get("env") or {}
+        self.assertEqual(archive_env.get("USE_SCCACHE"), "false")
+        self.assertNotIn("SCCACHE_CACHE_SIZE", archive_env)
+        archive_steps_json = json.dumps(archive_job.get("steps") or [], sort_keys=True)
+        self.assertNotIn("RUSTC_WRAPPER=sccache", archive_steps_json)
+        self.assertNotIn("Configure sccache backend", archive_steps_json)
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")

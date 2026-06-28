@@ -111,7 +111,7 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Workflow and route-map edits also run cheap planner fixture tests so
     follow-up lane selection does not silently drift.
   - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
-    headroom and cap archive-job sccache before archive creation, then fail
+    headroom and skip archive-job sccache before archive creation, then fail
     early if the hosted runner is still below the archive safety floor.
   - `v8-canary.yml` staging keeps hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the V8 build.
