@@ -72,7 +72,7 @@ impl ChatWidget {
     pub(crate) fn open_model_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
         let presets: Vec<ModelPreset> = presets
             .into_iter()
-            .filter(|preset| preset.show_in_picker)
+            .filter(|preset| preset.show_in_picker || preset.upgrade.is_some())
             .collect();
 
         let current_model = self.current_model();

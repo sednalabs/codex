@@ -1543,7 +1543,9 @@ async fn esc_interrupt_pauses_active_goal_turn() {
     let thread_id = start_active_goal_turn(&mut chat);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt { .. })));
     assert_goal_paused_event(&mut rx, thread_id);
 
