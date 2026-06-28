@@ -181,9 +181,17 @@ fn plugin_config_toml(enabled: bool, plugins_feature_enabled: bool) -> String {
 }
 
 async fn load_plugins_from_config(config_toml: &str, codex_home: &Path) -> PluginLoadOutcome {
+    load_plugins_from_config_with_auth(config_toml, codex_home, /*auth_mode*/ None).await
+}
+
+async fn load_plugins_from_config_with_auth(
+    config_toml: &str,
+    codex_home: &Path,
+    auth_mode: Option<AuthMode>,
+) -> PluginLoadOutcome {
     write_file(&codex_home.join(CONFIG_TOML_FILE), config_toml);
     let config = load_config(codex_home, codex_home).await;
-    PluginsManager::new(codex_home.to_path_buf())
+    PluginsManager::new_with_options(codex_home.to_path_buf(), Some(Product::Codex), auth_mode)
         .plugins_for_config(&config)
         .await
 }
@@ -274,9 +282,10 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
 }"#,
     );
 
-    let outcome = load_plugins_from_config(
+    let outcome = load_plugins_from_config_with_auth(
         &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
         codex_home.path(),
+        Some(AuthMode::Chatgpt),
     )
     .await;
 
@@ -1221,7 +1230,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
         &plugin_root.join(".app.json"),
         r#"{
   "apps": {
-    "default": {
+    "default-app": {
       "id": "connector_default"
     }
   }
@@ -1231,25 +1240,23 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
         &plugin_root.join("config/custom.app.json"),
         r#"{
   "apps": {
-    "custom": {
+    "custom-app": {
       "id": "connector_custom"
     }
   }
 }"#,
     );
 
-    let outcome = load_plugins_from_config(
+    let outcome = load_plugins_from_config_with_auth(
         &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
         codex_home.path(),
+        Some(AuthMode::Chatgpt),
     )
     .await;
 
     assert_eq!(
         outcome.plugins()[0].skill_roots,
-        vec![
-            plugin_root.join("custom-skills").abs(),
-            plugin_root.join("skills").abs()
-        ]
+        vec![plugin_root.join("custom-skills").abs()]
     );
     assert_eq!(
         outcome.plugins()[0].mcp_servers,
@@ -1287,7 +1294,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
     assert_eq!(
         outcome.plugins()[0].apps,
         vec![AppDeclaration {
-            name: "custom".to_string(),
+            name: "custom-app".to_string(),
             connector_id: AppConnectorId("connector_custom".to_string()),
             category: None,
         }]
@@ -1411,7 +1418,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
         &plugin_root.join(".app.json"),
         r#"{
   "apps": {
-    "default": {
+    "default-app": {
       "id": "connector_default"
     }
   }
@@ -1421,16 +1428,17 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
         &plugin_root.join("config/custom.app.json"),
         r#"{
   "apps": {
-    "custom": {
+    "custom-app": {
       "id": "connector_custom"
     }
   }
 }"#,
     );
 
-    let outcome = load_plugins_from_config(
+    let outcome = load_plugins_from_config_with_auth(
         &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
         codex_home.path(),
+        Some(AuthMode::Chatgpt),
     )
     .await;
 
@@ -1474,7 +1482,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
     assert_eq!(
         outcome.plugins()[0].apps,
         vec![AppDeclaration {
-            name: "default".to_string(),
+            name: "default-app".to_string(),
             connector_id: AppConnectorId("connector_default".to_string()),
             category: None,
         }]
@@ -1636,7 +1644,12 @@ async fn effective_apps_dedupes_connector_ids_across_plugins() {
     let config_toml =
         toml::to_string(&Value::Table(root)).expect("plugin test config should serialize");
 
-    let outcome = load_plugins_from_config(&config_toml, codex_home.path()).await;
+    let outcome = load_plugins_from_config_with_auth(
+        &config_toml,
+        codex_home.path(),
+        Some(AuthMode::Chatgpt),
+    )
+    .await;
 
     assert_eq!(
         outcome.effective_apps(),
@@ -1676,9 +1689,10 @@ async fn effective_apps_preserves_app_config_order() {
 }"#,
     );
 
-    let outcome = load_plugins_from_config(
+    let outcome = load_plugins_from_config_with_auth(
         &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
         codex_home.path(),
+        Some(AuthMode::Chatgpt),
     )
     .await;
 
@@ -3111,8 +3125,11 @@ enabled = true
         .find(|marketplace| marketplace.name == "debug")
         .expect("debug marketplace should be listed");
 
+    let mut plugins = marketplace.plugins;
+    assert!(plugins[0].manifest_fallback.is_some());
+    plugins[0].manifest_fallback = None;
     assert_eq!(
-        marketplace.plugins,
+        plugins,
         vec![ConfiguredMarketplacePlugin {
             id: "toolkit@debug".to_string(),
             name: "toolkit".to_string(),

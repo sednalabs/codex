@@ -346,6 +346,10 @@ docs-only refresh commit that records this snapshot.
   cannot hit an old localhost target before an explicit requested navigation.
   Provider-managed `state.json`, cookies, local storage, and other profile data
   are preserved.
+- Plugin app declarations are validated on the authenticated ChatGPT app
+  projection. The unauthenticated plugin projection may intentionally omit apps,
+  so future syncs should not treat app absence from unauthenticated manager
+  tests as evidence that downstream app/plugin carry is removable.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -416,6 +420,9 @@ docs-only refresh commit that records this snapshot.
 - Cached expired tokens remain visibly expired when reloaded so the OAuth
   manager refreshes them before reconnecting instead of treating stale access
   tokens as usable.
+- Proactive refresh failures such as missing refresh tokens are classified as
+  authentication-required startup failures, so operators get the reauth path
+  instead of a generic MCP startup failure.
 - The selected keyring backend is intentional carry now that upstream supports
   encrypted local secrets storage. Syncs must preserve both upstream
   `AuthKeyringBackendKind::Secrets` support and the downstream resolved-store
@@ -427,6 +434,7 @@ docs-only refresh commit that records this snapshot.
 - Primary files:
   - `codex-rs/rmcp-client/src/oauth.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
 
 ### MCP OAuth Device Login For Headless Servers
