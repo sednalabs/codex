@@ -160,6 +160,15 @@ impl TestAppServer {
     /// URL-based configuration, this helper rejects a `codex_home` containing
     /// that file.
     pub async fn new_with_auto_env(codex_home: &Path) -> anyhow::Result<Self> {
+        Self::new_with_auto_env_and_env(codex_home, &[]).await
+    }
+
+    /// Starts an app server with the standard target-native test environment
+    /// plus caller-provided environment overrides.
+    pub async fn new_with_auto_env_and_env(
+        codex_home: &Path,
+        env_overrides: &[(&str, Option<&str>)],
+    ) -> anyhow::Result<Self> {
         let environments_toml = codex_home.join("environments.toml");
         ensure!(
             !environments_toml
@@ -172,7 +181,7 @@ impl TestAppServer {
         let auto_env = test_env().await?;
         // Noise registry configuration takes precedence over the URL-based
         // provider, so clear inherited values to keep the selection hermetic.
-        let env_overrides = [
+        let mut all_env_overrides = vec![
             (
                 CODEX_EXEC_SERVER_URL_ENV_VAR,
                 auto_env.environment().exec_server_url(),
@@ -182,7 +191,8 @@ impl TestAppServer {
             (CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR, None),
             (CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR, None),
         ];
-        let mut app_server = Self::new_with_env(codex_home, &env_overrides).await?;
+        all_env_overrides.extend_from_slice(env_overrides);
+        let mut app_server = Self::new_with_env(codex_home, &all_env_overrides).await?;
         app_server.auto_env = Some(auto_env);
         Ok(app_server)
     }
@@ -213,6 +223,15 @@ impl TestAppServer {
         let mut all_env_overrides = vec![(DISABLE_MANAGED_CONFIG_ENV_VAR, Some("1"))];
         all_env_overrides.extend_from_slice(env_overrides);
         Self::new_with_env(codex_home, &all_env_overrides).await
+    }
+
+    pub async fn new_without_managed_config_with_auto_env_and_env(
+        codex_home: &Path,
+        env_overrides: &[(&str, Option<&str>)],
+    ) -> anyhow::Result<Self> {
+        let mut all_env_overrides = vec![(DISABLE_MANAGED_CONFIG_ENV_VAR, Some("1"))];
+        all_env_overrides.extend_from_slice(env_overrides);
+        Self::new_with_auto_env_and_env(codex_home, &all_env_overrides).await
     }
 
     pub async fn new_with_plugin_startup_tasks(codex_home: &Path) -> anyhow::Result<Self> {
