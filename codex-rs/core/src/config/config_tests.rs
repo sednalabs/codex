@@ -5587,11 +5587,11 @@ fn web_search_mode_disabled_overrides_legacy_request() {
 }
 
 #[test]
-fn web_search_mode_for_turn_preserves_indexed_for_disabled_permissions() {
+fn web_search_mode_for_turn_prefers_live_over_indexed_for_disabled_permissions() {
     let web_search_mode = Constrained::allow_any(WebSearchMode::Indexed);
     let mode = resolve_web_search_mode_for_turn(&web_search_mode, &PermissionProfile::Disabled);
 
-    assert_eq!(mode, WebSearchMode::Indexed);
+    assert_eq!(mode, WebSearchMode::Live);
 }
 
 #[test]

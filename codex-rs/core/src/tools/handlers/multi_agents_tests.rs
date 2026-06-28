@@ -172,7 +172,7 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
         &role_config_path,
         r#"model = "gpt-5-role-override"
 model_provider = "ollama"
-model_reasoning_effort = "minimal"
+model_reasoning_effort = "low"
 "#,
     )
     .await
@@ -1067,7 +1067,7 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 
     assert_eq!(snapshot.model, "gpt-5-role-override");
     assert_eq!(snapshot.model_provider_id, "ollama");
-    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
 }
 
 #[tokio::test]
