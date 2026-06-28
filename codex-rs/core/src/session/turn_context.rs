@@ -834,10 +834,11 @@ impl Session {
         state.session_configuration.clone()
     }
 
-    fn validate_environment_selections(
+    pub(super) fn validate_environment_selections(
         &self,
         environments: &[TurnEnvironmentSelection],
     ) -> CodexResult<()> {
+        let environment_manager = self.services.turn_environments.environment_manager();
         let mut environment_ids = std::collections::HashSet::with_capacity(environments.len());
         for environment in environments {
             if !environment_ids.insert(environment.environment_id.as_str()) {
@@ -846,8 +847,7 @@ impl Session {
                     environment.environment_id
                 )));
             }
-            self.services
-                .environment_manager
+            environment_manager
                 .get_environment(&environment.environment_id)
                 .ok_or_else(|| {
                     CodexErr::InvalidRequest(format!(
