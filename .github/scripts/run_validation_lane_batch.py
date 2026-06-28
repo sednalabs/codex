@@ -17,6 +17,12 @@ from typing import Any
 
 RETRY_RUSTY_V8_RE = re.compile(r"rusty_v8", re.IGNORECASE)
 RETRY_HTTP_502_RE = re.compile(r"HTTP Error 502", re.IGNORECASE)
+RETRY_CARGO_REGISTRY_TRANSPORT_RES = (
+    re.compile(r"unable to update registry [`']crates-io[`']", re.IGNORECASE),
+    re.compile(r"download of .+ failed", re.IGNORECASE),
+    re.compile(r"curl failed", re.IGNORECASE),
+    re.compile(r"Error in the HTTP2 framing layer|unexpected eof while reading", re.IGNORECASE),
+)
 DISK_HEADROOM_FLOOR_BYTES = 12 * 1024 * 1024 * 1024
 
 
@@ -90,7 +96,9 @@ def stream_command(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
 
 def should_retry(log_path: Path) -> bool:
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    return bool(RETRY_RUSTY_V8_RE.search(text) and RETRY_HTTP_502_RE.search(text))
+    if RETRY_RUSTY_V8_RE.search(text) and RETRY_HTTP_502_RE.search(text):
+        return True
+    return all(pattern.search(text) for pattern in RETRY_CARGO_REGISTRY_TRANSPORT_RES)
 
 
 def clean_workspace(repo_root: Path) -> None:
@@ -162,7 +170,7 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
         if attempt > 1:
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n=== retry attempt {attempt}/{max_attempts} ===\n")
-            print(f"::warning title=Retrying flaky rusty_v8 download::{lane_id} hit HTTP 502 while downloading rusty_v8; retrying once.")
+            print(f"::warning title=Retrying transient validation dependency fetch::{lane_id} hit a retryable dependency download error; retrying once.")
         cmd = [
             "python3",
             str(workflow_src / ".github" / "scripts" / "run_validation_lane.py"),
