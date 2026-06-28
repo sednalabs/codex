@@ -117,6 +117,7 @@ pub(crate) enum WaitPrimitiveKind {
         max_wait_ms: Option<u64>,
         heartbeat_interval_ms: Option<u64>,
     },
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     BackgroundTerminal,
 }
 
@@ -157,6 +158,7 @@ impl WaitPrimitiveCell {
         }
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn background_terminal(command_display: Option<String>) -> Self {
         Self {
             kind: WaitPrimitiveKind::BackgroundTerminal,
@@ -228,6 +230,7 @@ pub(crate) fn new_terminal_wait_primitive(
     WaitPrimitiveCell::terminal(terminal_wait, command_display)
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn new_background_terminal_wait(command_display: Option<String>) -> WaitPrimitiveCell {
     WaitPrimitiveCell::background_terminal(command_display)
 }

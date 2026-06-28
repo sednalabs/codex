@@ -18,17 +18,20 @@ pub const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_
 };
 
 /// The npm package used for self-update guidance when the binary is npm-managed.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
     Some(package) => package,
     None => "@openai/codex",
 };
 
 /// The brew cask used for self-update guidance when the binary is brew-managed.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CASK") {
     Some(cask) => cask,
     None => "codex",
 };
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn installation_options_url() -> String {
     format!("https://github.com/{CODEX_RELEASE_REPOSITORY}")
 }

@@ -11,6 +11,7 @@ use serde_json::json;
 use std::path::Path;
 
 /// Schema for the `[features]` map with known + legacy keys only.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
     let mut properties = Map::new();
     for feature in FEATURES {
@@ -42,6 +43,7 @@ pub(crate) fn features_schema(schema_gen: &mut SchemaGenerator) -> Schema {
 }
 
 /// Schema for the `[mcp_servers]` map using the raw input shape.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn mcp_servers_schema(schema_gen: &mut SchemaGenerator) -> Schema {
     match json!({
         "type": "object",

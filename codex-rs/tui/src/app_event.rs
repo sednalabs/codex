@@ -1176,6 +1176,7 @@ pub(crate) struct PermissionProfileSelection {
     pub display_label: String,
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct RealtimeWebrtcOffer {
     pub(crate) offer_sdp: String,

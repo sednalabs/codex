@@ -165,6 +165,7 @@ impl StatusIndicatorWidget {
         self.show_interrupt_hint = visible;
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn set_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         self.interrupt_requires_double_press = requires_double_press;
     }

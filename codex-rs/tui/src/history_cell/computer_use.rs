@@ -116,9 +116,7 @@ impl HistoryCell for ComputerUseCallCell {
             vec![
                 bullet,
                 " ".into(),
-                computer_use_action_label(&self.invocation.adapter, state)
-                    .bold()
-                    .into(),
+                computer_use_action_label(&self.invocation.adapter, state).bold(),
             ]
             .into(),
         ];

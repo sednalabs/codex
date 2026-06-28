@@ -36,6 +36,7 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+#[cfg_attr(debug_assertions, allow(dead_code))]
 const AGENT_PICKER_TASK_PREVIEW_GRAPHEMES: usize = 48;
 pub(crate) const SUBAGENT_LABEL: &str = "Subagent";
 
@@ -85,6 +86,7 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadUsage {
     pub(crate) token_usage: TokenUsage,
@@ -129,6 +131,7 @@ pub(crate) fn format_agent_picker_item_name(
     }
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn format_agent_picker_item_description(
     thread_id: ThreadId,
     entry: &AgentPickerThreadEntry,
@@ -137,6 +140,7 @@ pub(crate) fn format_agent_picker_item_description(
     format_agent_picker_item_description_at(thread_id, entry, usage, Utc::now().timestamp())
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn format_agent_picker_item_description_at(
     thread_id: ThreadId,
     entry: &AgentPickerThreadEntry,
@@ -195,6 +199,7 @@ fn format_agent_picker_item_description_at(
     parts.join(" • ")
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn format_agent_picker_item_selected_description(
     thread_id: ThreadId,
     entry: &AgentPickerThreadEntry,
@@ -212,6 +217,7 @@ pub(crate) fn format_agent_picker_item_selected_description(
     description
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn format_agent_picker_policy_details(
     approval_policy: Option<AskForApproval>,
     approvals_reviewer: Option<ApprovalsReviewer>,
@@ -230,6 +236,7 @@ fn format_agent_picker_policy_details(
     (!parts.is_empty()).then(|| parts.join(" • "))
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn format_agent_picker_age(
     updated_at: Option<i64>,
     created_at: Option<i64>,
