@@ -65,6 +65,10 @@ impl CompletionRule {
         statuses: &HashMap<ThreadId, AgentStatus>,
         receiver_thread_ids: &[ThreadId],
     ) -> bool {
+        if receiver_thread_ids.is_empty() {
+            return false;
+        }
+
         match self.return_when {
             ReturnWhen::Any => !statuses.is_empty(),
             ReturnWhen::All => receiver_thread_ids
@@ -102,7 +106,11 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
+        let receiver_thread_ids = if args.targets.is_empty() {
+            Vec::new()
+        } else {
+            resolve_agent_targets(&session, &turn, args.targets).await?
+        };
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
@@ -129,7 +137,7 @@ impl Handler {
             .config
             .multi_agent_v2
             .min_wait_timeout_ms
-            .clamp(1, MAX_WAIT_TIMEOUT_MS);
+            .clamp(0, MAX_WAIT_TIMEOUT_MS);
         let max_timeout_ms = turn
             .config
             .multi_agent_v2
