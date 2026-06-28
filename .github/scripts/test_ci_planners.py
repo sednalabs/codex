@@ -2916,6 +2916,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         archive_steps_json = json.dumps(archive_job.get("steps") or [], sort_keys=True)
         self.assertNotIn("RUSTC_WRAPPER=sccache", archive_steps_json)
         self.assertNotIn("Configure sccache backend", archive_steps_json)
+        self.assertNotIn("cargo nextest run", archive_steps_json)
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -3122,6 +3123,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("cargo nextest archive", archive_run)
         self.assertIn("--archive-file", archive_run)
+        self.assertNotIn("cargo nextest run", archive_run)
+        self.assertNotIn("tests", [step.get("name") for step in archive_steps])
 
         for job_name in ["tests", "remote_tests"]:
             with self.subTest(job=job_name):
