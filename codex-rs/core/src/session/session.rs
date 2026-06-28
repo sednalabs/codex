@@ -688,11 +688,7 @@ impl Session {
             session_init.ephemeral = config.ephemeral,
         ));
         let state_db_fut = async {
-            if config.ephemeral {
-                None
-            } else if let Some(local_store) =
-                thread_store.as_any().downcast_ref::<LocalThreadStore>()
-            {
+            if let Some(local_store) = thread_store.as_any().downcast_ref::<LocalThreadStore>() {
                 local_store.state_db().await
             } else {
                 None

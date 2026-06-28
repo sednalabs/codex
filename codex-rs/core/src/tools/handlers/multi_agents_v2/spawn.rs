@@ -262,13 +262,20 @@ impl SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
     task_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     requested_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     requested_reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     effective_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     requested_model_honored: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     effective_reasoning_effort: Option<ReasoningEffort>,
 }
 

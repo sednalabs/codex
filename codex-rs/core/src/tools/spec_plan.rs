@@ -52,6 +52,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::request_user_input_spec::REQUEST_USER_INPUT_TOOL_NAME;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
@@ -509,6 +510,10 @@ fn is_excluded_from_code_mode(turn_context: &TurnContext, tool_name: &ToolName) 
     })
 }
 
+fn is_unsupported_code_mode_nested_tool(tool_name: &ToolName) -> bool {
+    tool_name.namespace.is_none() && tool_name.name == REQUEST_USER_INPUT_TOOL_NAME
+}
+
 fn build_code_mode_executors(
     turn_context: &TurnContext,
     executors: &[Arc<dyn CoreToolRuntime>],
@@ -525,6 +530,7 @@ fn build_code_mode_executors(
     let deferred_tools_guidance_enabled = search_tool_enabled(turn_context);
     for executor in executors {
         let exposure = executor.exposure();
+        let tool_name = executor.tool_name();
         if exposure == ToolExposure::DirectModelOnly {
             continue;
         }
@@ -533,7 +539,11 @@ fn build_code_mode_executors(
             continue;
         }
 
-        if is_excluded_from_code_mode(turn_context, &executor.tool_name()) {
+        if is_excluded_from_code_mode(turn_context, &tool_name) {
+            continue;
+        }
+
+        if is_unsupported_code_mode_nested_tool(&tool_name) {
             continue;
         }
 

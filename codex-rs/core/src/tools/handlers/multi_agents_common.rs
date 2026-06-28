@@ -681,6 +681,10 @@ pub(crate) fn validate_spawn_agent_reasoning_effort(
     supported_reasoning_levels: &[ReasoningEffortPreset],
     requested_reasoning_effort: &ReasoningEffort,
 ) -> Result<(), FunctionCallError> {
+    if supported_reasoning_levels.is_empty() {
+        return Ok(());
+    }
+
     if supported_reasoning_levels
         .iter()
         .any(|preset| &preset.effort == requested_reasoning_effort)
