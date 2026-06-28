@@ -1097,6 +1097,7 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
     let turn = TurnContext {
         config: Arc::new(config),
         ..turn
@@ -2484,7 +2485,7 @@ async fn multi_agent_v2_spawn_omits_agent_id_when_named() {
     let result: serde_json::Value =
         serde_json::from_str(&content).expect("spawn_agent result should be json");
 
-    assert!(result.get("agent_id").is_some());
+    assert!(result.get("agent_id").is_none());
     assert_eq!(result["task_name"], "/root/test_process");
     assert!(result.get("nickname").is_none());
     assert_eq!(success, Some(true));
@@ -2808,7 +2809,7 @@ async fn send_input_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
 }
 
 #[tokio::test]
@@ -3149,7 +3150,7 @@ async fn wait_agent_rejects_invalid_target() {
         Arc::new(session),
         Arc::new(turn),
         "wait_agent",
-        function_payload(json!({"targets": ["invalid"]})),
+        function_payload(json!({"targets": ["not-a-uuid"]})),
     );
     let Err(err) = WaitAgentHandler::default().handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -3157,7 +3158,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent target invalid:"));
+    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
 }
 
 #[tokio::test]

@@ -384,10 +384,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
             "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits to avoid busy polling."
         )
     );
-    assert_eq!(
-        parameters.required.as_ref(),
-        Some(&vec!["targets".to_string()])
-    );
+    assert_eq!(parameters.required.as_ref(), None);
     assert_eq!(
         output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
