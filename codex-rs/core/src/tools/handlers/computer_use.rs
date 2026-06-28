@@ -645,7 +645,13 @@ mod tests {
         let (_session, turn_context, _rx) = make_session_and_context_with_rx().await;
         let mut turn_context =
             Arc::into_inner(turn_context).expect("turn context should have one owner");
-        let cwd = turn_context.cwd.clone();
+        let cwd = turn_context
+            .environments
+            .primary()
+            .expect("turn context should have a primary environment")
+            .cwd()
+            .to_abs_path()
+            .expect("primary test environment cwd should be native");
         let first_environment = Arc::new(
             codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
                 .expect("create first environment"),

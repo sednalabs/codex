@@ -3623,11 +3623,8 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Interrupted);
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(
-                    n.turn.duration_ms,
-                    Some(TEST_TURN_COMPLETED_AT - TEST_TURN_CREATED_AT)
-                );
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
                 assert_eq!(n.final_model, None);
                 assert_eq!(n.model_snapshot, None);
             }
@@ -3685,8 +3682,8 @@ mod tests {
                         additional_details: None,
                     })
                 );
-                assert_eq!(n.turn.completed_at, None);
-                assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
+                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
             }
             other => bail!("unexpected message: {other:?}"),
         }

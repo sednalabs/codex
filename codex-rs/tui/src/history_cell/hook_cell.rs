@@ -13,6 +13,7 @@
 use super::HistoryCell;
 use super::plain_lines;
 use crate::history_cell::HistoryRenderMode;
+#[cfg(test)]
 use crate::history_cell::TranscriptDetailMode;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;

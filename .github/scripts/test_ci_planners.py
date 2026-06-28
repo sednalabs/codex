@@ -6091,6 +6091,22 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_df = fake_bin / "df"
+            fake_df.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'",
+                        "printf 'fake 100000000 1 100000000 1%% .\\n'",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_df.chmod(0o755)
 
             proc = subprocess.run(
                 [
@@ -6112,6 +6128,7 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
             )
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -6120,6 +6137,134 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
             self.assertEqual(
                 results["results"][0]["lane_id"],
                 "codex.branch-only-targeted",
+            )
+
+    def test_batch_runner_reclaims_disk_headroom_before_first_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo_root = root / "repo"
+            output_dir = root / "out"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            script_dir.mkdir(parents=True)
+
+            (script_dir / "assert-clean-target.sh").write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "test ! -e codex-rs/target/stale-artifact",
+                        "echo first-lane-target-was-reclaimed",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (repo_root / ".github/validation-lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "lane_id": "codex.low-disk-targeted",
+                                "groups": ["core"],
+                                "lane_sets": ["all"],
+                                "status_class": "active",
+                                "setup_class": "rust_integration",
+                                "frontier_default": True,
+                                "frontier_role": "sentinel",
+                                "summary_family": "low-disk",
+                                "cost_class": "high",
+                                "checkout_fetch_depth": 1,
+                                "timeout_minutes": 30,
+                                "working_directory": ".",
+                                "script_path": ".github/scripts/validation-lanes/assert-clean-target.sh",
+                                "script_args": [],
+                                "needs_just": False,
+                                "needs_node": False,
+                                "needs_nextest": False,
+                                "needs_linux_build_deps": False,
+                                "needs_dotslash": False,
+                                "needs_sccache": False,
+                                "needs_bazel": False,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(
+                ["git", "init", "--initial-branch=main"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "CI Planner Tests"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "ci-planner-tests@example.invalid"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "initial"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            target_dir = repo_root / "codex-rs/target"
+            target_dir.mkdir(parents=True)
+            (target_dir / "stale-artifact").write_text("stale\n", encoding="utf-8")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_df = fake_bin / "df"
+            fake_df.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'",
+                        "printf 'fake 1 1 0 100%% .\\n'",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_df.chmod(0o755)
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane_batch.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--workflow-src",
+                    str(REPO_ROOT),
+                    "--setup-class",
+                    "rust_integration",
+                    "--batch-id",
+                    "rust_integration-01",
+                    "--lane-ids-json",
+                    '["codex.low-disk-targeted"]',
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("first-lane-target-was-reclaimed", proc.stdout)
+            self.assertIn(
+                "Reclaiming validation workspace disk headroom",
+                proc.stdout,
             )
 
 

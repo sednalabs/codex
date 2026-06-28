@@ -153,7 +153,7 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
     log_path = output_dir / f"validation-lane-{index + 1:02d}-{lane_slug}.log"
     if index > 0:
         clean_workspace(repo_root)
-        reclaim_batch_disk_headroom(repo_root, lane_id)
+    reclaim_batch_disk_headroom(repo_root, lane_id)
 
     started_at_ms = int(time.time() * 1000)
     attempt = 1

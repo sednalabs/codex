@@ -1405,6 +1405,7 @@ impl TextArea {
         self.replace_element_payload_at_index(idx, new)
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub fn replace_element_payload_by_id(&mut self, id: u64, new: &str) -> bool {
         let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
             return false;
@@ -1413,6 +1414,7 @@ impl TextArea {
         self.replace_element_payload_at_index(idx, new)
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub fn remove_element_by_id(&mut self, id: u64) -> bool {
         let Some(range) = self
             .elements

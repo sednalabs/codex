@@ -1023,7 +1023,7 @@ impl App {
         } else if rollout_path.is_some() {
             session.model.clear();
         }
-        session.reasoning_effort = model_settings.reasoning_effort.map(Into::into);
+        session.reasoning_effort = model_settings.reasoning_effort;
         session.message_history = None;
         session.rollout_path = rollout_path;
         self.upsert_agent_picker_thread(

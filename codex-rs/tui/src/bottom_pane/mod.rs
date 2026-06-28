@@ -452,10 +452,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub fn set_realtime_conversation_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub fn set_audio_device_selection_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
@@ -805,6 +807,18 @@ impl BottomPane {
     fn pre_draw_tick_at(&mut self, now: Instant) {
         self.composer.sync_popups();
         self.maybe_show_delayed_approval_requests_at(now);
+        let (view_changed, view_complete, completion) =
+            if let Some(view) = self.view_stack.last_mut() {
+                let view_changed = view.pre_draw_tick(now);
+                (view_changed, view.is_complete(), view.completion())
+            } else {
+                (false, false, None)
+            };
+        if view_complete {
+            self.pop_active_view_with_completion(completion);
+        } else if view_changed {
+            self.request_redraw();
+        }
         self.schedule_active_view_frame();
     }
 
@@ -1132,6 +1146,7 @@ impl BottomPane {
         }
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn set_esc_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         let effective_requires_double_press =
             esc_interrupt_requires_double_press_from_env().unwrap_or(requires_double_press);

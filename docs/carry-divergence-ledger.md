@@ -42,9 +42,13 @@ docs-only refresh commit that records this snapshot.
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
-  `cargo nextest archive`, skip archive-job sccache, and keep hosted macOS V8
-  staging and Bazel clippy fanout below runner process/thread ceilings. TUI
-  carry smoke uses the same hosted test stack floor as core carry smoke so
+  `cargo nextest archive`, validation-lab Rust batches reclaim target artifacts
+  before the first lane and between later lanes when hosted disk falls below
+  the safety floor, and archive jobs skip sccache. The workspace JWT dependency
+  uses `jsonwebtoken` with the `aws_lc_rs` provider so hosted Cargo/Bazel
+  `--locked` runs avoid pulling the RustCrypto RSA graph. Hosted macOS V8
+  staging and Bazel clippy keep fanout below runner process/thread ceilings.
+  TUI carry smoke uses the same hosted test stack floor as core carry smoke so
   frontier/checkpoint validation can stay on GitHub hosted compute instead of
   falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,
@@ -58,10 +62,14 @@ docs-only refresh commit that records this snapshot.
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
+  - `.github/scripts/run_validation_lane_batch.py`
   - `.github/scripts/rusty_v8_bazel.py`
+  - `.github/scripts/test_ci_planners.py`
   - `.github/workflows/blocking-ci.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
+  - `codex-rs/Cargo.toml`
+  - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
   - `docs/downstream.md`
 
@@ -473,6 +481,10 @@ docs-only refresh commit that records this snapshot.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
+- Bottom-pane transient views run their pre-draw tick and completion path so
+  request-user-input overlays and other timed active views can redraw,
+  auto-resolve, and pop through the same active-view seam instead of stalling
+  behind static composer redraws.
 - TUI realtime voice remains a downstream carry on non-Linux targets even
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
@@ -492,6 +504,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/Cargo.toml`
   - `codex-rs/Cargo.lock`
   - `codex-rs/tui/src/audio_device.rs`
+  - `codex-rs/tui/src/bottom_pane/mod.rs`
+  - `codex-rs/tui/src/bottom_pane/textarea.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/voice.rs`
   - `codex-rs/tui/src/slash_command.rs`

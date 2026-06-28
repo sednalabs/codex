@@ -578,13 +578,15 @@
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, and the carried non-Linux realtime voice platform split aligned. The voice split includes the target-specific TUI cpal dependency and Cargo lock graph required by hosted macOS/Windows builds.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, and the carried non-Linux realtime voice platform split aligned. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. The voice split includes the target-specific TUI cpal dependency and Cargo lock graph required by hosted macOS/Windows builds.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
         "codex-rs/Cargo.lock",
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/textarea.rs",
         "codex-rs/tui/src/audio_device.rs",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/chatwidget.rs",
@@ -812,7 +814,7 @@
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. Hosted nextest archive builders reclaim common Linux runner disk headroom and skip archive-job sccache before archive creation, TUI carry smoke uses the same hosted test stack floor as core carry smoke, and hosted macOS V8 staging plus Bazel clippy bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Hosted nextest archive builders reclaim common Linux runner disk headroom and skip archive-job sccache before archive creation, validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, TUI carry smoke uses the same hosted test stack floor as core carry smoke, and hosted macOS V8 staging plus Bazel clippy bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
