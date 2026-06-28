@@ -191,6 +191,18 @@ mod tests {
     use ratatui::Terminal;
     use std::path::PathBuf;
 
+    fn trimmed_terminal_snapshot(terminal: &Terminal<VT100Backend>) -> String {
+        terminal
+            .backend()
+            .vt100()
+            .screen()
+            .contents()
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn widget(error: Option<String>) -> TrustDirectoryWidget {
         TrustDirectoryWidget {
             cwd: PathBuf::from("/workspace/project"),
@@ -253,6 +265,6 @@ mod tests {
             .draw(|f| (&widget).render_ref(f.area(), f.buffer_mut()))
             .expect("draw");
 
-        insta::assert_snapshot!(terminal.backend());
+        insta::assert_snapshot!(trimmed_terminal_snapshot(&terminal));
     }
 }

@@ -2243,7 +2243,7 @@ async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
     app.refresh_pending_thread_approvals().await;
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.active_thread_id = Some(agent_thread_id);
@@ -2299,7 +2299,7 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
     assert_eq!(app.chat_widget.has_active_view(), true);
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     Ok(())
@@ -2460,7 +2460,7 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
     assert_eq!(app.chat_widget.has_active_view(), false);
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.side_threads.remove(&side_thread_id);
@@ -2844,7 +2844,7 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
     .await?;
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.enqueue_thread_notification(

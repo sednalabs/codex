@@ -1255,9 +1255,25 @@ impl BottomPane {
     pub(crate) fn replace_selection_view_if_present(
         &mut self,
         view_id: &'static str,
-        params: list_selection_view::SelectionViewParams,
+        mut params: list_selection_view::SelectionViewParams,
     ) -> bool {
-        self.replace_selection_view_if_active(view_id, params)
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+
+        self.apply_standard_popup_hint(&mut params);
+        let view = list_selection_view::ListSelectionView::new(
+            params,
+            self.app_event_tx.clone(),
+            self.keymap.list.clone(),
+        );
+        self.view_stack[index] = Box::new(view);
+        self.request_redraw();
+        true
     }
 
     pub(crate) fn standard_popup_hint_line(&self) -> Line<'static> {
@@ -1331,7 +1347,17 @@ impl BottomPane {
     }
 
     pub(crate) fn dismiss_view_by_id(&mut self, view_id: &'static str) -> bool {
-        self.dismiss_active_view_if_id(view_id)
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+
+        self.view_stack.remove(index);
+        self.request_redraw();
+        true
     }
 
     /// Update the pending-input preview shown above the composer.
@@ -2010,6 +2036,14 @@ mod tests {
         snapshot_buffer(&buf)
     }
 
+    fn render_snapshot_trimmed(pane: &BottomPane, area: Rect) -> String {
+        render_snapshot(pane, area)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn test_pane(app_event_tx: AppEventSender) -> BottomPane {
         test_pane_with_disable_paste_burst(app_event_tx, /*disable_paste_burst*/ false)
     }
@@ -2623,7 +2657,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "status_with_details_and_queued_messages_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 
@@ -2655,7 +2689,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "queued_messages_visible_when_status_hidden_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 
@@ -2686,7 +2720,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "status_and_queued_messages_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 

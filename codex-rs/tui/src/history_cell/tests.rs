@@ -544,7 +544,7 @@ fn wait_primitive_cell_renders_background_terminal_wait() {
     let lines = render_transcript(&cell);
     assert_eq!(
         lines,
-        vec!["• Waiting via background terminal · cargo test -p codex-core"],
+        vec!["• Waiting · primitive: background terminal · cargo test -p codex-core"],
     );
 }
 

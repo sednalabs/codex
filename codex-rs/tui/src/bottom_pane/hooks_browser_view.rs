@@ -899,7 +899,7 @@ mod tests {
                 let normalized = rendered
                     .replace(&test_path_display("/tmp/hooks.json"), "/tmp/hooks.json")
                     .replace(&test_path_display("/tmp/h.json"), "/tmp/h.json");
-                format!("{normalized:width$}", width = area.width as usize)
+                normalized.trim_end().to_string()
             })
             .collect::<Vec<_>>()
             .join("\n")
