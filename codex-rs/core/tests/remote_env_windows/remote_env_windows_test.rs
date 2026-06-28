@@ -37,7 +37,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
-use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -48,7 +47,8 @@ use tokio::time::timeout;
 use wine_exec_server_test_support::WineExecServer;
 
 const APP_SERVER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const REMOTE_WINDOWS_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const REMOTE_WINDOWS_COMMAND_YIELD_MS: u64 = 10_000;
+const REMOTE_WINDOWS_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
@@ -68,7 +68,7 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 // An absolute foreign workdir should replace the selected environment cwd and
                 // reach exec-server without conversion to the host path convention.
                 "workdir": r"C:\windows",
-                "yield_time_ms": 10_000,
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
             let patch = format!(
                 "*** Begin Patch\n*** Add File: {PATCH_FILE}\n+patched through unified exec\n*** End Patch"
@@ -78,13 +78,13 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 "login": false,
                 // Resolve this relative workdir using the selected Windows environment cwd.
                 "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": 10_000,
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
             let verify_arguments = serde_json::to_string(&json!({
                 "cmd": VERIFY_COMMAND,
                 "login": false,
                 "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": 10_000,
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
             let response_mock = mount_sse_sequence(
                 &server,
@@ -161,38 +161,56 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 })
                 .await?;
 
-            let mut begin = None;
-            let mut end = None;
-            let mut patch_end = None;
-            let mut turn_complete = false;
-            loop {
-                // Wine-backed process startup can legitimately consume the
-                // default 10s unified-exec yield window before the next event.
-                match wait_for_event_with_timeout(
-                    &test.codex,
-                    |_| true,
-                    REMOTE_WINDOWS_EVENT_TIMEOUT,
-                )
-                .await
-                {
-                    EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
-                        begin = Some(event)
+            let (begin, end, patch_end) = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
+                let mut begin = None;
+                let mut end = None;
+                let mut patch_end = None;
+                let mut verify_end = None;
+                let mut turn_complete = false;
+                loop {
+                    let event = test
+                        .codex
+                        .next_event()
+                        .await
+                        .context("event stream ended unexpectedly")?;
+                    match event.msg {
+                        EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
+                            begin = Some(event)
+                        }
+                        EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
+                            end = Some(event)
+                        }
+                        EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
+                            patch_end = Some(event)
+                        }
+                        EventMsg::ExecCommandEnd(event) if event.call_id == VERIFY_CALL_ID => {
+                            verify_end = Some(event)
+                        }
+                        EventMsg::TurnComplete(_) => turn_complete = true,
+                        EventMsg::Error(error) => {
+                            anyhow::bail!("codex emitted error event: {}", error.message);
+                        }
+                        _ => {}
                     }
-                    EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
-                        end = Some(event)
+                    if turn_complete
+                        && begin.is_some()
+                        && end.is_some()
+                        && patch_end.is_some()
+                        && verify_end.is_some()
+                    {
+                        break;
                     }
-                    EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
-                        patch_end = Some(event)
-                    }
-                    EventMsg::TurnComplete(_) => turn_complete = true,
-                    _ => {}
                 }
-                if turn_complete && end.is_some() {
-                    break;
-                }
-            }
 
-            let begin = begin.context("exec_command should emit a begin event")?;
+                Ok::<_, anyhow::Error>((
+                    begin.context("exec_command should emit a begin event")?,
+                    end.context("exec_command should emit an end event")?,
+                    patch_end.context("intercepted apply_patch should emit an end event")?,
+                ))
+            })
+            .await
+            .context("timeout waiting for remote Windows smoke events")??;
+
             assert!(
                 begin.command.first().is_some_and(|command| command
                     .to_ascii_lowercase()
@@ -207,7 +225,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             assert_eq!((&begin.cwd, &end.cwd), (&expected_cwd, &expected_cwd));
             assert_eq!((end.exit_code, end.status), (0, ExecCommandStatus::Completed));
 
-            let patch_end = patch_end.context("intercepted apply_patch should emit an end event")?;
             assert!(
                 patch_end.success,
                 "intercepted apply_patch failed: stdout={:?} stderr={:?}",

@@ -88,6 +88,7 @@ fn permission_profile_flag_is_included() {
             .any(|window| window[0] == "--command-cwd" && window[1] == "/tmp/link"),
         true
     );
+    assert_eq!(args.contains(&"--use-legacy-landlock".to_string()), true);
 }
 
 #[test]
@@ -121,7 +122,7 @@ fn permission_profile_can_model_split_policy_without_legacy_landlock_flag() {
         command_cwd,
         &permission_profile,
         cwd.path(),
-        /*use_legacy_landlock*/ false,
+        /*use_legacy_landlock*/ true,
         /*allow_network_for_proxy*/ false,
     );
 
