@@ -10625,11 +10625,10 @@ usage_hint_text = "{{ features.multi_agent_v2.does_not_exist }}"
 #[tokio::test]
 async fn profile_multi_agent_v2_config_overrides_base() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
+    let profile_config = codex_home.path().join("no_hint.config.toml");
     std::fs::write(
         codex_home.path().join(CONFIG_TOML_FILE),
-        r#"profile = "no_hint"
-
-[features.multi_agent_v2]
+        r#"[features.multi_agent_v2]
 max_concurrent_threads_per_session = 4
 min_wait_timeout_ms = 3000
 max_wait_timeout_ms = 120000
@@ -10640,8 +10639,11 @@ subagent_usage_hint_text = "base subagent hint"
 tool_namespace = "base_agents"
 hide_spawn_agent_metadata = true
 non_code_mode_only = false
-
-[profiles.no_hint.features.multi_agent_v2]
+"#,
+    )?;
+    std::fs::write(
+        &profile_config,
+        r#"[features.multi_agent_v2]
 max_concurrent_threads_per_session = 6
 min_wait_timeout_ms = 1500
 max_wait_timeout_ms = 90000
@@ -10658,6 +10660,11 @@ non_code_mode_only = true
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
         .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .loader_overrides(LoaderOverrides {
+            user_config_path: Some(profile_config.abs()),
+            user_config_profile: Some("no_hint".parse().expect("profile-v2 name")),
+            ..LoaderOverrides::without_managed_config_for_tests()
+        })
         .build()
         .await?;
 
@@ -10727,16 +10734,17 @@ max_concurrent_threads_per_session = 17
 
     let config = resolve_multi_agent_v2_config(&config_toml);
     let concurrency_guidance = "There are 17 available concurrency slots, meaning that up to 17 agents can be active at once, including you.";
-    let expected_suffix =
-        format!("{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{concurrency_guidance}");
-    assert!(
-        [
-            config.root_agent_usage_hint_text,
-            config.subagent_usage_hint_text,
-        ]
-        .into_iter()
-        .all(|hint| hint.is_some_and(|hint| hint.ends_with(expected_suffix.as_str())))
-    );
+    let root_hint = config
+        .root_agent_usage_hint_text
+        .expect("root agent usage hint should default");
+    assert!(root_hint.starts_with(DEFAULT_MULTI_AGENT_V2_ROOT_AGENT_USAGE_HINT_TEXT));
+    assert!(root_hint.ends_with(concurrency_guidance));
+
+    let subagent_hint = config
+        .subagent_usage_hint_text
+        .expect("subagent usage hint should default");
+    assert!(subagent_hint.starts_with(DEFAULT_MULTI_AGENT_V2_SUBAGENT_USAGE_HINT_TEXT));
+    assert!(subagent_hint.ends_with(concurrency_guidance));
 }
 
 #[tokio::test]
