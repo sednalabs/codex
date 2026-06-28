@@ -777,7 +777,6 @@ enabled = true
             .map(|plugin| plugin.config_name.clone())
             .collect::<Vec<_>>(),
         vec![
-            "linear@openai-api-curated".to_string(),
             "linear@openai-curated-remote".to_string(),
             "remote-only@openai-curated-remote".to_string(),
         ]
@@ -1490,7 +1489,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
 }
 
 #[tokio::test]
-async fn load_plugins_ignores_invalid_manifest_skills_shape() {
+async fn load_plugins_accepts_manifest_skill_path_array() {
     let codex_home = TempDir::new().unwrap();
     let plugin_root = codex_home
         .path()
@@ -1522,7 +1521,7 @@ async fn load_plugins_ignores_invalid_manifest_skills_shape() {
     assert_eq!(outcome.plugins()[0].error, None);
     assert_eq!(
         outcome.plugins()[0].skill_roots,
-        vec![plugin_root.join("skills").abs()]
+        vec![plugin_root.join("custom-skills").abs()]
     );
 }
 

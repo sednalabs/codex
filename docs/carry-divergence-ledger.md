@@ -46,15 +46,22 @@ docs-only refresh commit that records this snapshot.
   archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
   install `bubblewrap` and reclaim hosted disk before archive extraction so
   sandbox and remote replay failures are not artifacts of runner packaging or
-  disk pressure. Validation-lab Rust batches reclaim target artifacts before
+  disk pressure. The rust-ci-full summary parser records final nextest retry
+  statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
+  persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
+  harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
   the first lane and between later lanes when hosted disk falls below the safety
   floor, and archive jobs skip sccache. The workspace JWT dependency uses
   `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging and Bazel clippy keep fanout
-  below runner process/thread ceilings. TUI carry smoke uses the same hosted
-  test stack floor as core carry smoke so frontier/checkpoint validation can
-  stay on GitHub hosted compute instead of falling back to local compute.
+  below runner process/thread ceilings. The argument-comment lint target list
+  excludes the V8 proof-of-concept from repo-wide hosted frontier linting so
+  cold runs do not spend the lane compiling V8/ICU before linting ordinary Rust
+  call sites; V8 proof-of-concept buildability remains covered by build/test
+  workflows. TUI carry smoke uses the same hosted test stack floor as core
+  carry smoke so frontier/checkpoint validation can stay on GitHub hosted
+  compute instead of falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in

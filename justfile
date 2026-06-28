@@ -289,6 +289,7 @@ blocking-waits-unified-exec-targeted:
 
 blocking-waits-app-server-targeted:
     cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
+    cargo clean -p codex-tui
     cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
 
 blocking-waits-mcp-targeted:
