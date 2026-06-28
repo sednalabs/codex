@@ -63,9 +63,11 @@ docs-only refresh commit that records this snapshot.
   repo-wide hosted frontier linting so
   cold runs do not spend the lane compiling V8/ICU before linting ordinary Rust
   call sites; V8 proof-of-concept buildability remains covered by build/test
-  workflows. TUI carry smoke uses the same hosted test stack floor as core
-  carry smoke so frontier/checkpoint validation can stay on GitHub hosted
-  compute instead of falling back to local compute.
+  workflows. Direct-runtime permission profiles stay on the bubblewrap/seccomp
+  enforcement path when legacy Landlock is configured so sandbox validation
+  fails safely instead of weakening policy. TUI carry smoke uses the same
+  hosted test stack floor as core carry smoke so frontier/checkpoint validation
+  can stay on GitHub hosted compute instead of falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -125,7 +127,10 @@ docs-only refresh commit that records this snapshot.
 - `usage_provider_calls` also stores provider-confirmed `final_model` and
   `model_snapshot` values when turn completion reports them, preserving the
   downstream distinction between requested/configured model, historical
-  `actual_model_used`, and final provider identity.
+  `actual_model_used`, and final provider identity. Core turn completion
+  captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
+  TUI, and usage-ledger consumers receive provider-confirmed identity instead
+  of falling back to `None`.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -133,6 +138,9 @@ docs-only refresh commit that records this snapshot.
   parent/session model.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/tasks/mod.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -543,7 +551,10 @@ docs-only refresh commit that records this snapshot.
 - Bottom-pane transient views run their pre-draw tick and completion path so
   request-user-input overlays and other timed active views can redraw,
   auto-resolve, and pop through the same active-view seam instead of stalling
-  behind static composer redraws.
+  behind static composer redraws. Stacked selection popups can be replaced or
+  dismissed by view id even when another view sits above them, `/resume` stays
+  available during MCP startup while active-turn blocking remains in force, and
+  `/status` history preserves cached status text while a refresh is pending.
 - TUI realtime voice remains a downstream carry on non-Linux targets even
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
@@ -567,6 +578,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/audio_device.rs`
   - `codex-rs/tui/src/bottom_pane/mod.rs`
   - `codex-rs/tui/src/bottom_pane/textarea.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/voice.rs`
   - `codex-rs/tui/src/slash_command.rs`
