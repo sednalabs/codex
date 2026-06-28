@@ -3185,9 +3185,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             nextest_log.write_text(
                 "\n".join(
                     [
-                        "Starting 3 tests across 2 binaries (1 tests skipped)",
+                        "Starting 6 tests across 2 binaries (1 tests skipped)",
                         "        FAIL [   0.042s] (1/3) codex_core::remote_env::fails_cleanly",
                         "     TIMEOUT [  60.000s] (2/3) codex_core::remote_exec_server::hangs",
+                        "   TRY 1 FAIL [   0.120s] codex_core::flaky_once",
+                        "   TRY 2 PASS [   0.011s] codex_core::flaky_once",
+                        "   TRY 1 FAIL [   0.220s] codex-core session::stable_failure",
+                        "   TRY 2 FAIL [   0.230s] codex-core session::stable_failure",
+                        "   TRY 1 TIMEOUT [  30.000s] codex-core remote::stable_timeout",
+                        "   TRY 2 TIMEOUT [  30.001s] codex-core remote::stable_timeout",
                     ]
                 ),
                 encoding="utf-8",
@@ -3213,10 +3219,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "type": "nextest",
                 "suite": "nextest-linux",
                 "log_missing": False,
-                "started": {"tests": 3, "binaries": 2, "skipped": 1},
-                "failure_signal_count": 2,
-                "unique_failure_count": 2,
-                "status_counts": {"FAIL": 1, "TIMEOUT": 1},
+                "started": {"tests": 6, "binaries": 2, "skipped": 1},
+                "failure_signal_count": 4,
+                "unique_failure_count": 4,
+                "status_counts": {"FAIL": 2, "TIMEOUT": 2},
                 "failures": [
                     {
                         "status": "fail",
@@ -3227,6 +3233,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
                         "status": "timeout",
                         "duration": "60.000s",
                         "test": "codex_core::remote_exec_server::hangs",
+                    },
+                    {
+                        "status": "fail",
+                        "duration": "0.230s",
+                        "test": "codex-core session::stable_failure",
+                    },
+                    {
+                        "status": "timeout",
+                        "duration": "30.001s",
+                        "test": "codex-core remote::stable_timeout",
                     },
                 ],
                 "truncated": False,

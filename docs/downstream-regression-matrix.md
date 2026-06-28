@@ -115,13 +115,18 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     execution happens in the archive-consuming test jobs. The archive-consuming
     jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
     and the archive builders fail early if the hosted runner is still below the
-    archive safety floor.
+    archive safety floor. The workflow summary parser understands nextest
+    retry-status lines so structured harvest artifacts show persistent retry
+    failures instead of reporting a false zero-failure summary.
   - The workspace JWT dependency stays on the `jsonwebtoken` `aws_lc_rs`
     provider so hosted Cargo/Bazel `--locked` runs do not pull the RustCrypto
     RSA graph or trip the cargo-deny RSA advisory.
   - `v8-canary.yml` staging and macOS Bazel clippy keep hosted macOS Bazel
     client fanout below the runner process/thread ceiling while remote
     execution handles the heavy Bazel work.
+  - Repo-wide argument-comment lint excludes the V8 proof-of-concept target so
+    hosted frontier lint harvests stay focused on ordinary Rust call-site
+    linting instead of cold-building the V8/ICU dependency graph.
   - `core-carry-ui-smoke` uses the same hosted test stack floor as
     `core-carry-core-smoke` so stack-heavy TUI replay checks fail on behavior,
     not on runner-default stack limits.

@@ -27,8 +27,12 @@ excluded_targets="$(
 )"
 
 # The lint configuration does not register the transitioned Windows toolchain.
+# The V8 proof-of-concept pulls in the full native rusty_v8/ICU graph in cold
+# hosted frontier runs, which can consume the whole lane before linting ordinary
+# Rust call sites. Keep it covered by build/test workflows instead of this lint.
 printf '%s\n' \
   "//codex-rs/..." \
+  "-//codex-rs/v8-poc/..." \
   "-//codex-rs/core/tests/remote_env_windows:smoke-test"
 if [[ -n "${excluded_targets}" ]]; then
   printf '%s\n' "${excluded_targets}" | sed 's/^/-/'

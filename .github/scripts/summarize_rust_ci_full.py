@@ -15,9 +15,11 @@ NEXTEST_START_RE = re.compile(
     r"\bStarting\s+(?P<tests>\d+)\s+tests\s+across\s+(?P<binaries>\d+)\s+binaries"
     r"(?:\s+\((?P<skipped>\d+)\s+tests\s+skipped\))?"
 )
-NEXTEST_FAILURE_RE = re.compile(
-    r"\b(?P<status>FAIL|TIMEOUT)\s+\[\s*(?P<duration>[^\]]+?)\s*\]\s+"
-    r"\(\s*(?P<index>\d+)\s*/\s*(?P<total>\d+)\)\s+(?P<test>.+)$"
+NEXTEST_STATUS_RE = re.compile(
+    r"\b(?:TRY\s+(?P<try>\d+)\s+)?(?P<status>PASS|FAIL|TIMEOUT)\s+"
+    r"\[\s*(?P<duration>[^\]]+?)\s*\]\s+"
+    r"(?:\(\s*(?P<index>\d+)\s*/\s*(?P<total>\d+)\)\s+)?"
+    r"(?P<test>.+)$"
 )
 CLIPPY_ERROR_RE = re.compile(r"\berror(?:\[[^\]]+\])?:\s*(?P<message>.+)$")
 CLIPPY_LOCATION_RE = re.compile(r"-->\s+(?P<location>[^:\s]+:\d+:\d+)")
@@ -45,8 +47,8 @@ def load_lines(path: Path) -> list[str]:
 def nextest_summary(path: Path, suite: str) -> dict[str, Any]:
     lines = load_lines(path)
     started: dict[str, int] = {}
-    failures: list[dict[str, str]] = []
-    seen_tests: set[str] = set()
+    final_status_by_test: dict[str, dict[str, str] | None] = {}
+    failure_order: list[str] = []
     status_counts: dict[str, int] = {}
 
     for line in lines:
@@ -59,23 +61,34 @@ def nextest_summary(path: Path, suite: str) -> dict[str, Any]:
             }
             continue
 
-        failure_match = NEXTEST_FAILURE_RE.search(line)
-        if not failure_match:
+        status_match = NEXTEST_STATUS_RE.search(line)
+        if not status_match:
             continue
 
-        status = failure_match.group("status")
-        status_counts[status] = status_counts.get(status, 0) + 1
-        test_name = " ".join(failure_match.group("test").split())
-        if test_name in seen_tests:
+        status = status_match.group("status")
+        test_name = " ".join(status_match.group("test").split())
+        if status == "PASS":
+            # Nextest emits retry lines as TRY 1 FAIL followed by TRY 2 PASS
+            # for flakes. Only final failing statuses should block the summary.
+            final_status_by_test[test_name] = None
             continue
-        seen_tests.add(test_name)
-        failures.append(
-            {
-                "status": status.lower(),
-                "duration": failure_match.group("duration").strip(),
-                "test": test_name,
-            }
-        )
+
+        if test_name not in final_status_by_test:
+            failure_order.append(test_name)
+        final_status_by_test[test_name] = {
+            "status": status.lower(),
+            "duration": status_match.group("duration").strip(),
+            "test": test_name,
+        }
+
+    failures = [
+        failure
+        for test_name in failure_order
+        if (failure := final_status_by_test.get(test_name)) is not None
+    ]
+    for failure in failures:
+        status = failure["status"].upper()
+        status_counts[status] = status_counts.get(status, 0) + 1
 
     return {
         "type": "nextest",
