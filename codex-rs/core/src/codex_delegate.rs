@@ -297,10 +297,15 @@ async fn forward_events(
                     Err(_) => break,
                 };
                 match event {
-                    Event {
-                        id: _,
+                    event @ Event {
                         msg: EventMsg::TokenCount(_),
-                    } => {}
+                        ..
+                    } => {
+                        if !forward_event_or_shutdown(&codex, &tx_sub, &cancel_token, event).await
+                        {
+                            break;
+                        }
+                    }
                     Event {
                         id: _,
                         msg: EventMsg::SessionConfigured(_),
