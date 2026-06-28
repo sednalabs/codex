@@ -3719,6 +3719,37 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                 .await
         }
     });
+    tokio::task::yield_now().await;
+
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            worker_path,
+            AgentPath::root(),
+            Vec::new(),
+            "mailbox update".to_string(),
+            /*trigger_turn*/ false,
+        ))
+        .await;
+
+    let output = wait_task
+        .await
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: Vec::new(),
+            pending_ids: Vec::new(),
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
 }
 
 #[tokio::test]

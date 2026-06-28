@@ -659,6 +659,7 @@ impl Codex {
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
         let dynamic_tools = if dynamic_tools.is_empty() {
             persisted_tools
+                .filter(|tools| !tools.is_empty())
                 .or_else(|| conversation_history.get_dynamic_tools())
                 .unwrap_or_default()
                 .into_iter()

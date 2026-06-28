@@ -43,7 +43,8 @@ docs-only refresh commit that records this snapshot.
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
   `cargo nextest archive`, skip archive-job sccache, and keep hosted macOS V8
-  Bazel client fanout below runner process/thread ceilings so
+  staging and Bazel clippy fanout below runner process/thread ceilings. TUI
+  carry smoke uses the same hosted test stack floor as core carry smoke so
   frontier/checkpoint validation can stay on GitHub hosted compute instead of
   falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,
