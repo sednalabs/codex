@@ -56,9 +56,10 @@ docs-only refresh commit that records this snapshot.
   download flakes. The workspace JWT dependency uses
   `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
-  RustCrypto RSA graph. Hosted macOS V8 staging and Bazel clippy keep fanout
-  below runner process/thread ceilings. The argument-comment lint target list
-  excludes the V8 proof-of-concept from repo-wide hosted frontier linting so
+  RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
+  release-build verification keep fanout below runner process/thread ceilings.
+  The argument-comment lint target list excludes the V8 proof-of-concept from
+  repo-wide hosted frontier linting so
   cold runs do not spend the lane compiling V8/ICU before linting ordinary Rust
   call sites; V8 proof-of-concept buildability remains covered by build/test
   workflows. TUI carry smoke uses the same hosted test stack floor as core
@@ -79,6 +80,7 @@ docs-only refresh commit that records this snapshot.
   - `.github/scripts/rusty_v8_bazel.py`
   - `.github/scripts/test_ci_planners.py`
   - `.github/workflows/blocking-ci.yml`
+  - `.github/workflows/bazel.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
   - `codex-rs/Cargo.toml`

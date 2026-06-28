@@ -506,6 +506,11 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            # Hosted macOS runners can exhaust the Bazel client thread/process
+            # ceiling when inheriting the high remote-execution job count.
+            bazel_build_args+=(--jobs=96 --loading_phase_threads=8)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()
