@@ -447,10 +447,7 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
     let enabled = probe(|_| {}).await;
     enabled.assert_visible_contains(&["request_user_input"]);
     enabled.assert_registered_contains(&["request_user_input"]);
-    assert_eq!(
-        enabled.exposure("request_user_input"),
-        ToolExposure::DirectModelOnly
-    );
+    assert_eq!(enabled.exposure("request_user_input"), ToolExposure::Direct);
 
     let disabled = probe(|turn| {
         update_config(turn, |config| {
@@ -463,22 +460,19 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
 }
 
 #[tokio::test]
-async fn request_user_input_stays_direct_in_code_mode_only() {
+async fn request_user_input_stays_hidden_in_code_mode_only() {
     let plan = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
     })
     .await;
 
     plan.assert_visible_contains(&[
-        "request_user_input",
         codex_code_mode::PUBLIC_TOOL_NAME,
         codex_code_mode::WAIT_TOOL_NAME,
     ]);
+    plan.assert_visible_lacks(&["request_user_input"]);
     plan.assert_registered_contains(&["request_user_input"]);
-    assert_eq!(
-        plan.exposure("request_user_input"),
-        ToolExposure::DirectModelOnly
-    );
+    assert_eq!(plan.exposure("request_user_input"), ToolExposure::Direct);
 
     let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
         panic!("expected code mode exec tool");
@@ -1267,7 +1261,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     let spawn_agent_description = spawn_agent.description.as_str();
     assert!(!spawn_agent_description.contains("max_concurrent_threads_per_session"));
     assert!(spawn_agent_description.contains(
-        "Note that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent"
+        "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string"
     ));
 
     let direct_model_only = probe(|turn| {
@@ -1486,7 +1480,6 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         vec![
             "exec",
             "wait",
-            "request_user_input",
             "agents",
             // Hosted Responses tools.
             "web_search",
@@ -1621,7 +1614,6 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
             // Code-mode entrypoints.
             codex_code_mode::PUBLIC_TOOL_NAME,
             codex_code_mode::WAIT_TOOL_NAME,
-            "request_user_input",
             // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
             // Hosted Responses tools.

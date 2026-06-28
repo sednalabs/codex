@@ -2484,7 +2484,7 @@ async fn multi_agent_v2_spawn_omits_agent_id_when_named() {
     let result: serde_json::Value =
         serde_json::from_str(&content).expect("spawn_agent result should be json");
 
-    assert!(result.get("agent_id").is_none());
+    assert!(result.get("agent_id").is_some());
     assert_eq!(result["task_name"], "/root/test_process");
     assert!(result.get("nickname").is_none());
     assert_eq!(success, Some(true));
@@ -3157,7 +3157,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id invalid:"));
+    assert!(msg.starts_with("invalid agent target invalid:"));
 }
 
 #[tokio::test]
@@ -3174,7 +3174,7 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
     );
 }
 
@@ -3814,7 +3814,10 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             session,
             turn,
             "wait_agent",
-            function_payload(json!({"timeout_ms": 10_000})),
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 10_000
+            })),
         )),
     )
     .await
@@ -3827,8 +3830,8 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait woke due to mailbox activity.".to_string(),
-            requested_ids: Vec::new(),
-            pending_ids: Vec::new(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }
