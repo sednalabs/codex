@@ -472,9 +472,7 @@ async fn maybe_create_usage_logger(
     agent_nickname: Option<String>,
     agent_role: Option<String>,
 ) -> Option<Mutex<codex_state::UsageLogger>> {
-    let Some(state_db) = state_db else {
-        return None;
-    };
+    let state_db = state_db?;
 
     match codex_state::UsageLogger::try_new_with_thread_source(
         state_db,

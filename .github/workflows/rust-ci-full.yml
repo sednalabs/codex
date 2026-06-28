@@ -295,7 +295,7 @@ jobs:
       # mixed-architecture archives under sccache.
       USE_SCCACHE: ${{ (startsWith(matrix.runner, 'windows') || (matrix.runner == 'macos-15' && matrix.target == 'x86_64-apple-darwin')) && 'false' || 'true' }}
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_CACHE_SIZE: 512M
       SCCACHE_FALLBACK_CACHE_POLICY: restore-only
       # In rust-ci, representative release-profile checks use thin LTO for faster feedback.
       CARGO_PROFILE_RELEASE_LTO: ${{ matrix.profile == 'release' && 'thin' || 'fat' }}
@@ -639,7 +639,7 @@ jobs:
           before_bytes="$(available_bytes)"
           if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
             echo "::warning title=Low runner disk before nextest archive::Available disk is $(numfmt --to=iec "${before_bytes}") before archive setup; reclaiming headroom."
-            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell || true
             sudo apt-get clean || true
             sudo rm -rf /var/lib/apt/lists/* || true
           fi

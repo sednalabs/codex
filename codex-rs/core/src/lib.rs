@@ -16,6 +16,7 @@ mod realtime_conversation;
 mod realtime_prompt;
 mod responses_metadata;
 mod responses_retry;
+#[allow(dead_code, unused_imports)]
 pub(crate) mod session;
 pub use responses_metadata::CodexResponsesMetadata;
 pub use session::SteerInputError;
@@ -40,6 +41,7 @@ pub mod connectors;
 pub mod context;
 mod context_manager;
 mod current_time;
+#[allow(dead_code)]
 mod custom_prompts;
 mod environment_selection;
 pub use codex_utils_path::env;
@@ -60,6 +62,7 @@ mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
+#[allow(dead_code)]
 pub(crate) mod network_proxy_loader;
 mod original_image_detail;
 pub use codex_mcp::SandboxState;
@@ -85,12 +88,15 @@ pub(crate) mod mentions {
 }
 mod sandbox_tags;
 pub mod sandboxing;
+#[allow(dead_code)]
 mod session_prefix;
 mod session_startup_prewarm;
 pub mod skills;
 pub(crate) use skills::SkillInjections;
+#[allow(unused_imports)]
 pub(crate) use skills::SkillLoadOutcome;
 pub(crate) use skills::SkillMetadata;
+#[allow(unused_imports)]
 pub(crate) use skills::SkillsManager;
 pub(crate) use skills::SkillsService;
 pub(crate) use skills::build_available_skills;
@@ -105,6 +111,7 @@ pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;
 pub use stream_events_utils::image_generation_artifact_path;
 pub mod test_support;
+#[allow(dead_code)]
 mod unified_exec;
 pub mod windows_sandbox;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
@@ -195,7 +202,9 @@ mod state;
 mod tasks;
 mod user_shell_command;
 pub mod util;
+#[allow(unused_imports)]
 pub(crate) use codex_protocol::protocol;
+#[allow(unused_imports)]
 pub(crate) use codex_shell_command::is_safe_command;
 
 pub use attestation::AttestationContext;

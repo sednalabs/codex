@@ -184,17 +184,16 @@ impl ChatWidget {
         let had_pending_steers = !self.input_queue.pending_steers.is_empty();
         self.refresh_pending_input_preview();
 
-        if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
+        if from_replay {
+            return;
+        }
+
+        if !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
-        // Keep this flag for replayed completion events so a subsequent live TurnComplete can
-        // still show the prompt once after thread switch replay.
-        if !from_replay {
-            self.transcript.saw_plan_item_this_turn = false;
-        }
+        self.transcript.saw_plan_item_this_turn = false;
         // If there is a queued user message, send exactly one now to begin the next turn.
-        // Snapshot replay resumes restored queues once after all replayed events are applied.
-        let follow_up_started = !from_replay && self.maybe_send_next_queued_input();
+        let follow_up_started = self.maybe_send_next_queued_input();
         let active_goal_continuing = self
             .current_goal_status
             .as_ref()
@@ -203,7 +202,7 @@ impl ChatWidget {
         // Queued follow-up input and active goal continuation both start the
         // next turn immediately, so notifying at that boundary would feel like
         // a false "needs attention".
-        if !from_replay && !follow_up_started && !active_goal_continuing {
+        if !follow_up_started && !active_goal_continuing {
             self.notify(Notification::AgentTurnComplete {
                 response: notification_response,
             });
