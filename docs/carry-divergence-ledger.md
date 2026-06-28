@@ -43,10 +43,13 @@ docs-only refresh commit that records this snapshot.
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
   `cargo nextest archive`, stay archive-only, and leave test execution to the
-  archive-consuming `tests` and `remote_tests` jobs. Validation-lab Rust
-  batches reclaim target artifacts before the first lane and between later
-  lanes when hosted disk falls below the safety floor, and archive jobs skip
-  sccache. The workspace JWT dependency uses `jsonwebtoken` with the
+  archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
+  install `bubblewrap` and reclaim hosted disk before archive extraction so
+  sandbox and remote replay failures are not artifacts of runner packaging or
+  disk pressure. Validation-lab Rust batches reclaim target artifacts before
+  the first lane and between later lanes when hosted disk falls below the safety
+  floor, and archive jobs skip sccache. The workspace JWT dependency uses
+  `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging and Bazel clippy keep fanout
   below runner process/thread ceilings. TUI carry smoke uses the same hosted

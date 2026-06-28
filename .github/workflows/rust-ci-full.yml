@@ -757,7 +757,42 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
+          fi
+
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          before_bytes="$(available_bytes)"
+          echo "Available disk before nextest replay cleanup: $(numfmt --to=iec "${before_bytes}")"
+
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
+          after_bytes="$(available_bytes)"
+          echo "Available disk after nextest replay cleanup: $(numfmt --to=iec "${after_bytes}")"
+
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for rust-ci-full nextest replay."
+            exit 1
           fi
 
       - name: Install DotSlash
@@ -850,7 +885,42 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
+          fi
+
+      - name: Reclaim runner disk headroom
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          before_bytes="$(available_bytes)"
+          echo "Available disk before remote nextest replay cleanup: $(numfmt --to=iec "${before_bytes}")"
+
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
+          after_bytes="$(available_bytes)"
+          echo "Available disk after remote nextest replay cleanup: $(numfmt --to=iec "${after_bytes}")"
+
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for rust-ci-full remote nextest replay."
+            exit 1
           fi
 
       - name: Install DotSlash

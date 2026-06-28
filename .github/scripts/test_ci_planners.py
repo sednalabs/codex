@@ -3129,6 +3129,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
         for job_name in ["tests", "remote_tests"]:
             with self.subTest(job=job_name):
                 steps = (jobs.get(job_name) or {}).get("steps") or []
+                install_step = next(
+                    step
+                    for step in steps
+                    if step.get("name") == "Install Linux build dependencies"
+                )
+                self.assertIn("bubblewrap", install_step.get("run") or "")
+
+                replay_disk_step = next(
+                    step for step in steps if step.get("name") == "Reclaim runner disk headroom"
+                )
+                self.assertEqual(replay_disk_step.get("if"), "${{ runner.os == 'Linux' }}")
+                self.assertIn("/usr/share/dotnet", replay_disk_step.get("run") or "")
+                self.assertIn("6 GiB safety floor", replay_disk_step.get("run") or "")
+
                 download_step = next(
                     step for step in steps if step.get("name") == "Download nextest archive"
                 )
