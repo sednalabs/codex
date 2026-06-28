@@ -112,8 +112,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     follow-up lane selection does not silently drift.
   - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
     headroom, skip archive-job sccache, and stay archive-only so hosted test
-    execution happens in the archive-consuming test jobs. The archive builders
-    fail early if the hosted runner is still below the archive safety floor.
+    execution happens in the archive-consuming test jobs. The archive-consuming
+    jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
+    and the archive builders fail early if the hosted runner is still below the
+    archive safety floor.
   - The workspace JWT dependency stays on the `jsonwebtoken` `aws_lc_rs`
     provider so hosted Cargo/Bazel `--locked` runs do not pull the RustCrypto
     RSA graph or trip the cargo-deny RSA advisory.
