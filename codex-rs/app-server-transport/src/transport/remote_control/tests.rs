@@ -362,13 +362,10 @@ async fn managed_disable_overrides_startup_and_persisted_enablement() {
 }
 
 fn remote_control_url_for_listener(listener: &TcpListener) -> String {
-    format!(
-        "http://localhost:{}/backend-api/",
-        listener
-            .local_addr()
-            .expect("listener should have a local addr")
-            .port()
-    )
+    let addr = listener
+        .local_addr()
+        .expect("listener should have a local addr");
+    format!("http://{addr}/backend-api/")
 }
 
 fn test_server_name() -> String {
