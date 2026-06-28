@@ -235,7 +235,7 @@ docs-only refresh commit that records this snapshot.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
-- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling. The v2 schema also permits omitting `targets` when the caller intentionally wants a mailbox-only wait or timeout.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
@@ -256,6 +256,26 @@ docs-only refresh commit that records this snapshot.
 - Primary files:
   - `codex-rs/utils/absolute-path/src/lib.rs`
   - `codex-rs/utils/absolute-path/tests/dead_cwd.rs`
+
+### Session Environment And Thread-Tail State
+
+- Session environment updates validate duplicate and unknown environment ids
+  before mutating stored session state.
+- When a session cwd/environment update changes the legacy fallback cwd,
+  sticky environment selections retarget to that cwd instead of retaining stale
+  path selections.
+- Default turns refresh runtime `ThreadEnvironments` from stored selections so
+  explicit empty or non-fallback stored environments are honored.
+- Mailbox deferral must not overtake explicit steered user input, while
+  response-only queued items may still defer after an answer boundary.
+- Legacy active turns that only contain `UserMessageEvent` tails are still
+  treated as mid-turn so replay/fork state does not discard the active start.
+- Primary files:
+  - `codex-rs/core/src/session/input_queue.rs`
+  - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/core/src/session/session.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/thread_manager.rs`
 
 ### Blocking Unified-Exec Waits And Compaction-Aware Turn Completion
 
@@ -509,8 +529,9 @@ docs-only refresh commit that records this snapshot.
 - Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
   and model service-tier slash commands remain selectable while a task is
   running so their chosen settings apply to queued follow-up turns.
-- Interrupt handling defaults to double-`Esc` confirmation and preserves queued
-  follow-ups and queued model changes coherently.
+- Interrupt handling defaults to double-`Esc` confirmation, including status-row
+  interrupts while a turn is running, and preserves queued follow-ups and
+  queued model changes coherently.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
@@ -526,6 +547,8 @@ docs-only refresh commit that records this snapshot.
   `codex-rs/tui/Cargo.toml` and its `codex-rs/Cargo.lock` graph.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- Upgradeable legacy models stay visible in the model picker even when ordinary
+  hidden presets are excluded.
 - `/quit` and `/exit` inside an active `/side` conversation close only that side
   conversation and return to the parent session; the same commands in the main
   conversation remain application exits.
@@ -636,8 +659,12 @@ docs-only refresh commit that records this snapshot.
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
 - This is a live carry-only divergence.
+- `ToolRouter` preserves `ResponseItem::CustomToolCall.namespace` when
+  constructing registry tool names, so namespaced MCP/app custom tools do not
+  flatten into plain names before routing.
 - Primary files:
   - `codex-rs/core/src/tools/code_mode_description.rs`
+  - `codex-rs/core/src/tools/router.rs`
 
 ## Not Counted As Standalone Live Divergences
 
