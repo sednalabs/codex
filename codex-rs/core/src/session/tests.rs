@@ -10254,9 +10254,7 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
 
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
-        vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
-        ))],
+        vec![TurnInput::InterAgentCommunication(communication)],
     );
 }
 
@@ -10345,7 +10343,7 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::InterAgentCommunication(communication),
         ],
     );
 }
@@ -10403,7 +10401,7 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::InterAgentCommunication(communication),
         ],
     );
 }
@@ -10459,9 +10457,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     assert!(output.tool_future.is_some());
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
-        vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
-        ))],
+        vec![TurnInput::InterAgentCommunication(communication)],
     );
 }
 

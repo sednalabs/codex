@@ -87,6 +87,7 @@ fn session_configuration_to_lock_config_toml(
 ) -> anyhow::Result<ConfigToml> {
     let config = sc.original_config_do_not_use.as_ref();
     let mut lock_config = materialized_config_toml(config)?;
+    save_config_resolved_fields(config, &mut lock_config)?;
 
     if config.config_lock_save_fields_resolved_from_model_catalog {
         save_session_resolved_fields(sc, &mut lock_config);

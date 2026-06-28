@@ -1296,7 +1296,11 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
     let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
     };
-    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
+    for (tool_name, encrypted_parameter) in [
+        ("spawn_agent", "message"),
+        ("send_message", "items"),
+        ("followup_task", "message"),
+    ] {
         let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.iter().find(|tool| {
             matches!(
                 tool,
@@ -1312,7 +1316,7 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
             .expect("tool should use object params");
         assert_eq!(
             properties
-                .get("message")
+                .get(encrypted_parameter)
                 .and_then(|schema| schema.encrypted),
             Some(true)
         );

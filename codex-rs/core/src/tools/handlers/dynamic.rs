@@ -44,7 +44,15 @@ pub struct DynamicToolHandler {
 
 impl DynamicToolHandler {
     pub fn new(tool: &DynamicToolFunctionSpec) -> Option<Self> {
-        Self::from_parts(tool, /*namespace*/ None)
+        let namespace = tool
+            .namespace
+            .as_ref()
+            .map(|name| DynamicToolNamespaceSpec {
+                name: name.clone(),
+                description: String::new(),
+                tools: Vec::new(),
+            });
+        Self::from_parts(tool, namespace.as_ref())
     }
 
     pub fn new_in_namespace(
