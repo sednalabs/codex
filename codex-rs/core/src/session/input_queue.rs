@@ -141,7 +141,7 @@ impl InputQueue {
             return;
         };
         let mut turn_state = turn_state.lock().await;
-        if !turn_state.pending_input.items.is_empty() {
+        if turn_state.pending_input.has_user_input() {
             return;
         }
         turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
