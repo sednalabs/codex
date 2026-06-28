@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
@@ -95,9 +94,9 @@
         }
       },
       "required": [
-        "materializedAppIds",
+        "templateId",
         "name",
-        "templateId"
+        "materializedAppIds"
       ],
       "type": "object"
     },
@@ -133,15 +132,15 @@
     "PluginAvailability": {
       "oneOf": [
         {
-          "type": "string",
           "enum": [
             "DISABLED_BY_ADMIN"
-          ]
+          ],
+          "type": "string"
         },
         {
+          "const": "AVAILABLE",
           "description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins.\nCodex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps\ndecoding compatible with that upstream response.",
-          "type": "string",
-          "const": "AVAILABLE"
+          "type": "string"
         }
       ]
     },
@@ -207,13 +206,13 @@
         }
       },
       "required": [
-        "appTemplates",
-        "apps",
-        "hooks",
         "marketplaceName",
-        "mcpServers",
+        "summary",
         "skills",
-        "summary"
+        "hooks",
+        "apps",
+        "appTemplates",
+        "mcpServers"
       ],
       "type": "object"
     },
@@ -227,8 +226,8 @@
         }
       },
       "required": [
-        "eventName",
-        "key"
+        "key",
+        "eventName"
       ],
       "type": "object"
     },
@@ -383,8 +382,8 @@
       },
       "required": [
         "capabilities",
-        "screenshotUrls",
-        "screenshots"
+        "screenshots",
+        "screenshotUrls"
       ],
       "type": "object"
     },
@@ -468,10 +467,10 @@
         }
       },
       "required": [
-        "name",
-        "principalId",
         "principalType",
-        "role"
+        "principalId",
+        "role",
+        "name"
       ],
       "type": "object"
     },
@@ -499,14 +498,14 @@
               "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
+              "const": "local",
               "title": "LocalPluginSourceType",
-              "type": "string",
-              "const": "local"
+              "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalPluginSource",
           "type": "object"
@@ -532,9 +531,9 @@
               ]
             },
             "type": {
+              "const": "git",
               "title": "GitPluginSourceType",
-              "type": "string",
-              "const": "git"
+              "type": "string"
             },
             "url": {
               "type": "string"
@@ -573,8 +572,8 @@
             }
           },
           "required": [
-            "package",
-            "type"
+            "type",
+            "package"
           ],
           "title": "NpmPluginSource",
           "type": "object"
@@ -583,9 +582,9 @@
           "description": "The plugin is available in the remote catalog. Download metadata is\nkept server-side and is not exposed through the app-server API.",
           "properties": {
             "type": {
+              "const": "remote",
               "title": "RemotePluginSourceType",
-              "type": "string",
-              "const": "remote"
+              "type": "string"
             }
           },
           "required": [
@@ -602,9 +601,9 @@
           "$ref": "#/$defs/PluginAuthPolicy"
         },
         "availability": {
+          "$ref": "#/$defs/PluginAvailability",
           "default": "AVAILABLE",
-          "description": "Availability state for installing and using the plugin.",
-          "$ref": "#/$defs/PluginAvailability"
+          "description": "Availability state for installing and using the plugin."
         },
         "enabled": {
           "type": "boolean"
@@ -669,13 +668,13 @@
         }
       },
       "required": [
-        "authPolicy",
-        "enabled",
         "id",
-        "installPolicy",
-        "installed",
         "name",
-        "source"
+        "source",
+        "installed",
+        "enabled",
+        "installPolicy",
+        "authPolicy"
       ],
       "type": "object"
     },
@@ -767,13 +766,14 @@
         }
       },
       "required": [
+        "name",
         "description",
-        "enabled",
-        "name"
+        "enabled"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "plugin": {
       "$ref": "#/$defs/PluginDetail"

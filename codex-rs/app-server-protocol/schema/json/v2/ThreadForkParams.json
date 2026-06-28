@@ -66,26 +66,26 @@
       "properties": {
         "capabilityScope": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "family": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "leaseMode": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "mutationClass": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         }
       },
@@ -116,8 +116,8 @@
         },
         "namespace": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "persistOnResume": {
@@ -126,9 +126,9 @@
         }
       },
       "required": [
+        "name",
         "description",
-        "inputSchema",
-        "name"
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -197,7 +197,7 @@
       "type": "boolean"
     },
     "lastTurnId": {
-      "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork. The referenced turn cannot be in progress.",
+      "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork.\nThe referenced turn cannot be in progress.",
       "type": [
         "string",
         "null"

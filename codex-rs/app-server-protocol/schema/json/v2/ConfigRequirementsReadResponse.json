@@ -188,20 +188,20 @@
             }
           ]
         },
-        "network": {
+        "models": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NetworkRequirements"
+              "$ref": "#/$defs/ModelsRequirements"
             },
             {
               "type": "null"
             }
           ]
         },
-        "models": {
+        "network": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ModelsRequirements"
+              "$ref": "#/$defs/NetworkRequirements"
             },
             {
               "type": "null"
