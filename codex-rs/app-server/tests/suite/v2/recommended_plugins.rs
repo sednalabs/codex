@@ -74,7 +74,7 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
     )?;
 
     let sqlite_home = codex_home.path().to_string_lossy();
-    let mut app_server = TestAppServer::new_without_managed_config_with_env(
+    let mut app_server = TestAppServer::new_without_managed_config_with_auto_env_and_env(
         codex_home.path(),
         &[("CODEX_SQLITE_HOME", Some(sqlite_home.as_ref()))],
     )
@@ -103,9 +103,14 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
         to_response::<LoginAccountResponse>(login_response)?,
         LoginAccountResponse::ChatgptAuthTokens {}
     );
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        app_server.read_stream_until_notification_message("account/updated"),
+    )
+    .await??;
 
     let thread_id = app_server
-        .send_thread_start_request(ThreadStartParams {
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })

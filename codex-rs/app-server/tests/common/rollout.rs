@@ -29,7 +29,28 @@ pub fn rollout_path(codex_home: &Path, filename_ts: &str, thread_id: &str) -> Pa
 }
 
 pub fn default_rollout_cwd() -> Result<PathBuf> {
-    Ok(fs::canonicalize(std::env::current_dir()?)?)
+    Ok(normalize_cwd_for_protocol_comparison(fs::canonicalize(
+        std::env::current_dir()?,
+    )?))
+}
+
+#[cfg(windows)]
+fn normalize_cwd_for_protocol_comparison(path: PathBuf) -> PathBuf {
+    // The app-server protocol uses ordinary absolute paths, while
+    // `fs::canonicalize` returns verbatim paths on Windows.
+    let path = path.as_os_str().to_string_lossy();
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{path}"))
+    } else if let Some(path) = path.strip_prefix(r"\\?\") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(path.as_ref())
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_cwd_for_protocol_comparison(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
