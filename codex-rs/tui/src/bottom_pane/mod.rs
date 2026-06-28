@@ -1336,6 +1336,7 @@ impl BottomPane {
     }
 
     #[cfg(test)]
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn pending_input_preview_queued_messages(&self) -> &[String] {
         &self.pending_input_preview.queued_messages
     }
