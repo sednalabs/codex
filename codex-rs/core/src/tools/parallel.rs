@@ -24,7 +24,6 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
-use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 

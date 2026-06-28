@@ -1,6 +1,8 @@
 pub(crate) mod agent_resolver;
+#[allow(dead_code, unused_imports)]
 pub(crate) mod control;
 mod registry;
+#[allow(dead_code, unused_imports)]
 pub(crate) mod role;
 pub(crate) mod status;
 

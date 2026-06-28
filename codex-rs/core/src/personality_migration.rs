@@ -10,7 +10,6 @@ use codex_thread_store::ThreadStore;
 use std::io;
 use std::path::Path;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 
 pub const PERSONALITY_MIGRATION_FILENAME: &str = ".personality_migration";

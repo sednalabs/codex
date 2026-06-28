@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -27,6 +28,16 @@ RUSTY_V8_CHECKSUMS_DIR = ROOT / "third_party" / "v8"
 RELEASE_ARTIFACT_PROFILE = "release"
 SANDBOX_ARTIFACT_PROFILE = "ptrcomp_sandbox_release"
 ARTIFACT_BAZEL_CONFIGS = ["rusty-v8-upstream-libcxx"]
+
+
+def hosted_macos_bazel_resource_args(platform: str) -> list[str]:
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not platform.startswith("macos_"):
+        return []
+
+    # The macOS hosted runners still delegate V8 actions to RBE, but the Bazel
+    # client itself can exhaust the runner's process/thread ceiling when it
+    # inherits the high shared remote-execution job count.
+    return ["--jobs=96", "--loading_phase_threads=8"]
 
 
 def bazel_execroot() -> Path:
@@ -68,6 +79,7 @@ def bazel_output_files(
             compilation_mode,
             f"--platforms=@llvm//platforms:{platform}",
             *[f"--config={config}" for config in bazel_configs],
+            *hosted_macos_bazel_resource_args(platform),
             "--output=files",
             expression,
         ),
@@ -95,6 +107,7 @@ def bazel_build(
             compilation_mode,
             f"--platforms=@llvm//platforms:{platform}",
             *[f"--config={config}" for config in bazel_configs],
+            *hosted_macos_bazel_resource_args(platform),
             *download_args,
             *labels,
         ),

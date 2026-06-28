@@ -42,8 +42,10 @@ docs-only refresh commit that records this snapshot.
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
-  `cargo nextest archive` so frontier/checkpoint validation can stay on GitHub
-  hosted compute instead of falling back to local compute.
+  `cargo nextest archive`, cap archive-job sccache footprint, and keep hosted
+  macOS V8 Bazel client fanout below runner process/thread ceilings so
+  frontier/checkpoint validation can stay on GitHub hosted compute instead of
+  falling back to local compute.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -55,7 +57,10 @@ docs-only refresh commit that records this snapshot.
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
+  - `.github/scripts/rusty_v8_bazel.py`
   - `.github/workflows/blocking-ci.yml`
+  - `.github/workflows/rust-ci-full.yml`
+  - `.github/workflows/v8-canary.yml`
   - `docs/contributing.md`
   - `docs/downstream.md`
 
