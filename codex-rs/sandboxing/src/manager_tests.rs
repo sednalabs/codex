@@ -424,6 +424,62 @@ fn transform_linux_seccomp_uses_helper_alias_when_launcher_is_not_helper_path() 
     assert_eq!(exec_request.arg0, Some("codex-linux-sandbox".to_string()));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn transform_linux_seccomp_uses_bwrap_for_direct_runtime_profiles() {
+    let manager = SandboxManager::new();
+    let codex_linux_sandbox_exe = std::path::PathBuf::from("/tmp/codex-linux-sandbox");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cwd = AbsolutePathBuf::from_absolute_path(temp_dir.path()).expect("absolute cwd");
+    let cwd_uri = PathUri::from_abs_path(&cwd);
+    let docs = cwd.join("docs");
+    std::fs::create_dir_all(docs.as_path()).expect("create docs");
+    let permissions = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: docs },
+                access: FileSystemAccessMode::Read,
+            },
+        ]),
+        NetworkSandboxPolicy::Restricted,
+    );
+    let exec_request = manager
+        .transform(SandboxTransformRequest {
+            command: SandboxCommand {
+                program: "true".into(),
+                args: Vec::new(),
+                cwd: cwd_uri.clone(),
+                env: HashMap::new(),
+                managed_network: None,
+                additional_permissions: None,
+            },
+            permissions: &permissions,
+            sandbox: SandboxType::LinuxSeccomp,
+            enforce_managed_network: false,
+            environment_id: None,
+            network: None,
+            sandbox_policy_cwd: &cwd_uri,
+            codex_linux_sandbox_exe: Some(&codex_linux_sandbox_exe),
+            use_legacy_landlock: true,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })
+        .expect("transform");
+
+    assert_eq!(
+        exec_request
+            .command
+            .contains(&"--use-legacy-landlock".to_string()),
+        false
+    );
+}
+
 #[cfg(target_os = "windows")]
 #[test]
 fn transform_for_direct_spawn_windows_preserves_only_wrapper_setup_identity() {

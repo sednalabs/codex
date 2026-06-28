@@ -47,8 +47,12 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
         "--permission-profile".to_string(),
         permission_profile_json,
     ];
-    // Proxy-only networking requires bubblewrap's isolated network namespace.
-    if use_legacy_landlock && !allow_network_for_proxy {
+    if should_use_legacy_landlock_for_permission_profile(
+        permission_profile,
+        sandbox_policy_cwd,
+        use_legacy_landlock,
+        allow_network_for_proxy,
+    ) {
         linux_cmd.push("--use-legacy-landlock".to_string());
     }
     if allow_network_for_proxy {
@@ -57,6 +61,22 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
     linux_cmd.push("--".to_string());
     linux_cmd.extend(command);
     linux_cmd
+}
+
+pub fn should_use_legacy_landlock_for_permission_profile(
+    permission_profile: &PermissionProfile,
+    sandbox_policy_cwd: &Path,
+    use_legacy_landlock: bool,
+    allow_network_for_proxy: bool,
+) -> bool {
+    if !use_legacy_landlock || allow_network_for_proxy {
+        return false;
+    }
+
+    let (file_system_sandbox_policy, network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
+    !file_system_sandbox_policy
+        .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd)
 }
 
 /// Converts the sandbox cwd and execution options into the CLI invocation for

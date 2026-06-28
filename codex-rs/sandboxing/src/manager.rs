@@ -388,6 +388,14 @@ impl SandboxManager {
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
                 #[cfg(target_os = "linux")]
+                let use_legacy_landlock =
+                    crate::landlock::should_use_legacy_landlock_for_permission_profile(
+                        &pending.effective_permission_profile,
+                        pending.native_sandbox_policy_cwd.as_path(),
+                        use_legacy_landlock,
+                        allow_proxy_network,
+                    );
+                #[cfg(target_os = "linux")]
                 ensure_linux_bubblewrap_is_supported(
                     &pending.effective_file_system_policy,
                     use_legacy_landlock,
