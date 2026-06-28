@@ -1583,6 +1583,18 @@ impl Session {
                     return Err(err);
                 }
             };
+            if updates.environments.is_some()
+                && let Err(err) =
+                    self.validate_environment_selections(updated.environment_selections())
+            {
+                warn!("rejected session environment update: {err}");
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "environments",
+                    candidate: err.to_string(),
+                    allowed: "known, unique environment ids".to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
 
             let previous_config = notify_config_contributors
                 .then(|| Self::build_effective_session_config(&state.session_configuration));

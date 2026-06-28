@@ -265,11 +265,19 @@ impl SessionConfiguration {
         }
 
         let current_cwd = self.cwd().clone();
-        let next_environments = updates
+        let mut next_environments = updates
             .environments
             .clone()
             .unwrap_or_else(|| self.environments.clone());
         let cwd_changed = next_environments.legacy_fallback_cwd.as_path() != current_cwd.as_path();
+        if updates.environments.is_some() && cwd_changed {
+            let cwd = codex_utils_path_uri::PathUri::from_abs_path(
+                &next_environments.legacy_fallback_cwd,
+            );
+            for environment in &mut next_environments.environments {
+                environment.cwd = cwd.clone();
+            }
+        }
         next_configuration.environments = next_environments;
         if let Some(workspace_roots) = updates.workspace_roots.clone() {
             next_configuration.workspace_roots = workspace_roots;
