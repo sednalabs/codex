@@ -27,9 +27,14 @@ use crate::proxy_routing::activate_proxy_routes_in_netns;
 use crate::proxy_routing::prepare_host_proxy_route_spec;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 static BWRAP_CHILD_PID: AtomicI32 = AtomicI32::new(0);
 static PENDING_FORWARDED_SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -230,10 +235,12 @@ pub fn run_main() -> ! {
             proxy_route_spec,
             command,
         });
+        let bwrap_file_system_sandbox_policy =
+            file_system_policy_with_bwrap_bootstrap_roots(&file_system_sandbox_policy);
         run_bwrap_with_proc_fallback(
             &sandbox_policy_cwd,
             command_cwd.as_deref(),
-            &file_system_sandbox_policy,
+            &bwrap_file_system_sandbox_policy,
             network_sandbox_policy,
             inner,
             !no_proc,
@@ -276,6 +283,37 @@ impl fmt::Display for ResolvePermissionProfileError {
 
 fn parse_permission_profile(value: &str) -> std::result::Result<PermissionProfile, String> {
     serde_json::from_str(value).map_err(|err| format!("invalid permission profile JSON: {err}"))
+}
+
+fn file_system_policy_with_bwrap_bootstrap_roots(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+) -> FileSystemSandboxPolicy {
+    if file_system_sandbox_policy.has_full_disk_read_access() {
+        return file_system_sandbox_policy.clone();
+    }
+
+    let mut file_system_sandbox_policy = file_system_sandbox_policy.clone();
+    if let Some(current_exe_parent) = current_exe_parent_readable_root() {
+        file_system_sandbox_policy = file_system_sandbox_policy
+            .with_additional_readable_roots(Path::new("/"), &[current_exe_parent]);
+    }
+    if !file_system_sandbox_policy.include_platform_defaults() {
+        file_system_sandbox_policy
+            .entries
+            .push(FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Minimal,
+                },
+                access: FileSystemAccessMode::Read,
+            });
+    }
+    file_system_sandbox_policy
+}
+
+fn current_exe_parent_readable_root() -> Option<AbsolutePathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    let current_exe = AbsolutePathBuf::from_absolute_path(&current_exe).ok()?;
+    current_exe.parent()
 }
 
 fn resolve_permission_profile(

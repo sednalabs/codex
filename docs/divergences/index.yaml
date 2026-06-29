@@ -1196,16 +1196,18 @@
         "plugin_mcp_tools_are_listed",
         "mcp_tool_call_output_exceeds_limit_truncated_for_model",
         "restricted_read_implicitly_allows_helper_executables",
+        "bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots",
         "usage_limit_error_emits_rate_limit_event",
         "responses_websocket_usage_limit_error_emits_rate_limit_event"
       ],
       "owner": "downstream",
-      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only. Plugin app declarations are validated against the authenticated ChatGPT app projection; unauthenticated plugin projections may omit apps and are not evidence that downstream plugin/app carry can be removed. Thread-manager snapshots preserve implicit legacy user-message tails as active mid-turn state, and multi-agent spawn normalization treats an empty reasoning-support list as unknown rather than unsupported when explicit requested or role-derived reasoning effort is present. Restricted filesystem profiles keep configured runtime helper executables readable, including codex_linux_sandbox_exe, so archived hosted test runs can re-enter the sandbox helper from extracted test binaries.",
+      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only. Plugin app declarations are validated against the authenticated ChatGPT app projection; unauthenticated plugin projections may omit apps and are not evidence that downstream plugin/app carry can be removed. Thread-manager snapshots preserve implicit legacy user-message tails as active mid-turn state, and multi-agent spawn normalization treats an empty reasoning-support list as unknown rather than unsupported when explicit requested or role-derived reasoning effort is present. Restricted filesystem profiles keep configured runtime helper executables readable, including codex_linux_sandbox_exe, so archived hosted test runs can re-enter the sandbox helper from extracted test binaries; the Linux bwrap launch path also adds the helper directory and :minimal system runtime roots to the outer bootstrap filesystem view before re-entering the inner seccomp stage.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-capability-adapter",
       "hotspot_files": [
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/config/permissions.rs",
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "domain-specific runtime capability adapters"
