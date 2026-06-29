@@ -57,7 +57,10 @@ docs-only refresh commit that records this snapshot.
   Cargo metadata/fetch failure class before reporting a lint blocker. Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
-  can re-enter the sandbox helper from extracted test binaries. The
+  can re-enter the sandbox helper from extracted test binaries; the Linux bwrap
+  launch path also adds the helper directory and `:minimal` system runtime roots
+  to the outer bootstrap filesystem view before re-entering the inner seccomp
+  stage. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
@@ -92,6 +95,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/config/permissions.rs`
   - `codex-rs/core/src/config/permissions_tests.rs`
+  - `codex-rs/linux-sandbox/src/linux_run_main.rs`
   - `codex-rs/Cargo.toml`
   - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
