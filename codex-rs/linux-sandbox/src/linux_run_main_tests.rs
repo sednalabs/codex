@@ -514,7 +514,10 @@ fn non_managed_inner_command_omits_route_spec() {
 fn bwrap_bootstrap_policy_leaves_full_read_policy_unchanged() {
     let policy = read_only_file_system_policy();
 
-    assert_eq!(file_system_policy_with_bwrap_bootstrap_roots(&policy), policy);
+    assert_eq!(
+        file_system_policy_with_bwrap_bootstrap_roots(&policy),
+        policy
+    );
 }
 
 #[test]
