@@ -1125,13 +1125,15 @@ impl ModelClientSession {
     }
 
     fn get_last_response(&mut self) -> Option<LastResponse> {
-        self.websocket_session
-            .last_response_rx
-            .take()
-            .and_then(|mut receiver| match receiver.try_recv() {
-                Ok(last_response) => Some(last_response),
-                Err(TryRecvError::Closed) | Err(TryRecvError::Empty) => None,
-            })
+        let mut receiver = self.websocket_session.last_response_rx.take()?;
+        match receiver.try_recv() {
+            Ok(last_response) => Some(last_response),
+            Err(TryRecvError::Closed) => None,
+            Err(TryRecvError::Empty) => {
+                self.websocket_session.last_response_rx = Some(receiver);
+                None
+            }
+        }
     }
 
     fn prepare_websocket_request(

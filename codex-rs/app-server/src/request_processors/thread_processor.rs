@@ -3621,6 +3621,9 @@ impl ThreadRequestProcessor {
             .read_stored_thread_for_resume(&thread_id, path.as_ref(), /*include_history*/ true)
             .await?;
         let source_thread_id = source_thread.thread_id;
+        let fork_thread_source = thread_source
+            .map(Into::into)
+            .or_else(|| source_thread.thread_source.clone());
         let source_thread_name = source_thread
             .name
             .as_deref()
@@ -3706,7 +3709,7 @@ impl ThreadRequestProcessor {
                     history: Arc::clone(&history_items),
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
-                thread_source.map(Into::into),
+                fork_thread_source,
                 core_dynamic_tools,
                 self.request_trace_context(&request_id).await,
                 supports_openai_form_elicitation,

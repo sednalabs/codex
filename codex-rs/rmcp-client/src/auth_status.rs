@@ -16,6 +16,7 @@ use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::HeaderMap;
+use reqwest::header::WWW_AUTHENTICATE;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -263,7 +264,7 @@ async fn discover_streamable_http_oauth_with_headers(
         debug!("OAuth discovery requests failed for {url}: {err:?}");
     }
 
-    Ok(None)
+    discover_from_protected_resource_metadata(&client, &base_url).await
 }
 
 async fn discover_streamable_http_oauth_with_headers_and_http_client(
@@ -320,7 +321,12 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
         debug!("OAuth discovery requests failed for {url}: {err:?}");
     }
 
-    Ok(None)
+    discover_from_protected_resource_metadata_with_http_client(
+        &base_url,
+        &default_headers,
+        http_client.as_ref(),
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +341,13 @@ struct OAuthDiscoveryMetadata {
     device_authorization_endpoint: Option<String>,
     #[serde(default)]
     grant_types_supported: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtectedResourceMetadata {
+    resource: String,
+    #[serde(default)]
+    authorization_servers: Vec<String>,
 }
 
 fn discovery_from_metadata(
@@ -371,6 +384,217 @@ fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<H
         value: OAUTH_DISCOVERY_VERSION.to_string(),
     });
     Ok(headers)
+}
+
+async fn discover_from_protected_resource_metadata(
+    client: &Client,
+    resource_url: &Url,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    let resource_response = client
+        .get(resource_url.clone())
+        .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
+        .send()
+        .await?;
+    let Some(resource_metadata_url) = resource_metadata_url_from_www_authenticate_values(
+        resource_response
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .iter()
+            .filter_map(|value| value.to_str().ok()),
+    ) else {
+        return Ok(None);
+    };
+    let metadata_response = client
+        .get(Url::parse(&resource_metadata_url)?)
+        .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
+        .send()
+        .await?;
+    if metadata_response.status() != StatusCode::OK {
+        return Ok(None);
+    }
+    let resource_metadata = metadata_response
+        .json::<ProtectedResourceMetadata>()
+        .await?;
+    discovery_from_protected_resource_metadata(client, resource_url, resource_metadata).await
+}
+
+async fn discovery_from_protected_resource_metadata(
+    client: &Client,
+    resource_url: &Url,
+    resource_metadata: ProtectedResourceMetadata,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    if !protected_resource_matches(resource_url, &resource_metadata.resource) {
+        return Ok(None);
+    }
+    for authorization_server in resource_metadata.authorization_servers {
+        let Ok(authorization_server_url) = Url::parse(&authorization_server) else {
+            continue;
+        };
+        for candidate_path in discovery_paths(authorization_server_url.path()) {
+            let mut discovery_url = authorization_server_url.clone();
+            discovery_url.set_path(&candidate_path);
+            let response = match client
+                .get(discovery_url)
+                .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => continue,
+            };
+            if response.status() != StatusCode::OK {
+                continue;
+            }
+            let metadata = match response.json::<OAuthDiscoveryMetadata>().await {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if let Some(discovery) = discovery_from_metadata(metadata) {
+                return Ok(Some(discovery));
+            }
+        }
+    }
+    Ok(None)
+}
+
+async fn discover_from_protected_resource_metadata_with_http_client(
+    resource_url: &Url,
+    default_headers: &HeaderMap,
+    http_client: &dyn HttpClient,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    let resource_response = http_client
+        .http_request(HttpRequestParams {
+            method: "GET".to_string(),
+            url: resource_url.to_string(),
+            headers: oauth_discovery_protocol_headers(default_headers)?,
+            body: None,
+            timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
+            redirect_policy: HttpRedirectPolicy::Follow,
+            request_id: "oauth-resource-probe".to_string(),
+            stream_response: false,
+        })
+        .await?;
+    let Some(resource_metadata_url) = resource_metadata_url_from_www_authenticate_values(
+        resource_response
+            .headers
+            .iter()
+            .filter(|header| header.name.eq_ignore_ascii_case("www-authenticate"))
+            .map(|header| header.value.as_str()),
+    ) else {
+        return Ok(None);
+    };
+    let metadata_response = http_client
+        .http_request(HttpRequestParams {
+            method: "GET".to_string(),
+            url: resource_metadata_url,
+            headers: oauth_discovery_protocol_headers(default_headers)?,
+            body: None,
+            timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
+            redirect_policy: HttpRedirectPolicy::Follow,
+            request_id: "oauth-resource-metadata".to_string(),
+            stream_response: false,
+        })
+        .await?;
+    if metadata_response.status != StatusCode::OK.as_u16() {
+        return Ok(None);
+    }
+    let resource_metadata =
+        serde_json::from_slice::<ProtectedResourceMetadata>(&metadata_response.body.into_inner())?;
+    if !protected_resource_matches(resource_url, &resource_metadata.resource) {
+        return Ok(None);
+    }
+    for (authorization_server_index, authorization_server) in resource_metadata
+        .authorization_servers
+        .into_iter()
+        .enumerate()
+    {
+        let Ok(authorization_server_url) = Url::parse(&authorization_server) else {
+            continue;
+        };
+        for (candidate_index, candidate_path) in discovery_paths(authorization_server_url.path())
+            .into_iter()
+            .enumerate()
+        {
+            let mut discovery_url = authorization_server_url.clone();
+            discovery_url.set_path(&candidate_path);
+            let response = match http_client
+                .http_request(HttpRequestParams {
+                    method: "GET".to_string(),
+                    url: discovery_url.to_string(),
+                    headers: oauth_discovery_protocol_headers(default_headers)?,
+                    body: None,
+                    timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
+                    redirect_policy: HttpRedirectPolicy::Follow,
+                    request_id: format!(
+                        "oauth-resource-authorization-server-{authorization_server_index}-{candidate_index}"
+                    ),
+                    stream_response: false,
+                })
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => continue,
+            };
+            if response.status != StatusCode::OK.as_u16() {
+                continue;
+            }
+            let metadata =
+                match serde_json::from_slice::<OAuthDiscoveryMetadata>(&response.body.into_inner())
+                {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+            if let Some(discovery) = discovery_from_metadata(metadata) {
+                return Ok(Some(discovery));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn resource_metadata_url_from_www_authenticate_values<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    values
+        .into_iter()
+        .find_map(resource_metadata_url_from_www_authenticate)
+}
+
+fn resource_metadata_url_from_www_authenticate(header: &str) -> Option<String> {
+    if !header
+        .split_once(' ')
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+    {
+        return None;
+    }
+    let (_, value) = header.split_once("resource_metadata=")?;
+    parse_auth_param_value(value.trim_start())
+}
+
+fn parse_auth_param_value(value: &str) -> Option<String> {
+    if let Some(rest) = value.strip_prefix('"') {
+        let mut parsed = String::new();
+        let mut chars = rest.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => return Some(parsed),
+                '\\' => parsed.push(chars.next()?),
+                ch => parsed.push(ch),
+            }
+        }
+        return None;
+    }
+    let value = value
+        .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+        .next()?;
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn protected_resource_matches(resource_url: &Url, resource: &str) -> bool {
+    match Url::parse(resource) {
+        Ok(resource) => resource == *resource_url,
+        Err(_) => false,
+    }
 }
 
 fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -425,6 +649,9 @@ fn discovery_paths(base_path: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use axum::Router;
+    use axum::http::HeaderMap as AxumHeaderMap;
+    use axum::http::HeaderValue;
+    use axum::http::StatusCode as AxumStatusCode;
     use axum::http::header::CONTENT_TYPE;
     use axum::response::IntoResponse;
     use axum::response::Response;
@@ -471,6 +698,72 @@ mod tests {
 
         TestServer {
             url: format!("http://{address}/mcp"),
+            handle,
+        }
+    }
+
+    async fn spawn_protected_resource_oauth_server(metadata: serde_json::Value) -> TestServer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener.local_addr().expect("listener should have address");
+        let base_url = format!("http://{address}");
+        let resource_url = format!("{base_url}/mcp");
+        let resource_metadata_url = format!("{base_url}/.well-known/oauth-protected-resource/mcp");
+        let app = Router::new()
+            .route(
+                "/mcp",
+                get({
+                    let resource_metadata_url = resource_metadata_url.clone();
+                    move || {
+                        let resource_metadata_url = resource_metadata_url.clone();
+                        async move {
+                            let mut headers = AxumHeaderMap::new();
+                            headers.insert(
+                                axum::http::header::WWW_AUTHENTICATE,
+                                HeaderValue::from_str(&format!(
+                                    r#"Bearer resource_metadata="{resource_metadata_url}""#
+                                ))
+                                .expect("resource metadata URL should be a valid header value"),
+                            );
+                            (AxumStatusCode::UNAUTHORIZED, headers)
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                get({
+                    let base_url = base_url.clone();
+                    let resource_url = resource_url.clone();
+                    move || {
+                        let base_url = base_url.clone();
+                        let resource_url = resource_url.clone();
+                        async move {
+                            json_response(serde_json::json!({
+                                "resource": resource_url,
+                                "authorization_servers": [base_url],
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get({
+                    let metadata = metadata.clone();
+                    move || {
+                        let metadata = metadata.clone();
+                        async move { json_response(metadata) }
+                    }
+                }),
+            );
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        TestServer {
+            url: resource_url,
             handle,
         }
     }
@@ -631,6 +924,36 @@ mod tests {
             .expect("support check should succeed");
 
         assert!(supported);
+    }
+
+    #[tokio::test]
+    async fn discover_streamable_http_oauth_follows_protected_resource_metadata() {
+        let server = spawn_protected_resource_oauth_server(serde_json::json!({
+            "authorization_endpoint": "https://example.com/authorize",
+            "token_endpoint": "https://example.com/token",
+            "scopes_supported": ["profile"],
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+        )
+        .await
+        .expect("discovery should succeed")
+        .expect("oauth support should be detected");
+
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: Some(vec!["profile".to_string()]),
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
+            }
+        );
     }
 
     #[tokio::test]
