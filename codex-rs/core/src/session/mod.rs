@@ -3195,9 +3195,9 @@ impl Session {
             {
                 push_prompt_fragment(
                     fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
+                    developer_sections,
+                    contextual_user_sections,
+                    separate_developer_sections,
                 );
             }
         }

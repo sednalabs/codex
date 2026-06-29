@@ -715,7 +715,7 @@ mod tests {
         ))
         .expect("resource metadata URL should be a valid header value");
         let resource_metadata = serde_json::json!({
-            "resource": resource_url.clone(),
+            "resource": resource_url,
             "authorization_servers": [base_url],
         });
         let app = Router::new()
