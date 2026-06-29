@@ -164,6 +164,10 @@ docs-only refresh commit that records this snapshot.
 - Usage-ledger lineage records side forks in `usage_threads` and
   `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
   writes normal provider-call rows for side turns.
+- Forks created from an existing side conversation inherit the side
+  `thread_source` unless the caller explicitly supplies a different source,
+  keeping nested side-chat forks hidden from default history surfaces and
+  marked in usage-ledger lineage.
 - `scripts/codex-resume-recent.sh` skips side chats by default, with
   `--include-side` available when an operator deliberately wants side-chat
   resume candidates.

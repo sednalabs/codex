@@ -18,6 +18,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::RecommendedPluginsInstructions;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -107,6 +108,7 @@ use codex_protocol::protocol::SafetyBufferingEvent;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
+use codex_tools::DiscoverableTool;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -126,6 +128,11 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+#[derive(Clone, Debug)]
+struct CachedEndpointRecommendedPluginCandidates {
+    tools: Vec<DiscoverableTool>,
+}
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -562,6 +569,29 @@ async fn build_skills_and_plugins(
         .plugins_manager
         .plugins_for_config(&turn_context.config.plugins_config_input())
         .await;
+    let endpoint_recommended_plugin_candidates = if tool_suggest_enabled(turn_context) {
+        let plugins_config = turn_context.config.plugins_config_input();
+        let auth = sess.services.auth_manager.auth().await;
+        sess.services
+            .plugins_manager
+            .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                plugins_config: &plugins_config,
+                loaded_plugins: &loaded_plugins,
+                auth: auth.as_ref(),
+                disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                app_server_client_name: turn_context.app_server_client_name.as_deref(),
+            })
+            .await
+    } else {
+        None
+    };
+    if let Some(tools) = endpoint_recommended_plugin_candidates.as_ref() {
+        turn_context
+            .extension_data
+            .insert(CachedEndpointRecommendedPluginCandidates {
+                tools: tools.clone(),
+            });
+    }
     // Structured plugin:// mentions are resolved from the current session's
     // enabled plugins, then converted into turn-scoped guidance below.
     let mentioned_plugins =
@@ -692,6 +722,12 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
+    if let Some(recommended_plugins) = endpoint_recommended_plugin_candidates
+        .as_ref()
+        .and_then(|tools| RecommendedPluginsInstructions::from_plugins(tools))
+    {
+        injection_items.push(ContextualUserFragment::into(recommended_plugins));
+    }
     injection_items.extend(extension_injection_items);
     Some((injection_items, explicitly_enabled_connectors))
 }
@@ -1268,21 +1304,28 @@ pub(crate) async fn built_tools(
     } else {
         None
     };
-    let endpoint_recommended_plugin_candidates = if tool_suggest_is_enabled {
-        let plugins_config = turn_context.config.plugins_config_input();
-        sess.services
-            .plugins_manager
-            .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                plugins_config: &plugins_config,
-                loaded_plugins: &loaded_plugins,
-                auth: auth.as_ref(),
-                disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                app_server_client_name: turn_context.app_server_client_name.as_deref(),
-            })
-            .await
-    } else {
-        None
-    };
+    let cached_endpoint_recommended_plugin_candidates = turn_context
+        .extension_data
+        .get::<CachedEndpointRecommendedPluginCandidates>(
+    );
+    let endpoint_recommended_plugin_candidates =
+        if let Some(cached) = cached_endpoint_recommended_plugin_candidates.as_ref() {
+            Some(cached.tools.clone())
+        } else if tool_suggest_is_enabled {
+            let plugins_config = turn_context.config.plugins_config_input();
+            sess.services
+                .plugins_manager
+                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                    plugins_config: &plugins_config,
+                    loaded_plugins: &loaded_plugins,
+                    auth: auth.as_ref(),
+                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
+                })
+                .await
+        } else {
+            None
+        };
     let tool_suggest_candidates =
         if let Some(recommended_plugin_candidates) = endpoint_recommended_plugin_candidates {
             Some(ToolSuggestCandidates {
@@ -2280,6 +2323,9 @@ async fn try_run_sampling_request(
                 .await;
                 sess.record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
+                if let Some(token_usage) = token_usage.as_ref() {
+                    sess.record_rollout_budget_usage(token_usage)?;
+                }
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
                 if let Some(false) = end_turn {

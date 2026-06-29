@@ -71,7 +71,28 @@ pub(super) async fn spawn_review_thread(
     let auth_manager_for_context = auth_manager.clone();
     let provider_for_context = provider.clone();
     let session_telemetry_for_context = session_telemetry.clone();
-    let reasoning_effort = per_turn_config.model_reasoning_effort.clone();
+    let supported_reasoning_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.clone())
+        .collect::<Vec<_>>();
+    let reasoning_effort =
+        if let Some(current_reasoning_effort) = per_turn_config.model_reasoning_effort.clone() {
+            if supported_reasoning_levels.contains(&current_reasoning_effort) {
+                Some(current_reasoning_effort)
+            } else {
+                supported_reasoning_levels
+                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                    .cloned()
+                    .or_else(|| model_info.default_reasoning_level.clone())
+            }
+        } else {
+            supported_reasoning_levels
+                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                .cloned()
+                .or_else(|| model_info.default_reasoning_level.clone())
+        };
+    per_turn_config.model_reasoning_effort = reasoning_effort.clone();
     let reasoning_summary = per_turn_config
         .model_reasoning_summary
         .unwrap_or(model_info.default_reasoning_summary);

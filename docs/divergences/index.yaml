@@ -1369,7 +1369,7 @@
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, keeps forks from existing side conversations side-tagged unless explicitly overridden, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
