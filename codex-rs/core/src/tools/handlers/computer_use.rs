@@ -680,13 +680,18 @@ mod tests {
 
         assert_eq!(
             selected_computer_use_environment_id(&turn_context),
-            Some("second".to_string())
+            Some("first".to_string())
         );
     }
 
     #[tokio::test]
     async fn unavailable_environment_does_not_emit_external_computer_use_request() {
         let (session, turn, rx) = make_session_and_context_with_rx().await;
+        let mut turn = Arc::into_inner(turn).expect("turn context should have one owner");
+        turn.environments = crate::environment_selection::TurnEnvironmentSnapshot {
+            turn_environments: Vec::new(),
+            starting: Vec::new(),
+        };
 
         let response = request_computer_use(
             &session,

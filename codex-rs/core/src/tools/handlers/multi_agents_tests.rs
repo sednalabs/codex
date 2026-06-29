@@ -114,6 +114,7 @@ async fn multi_agent_v2_wait_context<F>(
     Arc<TurnContext>,
     ThreadId,
     NewThread,
+    NewThread,
     ThreadManager,
 )
 where
@@ -127,18 +128,23 @@ where
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     configure(&mut config);
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
     let target = manager
         .start_thread(config.clone())
         .await
         .expect("target thread should start");
     session.services.agent_control = manager.agent_control();
-    session.thread_id = target.thread_id;
+    session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
 
     (
         Arc::new(session),
         Arc::new(turn),
         target.thread_id,
+        root,
         target,
         manager,
     )
@@ -3315,12 +3321,13 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() {
-    let (session, turn, target_id, _target, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1_000;
-        config.multi_agent_v2.default_wait_timeout_ms = 50;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 50;
+        })
+        .await;
 
     let output = WaitAgentHandlerV2::default()
         .handle(invocation(
@@ -3348,12 +3355,13 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
-    let (session, turn, target_id, _target, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1_000;
-        config.multi_agent_v2.default_wait_timeout_ms = 50;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 50;
+        })
+        .await;
 
     let early = timeout(
         Duration::from_millis(/*millis*/ 20),
@@ -3400,12 +3408,13 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
-    let (session, turn, target_id, _target, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 0;
-        config.multi_agent_v2.max_wait_timeout_ms = 0;
-        config.multi_agent_v2.default_wait_timeout_ms = 0;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 0;
+            config.multi_agent_v2.max_wait_timeout_ms = 0;
+            config.multi_agent_v2.default_wait_timeout_ms = 0;
+        })
+        .await;
 
     let output = timeout(
         Duration::from_secs(/*secs*/ 1),
@@ -3468,12 +3477,13 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() {
-    let (session, turn, target_id, _target, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1;
-        config.multi_agent_v2.default_wait_timeout_ms = 1;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 1;
+            config.multi_agent_v2.default_wait_timeout_ms = 1;
+        })
+        .await;
 
     let output = WaitAgentHandlerV2::default()
         .handle(invocation(
