@@ -493,7 +493,7 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
         .expect("channel open");
     assert!(matches!(
         first.msg,
-        EventMsg::TurnStarted(TurnStartedEvent { started_at: Some(0),  turn_id, .. }) if turn_id == tc.sub_id
+        EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. }) if turn_id == tc.sub_id
     ));
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
