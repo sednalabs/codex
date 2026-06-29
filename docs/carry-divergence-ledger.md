@@ -54,7 +54,10 @@ docs-only refresh commit that records this snapshot.
   floor, archive jobs skip sccache, and validation-lab Rust batches retry once
   on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF
   download flakes, and argument-comment lint retries once on the same narrow
-  Cargo metadata/fetch failure class before reporting a lint blocker. The
+  Cargo metadata/fetch failure class before reporting a lint blocker. Runtime
+  permission policy keeps the configured `codex_linux_sandbox_exe` readable
+  under restricted filesystem profiles so GitHub-hosted archived nextest runs
+  can re-enter the sandbox helper from extracted test binaries. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
@@ -86,6 +89,9 @@ docs-only refresh commit that records this snapshot.
   - `.github/workflows/bazel.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/config/permissions.rs`
+  - `codex-rs/core/src/config/permissions_tests.rs`
   - `codex-rs/Cargo.toml`
   - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
