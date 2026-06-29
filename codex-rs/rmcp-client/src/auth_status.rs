@@ -715,14 +715,13 @@ mod tests {
         ))
         .expect("resource metadata URL should be a valid header value");
         let resource_metadata = serde_json::json!({
-            "resource": resource_url,
+            "resource": resource_url.clone(),
             "authorization_servers": [base_url],
         });
         let app = Router::new()
             .route(
                 "/mcp",
                 get({
-                    let www_authenticate_value = www_authenticate_value.clone();
                     move || {
                         let www_authenticate_value = www_authenticate_value.clone();
                         async move {
@@ -739,7 +738,6 @@ mod tests {
             .route(
                 "/.well-known/oauth-protected-resource/mcp",
                 get({
-                    let resource_metadata = resource_metadata.clone();
                     move || {
                         let resource_metadata = resource_metadata.clone();
                         async move { json_response(resource_metadata) }
@@ -749,7 +747,6 @@ mod tests {
             .route(
                 "/.well-known/oauth-authorization-server",
                 get({
-                    let metadata = metadata.clone();
                     move || {
                         let metadata = metadata.clone();
                         async move { json_response(metadata) }

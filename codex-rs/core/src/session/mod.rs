@@ -3172,13 +3172,13 @@ impl Session {
         }
     }
 
-    async fn build_turn_context_contribution_items(
+    async fn append_turn_context_contributions(
         &self,
         turn_context: &TurnContext,
-    ) -> Vec<ResponseItem> {
-        let mut developer_sections = Vec::new();
-        let mut contextual_user_sections = Vec::new();
-        let mut separate_developer_sections = Vec::new();
+        developer_sections: &mut Vec<String>,
+        contextual_user_sections: &mut Vec<String>,
+        separate_developer_sections: &mut Vec<String>,
+    ) {
         let context_contributors = self.services.extensions.context_contributors().to_vec();
 
         for contributor in &context_contributors {
@@ -3201,6 +3201,23 @@ impl Session {
                 );
             }
         }
+    }
+
+    async fn build_turn_context_contribution_items(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        let mut developer_sections = Vec::new();
+        let mut contextual_user_sections = Vec::new();
+        let mut separate_developer_sections = Vec::new();
+
+        self.append_turn_context_contributions(
+            turn_context,
+            &mut developer_sections,
+            &mut contextual_user_sections,
+            &mut separate_developer_sections,
+        )
+        .await;
 
         let mut items = Vec::with_capacity(3);
         if let Some(developer_message) =
@@ -3393,6 +3410,13 @@ impl Session {
                 );
             }
         }
+        self.append_turn_context_contributions(
+            turn_context,
+            &mut developer_sections,
+            &mut contextual_user_sections,
+            &mut separate_developer_sections,
+        )
+        .await;
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
             && turn_context.model_context_window().is_some()
