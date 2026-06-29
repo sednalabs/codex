@@ -30,7 +30,7 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
 ) -> Vec<String> {
     let permission_profile_json = serde_json::to_string(permission_profile)
         .unwrap_or_else(|err| panic!("failed to serialize permission profile: {err}"));
-    let sandbox_policy_cwd = sandbox_policy_cwd
+    let sandbox_policy_cwd_arg = sandbox_policy_cwd
         .to_str()
         .unwrap_or_else(|| panic!("cwd must be valid UTF-8"))
         .to_string();
@@ -41,7 +41,7 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
 
     let mut linux_cmd: Vec<String> = vec![
         "--sandbox-policy-cwd".to_string(),
-        sandbox_policy_cwd,
+        sandbox_policy_cwd_arg,
         "--command-cwd".to_string(),
         command_cwd,
         "--permission-profile".to_string(),
