@@ -3355,7 +3355,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
-    let (session, turn, target_id, _root, _target, _manager) =
+    let (session, turn, _target_id, _root, _target, _manager) =
         multi_agent_v2_wait_context(|config| {
             config.multi_agent_v2.min_wait_timeout_ms = 1;
             config.multi_agent_v2.max_wait_timeout_ms = 1_000;
@@ -3369,9 +3369,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
             session.clone(),
             turn.clone(),
             "wait_agent",
-            function_payload(json!({
-                "targets": [target_id.to_string()]
-            })),
+            function_payload(json!({})),
         )),
     )
     .await;
@@ -3386,9 +3384,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
             session,
             turn,
             "wait_agent",
-            function_payload(json!({
-                "targets": [target_id.to_string()]
-            })),
+            function_payload(json!({})),
         )),
     )
     .await
