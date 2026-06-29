@@ -3805,6 +3805,7 @@ impl Config {
         let mut helper_readable_roots = get_readable_roots_required_for_codex_runtime(
             &codex_home,
             zsh_path.as_ref(),
+            codex_linux_sandbox_exe.as_ref(),
             main_execve_wrapper_exe.as_ref(),
         );
         if features.enabled(Feature::MemoryTool) && memories_config.use_memories {
