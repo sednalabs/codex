@@ -2429,7 +2429,7 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
     assert_eq!(metadata.attempt_count, 1);
     assert!(matches!(
         metadata.guardian_session_kind,
-        Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
+        Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
     ));
     assert_eq!(request_log.requests().len(), 2);
     Ok(())
