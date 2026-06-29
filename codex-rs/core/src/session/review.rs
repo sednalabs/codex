@@ -5,19 +5,20 @@ use std::sync::atomic::AtomicBool;
 /// Spawn a review thread using the given prompt.
 pub(super) async fn spawn_review_thread(
     sess: Arc<Session>,
-    config: Arc<Config>,
+    _config: Arc<Config>,
     parent_turn_context: Arc<TurnContext>,
     sub_id: String,
     resolved: crate::review_prompts::ResolvedReviewRequest,
 ) {
-    let model = config
+    let base_config = parent_turn_context.config.clone();
+    let model = base_config
         .review_model
         .clone()
         .unwrap_or_else(|| parent_turn_context.model_info.slug.clone());
     let review_model_info = sess
         .services
         .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
+        .get_model_info(&model, &base_config.to_models_manager_config())
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
@@ -43,7 +44,7 @@ pub(super) async fn spawn_review_thread(
     let model_info = review_model_info.clone();
 
     // Build per‑turn client with the requested model/family.
-    let mut per_turn_config = (*config).clone();
+    let mut per_turn_config = (*base_config).clone();
     per_turn_config.model = Some(model.clone());
     per_turn_config.features = review_features.clone();
     per_turn_config.permissions.shell_environment_policy = parent_turn_context

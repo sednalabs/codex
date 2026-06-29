@@ -710,21 +710,26 @@ mod tests {
         let base_url = format!("http://{address}");
         let resource_url = format!("{base_url}/mcp");
         let resource_metadata_url = format!("{base_url}/.well-known/oauth-protected-resource/mcp");
+        let www_authenticate_value = HeaderValue::from_str(&format!(
+            r#"Bearer resource_metadata="{resource_metadata_url}""#
+        ))
+        .expect("resource metadata URL should be a valid header value");
+        let resource_metadata = serde_json::json!({
+            "resource": resource_url,
+            "authorization_servers": [base_url],
+        });
         let app = Router::new()
             .route(
                 "/mcp",
                 get({
-                    let resource_metadata_url = resource_metadata_url.clone();
+                    let www_authenticate_value = www_authenticate_value.clone();
                     move || {
-                        let resource_metadata_url = resource_metadata_url.clone();
+                        let www_authenticate_value = www_authenticate_value.clone();
                         async move {
                             let mut headers = AxumHeaderMap::new();
                             headers.insert(
                                 axum::http::header::WWW_AUTHENTICATE,
-                                HeaderValue::from_str(&format!(
-                                    r#"Bearer resource_metadata="{resource_metadata_url}""#
-                                ))
-                                .expect("resource metadata URL should be a valid header value"),
+                                www_authenticate_value,
                             );
                             (AxumStatusCode::UNAUTHORIZED, headers)
                         }
@@ -734,17 +739,10 @@ mod tests {
             .route(
                 "/.well-known/oauth-protected-resource/mcp",
                 get({
-                    let base_url = base_url.clone();
-                    let resource_url = resource_url.clone();
+                    let resource_metadata = resource_metadata.clone();
                     move || {
-                        let base_url = base_url.clone();
-                        let resource_url = resource_url.clone();
-                        async move {
-                            json_response(serde_json::json!({
-                                "resource": resource_url,
-                                "authorization_servers": [base_url],
-                            }))
-                        }
+                        let resource_metadata = resource_metadata.clone();
+                        async move { json_response(resource_metadata) }
                     }
                 }),
             )

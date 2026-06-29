@@ -8310,10 +8310,11 @@ async fn build_initial_context_includes_turn_context_fragments_from_extensions()
     session.services.extensions = Arc::new(builder.build());
     turn_context.model_info.context_window = Some(100);
     turn_context.model_info.effective_context_window_percent = 50;
+    let expected_model_context_window = turn_context.model_context_window();
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
-            expected_model_context_window: Some(50),
+            expected_model_context_window,
         });
     let turn_context = Arc::new(turn_context);
 
@@ -8337,10 +8338,11 @@ async fn record_context_updates_includes_turn_context_fragments_on_steady_state_
     session.services.extensions = Arc::new(builder.build());
     turn_context.model_info.context_window = Some(200);
     turn_context.model_info.effective_context_window_percent = 25;
+    let expected_model_context_window = turn_context.model_context_window();
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
-            expected_model_context_window: Some(50),
+            expected_model_context_window,
         });
     let mut previous_context_item = turn_context.to_turn_context_item();
     previous_context_item.turn_id = Some("previous-turn-id".to_string());
