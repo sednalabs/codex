@@ -738,6 +738,17 @@
       ],
       "type": "object"
     },
+    "EnvironmentInfoParams": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {

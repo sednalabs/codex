@@ -346,14 +346,6 @@ fn write_auth_projection_app(codex_home: &Path, plugin_name: &str, app_name: &st
     );
 }
 
-fn app_declaration(name: &str, connector_id: &str) -> AppDeclaration {
-    AppDeclaration {
-        name: name.to_string(),
-        connector_id: AppConnectorId(connector_id.to_string()),
-        category: None,
-    }
-}
-
 async fn auth_projection_config(codex_home: &Path) -> PluginsConfigInput {
     let config_toml = r#"[features]
 plugins = true

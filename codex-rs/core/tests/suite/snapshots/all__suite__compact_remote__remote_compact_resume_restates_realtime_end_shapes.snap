@@ -16,6 +16,6 @@ Scenario: After remote manual /compact and resume, the first resumed turn rebuil
 00:compaction:encrypted=true
 01:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <realtime_conversation>\nRealtime conversation ended.\n\nSubsequ...
+    [02] <realtime_conversation>\nRealtime conversation ended.\n\nThis re...
 02:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 03:message/user:USER_TWO
