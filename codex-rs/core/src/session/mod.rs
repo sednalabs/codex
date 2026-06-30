@@ -1885,9 +1885,14 @@ impl Session {
             return;
         };
 
-        let Some(status) = agent_status_from_event(msg) else {
+        let Some(mut status) = agent_status_from_event(msg) else {
             return;
         };
+        if matches!(status, AgentStatus::Completed(None))
+            && let Some(error) = turn_context.terminal_error.lock().await.clone()
+        {
+            status = AgentStatus::Errored(error);
+        }
         if !is_final(&status) {
             return;
         }

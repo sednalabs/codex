@@ -328,7 +328,11 @@ text(result);
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn("Search the web from code mode").await?;
+    test.submit_turn_with_permission_profile(
+        "Search the web from code mode",
+        PermissionProfile::read_only(),
+    )
+    .await?;
 
     let search_request = server
         .received_requests()
@@ -557,7 +561,6 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
         vec![
             "exec".to_string(),
             "wait".to_string(),
-            "request_user_input".to_string(),
             "web_search".to_string()
         ]
     );
@@ -644,7 +647,6 @@ if (!tool) {
         vec![
             "exec".to_string(),
             "wait".to_string(),
-            "request_user_input".to_string(),
             "web_search".to_string(),
             "image_generation".to_string()
         ]
@@ -760,7 +762,7 @@ text(JSON.stringify({{
         "code mode visibility check should complete successfully: {output}"
     );
     let parsed: Value = serde_json::from_str(&output)?;
-    assert_eq!(parsed["visibleListed"], true);
+    assert_eq!(parsed["visibleListed"], false);
     assert_eq!(parsed["listed"], false);
     assert_eq!(parsed["callable"], false);
     assert!(
@@ -3619,7 +3621,7 @@ text(
             .get("description")
             .and_then(Value::as_str)
             .is_some_and(|description| {
-                description.contains("Codex app tools.")
+                description.contains("Tools in the codex_app namespace.")
                     && description.contains("A hidden dynamic tool.")
                     && description.contains("declare const tools:")
                     && description.contains("codex_app__hidden_dynamic_tool(args:")

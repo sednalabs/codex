@@ -298,7 +298,7 @@ async fn indexed_web_search_mode_sets_index_gate() {
 
     test.submit_turn_with_permission_profile(
         "hello indexed web search",
-        PermissionProfile::Disabled,
+        PermissionProfile::read_only(),
     )
     .await
     .expect("submit turn");
