@@ -52,7 +52,6 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::prelude::*;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use unicode_width::UnicodeWidthStr;
 
@@ -355,7 +354,7 @@ async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
-    config.cwd = PathBuf::from("/workspace/tests").abs();
+    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
     config
         .permissions
         .set_permission_profile(PermissionProfile::read_only())

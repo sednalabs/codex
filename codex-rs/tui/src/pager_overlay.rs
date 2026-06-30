@@ -1278,13 +1278,13 @@ impl TranscriptOverlay {
             action_hints.push(FooterHint::new(
                 key_label(&previous_edit_keys),
                 "edit prev",
-                "prev",
+                "edit prev",
                 /*priority*/ 8,
             ));
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.view.keymap.next_user_prompt)),
                 "edit next",
-                "next",
+                "edit next",
                 /*priority*/ 9,
             ));
             action_hints.push(FooterHint::new(

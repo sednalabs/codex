@@ -462,9 +462,14 @@ pub(crate) async fn run_turn(
                 let error = CodexErrorInfo::BadRequest;
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
+                let message = "Invalid image in your last message. Please remove it and try again."
+                    .to_string();
+                {
+                    let mut terminal_error = turn_context.terminal_error.lock().await;
+                    *terminal_error = Some(message.clone());
+                }
                 let event = EventMsg::Error(ErrorEvent {
-                    message: "Invalid image in your last message. Please remove it and try again."
-                        .to_string(),
+                    message,
                     codex_error_info: Some(error),
                 });
                 sess.send_event(&turn_context, event).await;
@@ -477,6 +482,10 @@ pub(crate) async fn run_turn(
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                {
+                    let mut terminal_error = turn_context.terminal_error.lock().await;
+                    *terminal_error = Some(event.message.clone());
+                }
                 sess.send_event(&turn_context, event).await;
                 // let the user continue the conversation
                 break;
