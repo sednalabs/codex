@@ -33,6 +33,28 @@ impl Handler {
     }
 }
 
+pub(crate) fn resolve_wait_timeout_ms(
+    requested_timeout_ms: Option<i64>,
+    min_wait_timeout_ms: i64,
+    max_wait_timeout_ms: i64,
+    default_wait_timeout_ms: i64,
+) -> Result<i64, FunctionCallError> {
+    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_WAIT_TIMEOUT_MS);
+    let max_timeout_ms = max_wait_timeout_ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+    let default_timeout_ms = default_wait_timeout_ms.clamp(min_timeout_ms, max_timeout_ms);
+
+    match requested_timeout_ms {
+        Some(ms) if ms < min_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
+            "timeout_ms must be at least {min_timeout_ms}"
+        ))),
+        Some(ms) if ms > max_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
+            "timeout_ms must be at most {max_timeout_ms}"
+        ))),
+        Some(ms) => Ok(ms),
+        None => Ok(default_timeout_ms),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WakeSource {
     TargetCompletion,
@@ -133,35 +155,12 @@ impl Handler {
             });
         }
 
-        let min_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .min_wait_timeout_ms
-            .clamp(0, MAX_WAIT_TIMEOUT_MS);
-        let max_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .max_wait_timeout_ms
-            .clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
-        let default_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .default_wait_timeout_ms
-            .clamp(min_timeout_ms, max_timeout_ms);
-        let timeout_ms = match args.timeout_ms {
-            Some(ms) if ms < min_timeout_ms => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "timeout_ms must be at least {min_timeout_ms}"
-                )));
-            }
-            Some(ms) if ms > max_timeout_ms => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "timeout_ms must be at most {max_timeout_ms}"
-                )));
-            }
-            Some(ms) => ms,
-            None => default_timeout_ms,
-        };
+        let timeout_ms = resolve_wait_timeout_ms(
+            args.timeout_ms,
+            turn.config.multi_agent_v2.min_wait_timeout_ms,
+            turn.config.multi_agent_v2.max_wait_timeout_ms,
+            turn.config.multi_agent_v2.default_wait_timeout_ms,
+        )?;
         let mut mailbox_rx = session.input_queue.subscribe_mailbox().await;
 
         session
@@ -537,6 +536,18 @@ mod tests {
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
         assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
+    }
+
+    #[test]
+    fn resolve_wait_timeout_uses_configured_default() {
+        assert_eq!(
+            resolve_wait_timeout_ms(
+                /*requested_timeout_ms*/ None, /*min_wait_timeout_ms*/ 1,
+                /*max_wait_timeout_ms*/ 1_000, /*default_wait_timeout_ms*/ 50
+            )
+            .expect("configured default should be accepted"),
+            50
+        );
     }
 
     #[test]

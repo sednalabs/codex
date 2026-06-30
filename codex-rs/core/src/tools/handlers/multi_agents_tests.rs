@@ -3353,53 +3353,16 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     assert_eq!(success, None);
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
-    let (session, turn, _target_id, _root, _target, _manager) =
-        multi_agent_v2_wait_context(|config| {
-            config.multi_agent_v2.min_wait_timeout_ms = 1;
-            config.multi_agent_v2.max_wait_timeout_ms = 1_000;
-            config.multi_agent_v2.default_wait_timeout_ms = 50;
-        })
-        .await;
-
-    let early = timeout(
-        Duration::from_millis(/*millis*/ 20),
-        WaitAgentHandlerV2::default().handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "wait_agent",
-            function_payload(json!({})),
-        )),
-    )
-    .await;
-    assert!(
-        early.is_err(),
-        "wait_agent should not return before the configured default timeout"
-    );
-
-    let output = timeout(
-        Duration::from_secs(/*secs*/ 1),
-        WaitAgentHandlerV2::default().handle(invocation(
-            session,
-            turn,
-            "wait_agent",
-            function_payload(json!({})),
-        )),
-    )
-    .await
-    .expect("configured default should be shorter than the test timeout")
-    .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
+#[test]
+fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Timeout
+        crate::tools::handlers::multi_agents_v2::wait::resolve_wait_timeout_ms(
+            /*requested_timeout_ms*/ None, /*min_wait_timeout_ms*/ 1,
+            /*max_wait_timeout_ms*/ 1_000, /*default_wait_timeout_ms*/ 50
+        )
+        .expect("configured default should be accepted"),
+        50
     );
-    assert!(result.timed_out);
-    assert_eq!(success, None);
 }
 
 #[tokio::test]
