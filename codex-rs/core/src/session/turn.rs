@@ -481,12 +481,13 @@ pub(crate) async fn run_turn(
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
-                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                let error_event = e.to_error_event(/*message_prefix*/ None);
                 {
                     let mut terminal_error = turn_context.terminal_error.lock().await;
-                    *terminal_error = Some(event.message.clone());
+                    *terminal_error = Some(error_event.message.clone());
                 }
-                sess.send_event(&turn_context, event).await;
+                sess.send_event(&turn_context, EventMsg::Error(error_event))
+                    .await;
                 // let the user continue the conversation
                 break;
             }
