@@ -299,10 +299,7 @@ async fn explicit_remote_shell_runs_in_remote_cwd() -> Result<()> {
 
     test.submit_turn_with_environments(
         "run the remote shell in the remote cwd",
-        Some(vec![TurnEnvironmentSelection {
-            environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-            cwd: PathUri::from_abs_path(&test.config.cwd),
-        }]),
+        Some(vec![test.executor_environment().selection().clone()]),
     )
     .await?;
     let request = response_mock
