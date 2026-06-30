@@ -101,27 +101,27 @@ jobs:
             target: x86_64-unknown-linux-musl
             variant: centos-9
             image: quay.io/centos/centos:stream9
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-24.04
             image: arm64v8/ubuntu:24.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-22.04
             image: arm64v8/ubuntu:22.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-20.04
             image: arm64v8/ubuntu:20.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: debian-12
             image: arm64v8/debian:12
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: debian-11
             image: arm64v8/debian:11
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: centos-9
             image: quay.io/centos/centos:stream9
@@ -239,27 +239,27 @@ jobs:
             target: x86_64-unknown-linux-musl
             variant: centos-9
             image: quay.io/centos/centos:stream9
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-24.04
             image: arm64v8/ubuntu:24.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-22.04
             image: arm64v8/ubuntu:22.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-20.04
             image: arm64v8/ubuntu:20.04
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: debian-12
             image: arm64v8/debian:12
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: debian-11
             image: arm64v8/debian:11
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: centos-9
             image: quay.io/centos/centos:stream9

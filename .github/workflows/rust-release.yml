@@ -116,13 +116,13 @@ jobs:
             artifact_name: x86_64-unknown-linux-musl-app-server
             binaries: "codex-app-server"
             build_dmg: "false"
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             bundle: primary
             artifact_name: aarch64-unknown-linux-musl
             binaries: "codex codex-responses-api-proxy bwrap"
             build_dmg: "false"
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             bundle: app-server
             artifact_name: aarch64-unknown-linux-musl-app-server

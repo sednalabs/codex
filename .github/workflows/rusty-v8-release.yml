@@ -85,14 +85,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
             v8_cpu: x64
             variant: ptrcomp-sandbox
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: false
             target: aarch64-unknown-linux-gnu
             v8_cpu: arm64
             variant: release
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: true
@@ -134,7 +134,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             v8_cpu: x64
             variant: release
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: false
@@ -148,7 +148,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             v8_cpu: x64
             variant: ptrcomp-sandbox
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: true

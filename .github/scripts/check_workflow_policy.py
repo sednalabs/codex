@@ -28,8 +28,8 @@ FORBIDDEN_RUNNER_SIZE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:xlarge|large|xl)(?![A-Za-z0-9])", re.IGNORECASE
 )
 STANDARD_PUBLIC_RUNNER_PATTERNS = (
-    re.compile(r"ubuntu-(?:latest|slim|\d{2}\.\d{2}(?:-arm)?)"),
-    re.compile(r"windows-(?:latest|\d{4}(?:-vs\d{4})?|\d{2}(?:-vs\d{4})?-arm)"),
+    re.compile(r"ubuntu-(?:latest|\d{2}\.\d{2})"),
+    re.compile(r"windows-(?:latest|\d{4}(?:-vs\d{4})?)"),
     re.compile(r"macos-(?:latest|\d{2}(?:-intel)?)"),
 )
 RUNNER_FIELD_NAMES = {

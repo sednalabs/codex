@@ -65,7 +65,7 @@ jobs:
             variant: ubuntu-24.04
             image: ubuntu:24.04
             archive_name: codex-zsh-x86_64-unknown-linux-musl.tar.gz
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             variant: ubuntu-24.04
             image: arm64v8/ubuntu:24.04

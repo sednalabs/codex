@@ -38,9 +38,9 @@ jobs:
             target: x86_64-unknown-linux-musl
           # 2026-02-27 Bazel tests have been flaky on arm in CI.
           # Disable until we can investigate and stabilize them.
-          # - os: ubuntu-24.04-arm
+          # - os: ubuntu-24.04
           #   target: aarch64-unknown-linux-musl
-          # - os: ubuntu-24.04-arm
+          # - os: ubuntu-24.04
           #   target: aarch64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}

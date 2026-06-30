@@ -42,7 +42,7 @@ permissions: {}
 jobs:
   route:
     name: Release request gate
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -170,7 +170,7 @@ jobs:
     name: Resolve release metadata
     needs: route
     if: ${{ needs.route.outputs.release_requested == 'true' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -622,7 +622,7 @@ jobs:
       - resolve
       - release-linux
     if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
     concurrency:

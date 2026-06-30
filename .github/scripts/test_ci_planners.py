@@ -4804,7 +4804,7 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("main release gate", release_payload.get("run-name") or "")
         self.assertNotIn("concurrency", release_payload)
         self.assertEqual(route_job.get("name"), "Release request gate")
-        self.assertEqual(route_job.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(route_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(release_push.get("branches"), ["main"])
         self.assertEqual(release_push.get("tags"), ["v*-sedna.*"])
         self.assertEqual(release_payload.get("permissions"), {})
@@ -5272,6 +5272,47 @@ jobs:
             ],
         )
 
+    def test_workflow_policy_rejects_nonstandard_ubuntu_runner_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow = root / ".github/workflows/release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                """
+name: release
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-slim
+          - runner: ubuntu-24.04-arm
+    steps:
+      - run: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            violations = CHECK_WORKFLOW_POLICY.collect_violations(root)
+
+        ubuntu_arm_runner = (
+            ".github/workflows/release.yml: runner label 'ubuntu-24.04-arm' "
+            + "is not a recognized standard public GitHub-hosted runner label."
+        )
+        ubuntu_slim_runner = (
+            ".github/workflows/release.yml: runner label 'ubuntu-slim' is not "
+            + "a recognized standard public GitHub-hosted runner label."
+        )
+        self.assertEqual(
+            violations,
+            [
+                ubuntu_arm_runner,
+                ubuntu_slim_runner,
+            ],
+        )
+
     def test_workflow_policy_rejects_runner_group_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -5391,17 +5432,12 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
-          - runner: ubuntu-slim
           - runner: ubuntu-24.04
-          - runner: ubuntu-24.04-arm
           - runner: ubuntu-26.04
-          - runner: ubuntu-26.04-arm
           - runner: windows-latest
           - runner: windows-2022
           - runner: windows-2025
           - runner: windows-2025-vs2026
-          - runner: windows-11-arm
-          - runner: windows-11-vs2026-arm
           - runner: macos-latest
           - runner: macos-15
           - runner: macos-15-intel

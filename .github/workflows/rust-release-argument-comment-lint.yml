@@ -44,7 +44,7 @@ jobs:
             lib_name: libargument_comment_lint@nightly-2025-09-18-x86_64-unknown-linux-gnu.so
             runner_binary: argument-comment-lint
             cargo_dylint_binary: cargo-dylint
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             archive_name: argument-comment-lint-aarch64-unknown-linux-gnu.tar.gz
             lib_name: libargument_comment_lint@nightly-2025-09-18-aarch64-unknown-linux-gnu.so
