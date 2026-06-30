@@ -218,32 +218,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
             .len(),
         "expected tool names to be unique: {tool_names0:?}"
     );
-    let required_tools = if cfg!(windows) {
-        vec![
-            "shell_command",
-            "update_plan",
-            "view_image",
-            "spawn_agent",
-            "wait_agent",
-            "close_agent",
-        ]
-    } else {
-        vec![
-            "exec_command",
-            "write_stdin",
-            "update_plan",
-            "view_image",
-            "spawn_agent",
-            "wait_agent",
-            "close_agent",
-        ]
-    };
-    for tool_name in required_tools {
-        assert!(
-            tool_names0.iter().any(|candidate| candidate == tool_name),
-            "expected tool list to contain {tool_name}: {tool_names0:?}"
-        );
-    }
+    assert_eq!(tool_names0, expected_tools_names);
 
     let expected_instructions = if tool_names0.iter().any(|name| name == "apply_patch") {
         base_instructions
