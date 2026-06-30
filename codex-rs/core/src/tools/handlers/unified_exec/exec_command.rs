@@ -151,24 +151,33 @@ impl ExecCommandHandler {
             })?,
             None => turn_environment.cwd().clone(),
         };
-        // Permission parsing still works in host-native paths; the process
-        // manager keeps the URI form for environment-aware execution.
-        let native_cwd = cwd_uri.to_abs_path().map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "exec_command cwd `{cwd_uri}` is not native to the Codex host: {err}"
-            ))
-        })?;
         let environment = Arc::clone(&turn_environment.environment);
+        let native_cwd = match cwd_uri.to_abs_path() {
+            Ok(cwd) => Some(cwd),
+            Err(err) if environment.is_remote() => None,
+            Err(err) => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "exec_command cwd `{cwd_uri}` is not native to the Codex host: {err}"
+                )));
+            }
+        };
         let fs = environment.get_filesystem();
-        let args: ExecCommandArgs = parse_arguments_with_base_path(&arguments, &native_cwd)?;
+        // URI-aware execution keeps the target cwd below. Some legacy parsing
+        // and permission helpers still need a host-native cwd, so use the
+        // turn's local fallback only for that bookkeeping on foreign remotes.
+        let host_native_cwd_for_policy = native_cwd.as_ref().unwrap_or(&turn.cwd);
+        let args: ExecCommandArgs =
+            parse_arguments_with_base_path(&arguments, host_native_cwd_for_policy)?;
         let hook_command = args.cmd.clone();
-        maybe_emit_implicit_skill_invocation(
-            session.as_ref(),
-            context.turn.as_ref(),
-            &hook_command,
-            &native_cwd,
-        )
-        .await;
+        if let Some(native_cwd) = native_cwd.as_ref() {
+            maybe_emit_implicit_skill_invocation(
+                session.as_ref(),
+                context.turn.as_ref(),
+                &hook_command,
+                native_cwd,
+            )
+            .await;
+        }
         let process_id = manager.allocate_process_id().await;
         let shell_mode =
             shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
@@ -213,7 +222,7 @@ impl ExecCommandHandler {
         let effective_additional_permissions = apply_granted_turn_permissions(
             context.session.as_ref(),
             &turn_environment.environment_id,
-            native_cwd.as_path(),
+            host_native_cwd_for_policy.as_path(),
             sandbox_permissions,
             additional_permissions,
         )
@@ -253,7 +262,7 @@ impl ExecCommandHandler {
                     effective_additional_permissions.sandbox_permissions,
                     effective_additional_permissions.additional_permissions,
                     effective_additional_permissions.permissions_preapproved,
-                    native_cwd.as_path(),
+                    host_native_cwd_for_policy.as_path(),
                 )
             },
             |permissions| Ok(Some(permissions)),
