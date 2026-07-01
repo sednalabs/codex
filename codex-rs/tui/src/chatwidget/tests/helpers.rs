@@ -140,6 +140,17 @@ pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
     ))
 }
 
+pub(super) fn cache_project_root_name(chat: &mut ChatWidget, root_name: Option<&str>) {
+    chat.status_line_project_root_name_cache = Some(CachedProjectRootName {
+        cwd: chat.config.cwd.to_path_buf(),
+        root_name: root_name.map(str::to_string),
+    });
+}
+
+pub(super) fn cache_missing_project_root(chat: &mut ChatWidget) {
+    cache_project_root_name(chat, None);
+}
+
 // --- Helpers for tests that need direct construction and event draining ---
 pub(super) async fn make_chatwidget_manual(
     model_override: Option<&str>,
