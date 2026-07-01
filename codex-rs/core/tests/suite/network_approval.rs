@@ -34,6 +34,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_no_remote_env;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::test_codex::TestCodex;
@@ -63,6 +64,10 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_no_remote_env!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;

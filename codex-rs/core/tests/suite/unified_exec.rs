@@ -34,6 +34,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::test_codex::TestCodex;
@@ -826,6 +827,10 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
 
     let server = start_mock_server().await;
     let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
@@ -870,6 +875,10 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
 
     let server = start_mock_server().await;
     let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
