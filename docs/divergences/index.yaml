@@ -407,7 +407,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while retaining the read-only context-budget helper and keeping interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution uses the selected environment shell instead of host shell lookup for default and matching explicit shell aliases. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [

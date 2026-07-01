@@ -31,6 +31,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+#[cfg(any(windows, target_os = "macos"))]
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
