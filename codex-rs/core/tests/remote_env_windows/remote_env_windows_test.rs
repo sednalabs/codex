@@ -19,7 +19,6 @@ use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
@@ -197,10 +196,8 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                             verify_end_seen = true
                         }
                         EventMsg::TurnComplete(_) => turn_complete = true,
-                        EventMsg::Error(ErrorEvent { message, .. }) => {
-                            return Err(anyhow::Error::msg(format!(
-                                "codex emitted error event: {message}"
-                            )));
+                        EventMsg::Error(_) => {
+                            return Err(anyhow::Error::msg("codex emitted error event"));
                         }
                         _ => {}
                     }
