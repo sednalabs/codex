@@ -125,9 +125,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     release-build verification keep hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the heavy
     Bazel work.
-  - Repo-wide argument-comment lint excludes the V8 proof-of-concept target so
-    hosted frontier lint harvests stay focused on ordinary Rust call-site
-    linting instead of cold-building the V8/ICU dependency graph.
+  - Hosted frontier argument-comment lint uses the prebuilt linter package so
+    frontier harvests stay focused on ordinary Rust call-site linting instead
+    of cold-building the V8/ICU dependency graph.
   - `core-carry-ui-smoke` uses the same hosted test stack floor as
     `core-carry-core-smoke` so stack-heavy TUI replay checks fail on behavior,
     not on runner-default stack limits.

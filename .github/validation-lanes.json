@@ -1564,8 +1564,8 @@
       "explicit_only": true,
       "frontier_default": false,
       "summary_family": "argument-comment-lint",
-      "cost_class": "high",
-      "timeout_minutes": 120,
+      "cost_class": "medium",
+      "timeout_minutes": 30,
       "setup_class": "workflow",
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/argument-comment-lint.sh",
@@ -1576,7 +1576,7 @@
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": false,
-      "needs_bazel": true
+      "needs_bazel": false
     },
     {
       "lane_id": "codex.downstream-docs-check",

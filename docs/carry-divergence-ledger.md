@@ -65,11 +65,11 @@ docs-only refresh commit that records this snapshot.
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
-  The argument-comment lint target list excludes the V8 proof-of-concept from
-  repo-wide hosted frontier linting so
-  cold runs do not spend the lane compiling V8/ICU before linting ordinary Rust
-  call sites; V8 proof-of-concept buildability remains covered by build/test
-  workflows. Direct-runtime permission profiles stay on the bubblewrap/seccomp
+  Hosted frontier argument-comment lint uses the prebuilt linter package so
+  cold validation-lab runs do not spend the lane compiling V8/ICU before
+  linting ordinary Rust call sites; V8 proof-of-concept buildability remains
+  covered by build/test workflows. Direct-runtime permission profiles stay on
+  the bubblewrap/seccomp
   enforcement path when legacy Landlock is configured so sandbox validation
   fails safely instead of weakening policy. TUI carry smoke uses the same
   hosted test stack floor as core carry smoke so frontier/checkpoint validation

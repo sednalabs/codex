@@ -778,7 +778,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(lane["script_args"], [])
         self.assertFalse(lane["needs_just"])
 
-    def test_argument_comment_lint_lane_uses_bazel_setup_contract(self) -> None:
+    def test_argument_comment_lint_lane_uses_prebuilt_setup_contract(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
@@ -791,11 +791,11 @@ class RouteSelectionTests(unittest.TestCase):
             ".github/scripts/validation-lanes/argument-comment-lint.sh",
         )
         self.assertEqual(lane["script_args"], [])
-        self.assertTrue(lane["needs_bazel"])
+        self.assertFalse(lane["needs_bazel"])
         self.assertTrue(lane["needs_linux_build_deps"])
         self.assertTrue(lane["needs_dotslash"])
         self.assertFalse(lane["needs_sccache"])
-        self.assertEqual(lane["timeout_minutes"], 120)
+        self.assertEqual(lane["timeout_minutes"], 30)
 
     def test_bazel_macos_clippy_caps_hosted_runner_fanout(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
