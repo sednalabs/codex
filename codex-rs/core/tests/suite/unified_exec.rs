@@ -20,6 +20,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
+use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
@@ -41,6 +42,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
@@ -3373,9 +3375,15 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec";
-    let args = serde_json::json!({
-        "cmd": "echo 'hello crossplat'",
-    });
+    let args = match test_target_os() {
+        TestTargetOs::Windows => serde_json::json!({
+            "cmd": "echo hello crossplat",
+            "shell": "cmd",
+        }),
+        TestTargetOs::Linux | TestTargetOs::MacOs => serde_json::json!({
+            "cmd": "echo 'hello crossplat'",
+        }),
+    };
 
     let responses = vec![
         sse(vec![
@@ -3407,6 +3415,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).expect("missing output");
 
+    assert_eq!(output.exit_code, Some(0));
     // TODO: Weaker match because windows produces control characters
     assert_regex_match(".*hello crossplat.*", &output.output);
 

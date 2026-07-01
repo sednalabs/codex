@@ -4078,10 +4078,12 @@ impl ChatComposer {
         self.draft.textarea.replace_element_payload_by_id(id, text)
     }
 
+    #[allow(dead_code)]
     pub fn insert_recording_meter_placeholder(&mut self, text: &str) -> String {
         self.draft.textarea.insert_element(text).to_string()
     }
 
+    #[allow(dead_code)]
     pub fn remove_recording_meter_placeholder(&mut self, id: &str) {
         if let Ok(id) = id.parse::<u64>() {
             let _ = self.draft.textarea.remove_element_by_id(id);

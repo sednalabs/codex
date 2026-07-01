@@ -54,10 +54,7 @@ use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
 use crate::history_cell::HistoryCell;
 
-#[expect(
-    dead_code,
-    reason = "non-Linux realtime voice carry keeps device-selection events available"
-)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioDeviceKind {
     Microphone,
@@ -82,10 +79,7 @@ pub(crate) struct HistoryLookupResponse {
 }
 
 impl RealtimeAudioDeviceKind {
-    #[expect(
-        dead_code,
-        reason = "non-Linux realtime voice carry uses this label when device selection is enabled"
-    )]
+    #[allow(dead_code)]
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Microphone => "Microphone",
