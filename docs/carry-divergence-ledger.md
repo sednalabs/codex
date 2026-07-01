@@ -316,6 +316,13 @@ docs-only refresh commit that records this snapshot.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
+- Code-mode nested `exec_command` output follows the same model-policy bounded
+  unified-exec summary shape before JavaScript observes `result.output`; do not
+  restore raw large-output preservation expectations in code-mode tests when
+  the tool response already carries truncation warning headers.
+- Code mode may expose the read-only `get_context_remaining` helper so scripts
+  can inspect remaining budget, but interactive direct-model-only tools such as
+  `request_user_input` remain hidden from nested execution.
 - In local downstream workflows, this composes with existing blocking
   coordination primitives such as `wait_agent` and helper-backed `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
@@ -336,7 +343,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/compact.rs`
   - `codex-rs/core/src/compact_remote.rs`
+  - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
+  - `codex-rs/core/tests/suite/code_mode.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`

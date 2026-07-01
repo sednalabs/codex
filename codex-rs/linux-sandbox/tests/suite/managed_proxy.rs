@@ -6,6 +6,7 @@ use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::models::PermissionProfile;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -63,14 +64,19 @@ async fn should_skip_bwrap_tests() -> bool {
     let mut env = create_env_from_core_vars();
     strip_proxy_env(&mut env);
 
-    let output = run_linux_sandbox_direct(
+    let output = match try_run_linux_sandbox_direct(
         &["bash", "-c", "true"],
         &PermissionProfile::read_only(),
         /*allow_network_for_proxy*/ false,
         env,
         NETWORK_TIMEOUT_MS,
     )
-    .await;
+    .await
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == ErrorKind::NotFound => return true,
+        Err(err) => panic!("sandbox command should execute: {err}"),
+    };
     is_bwrap_unavailable_output(&output)
 }
 
@@ -119,6 +125,24 @@ async fn run_linux_sandbox_direct(
     env: HashMap<String, String>,
     timeout_ms: u64,
 ) -> Output {
+    try_run_linux_sandbox_direct(
+        command,
+        permission_profile,
+        allow_network_for_proxy,
+        env,
+        timeout_ms,
+    )
+    .await
+    .expect("sandbox command should execute")
+}
+
+async fn try_run_linux_sandbox_direct(
+    command: &[&str],
+    permission_profile: &PermissionProfile,
+    allow_network_for_proxy: bool,
+    env: HashMap<String, String>,
+    timeout_ms: u64,
+) -> std::io::Result<Output> {
     let cwd = std::env::current_dir().expect("current directory should exist");
     let permission_profile_json =
         serde_json::to_string(permission_profile).expect("permission profile should serialize");
@@ -146,7 +170,6 @@ async fn run_linux_sandbox_direct(
     tokio::time::timeout(Duration::from_millis(timeout_ms), cmd.output())
         .await
         .expect("sandbox command should not time out")
-        .expect("sandbox command should execute")
 }
 
 #[tokio::test]

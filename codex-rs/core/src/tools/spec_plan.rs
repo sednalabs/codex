@@ -52,6 +52,7 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::get_context_remaining_spec::GET_CONTEXT_REMAINING_TOOL_NAME;
 use crate::tools::handlers::request_user_input_spec::REQUEST_USER_INPUT_TOOL_NAME;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
@@ -514,6 +515,10 @@ fn is_unsupported_code_mode_nested_tool(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none() && tool_name.name == REQUEST_USER_INPUT_TOOL_NAME
 }
 
+fn direct_model_only_tool_is_supported_by_code_mode(tool_name: &ToolName) -> bool {
+    tool_name.namespace.is_none() && tool_name.name == GET_CONTEXT_REMAINING_TOOL_NAME
+}
+
 fn build_code_mode_executors(
     turn_context: &TurnContext,
     executors: &[Arc<dyn CoreToolRuntime>],
@@ -531,7 +536,9 @@ fn build_code_mode_executors(
     for executor in executors {
         let exposure = executor.exposure();
         let tool_name = executor.tool_name();
-        if exposure == ToolExposure::DirectModelOnly {
+        if exposure == ToolExposure::DirectModelOnly
+            && !direct_model_only_tool_is_supported_by_code_mode(&tool_name)
+        {
             continue;
         }
 

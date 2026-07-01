@@ -154,7 +154,7 @@ impl ExecCommandHandler {
         let environment = Arc::clone(&turn_environment.environment);
         let native_cwd = match cwd_uri.to_abs_path() {
             Ok(cwd) => Some(cwd),
-            Err(err) if environment.is_remote() => None,
+            Err(_) if environment.is_remote() => None,
             Err(err) => {
                 return Err(FunctionCallError::RespondToModel(format!(
                     "exec_command cwd `{cwd_uri}` is not native to the Codex host: {err}"
@@ -165,7 +165,12 @@ impl ExecCommandHandler {
         // URI-aware execution keeps the target cwd below. Some legacy parsing
         // and permission helpers still need a host-native cwd, so use the
         // turn's local fallback only for that bookkeeping on foreign remotes.
-        let host_native_cwd_for_policy = native_cwd.as_ref().unwrap_or(&turn.cwd);
+        #[allow(deprecated)]
+        let fallback_local_cwd = native_cwd.is_none().then(|| turn.cwd.clone());
+        let host_native_cwd_for_policy = native_cwd
+            .as_ref()
+            .or(fallback_local_cwd.as_ref())
+            .expect("remote cwd fallback should be available");
         let args: ExecCommandArgs =
             parse_arguments_with_base_path(&arguments, host_native_cwd_for_policy)?;
         let hook_command = args.cmd.clone();

@@ -21,6 +21,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -88,6 +89,18 @@ async fn run_cmd_output(
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
             if is_bwrap_unavailable_output(&output) =>
         {
+            let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
+                cmd,
+                writable_roots,
+                timeout_ms,
+                /*use_legacy_landlock*/ true,
+                /*network_access*/ false,
+            )
+            .await
+            .expect("sandboxed command should execute with legacy Landlock fallback");
+            output
+        }
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => {
             let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
                 cmd,
                 writable_roots,
@@ -246,6 +259,7 @@ async fn should_skip_bwrap_tests() -> bool {
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => {
             is_bwrap_unavailable_output(&output)
         }
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
         // Probe timeouts are not actionable for the bwrap-specific assertions below;
         // skip rather than fail the whole suite.
         Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,

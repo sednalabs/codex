@@ -104,6 +104,12 @@ User-visible behavior:
 - Tool-spec guardrails cover the full blocking-wait contract, including the
   surfaced wait fields, invalid-type rejection, and the empty-`chars`
   requirement for `write_stdin(wait_until_terminal=true)`.
+- Code-mode nested `exec_command` results use the same bounded unified-exec
+  output summaries, including truncation warning headers, before any later
+  code-mode or history output budget applies.
+- Code mode keeps the read-only `get_context_remaining` budget helper
+  available while direct-model-only tools that require interactive user input
+  stay hidden from nested execution.
 - `TurnCompleteEvent` includes `compaction_events_in_turn`.
 - Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
 - Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
