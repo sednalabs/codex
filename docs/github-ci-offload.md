@@ -193,7 +193,7 @@ verification must stay dry-run-only from the public Actions surface.
      repeating the whole family.
    - The workflow summary now records the profile intent, profile notes, and a
      compact lane-selection summary for operator handoff.
-   - Explicit lint lane: `codex.argument-comment-lint` runs the Bazel-backed
+   - Explicit lint lane: `codex.argument-comment-lint` runs the prebuilt
      argument-comment check (it verifies required explanatory comments for
      command arguments) as a selectable hosted lane, so comment-lint failures
      can be proven without broad local Rust validation.

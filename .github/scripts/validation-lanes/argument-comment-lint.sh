@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-commit_sha="$(git rev-parse HEAD 2>/dev/null || printf '%s' "${GITHUB_SHA:-unknown}")"
-bazel_targets=()
-while IFS= read -r bazel_target; do
-  [[ -n "${bazel_target}" ]] || continue
-  bazel_targets+=("${bazel_target}")
-done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
+run_lint() {
+  local log_path="$1"
+  ./tools/argument-comment-lint/run-prebuilt-linter.py -- --all-targets --ignore-rust-version 2>&1 | tee "${log_path}"
+}
 
-./.github/scripts/run-bazel-ci.sh \
-  -- \
-  build \
-  --config=argument-comment-lint \
-  --keep_going \
-  "--build_metadata=COMMIT_SHA=${commit_sha}" \
-  -- \
-  "${bazel_targets[@]}"
+is_transient_cargo_fetch_failure() {
+  local log_path="$1"
+  grep -Eiq \
+    'cargo metadata.*exited with an error|failed to get .* as a dependency|unable to update registry|download of .* failed|curl failed' \
+    "${log_path}"
+}
+
+first_log="$(mktemp)"
+if run_lint "${first_log}"; then
+  exit 0
+fi
+
+if ! is_transient_cargo_fetch_failure "${first_log}"; then
+  exit 1
+fi
+
+echo "argument-comment-lint hit a transient Cargo fetch/metadata failure; retrying once" >&2
+retry_log="$(mktemp)"
+run_lint "${retry_log}"
