@@ -824,7 +824,7 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
     let server_name = "rmcp_local_fallback_cwd";
     let expected_cwd = Arc::new(Mutex::new(None::<PathBuf>));
     let expected_cwd_for_config = Arc::clone(&expected_cwd);
-    let rmcp_test_server_bin = cargo_bin("test_stdio_server")?;
+    let rmcp_test_server_bin = PathBuf::from(stdio_server_bin()?);
     let relative_server_path = PathBuf::from("mcp-bin").join(
         rmcp_test_server_bin
             .file_name()
