@@ -208,7 +208,7 @@ mod config_lock;
 pub(crate) mod context_window;
 mod handlers;
 mod inject;
-mod input_queue;
+pub(crate) mod input_queue;
 mod mcp;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
