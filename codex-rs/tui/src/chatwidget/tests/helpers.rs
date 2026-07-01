@@ -148,7 +148,7 @@ pub(super) fn cache_project_root_name(chat: &mut ChatWidget, root_name: Option<&
 }
 
 pub(super) fn cache_missing_project_root(chat: &mut ChatWidget) {
-    cache_project_root_name(chat, None);
+    cache_project_root_name(chat, /*root_name*/ None);
 }
 
 // --- Helpers for tests that need direct construction and event draining ---

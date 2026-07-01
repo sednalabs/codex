@@ -3179,12 +3179,13 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
     })
     .await;
 
-    let turn_id = loop {
-        let event = test.codex.next_event().await?;
-        if let EventMsg::TurnStarted(turn_started) = event.msg {
-            break turn_started.turn_id;
+    let turn_id = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::TurnStarted(turn_started) if Uuid::parse_str(&turn_started.turn_id).is_ok() => {
+            Some(turn_started.turn_id.clone())
         }
-    };
+        _ => None,
+    })
+    .await;
     Uuid::parse_str(&turn_id).context("realtime-routed turn ID should be a UUID")?;
 
     wait_for_event(&test.codex, |event| {

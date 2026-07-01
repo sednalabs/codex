@@ -1008,7 +1008,7 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
         vec![json!({
             "type": "namespace",
             "name": "codex_app",
-            "description": "Automation tools.",
+            "description": "Tools in the codex_app namespace.",
             "tools": [{
                 "type": "function",
                 "name": tool_name,

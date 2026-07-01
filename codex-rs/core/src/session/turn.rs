@@ -130,8 +130,8 @@ use tracing::trace_span;
 use tracing::warn;
 
 #[derive(Clone, Debug)]
-struct CachedEndpointRecommendedPluginCandidates {
-    tools: Vec<DiscoverableTool>,
+pub(crate) struct CachedEndpointRecommendedPluginCandidates {
+    pub(crate) tools: Vec<DiscoverableTool>,
 }
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
