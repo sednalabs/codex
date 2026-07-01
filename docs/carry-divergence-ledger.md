@@ -74,6 +74,10 @@ docs-only refresh commit that records this snapshot.
   fails safely instead of weakening policy. TUI carry smoke uses the same
   hosted test stack floor as core carry smoke so frontier/checkpoint validation
   can stay on GitHub hosted compute instead of falling back to local compute.
+  Remote executor sweeps skip host-local managed-network approval and denial
+  fixtures until the remote harness provides a proxy endpoint reachable from the
+  target process; environment-specific approval scoping remains covered by unit
+  tests and host-local integration.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in

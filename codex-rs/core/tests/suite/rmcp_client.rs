@@ -849,13 +849,14 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
             insert_mcp_server(
                 config,
                 server_name,
-                stdio_transport(
+                stdio_transport_with_cwd(
                     relative_command,
                     Some(HashMap::from([(
                         "MCP_TEST_VALUE".to_string(),
                         "local-fallback-cwd".to_string(),
                     )])),
                     Vec::new(),
+                    /*cwd*/ None,
                 ),
                 TestMcpServerOptions::default(),
             );
@@ -2839,13 +2840,15 @@ async fn start_remote_streamable_http_test_server(
         wait_for_remote_bound_addr(container_name, &bound_addr_file, Duration::from_secs(5))
             .await?;
     let container_ip = remote_container_ip(container_name)?;
-    let server_url = format!("http://{}:{}/mcp", container_ip, remote_bind_addr.port());
-    // The orchestrator can see the Docker container IP, but the behavior under
-    // test is whether the remote-side MCP client can reach it. Probe through
-    // remote HTTP before handing the URL to the Codex fixture.
+    let port = remote_bind_addr.port();
+    let orchestrator_url = format!("http://{container_ip}:{port}/mcp");
+    let server_url = format!("http://127.0.0.1:{port}/mcp");
+    // The orchestrator can see the Docker container IP, but the MCP client runs
+    // inside the same container as the test server. Give Codex the loopback URL
+    // so the RMCP transport's host-header guard sees a local endpoint.
     wait_for_remote_streamable_http_server(&server_url, Duration::from_secs(5)).await?;
     if auth.is_some() {
-        wait_for_streamable_http_metadata(&server_url, Duration::from_secs(5)).await?;
+        wait_for_streamable_http_metadata(&orchestrator_url, Duration::from_secs(5)).await?;
     }
 
     Ok(StreamableHttpTestServer {
