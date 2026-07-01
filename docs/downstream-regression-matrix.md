@@ -79,6 +79,10 @@ Wine-backed executor note:
   is intentionally skipped under `CODEX_TEST_ENVIRONMENT=wine-exec`; Wine
   coverage belongs in the Windows remote-environment lanes instead of this
   generic cross-platform shell check.
+- `encrypted_multi_agent_v2_spawn_sends_agent_message_to_child` is likewise a
+  host-native encrypted request wire-shape assertion; Wine coverage for
+  sub-agent execution belongs in runner-locality-specific lanes, not this
+  serialization check.
 
 Focused lane used for protocol/event-history seams:
 
