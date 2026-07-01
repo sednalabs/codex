@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::session::input_queue::InputQueueActivity;
 use crate::session::session::Session;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
@@ -161,7 +162,8 @@ impl Handler {
             turn.config.multi_agent_v2.max_wait_timeout_ms,
             turn.config.multi_agent_v2.default_wait_timeout_ms,
         )?;
-        let mut mailbox_rx = session.input_queue.subscribe_mailbox().await;
+        let (mut input_activity_rx, pending_input_activity) =
+            session.input_queue.subscribe_activity(None).await;
 
         session
             .send_event(
@@ -226,6 +228,7 @@ impl Handler {
             &final_statuses,
             &receiver_thread_ids,
             wake_on_mailbox,
+            pending_input_activity,
         )
         .await
         {
@@ -233,7 +236,7 @@ impl Handler {
         } else {
             wait_for_wake_source(
                 session.clone(),
-                &mut mailbox_rx,
+                &mut input_activity_rx,
                 status_rxs,
                 &receiver_thread_ids,
                 completion_rule,
@@ -325,10 +328,14 @@ async fn ready_wake_source(
     final_statuses: &HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
+    pending_input_activity: Option<InputQueueActivity>,
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
-    } else if wake_on_mailbox && session.input_queue.has_pending_mailbox_items().await {
+    } else if wake_on_mailbox
+        && (pending_input_activity.is_some()
+            || session.input_queue.has_pending_input(&session.active_turn).await)
+    {
         Some(WakeSource::Mailbox)
     } else {
         None
@@ -439,7 +446,7 @@ async fn wait_for_final_status(
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_wake_source(
     session: std::sync::Arc<Session>,
-    mailbox_rx: &mut tokio::sync::watch::Receiver<()>,
+    input_activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
     status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
     receiver_thread_ids: &[ThreadId],
     completion_rule: CompletionRule,
@@ -471,8 +478,8 @@ async fn wait_for_wake_source(
                     None => {}
                 }
             }
-            mailbox_changed = mailbox_rx.changed(), if wake_on_mailbox => {
-                if mailbox_changed.is_ok() {
+            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox => {
+                if input_activity_changed.is_ok() {
                     return WakeSource::Mailbox;
                 }
             }

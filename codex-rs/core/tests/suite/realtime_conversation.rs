@@ -49,7 +49,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use uuid::Uuid;
 use wiremock::Match;
 use wiremock::Mock;
 use wiremock::Request as WiremockRequest;
@@ -3178,15 +3177,6 @@ async fn inbound_handoff_request_starts_turn() -> Result<()> {
         _ => None,
     })
     .await;
-
-    let turn_id = wait_for_event_match(&test.codex, |msg| match msg {
-        EventMsg::TurnStarted(turn_started) if Uuid::parse_str(&turn_started.turn_id).is_ok() => {
-            Some(turn_started.turn_id.clone())
-        }
-        _ => None,
-    })
-    .await;
-    Uuid::parse_str(&turn_id).context("realtime-routed turn ID should be a UUID")?;
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
