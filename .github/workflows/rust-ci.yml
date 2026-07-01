@@ -527,6 +527,8 @@ jobs:
       - name: Run argument comment lint on codex-rs
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         uses: ./.github/actions/run-argument-comment-lint
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           target: ${{ runner.os }}
 
