@@ -29,6 +29,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -1066,6 +1067,11 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "asserts host-native encrypted child request wire shape"
+    );
+
     let server = start_mock_server().await;
     let encrypted_message = "opaque-encrypted-message";
     let spawn_args = serde_json::to_string(&json!({
