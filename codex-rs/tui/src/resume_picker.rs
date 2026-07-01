@@ -638,7 +638,11 @@ fn spawn_app_server_page_loader(
             }
         }
         if let Err(err) = app_server.shutdown().await {
-            warn!(%err, "Failed to shut down app-server picker session");
+            let err = err.to_string();
+            warn!(
+                err = err.as_str(),
+                "Failed to shut down app-server picker session"
+            );
         }
     });
 

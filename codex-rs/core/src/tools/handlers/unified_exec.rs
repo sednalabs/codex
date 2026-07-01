@@ -17,6 +17,7 @@ use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::resolve_max_tokens;
 use codex_exec_server::Environment;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_shell_command::shell_detect::detect_shell_type;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
@@ -204,7 +205,7 @@ fn post_unified_exec_tool_use_payload(
 
 pub(crate) fn get_command(
     args: &ExecCommandArgs,
-    session_shell: Arc<Shell>,
+    default_shell: &Shell,
     shell_mode: &UnifiedExecShellMode,
     allow_login_shell: bool,
 ) -> Result<ResolvedCommand, String> {
@@ -223,8 +224,8 @@ pub(crate) fn get_command(
             let model_shell = args
                 .shell
                 .as_ref()
-                .map(|shell_str| get_shell_by_model_provided_path(&PathBuf::from(shell_str)));
-            let shell = model_shell.as_ref().unwrap_or(session_shell.as_ref());
+                .map(|shell_str| resolve_model_shell(shell_str, default_shell));
+            let shell = model_shell.as_ref().unwrap_or(default_shell);
             Ok(ResolvedCommand {
                 command: shell.derive_exec_args(&args.cmd, use_login_shell),
                 shell_type: shell.shell_type,
@@ -247,6 +248,19 @@ pub(crate) fn get_command(
             })
         }
     }
+}
+
+fn resolve_model_shell(shell_str: &str, default_shell: &Shell) -> Shell {
+    let shell_path = PathBuf::from(shell_str);
+    let is_bare_alias = shell_path.components().count() == 1;
+    if is_bare_alias
+        && detect_shell_type(&shell_path)
+            .is_some_and(|shell_type| shell_type == default_shell.shell_type)
+    {
+        return default_shell.clone();
+    }
+
+    get_shell_by_model_provided_path(&shell_path)
 }
 
 pub(crate) fn shell_mode_for_environment(

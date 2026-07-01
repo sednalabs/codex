@@ -189,9 +189,14 @@ impl ExecCommandHandler {
         let process_id = manager.allocate_process_id().await;
         let shell_mode =
             shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
+        let session_shell = session.user_shell();
+        let command_shell = turn_environment
+            .shell
+            .as_ref()
+            .unwrap_or(session_shell.as_ref());
         let resolved_command = get_command(
             &args,
-            session.user_shell(),
+            command_shell,
             &shell_mode,
             turn.config.permissions.allow_login_shell,
         )

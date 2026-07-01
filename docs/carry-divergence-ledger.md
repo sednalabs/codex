@@ -326,6 +326,10 @@ docs-only refresh commit that records this snapshot.
   unified-exec summary shape before JavaScript observes `result.output`; do not
   restore raw large-output preservation expectations in code-mode tests when
   the tool response already carries truncation warning headers.
+- Remote unified-exec command resolution must use the selected environment's
+  shell when the model omits `shell`, and must reuse that environment shell for
+  matching explicit aliases such as `powershell` instead of resolving them on
+  the host running Codex.
 - Code mode may expose the read-only `get_context_remaining` helper so scripts
   can inspect remaining budget, but interactive direct-model-only tools such as
   `request_user_input` remain hidden from nested execution.
@@ -351,7 +355,10 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/compact_remote.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
+  - `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`
   - `codex-rs/core/tests/suite/code_mode.rs`
+  - `codex-rs/core/tests/suite/remote_env.rs`
+  - `codex-rs/core/tests/suite/unified_exec.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`

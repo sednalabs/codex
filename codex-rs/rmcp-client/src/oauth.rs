@@ -1469,7 +1469,7 @@ mod tests {
 
         let loaded = super::load_oauth_tokens_from_keyring(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens.url,
         )?
@@ -1561,7 +1561,7 @@ mod tests {
 
         super::save_oauth_tokens_with_keyring_with_fallback_to_file(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens,
         )?;
@@ -1583,7 +1583,7 @@ mod tests {
 
         super::save_oauth_tokens_with_keyring_with_fallback_to_file(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens,
         )?;
@@ -1819,7 +1819,7 @@ mod tests {
             tokens.url.clone(),
             manager.clone(),
             ResolvedOAuthCredentialStore::Keyring,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             Some(tokens.clone()),
         );
         let refresh_timeout = Duration::from_secs(1);

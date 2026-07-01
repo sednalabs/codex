@@ -307,6 +307,14 @@ where
     wait_for_event_with_timeout(codex, predicate, Duration::from_secs(1)).await
 }
 
+fn default_event_wait_floor() -> tokio::time::Duration {
+    if cfg!(any(windows, target_os = "macos")) {
+        tokio::time::Duration::from_secs(30)
+    } else {
+        tokio::time::Duration::from_secs(10)
+    }
+}
+
 /// Waits for a configured MCP server to finish startup and requires it to be ready.
 pub async fn wait_for_mcp_server(codex: &CodexThread, server_name: &str) -> anyhow::Result<()> {
     use codex_protocol::protocol::EventMsg;
@@ -385,10 +393,13 @@ where
     use tokio::time::timeout;
     loop {
         // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
-        let ev = timeout(wait_time.max(Duration::from_secs(10)), codex.next_event())
-            .await
-            .expect("timeout waiting for event")
-            .expect("stream ended unexpectedly");
+        let ev = timeout(
+            wait_time.max(default_event_wait_floor()),
+            codex.next_event(),
+        )
+        .await
+        .expect("timeout waiting for event")
+        .expect("stream ended unexpectedly");
         if predicate(&ev.msg) {
             return ev.msg;
         }

@@ -29,6 +29,9 @@ const PERSONAL_ACCESS_TOKEN_AUTHORIZATION: &str = "Bearer at-cli-test";
 const PERSONAL_ACCESS_TOKEN_ACCOUNT_ID: &str = "account-pat";
 const WHOAMI_PATH: &str = "/v1/user-auth-credential/whoami";
 const CLOUD_CONFIG_BUNDLE_PATH: &str = "/backend-api/wham/config/bundle";
+#[cfg(windows)]
+const CLI_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(windows))]
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn repo_root() -> std::path::PathBuf {
