@@ -100,7 +100,7 @@ pub(crate) enum AppCommand {
     Review {
         target: ReviewTarget,
     },
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    #[allow(dead_code)]
     RealtimeConversationAudio {
         audio: ThreadRealtimeAudioChunk,
     },
@@ -269,7 +269,7 @@ impl AppCommand {
         Self::Review { target }
     }
 
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn realtime_conversation_audio(audio: ThreadRealtimeAudioChunk) -> Self {
         Self::RealtimeConversationAudio { audio }
     }

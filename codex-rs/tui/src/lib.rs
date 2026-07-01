@@ -223,6 +223,7 @@ mod updates;
 mod updates_cache;
 mod version;
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 mod voice;
 mod width;
 #[cfg(any(target_os = "windows", test))]
