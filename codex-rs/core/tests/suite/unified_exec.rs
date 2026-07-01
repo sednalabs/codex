@@ -38,6 +38,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
@@ -3363,6 +3364,10 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Wine-backed executor does not provide a command shell for this generic smoke"
+    );
 
     let server = start_mock_server().await;
 

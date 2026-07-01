@@ -73,6 +73,13 @@ Validation workflow reference:
 
 - `docs/validation_workflow.md`
 
+Wine-backed executor note:
+
+- `unified_exec_runs_on_all_platforms` is a host-native command-shell smoke and
+  is intentionally skipped under `CODEX_TEST_ENVIRONMENT=wine-exec`; Wine
+  coverage belongs in the Windows remote-environment lanes instead of this
+  generic cross-platform shell check.
+
 Focused lane used for protocol/event-history seams:
 
 - `codex.app-server-protocol-test`
