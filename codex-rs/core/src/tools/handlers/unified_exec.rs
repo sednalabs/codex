@@ -205,7 +205,8 @@ fn post_unified_exec_tool_use_payload(
 
 pub(crate) fn get_command(
     args: &ExecCommandArgs,
-    default_shell: &Shell,
+    session_shell: &Shell,
+    environment_shell: Option<&Shell>,
     shell_mode: &UnifiedExecShellMode,
     allow_login_shell: bool,
 ) -> Result<ResolvedCommand, String> {
@@ -221,11 +222,12 @@ pub(crate) fn get_command(
 
     match shell_mode {
         UnifiedExecShellMode::Direct => {
+            let explicit_shell_default = environment_shell.unwrap_or(session_shell);
             let model_shell = args
                 .shell
                 .as_ref()
-                .map(|shell_str| resolve_model_shell(shell_str, default_shell));
-            let shell = model_shell.as_ref().unwrap_or(default_shell);
+                .map(|shell_str| resolve_model_shell(shell_str, explicit_shell_default));
+            let shell = model_shell.as_ref().unwrap_or(session_shell);
             Ok(ResolvedCommand {
                 command: shell.derive_exec_args(&args.cmd, use_login_shell),
                 shell_type: shell.shell_type,
