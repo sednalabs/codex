@@ -31,6 +31,7 @@ use core_test_support::apps_test_server::configure_search_capable_model;
 use core_test_support::apps_test_server::recorded_apps_tool_call_by_call_id;
 use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::apps_test_server::search_capable_apps_builder as configured_builder;
+use core_test_support::is_remote_test_environment;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -866,6 +867,10 @@ async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let search_call_id = "tool-search-1";
@@ -1046,6 +1051,10 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount_searchable(&server).await?;
@@ -1179,6 +1188,10 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount_searchable(&server).await?;
@@ -1338,6 +1351,10 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_description() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount_searchable(&server).await?;

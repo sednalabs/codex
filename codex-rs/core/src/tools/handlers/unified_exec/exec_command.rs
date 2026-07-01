@@ -165,12 +165,15 @@ impl ExecCommandHandler {
         // URI-aware execution keeps the target cwd below. Some legacy parsing
         // and permission helpers still need a host-native cwd, so use the
         // turn's local fallback only for that bookkeeping on foreign remotes.
-        #[allow(deprecated)]
-        let fallback_local_cwd = native_cwd.is_none().then(|| turn.cwd.clone());
-        let host_native_cwd_for_policy = native_cwd
-            .as_ref()
-            .or(fallback_local_cwd.as_ref())
-            .expect("remote cwd fallback should be available");
+        let host_native_cwd_for_policy = match native_cwd.as_ref() {
+            Some(cwd) => cwd,
+            None => {
+                #[allow(deprecated)]
+                {
+                    &turn.cwd
+                }
+            }
+        };
         let args: ExecCommandArgs =
             parse_arguments_with_base_path(&arguments, host_native_cwd_for_policy)?;
         let hook_command = args.cmd.clone();
