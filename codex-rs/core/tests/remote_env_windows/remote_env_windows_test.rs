@@ -20,8 +20,11 @@ use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandBeginEvent;
+use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
@@ -49,6 +52,12 @@ use wine_exec_server_test_support::WineExecServer;
 const APP_SERVER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const REMOTE_WINDOWS_COMMAND_YIELD_MS: u64 = 10_000;
 const REMOTE_WINDOWS_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+struct RemoteWindowsSmokeEvents {
+    command_begin: ExecCommandBeginEvent,
+    command_end: ExecCommandEndEvent,
+    patch_end: PatchApplyEndEvent,
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
@@ -161,11 +170,11 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 })
                 .await?;
 
-            let (begin, end, patch_end) = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
-                let mut begin = None;
-                let mut end = None;
+            let events = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
+                let mut command_begin = None;
+                let mut command_end = None;
                 let mut patch_end = None;
-                let mut verify_end = None;
+                let mut verify_end_seen = false;
                 let mut turn_complete = false;
                 loop {
                     let event = test
@@ -175,68 +184,79 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                         .context("event stream ended unexpectedly")?;
                     match event.msg {
                         EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
-                            begin = Some(event)
+                            command_begin = Some(event)
                         }
                         EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
-                            end = Some(event)
+                            command_end = Some(event)
                         }
                         EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
                             patch_end = Some(event)
                         }
                         EventMsg::ExecCommandEnd(event) if event.call_id == VERIFY_CALL_ID => {
-                            verify_end = Some(event)
+                            verify_end_seen = true
                         }
                         EventMsg::TurnComplete(_) => turn_complete = true,
-                        EventMsg::Error(error) => {
-                            anyhow::bail!("codex emitted error event: {}", error.message);
+                        EventMsg::Error(err_event) => {
+                            anyhow::bail!("codex emitted error event: {}", err_event.message);
                         }
                         _ => {}
                     }
                     if turn_complete
-                        && begin.is_some()
-                        && end.is_some()
+                        && command_begin.is_some()
+                        && command_end.is_some()
                         && patch_end.is_some()
-                        && verify_end.is_some()
+                        && verify_end_seen
                     {
                         break;
                     }
                 }
 
-                Ok::<_, anyhow::Error>((
-                    begin.context("exec_command should emit a begin event")?,
-                    end.context("exec_command should emit an end event")?,
-                    patch_end.context("intercepted apply_patch should emit an end event")?,
-                ))
+                Ok::<_, anyhow::Error>(RemoteWindowsSmokeEvents {
+                    command_begin: command_begin.context("exec_command should emit a begin event")?,
+                    command_end: command_end.context("exec_command should emit an end event")?,
+                    patch_end: patch_end
+                        .context("intercepted apply_patch should emit an end event")?,
+                })
             })
             .await
             .context("timeout waiting for remote Windows smoke events")??;
 
             assert!(
-                begin.command.first().is_some_and(|command| command
+                events.command_begin.command.first().is_some_and(|command| command
                     .to_ascii_lowercase()
                     .ends_with("pwsh.exe")),
                 "unexpected command: {:?}",
-                begin.command
+                events.command_begin.command
             );
-            assert_eq!(&begin.command[1..], ["-NoProfile", "-Command", COMMAND]);
+            assert_eq!(
+                &events.command_begin.command[1..],
+                ["-NoProfile", "-Command", COMMAND]
+            );
 
             let expected_cwd = PathUri::parse("file:///C:/windows")?;
-            assert_eq!((&begin.cwd, &end.cwd), (&expected_cwd, &expected_cwd));
-            assert_eq!((end.exit_code, end.status), (0, ExecCommandStatus::Completed));
+            assert_eq!(
+                (&events.command_begin.cwd, &events.command_end.cwd),
+                (&expected_cwd, &expected_cwd)
+            );
+            assert_eq!(
+                (events.command_end.exit_code, events.command_end.status),
+                (0, ExecCommandStatus::Completed)
+            );
 
             assert!(
-                patch_end.success,
+                events.patch_end.success,
                 "intercepted apply_patch failed: stdout={:?} stderr={:?}",
-                patch_end.stdout, patch_end.stderr
+                events.patch_end.stdout, events.patch_end.stderr
             );
             assert!(
-                patch_end
+                events
+                    .patch_end
                     .changes
                     .contains_key(&std::path::PathBuf::from(format!(
                         r"C:\codex-home\apply-patch-smoke\nested\{PATCH_FILE}"
                     ))),
                 "apply_patch should retain the Windows cwd: {:?}",
-                patch_end.changes
+                events.patch_end.changes
             );
             let request = response_mock
                 .last_request()

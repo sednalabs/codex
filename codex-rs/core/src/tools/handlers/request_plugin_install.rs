@@ -441,7 +441,7 @@ async fn refresh_remote_installed_plugins_cache_after_install(
 
 fn remove_cached_endpoint_recommended_plugin_candidate(
     turn: &crate::session::turn_context::TurnContext,
-    plugin_id: &str,
+    installed_plugin_id: &str,
 ) {
     let Some(cached) = turn
         .extension_data
@@ -452,12 +452,7 @@ fn remove_cached_endpoint_recommended_plugin_candidate(
 
     let mut tools = cached.tools.clone();
     let original_len = tools.len();
-    tools.retain(|tool| {
-        !matches!(
-            tool,
-            DiscoverableTool::Plugin(plugin) if plugin.id == plugin_id
-        )
-    });
+    tools.retain(|tool| !discoverable_tool_has_plugin_id(tool, installed_plugin_id));
     if tools.len() == original_len {
         return;
     }
@@ -467,6 +462,13 @@ fn remove_cached_endpoint_recommended_plugin_candidate(
     } else {
         turn.extension_data
             .insert(CachedEndpointRecommendedPluginCandidates { tools });
+    }
+}
+
+fn discoverable_tool_has_plugin_id(tool: &DiscoverableTool, plugin_id: &str) -> bool {
+    match tool {
+        DiscoverableTool::Plugin(plugin) => plugin.id == plugin_id,
+        _ => false,
     }
 }
 

@@ -68,8 +68,10 @@ docs-only refresh commit that records this snapshot.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
   linting ordinary Rust call sites; V8 proof-of-concept buildability remains
-  covered by build/test workflows. Direct-runtime permission profiles stay on
-  the bubblewrap/seccomp
+  covered by build/test workflows. Hosted `rust-ci` callers pass `GH_TOKEN`
+  through to the composite action so DotSlash can use authenticated
+  `gh release download` fallback on Windows. Direct-runtime permission profiles
+  stay on the bubblewrap/seccomp
   enforcement path when legacy Landlock is configured so sandbox validation
   fails safely instead of weakening policy. TUI carry smoke uses the same
   hosted test stack floor as core carry smoke so frontier/checkpoint validation
