@@ -43,6 +43,7 @@ const NETWORK_TIMEOUT_MS: u64 = 10_000;
 const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "bubblewrap is unavailable: no system bwrap was found";
+const LEGACY_LANDLOCK_DIRECT_RUNTIME_ERR: &str = "permission profiles requiring direct runtime enforcement are incompatible with --use-legacy-landlock";
 const BWRAP_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "setting up uid map: Permission denied",
     "No permissions to create a new namespace",
@@ -245,6 +246,13 @@ fn is_bwrap_unavailable_output(output: &ExecToolCallOutput) -> bool {
                 || output.stderr.text.contains("Invalid argument")))
 }
 
+fn is_legacy_landlock_direct_runtime_output(output: &ExecToolCallOutput) -> bool {
+    output
+        .stderr
+        .text
+        .contains(LEGACY_LANDLOCK_DIRECT_RUNTIME_ERR)
+}
+
 async fn should_skip_bwrap_tests() -> bool {
     match run_cmd_result_with_writable_roots(
         &["bash", "-lc", "true"],
@@ -279,6 +287,11 @@ async fn should_skip_sandbox_helper_tests() -> bool {
     {
         Ok(_) => false,
         Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
+        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
+            if is_legacy_landlock_direct_runtime_output(&output) =>
+        {
+            true
+        }
         Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,
         Err(err) => panic!("sandbox helper availability probe failed unexpectedly: {err:?}"),
     }

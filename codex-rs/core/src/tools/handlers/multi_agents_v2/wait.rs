@@ -162,8 +162,10 @@ impl Handler {
             turn.config.multi_agent_v2.max_wait_timeout_ms,
             turn.config.multi_agent_v2.default_wait_timeout_ms,
         )?;
-        let (mut input_activity_rx, pending_input_activity) =
-            session.input_queue.subscribe_activity(None).await;
+        let (mut input_activity_rx, pending_input_activity) = session
+            .input_queue
+            .subscribe_activity(/*turn_state*/ None)
+            .await;
 
         session
             .send_event(
@@ -334,7 +336,10 @@ async fn ready_wake_source(
         Some(WakeSource::TargetCompletion)
     } else if wake_on_mailbox
         && (pending_input_activity.is_some()
-            || session.input_queue.has_pending_input(&session.active_turn).await)
+            || session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await)
     {
         Some(WakeSource::Mailbox)
     } else {
