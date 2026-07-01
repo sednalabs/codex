@@ -55,7 +55,7 @@ fn test_get_command_uses_default_shell_when_unspecified() -> anyhow::Result<()> 
     let resolved = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -79,7 +79,7 @@ fn test_get_command_respects_explicit_bash_shell() -> anyhow::Result<()> {
     let resolved = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -122,7 +122,7 @@ fn test_get_command_respects_explicit_powershell_shell() -> anyhow::Result<()> {
     let resolved = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -216,7 +216,7 @@ fn test_get_command_respects_explicit_cmd_shell() -> anyhow::Result<()> {
     let resolved = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -236,7 +236,7 @@ fn test_get_command_rejects_explicit_login_when_disallowed() -> anyhow::Result<(
     let err = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ false,
     )
@@ -271,7 +271,7 @@ fn test_get_command_rejects_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
     let err = get_command(
         &args,
         &default_shell,
-        None,
+        /*environment_shell*/ None,
         &shell_mode,
         /*allow_login_shell*/ true,
     )

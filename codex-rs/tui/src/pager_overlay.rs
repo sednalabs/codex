@@ -1617,7 +1617,7 @@ mod tests {
     fn paragraph_block(label: &str, lines: usize) -> Box<dyn Renderable> {
         let text = Text::from(
             (0..lines)
-                .map(|i| Line::from(format!("{}{}", label, i)))
+                .map(|i| Line::from(format!("{label}{i}")))
                 .collect::<Vec<_>>(),
         );
         Box::new(Paragraph::new(text)) as Box<dyn Renderable>

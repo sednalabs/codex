@@ -7,6 +7,7 @@ use tracing::warn;
 const PREFERRED_INPUT_SAMPLE_RATE: u32 = 24_000;
 const PREFERRED_INPUT_CHANNELS: u16 = 1;
 
+#[allow(dead_code)]
 pub(crate) fn list_realtime_audio_device_names(
     kind: RealtimeAudioDeviceKind,
 ) -> Result<Vec<String>, String> {
