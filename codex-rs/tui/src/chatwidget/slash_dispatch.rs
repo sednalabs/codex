@@ -428,7 +428,7 @@ impl ChatWidget {
                             }
                             Err(e) => {
                                 let mut message = "Failed to compute diff: ".to_string();
-                                message.push_str(&e.to_string());
+                                message.push_str(e.as_str());
                                 message
                             }
                         },
