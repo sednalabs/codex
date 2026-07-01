@@ -1503,7 +1503,7 @@ pub(super) fn plugins_test_detail(
             .flat_map(|(event_index, (event_name, handler_count))| {
                 (0..*handler_count).map(move |handler_index| {
                     codex_app_server_protocol::PluginHookSummary {
-                        key: format!("plugin:{event_index}:{handler_index}"),
+                        key: format!("plugin:{}:{}", event_index, handler_index),
                         event_name: *event_name,
                     }
                 })

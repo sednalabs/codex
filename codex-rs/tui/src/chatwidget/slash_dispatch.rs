@@ -426,7 +426,7 @@ impl ChatWidget {
                                     "`/diff` — _not inside a git repository_".to_string()
                                 }
                             }
-                            Err(e) => format!("Failed to compute diff: {e}"),
+                            Err(e) => format!("Failed to compute diff: {}", e),
                         },
                         None => "Failed to compute diff: workspace command runner unavailable"
                             .to_string(),
