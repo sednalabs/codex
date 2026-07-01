@@ -1502,8 +1502,12 @@ pub(super) fn plugins_test_detail(
             .enumerate()
             .flat_map(|(event_index, (event_name, handler_count))| {
                 (0..*handler_count).map(move |handler_index| {
+                    let mut key = "plugin:".to_string();
+                    key.push_str(&event_index.to_string());
+                    key.push(':');
+                    key.push_str(&handler_index.to_string());
                     codex_app_server_protocol::PluginHookSummary {
-                        key: format!("plugin:{}:{}", event_index, handler_index),
+                        key,
                         event_name: *event_name,
                     }
                 })
