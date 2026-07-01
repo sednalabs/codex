@@ -22,7 +22,6 @@ use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 const APPROX_BYTES_PER_TOKEN: usize = 4;
