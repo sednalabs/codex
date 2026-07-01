@@ -19,6 +19,7 @@ async fn debug_clear_memories_resets_state_and_removes_memory_dir() -> Result<()
     let codex_home = TempDir::new()?;
     let runtime =
         StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    runtime.close().await;
     drop(runtime);
 
     let thread_id = "00000000-0000-0000-0000-000000000123";
@@ -142,6 +143,7 @@ async fn debug_clear_memories_resets_memories_db_without_state_db() -> Result<()
     let codex_home = TempDir::new()?;
     let runtime =
         StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    runtime.close().await;
     drop(runtime);
 
     let db_path = state_db_path(codex_home.path());
