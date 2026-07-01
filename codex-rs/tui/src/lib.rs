@@ -2350,18 +2350,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<()> {
-        let codex_home = tempfile::Builder::new()
-            .prefix("codex-home-")
-            .tempdir_in(std::path::Path::new("/tmp"))?;
+        let codex_home = PathBuf::from("/tmp").join(format!("codex-home-{}", Uuid::new_v4()));
         let socket_path =
-            codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+            codex_app_server_client::app_server_control_socket_path(codex_home.as_path())?;
         std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
         let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
 
         assert_eq!(
-            maybe_probe_default_daemon_socket(codex_home.path()).await,
+            maybe_probe_default_daemon_socket(codex_home.as_path()).await,
             Some(socket_path)
         );
+        std::fs::remove_dir_all(codex_home)?;
         Ok(())
     }
 
