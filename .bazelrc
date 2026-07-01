@@ -180,6 +180,12 @@ common:ci-linux --platforms=//:rbe
 common:ci-macos --config=ci-bazel
 common:ci-macos --build_metadata=TAG_os=macos
 common:ci-macos --strategy=TestRunner=darwin-sandbox,local
+# Hosted macOS runners can exhaust Bazel client thread/process limits when
+# inheriting the high remote-execution job count. Keep analysis and local tests
+# bounded while still letting build actions execute remotely.
+common:ci-macos --jobs=64
+common:ci-macos --loading_phase_threads=8
+common:ci-macos --local_test_jobs=8
 
 # On Windows, use Linux remote execution for build actions but keep test actions
 # on the Windows runner so Bazel's normal test sharding and flaky-test retries
