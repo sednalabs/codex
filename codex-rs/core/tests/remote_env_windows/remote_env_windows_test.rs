@@ -88,12 +88,11 @@ fn remote_windows_smoke_progress(
     command_begin_seen: bool,
     command_end_seen: bool,
     patch_end_seen: bool,
-    verify_end_seen: bool,
     turn_complete: bool,
     observed_events: &[String],
 ) -> String {
     format!(
-        "seen command_begin={command_begin_seen}, command_end={command_end_seen}, patch_end={patch_end_seen}, verify_end={verify_end_seen}, turn_complete={turn_complete}; recent events={observed_events:?}"
+        "seen command_begin={command_begin_seen}, command_end={command_end_seen}, patch_end={patch_end_seen}, turn_complete={turn_complete}; recent events={observed_events:?}"
     )
 }
 
@@ -101,18 +100,15 @@ fn remote_windows_smoke_progress(
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
     const CALL_ID: &str = "wine-cmd-smoke";
     const PATCH_CALL_ID: &str = "wine-apply-patch";
-    const VERIFY_CALL_ID: &str = "wine-verify-patch";
     const PATCH_FILE: &str = "codex-apply-patch-smoke.txt";
     const COMMAND: &str = r#"if ((Get-Location).Path -ne 'C:\windows') { exit 1 }"#;
-    const VERIFY_COMMAND: &str = r#"$path = Join-Path (Get-Location) 'codex-apply-patch-smoke.txt'; if (-not (Test-Path $path)) { exit 1 }; if ([IO.File]::ReadAllText($path) -ne "patched through unified exec`n") { exit 2 }; Remove-Item $path; Write-Output 'PATCH_VERIFIED'"#;
 
     WineExecServer
-        .scope(|exec_server_url, _wine_prefix| async move {
+        .scope(|exec_server_url, wine_prefix| async move {
             let server = start_mock_server().await;
             let arguments = serde_json::to_string(&json!({
                 "cmd": COMMAND,
-                // Omitted `shell` follows the session shell; request the selected
-                // Windows environment shell for PowerShell syntax.
+                // Request the selected Windows environment shell for PowerShell syntax.
                 "shell": "powershell",
                 "login": false,
                 // An absolute foreign workdir should replace the selected environment cwd and
@@ -133,14 +129,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 "workdir": r"apply-patch-smoke\nested",
                 "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
-            let verify_arguments = serde_json::to_string(&json!({
-                "cmd": VERIFY_COMMAND,
-                // Keep this verification in the selected Windows environment shell.
-                "shell": "powershell",
-                "login": false,
-                "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
-            }))?;
             let response_mock = mount_sse_sequence(
                 &server,
                 vec![
@@ -156,13 +144,8 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                     ]),
                     sse(vec![
                         ev_response_created("resp-3"),
-                        ev_function_call(VERIFY_CALL_ID, "exec_command", &verify_arguments),
-                        ev_completed("resp-3"),
-                    ]),
-                    sse(vec![
-                        ev_response_created("resp-4"),
                         ev_assistant_message("msg-1", "done"),
-                        ev_completed("resp-4"),
+                        ev_completed("resp-3"),
                     ]),
                 ],
             )
@@ -219,7 +202,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             let mut command_begin = None;
             let mut command_end = None;
             let mut patch_end = None;
-            let mut verify_end_seen = false;
             let mut turn_complete = false;
             let mut observed_events = Vec::new();
             let wait_result = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
@@ -240,9 +222,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                         EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
                             patch_end = Some(event)
                         }
-                        EventMsg::ExecCommandEnd(event) if event.call_id == VERIFY_CALL_ID => {
-                            verify_end_seen = true
-                        }
                         EventMsg::TurnComplete(_) => turn_complete = true,
                         EventMsg::Error(_) => {
                             return Err(anyhow::Error::msg("codex emitted error event"));
@@ -253,7 +232,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                         && command_begin.is_some()
                         && command_end.is_some()
                         && patch_end.is_some()
-                        && verify_end_seen
                     {
                         break;
                     }
@@ -269,7 +247,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                         command_begin.is_some(),
                         command_end.is_some(),
                         patch_end.is_some(),
-                        verify_end_seen,
                         turn_complete,
                         &observed_events,
                     )
@@ -320,22 +297,20 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 "apply_patch should retain the Windows cwd: {:?}",
                 events.patch_end.changes
             );
+            let patched_path = wine_prefix
+                .join("drive_c")
+                .join("codex-home")
+                .join("apply-patch-smoke")
+                .join("nested")
+                .join(PATCH_FILE);
+            assert_eq!(
+                fs::read_to_string(&patched_path)
+                    .with_context(|| format!("failed to read {}", patched_path.display()))?,
+                "patched through unified exec\n"
+            );
             let request = response_mock
                 .last_request()
                 .context("model should receive the command output")?;
-            let (verify_output, verify_success) = request
-                .function_call_output_content_and_success(VERIFY_CALL_ID)
-                .context("verification output should be present")?;
-            anyhow::ensure!(
-                verify_success != Some(false),
-                "verification command failed: {verify_output:?}"
-            );
-            anyhow::ensure!(
-                verify_output
-                    .as_deref()
-                    .is_some_and(|output| output.contains("PATCH_VERIFIED")),
-                "verification command did not confirm the patched file: {verify_output:?}"
-            );
 
             let (_output, success) = request
                 .function_call_output_content_and_success(CALL_ID)
