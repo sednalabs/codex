@@ -59,6 +59,44 @@ struct RemoteWindowsSmokeEvents {
     patch_end: PatchApplyEndEvent,
 }
 
+fn record_remote_windows_smoke_event(observed_events: &mut Vec<String>, msg: &EventMsg) {
+    let label = match msg {
+        EventMsg::ExecCommandBegin(event) => {
+            format!("ExecCommandBegin({})", event.call_id)
+        }
+        EventMsg::ExecCommandEnd(event) => {
+            format!(
+                "ExecCommandEnd({}: exit={:?}, status={:?})",
+                event.call_id, event.exit_code, event.status
+            )
+        }
+        EventMsg::PatchApplyEnd(event) => {
+            format!("PatchApplyEnd({}: success={})", event.call_id, event.success)
+        }
+        EventMsg::TurnComplete(_) => "TurnComplete".to_string(),
+        EventMsg::Error(event) => format!("Error({})", event.message),
+        _ => return,
+    };
+
+    observed_events.push(label);
+    if observed_events.len() > 16 {
+        observed_events.remove(0);
+    }
+}
+
+fn remote_windows_smoke_progress(
+    command_begin_seen: bool,
+    command_end_seen: bool,
+    patch_end_seen: bool,
+    verify_end_seen: bool,
+    turn_complete: bool,
+    observed_events: &[String],
+) -> String {
+    format!(
+        "seen command_begin={command_begin_seen}, command_end={command_end_seen}, patch_end={patch_end_seen}, verify_end={verify_end_seen}, turn_complete={turn_complete}; recent events={observed_events:?}"
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
     const CALL_ID: &str = "wine-cmd-smoke";
@@ -87,6 +125,9 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             );
             let patch_arguments = serde_json::to_string(&json!({
                 "cmd": format!("apply_patch <<'EOF'\n{patch}\nEOF\n"),
+                // Use the selected Windows shell for remote-environment shell
+                // resolution; apply_patch is intercepted before execution.
+                "shell": "powershell",
                 "login": false,
                 // Resolve this relative workdir using the selected Windows environment cwd.
                 "workdir": r"apply-patch-smoke\nested",
@@ -175,18 +216,20 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 })
                 .await?;
 
-            let events = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
-                let mut command_begin = None;
-                let mut command_end = None;
-                let mut patch_end = None;
-                let mut verify_end_seen = false;
-                let mut turn_complete = false;
+            let mut command_begin = None;
+            let mut command_end = None;
+            let mut patch_end = None;
+            let mut verify_end_seen = false;
+            let mut turn_complete = false;
+            let mut observed_events = Vec::new();
+            let wait_result = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
                 loop {
                     let event = test
                         .codex
                         .next_event()
                         .await
                         .context("event stream ended unexpectedly")?;
+                    record_remote_windows_smoke_event(&mut observed_events, &event.msg);
                     match event.msg {
                         EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
                             command_begin = Some(event)
@@ -216,15 +259,29 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                     }
                 }
 
-                Ok::<_, anyhow::Error>(RemoteWindowsSmokeEvents {
-                    command_begin: command_begin.context("exec_command should emit a begin event")?,
-                    command_end: command_end.context("exec_command should emit an end event")?,
-                    patch_end: patch_end
-                        .context("intercepted apply_patch should emit an end event")?,
-                })
+                Ok::<_, anyhow::Error>(())
             })
             .await
-            .context("timeout waiting for remote Windows smoke events")??;
+            .map_err(|_| {
+                anyhow::Error::msg(format!(
+                    "timeout waiting for remote Windows smoke events: {}",
+                    remote_windows_smoke_progress(
+                        command_begin.is_some(),
+                        command_end.is_some(),
+                        patch_end.is_some(),
+                        verify_end_seen,
+                        turn_complete,
+                        &observed_events,
+                    )
+                ))
+            })?;
+            wait_result?;
+
+            let events = RemoteWindowsSmokeEvents {
+                command_begin: command_begin.context("exec_command should emit a begin event")?,
+                command_end: command_end.context("exec_command should emit an end event")?,
+                patch_end: patch_end.context("intercepted apply_patch should emit an end event")?,
+            };
 
             assert!(
                 events.command_begin.command.first().is_some_and(|command| command
