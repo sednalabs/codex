@@ -73,6 +73,9 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             let server = start_mock_server().await;
             let arguments = serde_json::to_string(&json!({
                 "cmd": COMMAND,
+                // Omitted `shell` follows the session shell; request the selected
+                // Windows environment shell for PowerShell syntax.
+                "shell": "powershell",
                 "login": false,
                 // An absolute foreign workdir should replace the selected environment cwd and
                 // reach exec-server without conversion to the host path convention.
@@ -91,6 +94,8 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             }))?;
             let verify_arguments = serde_json::to_string(&json!({
                 "cmd": VERIFY_COMMAND,
+                // Keep this verification in the selected Windows environment shell.
+                "shell": "powershell",
                 "login": false,
                 "workdir": r"apply-patch-smoke\nested",
                 "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
