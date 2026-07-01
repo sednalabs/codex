@@ -17,6 +17,7 @@ use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE as DOCUMENT_E
 use core_test_support::apps_test_server::apps_enabled_builder;
 use core_test_support::apps_test_server::recorded_apps_tool_call_by_name;
 use core_test_support::hooks::trust_discovered_hooks;
+use core_test_support::is_remote_test_environment;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -187,6 +188,10 @@ async fn run_extract_turn(test: &TestCodex, server: &MockServer) -> Result<Respo
 async fn codex_apps_file_params_upload_environment_files_before_mcp_tool_call() -> Result<()> {
     // TODO(anp): Remove after file-upload fixtures support target-native Windows paths.
     skip_if_wine_exec!(Ok(()), "uses a host-native file-upload path");
+    if is_remote_test_environment() {
+        eprintln!("skipping host-native app file-upload fixture under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount(&server).await?;

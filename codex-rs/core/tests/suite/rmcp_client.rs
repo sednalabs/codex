@@ -291,7 +291,12 @@ fn stdio_transport(
     env: Option<HashMap<String, String>>,
     env_vars: Vec<McpServerEnvVar>,
 ) -> McpServerTransportConfig {
-    stdio_transport_with_cwd(command, env, env_vars, /*cwd*/ None)
+    let cwd = if is_remote_test_environment() {
+        Some(PathBuf::from("/tmp"))
+    } else {
+        None
+    };
+    stdio_transport_with_cwd(command, env, env_vars, cwd)
 }
 
 fn stdio_transport_with_cwd(
