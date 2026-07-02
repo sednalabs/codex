@@ -82,6 +82,8 @@ ignore = [
     { id = "RUSTSEC-2026-0118", reason = "hickory-proto v0.25.2 is pulled in via rama-dns/rama-tcp used by codex-network-proxy; DNSSEC features are not enabled; remove when rama updates to hickory 0.26.1 or hickory-net" },
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto v0.25.2 is pulled in via rama-dns/rama-tcp used by codex-network-proxy; no fixed rama release is available yet; remove when rama updates to hickory 0.26.1 or hickory-net" },
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; pulled in via i18n-embed-fl/age used by codex-secrets local storage; remove when codex-secrets migrates off age or age drops i18n-embed-fl" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41.0 remains transitively pulled in via plist v1.9.0/syntect v5.3.0 and wayland-scanner v0.31.10/arboard v3.6.1; direct codex-protocol quick-xml is pinned to 0.41.0; remove when those upstream crates can use quick-xml >=0.41.0" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41.0 remains transitively pulled in via plist v1.9.0/syntect v5.3.0 and wayland-scanner v0.31.10/arboard v3.6.1; direct codex-protocol quick-xml is pinned to 0.41.0; remove when those upstream crates can use quick-xml >=0.41.0" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

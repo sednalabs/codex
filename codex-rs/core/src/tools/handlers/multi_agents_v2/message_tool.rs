@@ -5,9 +5,12 @@
 //! assembled.
 
 use super::*;
+use crate::agent_communication::AgentCommunicationContext;
+use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::user_input::UserInput;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageDeliveryMode {
@@ -49,7 +52,7 @@ pub(crate) struct AssignTaskArgs {
     pub(crate) message: String,
 }
 
-fn message_content(message: String) -> Result<String, FunctionCallError> {
+pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
     if message.trim().is_empty() {
         return Err(FunctionCallError::RespondToModel(
             "Empty message can't be sent to an agent".to_string(),
@@ -159,10 +162,15 @@ async fn handle_message_submission(
         .unwrap_or_else(AgentPath::root);
     let communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
+    let kind = match mode {
+        MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
+        MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
+    };
+    let context = AgentCommunicationContext::new(kind, session.thread_id);
     let result = session
         .services
         .agent_control
-        .send_inter_agent_communication(receiver_thread_id, mode.apply(communication))
+        .send_inter_agent_communication(receiver_thread_id, mode.apply(communication), context)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
     result?;

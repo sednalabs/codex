@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_target;
-use crate::agent::control::render_input_preview;
+use crate::agent::control::render_user_input_preview;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_tools::ToolSpec;
@@ -44,7 +44,7 @@ impl Handler {
         let args: SendInputArgs = parse_arguments(&arguments)?;
         let receiver_thread_id = resolve_agent_target(&session, &turn, &args.target).await?;
         let input_items = parse_collab_input(args.message, args.items)?;
-        let prompt = render_input_preview(&input_items);
+        let prompt = render_user_input_preview(&input_items);
         let receiver_agent = session
             .services
             .agent_control

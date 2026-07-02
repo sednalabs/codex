@@ -1526,8 +1526,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
             vec![UserInput::Text {
                 text: "inspect this repo".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,
@@ -1603,8 +1602,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
             vec![UserInput::Text {
                 text: "inspect this repo".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,
@@ -1778,8 +1776,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
             vec![UserInput::Text {
                 text: "research".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,
@@ -1799,8 +1796,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
             vec![UserInput::Text {
                 text: "build".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 2,
@@ -4298,8 +4294,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
             vec![UserInput::Text {
                 text: "inspect this repo".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,
@@ -4366,8 +4361,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
             vec![UserInput::Text {
                 text: "inspect this repo".to_string(),
                 text_elements: Vec::new(),
-            }]
-            .into(),
+            }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,

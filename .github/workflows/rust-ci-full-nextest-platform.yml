@@ -52,6 +52,8 @@ jobs:
       ARCHIVE_CACHE_RUNNER: ${{ inputs.archive_runner != '' && inputs.archive_runner || inputs.runner }}
       USE_SCCACHE: ${{ inputs.use_sccache && 'true' || 'false' }}
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      CARGO_PROFILE_CI_TEST_STRIP: "symbols"
       SCCACHE_CACHE_SIZE: 10G
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
@@ -320,14 +322,28 @@ jobs:
       - name: Set up remote test env (Docker)
         if: ${{ runner.os == 'Linux' && inputs.remote_env }}
         shell: bash
+        env:
+          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${GITHUB_RUN_ID}-${CODEX_NEXTEST_SHARD}"
+          export CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR="${RUNNER_TEMP}/remote-env-target-${CODEX_NEXTEST_SHARD}"
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_ENVIRONMENT=${CODEX_TEST_ENVIRONMENT}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME}" >> "$GITHUB_ENV"
+          echo "CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR=${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
+
+      - name: Reclaim remote env build artifacts
+        if: ${{ runner.os == 'Linux' && inputs.remote_env }}
+        shell: bash
+        env:
+          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          default_target_dir="${RUNNER_TEMP}/remote-env-target-${CODEX_NEXTEST_SHARD}"
+          rm -rf "${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR:-${default_target_dir}}"
 
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -374,7 +390,7 @@ jobs:
             --no-fail-fast
             --archive-file "${archive_file}"
             --workspace-remap "${workspace_root}"
-            --partition "hash:${{ matrix.shard }}/4"
+            --partition "hash:${CODEX_NEXTEST_SHARD}/4"
           )
           if [[ "${{ inputs.test_threads }}" != "0" ]]; then
             nextest_args+=(--test-threads "${{ inputs.test_threads }}")
@@ -402,6 +418,7 @@ jobs:
 
           "${test_command[@]}"
         env:
+          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
           RUST_BACKTRACE: 1
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
