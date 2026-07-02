@@ -518,7 +518,7 @@ impl MessageProcessor {
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config.plugins_config_input(),
-                    auth_manager.clone(),
+                    auth_manager,
                     Some(on_effective_plugins_changed),
                 );
         }
@@ -1036,6 +1036,9 @@ impl MessageProcessor {
                 .map(|response| Some(response.into())),
             ClientRequest::EnvironmentAdd { params, .. } => {
                 self.environment_processor.environment_add(params).await
+            }
+            ClientRequest::EnvironmentInfo { params, .. } => {
+                self.environment_processor.environment_info(params).await
             }
             ClientRequest::FsReadFile { params, .. } => self
                 .fs_processor

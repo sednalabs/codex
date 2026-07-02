@@ -544,7 +544,7 @@ fn wait_primitive_cell_renders_background_terminal_wait() {
     let lines = render_transcript(&cell);
     assert_eq!(
         lines,
-        vec!["• Waiting via background terminal · cargo test -p codex-core"],
+        vec!["• Waiting · primitive: background terminal · cargo test -p codex-core"],
     );
 }
 
@@ -2561,7 +2561,12 @@ fn streamed_agent_list_paragraph_preserves_item_indent_when_wrapped() {
         /*is_first_line*/ true,
     );
 
-    let lines = render_lines(&cell.display_lines(/*width*/ 64));
+    let mut lines = render_lines(&cell.display_lines(/*width*/ 64));
+    for line in &mut lines {
+        if line.trim().is_empty() {
+            line.clear();
+        }
+    }
     assert!(
         lines
             .iter()

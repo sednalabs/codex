@@ -223,6 +223,7 @@ mod updates;
 mod updates_cache;
 mod version;
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 mod voice;
 mod width;
 #[cfg(any(target_os = "windows", test))]
@@ -1061,7 +1062,6 @@ pub async fn run_main(
         /*enable_codex_api_key_env*/ false,
         bootstrap_config_toml
             .cli_auth_credentials_store
-            .clone()
             .unwrap_or_default(),
         resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
@@ -2353,7 +2353,8 @@ mod tests {
         let codex_home = TempDir::new()?;
         let socket_path =
             codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
-        std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
+        let socket_parent = socket_path.as_path().parent().expect("socket parent");
+        tokio::fs::create_dir_all(socket_parent).await?;
         let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
 
         assert_eq!(

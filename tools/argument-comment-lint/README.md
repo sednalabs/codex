@@ -148,6 +148,10 @@ wrapper runs cover test-only call sites by default. The Bazel entrypoints use
 `tools/argument-comment-lint/list-bazel-targets.sh` to add the internal
 manual `*-unit-tests-bin` Rust targets explicitly, so inline `#[cfg(test)]`
 call sites are covered without pulling in unrelated manual release targets.
+They also exclude `codex-rs/v8-poc` from the repo-wide lint target list because
+that proof-of-concept pulls the full native V8/ICU graph into cold hosted
+frontier lint runs. V8 buildability remains covered by the normal build/test
+workflows.
 
 Repo runs also promote `argument_comment_mismatch` and
 `uncommented_anonymous_literal_argument` to errors by default:

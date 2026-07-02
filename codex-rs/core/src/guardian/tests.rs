@@ -2424,10 +2424,12 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
     };
     assert_eq!(assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(assessment.rationale, "retry succeeded");
-    assert_eq!(metadata.attempt_count, 2);
+    // Transient transport failures are retried inside the model-provider request.
+    // Guardian metadata only counts full review-session attempts.
+    assert_eq!(metadata.attempt_count, 1);
     assert!(matches!(
         metadata.guardian_session_kind,
-        Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
+        Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
     ));
     assert_eq!(request_log.requests().len(), 2);
     Ok(())

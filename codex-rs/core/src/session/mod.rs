@@ -42,7 +42,6 @@ use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
-use crate::session_prefix::format_subagent_notification_message;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
 use crate::turn_metadata::TurnMetadataState;
@@ -185,6 +184,7 @@ use crate::codex_thread::ThreadConfigSnapshot;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::Constrained;
+use crate::config::ConstraintError;
 use crate::config::ConstraintResult;
 use crate::config::PermissionProfileSnapshot;
 use crate::config::PermissionProfileState;
@@ -208,7 +208,7 @@ mod config_lock;
 pub(crate) mod context_window;
 mod handlers;
 mod inject;
-mod input_queue;
+pub(crate) mod input_queue;
 mod mcp;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
@@ -659,6 +659,7 @@ impl Codex {
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
         let dynamic_tools = if dynamic_tools.is_empty() {
             persisted_tools
+                .filter(|tools| !tools.is_empty())
                 .or_else(|| conversation_history.get_dynamic_tools())
                 .unwrap_or_default()
                 .into_iter()
@@ -1583,12 +1584,23 @@ impl Session {
                     return Err(err);
                 }
             };
+            if updates.environments.is_some()
+                && let Err(err) =
+                    self.validate_environment_selections(updated.environment_selections())
+            {
+                warn!("rejected session environment update: {err}");
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "environments",
+                    candidate: err.to_string(),
+                    allowed: "known, unique environment ids".to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            }
 
             let previous_config = notify_config_contributors
                 .then(|| Self::build_effective_session_config(&state.session_configuration));
             let new_config =
                 notify_config_contributors.then(|| Self::build_effective_session_config(&updated));
-            let previous_cwd = state.session_configuration.cwd().clone();
             let previous_permission_profile = state.session_configuration.permission_profile();
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
@@ -1873,9 +1885,14 @@ impl Session {
             return;
         };
 
-        let Some(status) = agent_status_from_event(msg) else {
+        let Some(mut status) = agent_status_from_event(msg) else {
             return;
         };
+        if matches!(status, AgentStatus::Completed(None))
+            && let Some(error) = turn_context.terminal_error.lock().await.clone()
+        {
+            status = AgentStatus::Errored(error);
+        }
         if !is_final(&status) {
             return;
         }
@@ -1905,7 +1922,13 @@ impl Session {
             return;
         };
 
-        let message = format_subagent_notification_message(child_agent_path.as_str(), &status);
+        let Some(message) = format_inter_agent_completion_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            &status,
+        ) else {
+            return;
+        };
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = self
@@ -3154,13 +3177,13 @@ impl Session {
         }
     }
 
-    async fn build_turn_context_contribution_items(
+    async fn append_turn_context_contributions(
         &self,
         turn_context: &TurnContext,
-    ) -> Vec<ResponseItem> {
-        let mut developer_sections = Vec::new();
-        let mut contextual_user_sections = Vec::new();
-        let mut separate_developer_sections = Vec::new();
+        developer_sections: &mut Vec<String>,
+        contextual_user_sections: &mut Vec<String>,
+        separate_developer_sections: &mut Vec<String>,
+    ) {
         let context_contributors = self.services.extensions.context_contributors().to_vec();
 
         for contributor in &context_contributors {
@@ -3177,12 +3200,29 @@ impl Session {
             {
                 push_prompt_fragment(
                     fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
+                    developer_sections,
+                    contextual_user_sections,
+                    separate_developer_sections,
                 );
             }
         }
+    }
+
+    async fn build_turn_context_contribution_items(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        let mut developer_sections = Vec::new();
+        let mut contextual_user_sections = Vec::new();
+        let mut separate_developer_sections = Vec::new();
+
+        self.append_turn_context_contributions(
+            turn_context,
+            &mut developer_sections,
+            &mut contextual_user_sections,
+            &mut separate_developer_sections,
+        )
+        .await;
 
         let mut items = Vec::with_capacity(3);
         if let Some(developer_message) =
@@ -3335,7 +3375,10 @@ impl Session {
             );
             if let Some(available_skills) = available_skills {
                 let warning_message = available_skills.warning_message.clone();
-                let skills_instructions = AvailableSkillsInstructions::from(available_skills);
+                let skills_instructions = AvailableSkillsInstructions::from_available_skills(
+                    &available_skills,
+                    turn_context.model_info.include_skills_usage_instructions,
+                );
                 if let Some(warning_message) = warning_message {
                     self.send_event_raw(Event {
                         id: String::new(),
@@ -3375,6 +3418,13 @@ impl Session {
                 );
             }
         }
+        self.append_turn_context_contributions(
+            turn_context,
+            &mut developer_sections,
+            &mut contextual_user_sections,
+            &mut separate_developer_sections,
+        )
+        .await;
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
             && turn_context.model_context_window().is_some()

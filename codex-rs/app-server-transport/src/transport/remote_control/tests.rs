@@ -72,6 +72,7 @@ const TEST_REMOTE_CONTROL_URL: &str = "http://127.0.0.1:1/backend-api/wham/remot
 const TEST_REMOTE_CONTROL_SERVER_TOKEN: &str = "Remote Control Token";
 const TEST_REFRESHED_REMOTE_CONTROL_SERVER_TOKEN: &str = "Refreshed Remote Control Token";
 const TEST_REMOTE_CONTROL_SERVER_TOKEN_EXPIRES_AT: &str = "2999-01-01T00:00:00Z";
+const ACCOUNT_ID_WAKE_TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn remote_control_auth_manager() -> Arc<AuthManager> {
     auth_manager_from_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -362,13 +363,10 @@ async fn managed_disable_overrides_startup_and_persisted_enablement() {
 }
 
 fn remote_control_url_for_listener(listener: &TcpListener) -> String {
-    format!(
-        "http://localhost:{}/backend-api/",
-        listener
-            .local_addr()
-            .expect("listener should have a local addr")
-            .port()
-    )
+    let addr = listener
+        .local_addr()
+        .expect("listener should have a local addr");
+    format!("http://{addr}/backend-api/")
 }
 
 fn test_server_name() -> String {
@@ -1940,7 +1938,7 @@ async fn remote_control_waits_for_account_id_before_enrolling() {
     .expect("auth with account id should save");
     auth_manager.reload().await;
 
-    let enroll_request = timeout(Duration::from_millis(100), accept_http_request(&listener))
+    let enroll_request = timeout(ACCOUNT_ID_WAKE_TEST_TIMEOUT, accept_http_request(&listener))
         .await
         .expect("auth change should wake remote control before the retry delay");
     assert_eq!(

@@ -972,6 +972,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}
+The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#
@@ -1004,6 +1005,12 @@ fn default_spawn_agent_usage_hint(available_models_description: Option<&str>) ->
 Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
 {agent_role_usage_hint}
+
+### When to delegate vs. do the subtask yourself
+- First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
+- Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
+- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
+- Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
 
 ### Designing delegated subtasks
 - Subtasks must be concrete, well-defined, and self-contained.
@@ -1132,7 +1139,7 @@ fn wait_agent_tool_parameters_v2(
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
                 Some(
-                    "Agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all."
+                    "Optional agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all. Omit to wait only for mailbox activity or timeout."
                         .to_string(),
                 ),
             ),
@@ -1162,16 +1169,12 @@ fn wait_agent_tool_parameters_v2(
         );
     }
 
-    JsonSchema::object(
-        properties,
-        Some(vec!["targets".to_string()]),
-        Some(false.into()),
-    )
+    JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }
 
 fn wait_agent_v2_description(include_runtime_capability: bool) -> String {
     if include_runtime_capability {
-        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
+        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. Omit `targets` to wait only for mailbox activity or timeout. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
             .to_string()
     } else {
         "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until an agent reaches terminal status or the timeout expires. Prefer longer timeouts to avoid busy polling."

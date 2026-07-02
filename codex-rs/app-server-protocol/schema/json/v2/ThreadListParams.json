@@ -28,6 +28,9 @@
       ],
       "type": "string"
     },
+    "ThreadSource": {
+      "type": "string"
+    },
     "ThreadSourceKind": {
       "enum": [
         "cli",
@@ -41,9 +44,6 @@
         "subAgentOther",
         "unknown"
       ],
-      "type": "string"
-    },
-    "ThreadSource": {
       "type": "string"
     }
   },

@@ -29,6 +29,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -38,7 +39,6 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
-use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 use test_case::test_case;
@@ -62,33 +62,6 @@ const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
 const SUBAGENT_STOP_CONTINUATION: &str = "continue only the child";
 const INTERNAL_SUBAGENT_PROMPT: &str = "internal subagent: review";
-
-fn run_snapshot_test<F>(future: F) -> Result<()>
-where
-    F: Future<Output = Result<()>> + Send + 'static,
-{
-    std::thread::Builder::new()
-        .name("subagent-snapshot-test".to_string())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_stack_size(8 * 1024 * 1024)
-                .enable_all()
-                .build()?
-                .block_on(future)
-        })?
-        .join()
-        .map_err(|payload| {
-            if let Some(message) = payload.downcast_ref::<&str>() {
-                anyhow::anyhow!("subagent snapshot test panicked: {message}")
-            } else if let Some(message) = payload.downcast_ref::<String>() {
-                anyhow::anyhow!("subagent snapshot test panicked: {message}")
-            } else {
-                anyhow::anyhow!("subagent snapshot test panicked")
-            }
-        })?
-}
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     decoded_body(req)
@@ -365,6 +338,24 @@ async fn wait_for_requests(
         }
         if Instant::now() >= deadline {
             anyhow::bail!("expected at least 1 request, got {}", requests.len());
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_request_matching(
+    mock: &core_test_support::responses::ResponseMock,
+    description: &str,
+    predicate: impl Fn(&ResponsesRequest) -> bool,
+) -> Result<ResponsesRequest> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let requests = mock.requests();
+        if let Some(request) = requests.into_iter().find(|request| predicate(request)) {
+            return Ok(request);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("expected {description} request");
         }
         sleep(Duration::from_millis(10)).await;
     }
@@ -1094,6 +1085,11 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "asserts host-native encrypted child request wire shape"
+    );
+
     let server = start_mock_server().await;
     let encrypted_message = "opaque-encrypted-message";
     let spawn_args = serde_json::to_string(&json!({
@@ -1151,10 +1147,12 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
-    let child_request = wait_for_requests(&child_request_log)
-        .await?
-        .pop()
-        .expect("child request");
+    let child_request = wait_for_request_matching(
+        &child_request_log,
+        "child request with agent_message",
+        |request| !request.inputs_of_type("agent_message").is_empty(),
+    )
+    .await?;
     assert_eq!(
         strip_metadata_from_json(Value::Array(child_request.inputs_of_type("agent_message"))),
         Value::Array(vec![json!({
@@ -1304,10 +1302,10 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let _ = wait_for_requests(&child_request).await?;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
-    let request = wait_for_requests(&agent_request)
-        .await?
-        .pop()
-        .expect("agent message request");
+    let request = wait_for_request_matching(&agent_request, "agent message request", |request| {
+        !request.inputs_of_type("agent_message").is_empty()
+    })
+    .await?;
     assert_eq!(
         strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message"))),
         Value::Array(vec![json!({

@@ -152,6 +152,7 @@ pub(crate) async fn run_compact_task(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -284,6 +285,19 @@ async fn run_compact_task_inner_impl(
             }
             Err(err @ (CodexErr::Interrupted | CodexErr::TurnAborted)) => {
                 return Err(err);
+            }
+            Err(e @ CodexErr::ServerOverloaded) => {
+                capacity_retries += 1;
+                notify_and_wait_for_capacity_retry(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    cancellation_token,
+                    capacity_retries,
+                    "compaction request",
+                    e,
+                )
+                .await?;
+                continue;
             }
             Err(e @ CodexErr::SessionBudgetExceeded) => {
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
@@ -711,6 +725,9 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed { token_usage, .. }) => {
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await;
+                if let Some(token_usage) = token_usage.as_ref() {
+                    sess.record_rollout_budget_usage(token_usage)?;
+                }
                 return Ok(());
             }
             Ok(_) => continue,

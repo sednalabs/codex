@@ -11,6 +11,7 @@ mod environment_context;
 mod guardian_followup_review_reminder;
 mod hook_additional_context;
 mod image_generation_instructions;
+#[allow(dead_code)]
 mod inter_agent_completion_message;
 mod internal_model_context;
 mod legacy_apply_patch_exec_command_warning;
@@ -25,6 +26,7 @@ mod plugin_instructions;
 mod realtime_end_instructions;
 mod realtime_start_instructions;
 mod realtime_start_with_instructions;
+#[allow(dead_code)]
 mod recommended_plugins_instructions;
 mod rollout_budget;
 mod subagent_notification;

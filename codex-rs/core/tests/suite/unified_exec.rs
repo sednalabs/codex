@@ -16,9 +16,11 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
+use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
@@ -33,6 +35,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
@@ -40,6 +43,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
@@ -74,7 +78,7 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
     static OUTPUT_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = OUTPUT_REGEX.get_or_init(|| {
         Regex::new(concat!(
-            r#"(?s)^(?:Total output lines: \d+\n\n)?"#,
+            r#"(?s)^(?:Warning: truncated output \(original token count: \d+\)\n)?(?:Total output lines: \d+\n\n)?"#,
             r#"(?:Chunk ID: (?P<chunk_id>[^\n]+)\n)?"#,
             r#"Wall time: (?P<wall_time>-?\d+(?:\.\d+)?) seconds\n"#,
             r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
@@ -207,7 +211,10 @@ async fn submit_unified_exec_turn(
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(TurnEnvironmentSelections::new(
+                    test.config.cwd.clone(),
+                    vec![test.executor_environment().selection().clone()],
+                )),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -823,6 +830,10 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
 
     let server = start_mock_server().await;
     let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
@@ -867,6 +878,10 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
 
     let server = start_mock_server().await;
     let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
@@ -1561,7 +1576,7 @@ async fn exec_command_clamps_model_requested_max_output_tokens_to_policy() -> Re
     assert_eq!(output.original_token_count, Some(8_991));
     let output_text = output.output.replace("\r\n", "\n");
     assert_regex_match(
-        r"^Total output lines: 999\n\nEXEC-LINE-0001 x{20}\nEXEC-LINE-0002 x{20}\nEXEC-LINE-0003 x{13}…8941 tokens truncated…E-0997 x{20}\nEXEC-LINE-0998 x{20}\nEXEC-LINE-0999 x{20}\n$",
+        r"^Warning: truncated output \(original token count: 8991\)\nTotal output lines: 999\n\nEXEC-LINE-0001 x{20}\nEXEC-LINE-0002 x{20}\nEXEC-LINE-0003 x{13}…8941 tokens truncated…E-0997 x{20}\nEXEC-LINE-0998 x{20}\nEXEC-LINE-0999 x{20}\n$",
         &output_text,
     );
 
@@ -1651,7 +1666,7 @@ async fn write_stdin_clamps_model_requested_max_output_tokens_to_policy() -> Res
     assert_eq!(stdin_output.original_token_count, Some(9_492));
     let stdin_output_text = stdin_output.output.replace("\r\n", "\n");
     assert_regex_match(
-        r"^Total output lines: 1000\n\ngo\nSTDIN-LINE-0001 y{20}\nSTDIN-LINE-0002 y{20}\nSTDIN-LINE-0003 yyyy…9442 tokens truncated…7 y{20}\nSTDIN-LINE-0998 y{20}\nSTDIN-LINE-0999 y{20}\n$",
+        r"^Warning: truncated output \(original token count: 9492\)\nTotal output lines: 1000\n\ngo\nSTDIN-LINE-0001 y{20}\nSTDIN-LINE-0002 y{20}\nSTDIN-LINE-0003 yyyy…9442 tokens truncated…7 y{20}\nSTDIN-LINE-0998 y{20}\nSTDIN-LINE-0999 y{20}\n$",
         &stdin_output_text,
     );
 
@@ -2962,7 +2977,7 @@ PY
     let large_output = outputs.get(call_id).expect("missing large output summary");
 
     let output_text = large_output.output.replace("\r\n", "\n");
-    let truncated_pattern = r"(?s)^Total output lines: \d+\n\n(token token \n){5,}.*…\d+ tokens truncated….*(token token \n){5,}$";
+    let truncated_pattern = r"(?s)^Warning: truncated output \(original token count: \d+\)\nTotal output lines: \d+\n\n(token token \n){5,}.*…\d+ tokens truncated….*(token token \n){5,}$";
     assert_regex_match(truncated_pattern, &output_text);
 
     let original_tokens = large_output
@@ -3349,6 +3364,10 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Wine-backed executor does not provide a command shell for this generic smoke"
+    );
 
     let server = start_mock_server().await;
 
@@ -3361,9 +3380,15 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec";
-    let args = serde_json::json!({
-        "cmd": "echo 'hello crossplat'",
-    });
+    let args = match test_target_os() {
+        TestTargetOs::Windows => serde_json::json!({
+            "cmd": "echo hello crossplat",
+            "shell": "cmd",
+        }),
+        TestTargetOs::Linux | TestTargetOs::MacOs => serde_json::json!({
+            "cmd": "echo 'hello crossplat'",
+        }),
+    };
 
     let responses = vec![
         sse(vec![
@@ -3395,6 +3420,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).expect("missing output");
 
+    assert_eq!(output.exit_code, Some(0));
     // TODO: Weaker match because windows produces control characters
     assert_regex_match(".*hello crossplat.*", &output.output);
 

@@ -6,6 +6,7 @@
 use std::ops::Range;
 
 use ratatui::buffer::Buffer;
+use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -455,7 +456,7 @@ pub(crate) fn mark_buffer_hyperlinks(
                 let text = (0..layout_area.width)
                     .filter_map(|column| {
                         let cell = &layout[(column, row)];
-                        (!cell.skip).then(|| cell.symbol())
+                        (!cell_is_skipped(cell)).then(|| cell.symbol())
                     })
                     .collect::<String>();
                 Line::from(text.trim_end().to_string())
@@ -471,7 +472,7 @@ pub(crate) fn mark_buffer_hyperlinks(
                     let x = area.x + column as u16;
                     let y = area.y + (row - scroll_rows) as u16;
                     let cell = &mut buf[(x, y)];
-                    if cell.skip || cell.symbol().trim().is_empty() {
+                    if cell_is_skipped(cell) || cell.symbol().trim().is_empty() {
                         continue;
                     }
                     let symbol = osc8_hyperlink(&link.destination, cell.symbol());
@@ -506,11 +507,15 @@ fn mark_matching_cells(
     }
     for position in area.positions() {
         let cell = &mut buf[position];
-        if !cell.skip && !cell.symbol().trim().is_empty() && matches(cell) {
+        if !cell_is_skipped(cell) && !cell.symbol().trim().is_empty() && matches(cell) {
             let symbol = osc8_hyperlink(destination, cell.symbol());
             cell.set_symbol(&symbol);
         }
     }
+}
+
+fn cell_is_skipped(cell: &ratatui::buffer::Cell) -> bool {
+    matches!(cell.diff_option, CellDiffOption::Skip)
 }
 
 #[cfg(test)]

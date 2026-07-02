@@ -45,6 +45,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -1023,6 +1025,7 @@ impl ThreadManager {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn fork_thread_from_history_with_tools<S>(
         &self,
         snapshot: S,
@@ -1048,6 +1051,7 @@ impl ThreadManager {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fork_thread_with_initial_history(
         &self,
         snapshot: ForkSnapshot,
@@ -1829,12 +1833,23 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
         builder.handle_rollout_item(item);
     }
     let active_turn_id = builder.active_turn_id_if_explicit();
-    if builder.has_active_turn() && active_turn_id.is_some() {
+    if builder.has_active_turn() {
+        let active_turn_start_index = builder.active_turn_start_index();
         let active_turn_snapshot = builder.active_turn_snapshot();
         if active_turn_snapshot
             .as_ref()
             .is_some_and(|turn| turn.status != TurnStatus::InProgress)
         {
+            if active_turn_id.is_none()
+                && implicit_legacy_tail_is_mid_turn(rollout_items, active_turn_start_index)
+            {
+                return SnapshotTurnState {
+                    ends_mid_turn: true,
+                    active_turn_id: None,
+                    active_turn_start_index,
+                };
+            }
+
             return SnapshotTurnState {
                 ends_mid_turn: false,
                 active_turn_id: None,
@@ -1845,11 +1860,11 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
         return SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id,
-            active_turn_start_index: builder.active_turn_start_index(),
+            active_turn_start_index,
         };
     }
 
-    let Some(last_user_position) = truncation::user_message_positions_in_rollout(rollout_items)
+    let Some(last_user_position) = snapshot_user_message_positions(rollout_items)
         .last()
         .copied()
     else {
@@ -1863,16 +1878,70 @@ fn snapshot_turn_state(history: &InitialHistory) -> SnapshotTurnState {
     // Synthetic fork/resume histories can contain user/assistant response items
     // without explicit turn lifecycle events. If the persisted snapshot has no
     // terminating boundary after its last user message, treat it as mid-turn.
+    let ends_mid_turn = !rollout_items[last_user_position + 1..].iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+        )
+    });
     SnapshotTurnState {
-        ends_mid_turn: !rollout_items[last_user_position + 1..].iter().any(|item| {
-            matches!(
-                item,
-                RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
-            )
-        }),
+        ends_mid_turn,
         active_turn_id: None,
-        active_turn_start_index: None,
+        active_turn_start_index: ends_mid_turn.then_some(last_user_position),
     }
+}
+
+fn implicit_legacy_tail_is_mid_turn(
+    rollout_items: &[RolloutItem],
+    active_turn_start_index: Option<usize>,
+) -> bool {
+    let Some(last_user_position) = snapshot_user_message_positions(rollout_items)
+        .last()
+        .copied()
+    else {
+        return false;
+    };
+    if active_turn_start_index != Some(last_user_position) {
+        return false;
+    }
+
+    !rollout_items[last_user_position + 1..].iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(
+                EventMsg::AgentMessage(_)
+                    | EventMsg::Error(_)
+                    | EventMsg::TurnComplete(_)
+                    | EventMsg::TurnAborted(_)
+            )
+        )
+    })
+}
+
+fn snapshot_user_message_positions(rollout_items: &[RolloutItem]) -> Vec<usize> {
+    let mut user_positions = Vec::new();
+    for (idx, item) in rollout_items.iter().enumerate() {
+        match item {
+            RolloutItem::ResponseItem(item @ ResponseItem::Message { .. })
+                if matches!(
+                    crate::event_mapping::parse_turn_item(item),
+                    Some(TurnItem::UserMessage(_))
+                ) =>
+            {
+                user_positions.push(idx);
+            }
+            RolloutItem::EventMsg(EventMsg::UserMessage(_)) => {
+                user_positions.push(idx);
+            }
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                let num_turns = usize::try_from(rollback.num_turns).unwrap_or(usize::MAX);
+                let new_len = user_positions.len().saturating_sub(num_turns);
+                user_positions.truncate(new_len);
+            }
+            _ => {}
+        }
+    }
+    user_positions
 }
 
 fn fork_history_from_snapshot(

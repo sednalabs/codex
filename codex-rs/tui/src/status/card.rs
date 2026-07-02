@@ -200,6 +200,7 @@ pub(crate) fn new_status_output_with_rate_limits(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
     runtime_model_provider_base_url: Option<&str>,

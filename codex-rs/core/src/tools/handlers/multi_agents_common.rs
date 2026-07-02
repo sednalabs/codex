@@ -162,6 +162,7 @@ pub(crate) fn pending_wait_thread_ids(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_wait_end_event(
     session: &Session,
     turn: &TurnContext,
@@ -574,18 +575,26 @@ async fn normalize_spawn_agent_reasoning_effort(
 
     match config.model_reasoning_effort.as_ref() {
         Some(reasoning_effort) => {
+            let role_changed_reasoning_effort =
+                config.model_reasoning_effort != pre_role_reasoning_effort;
+            if model_info.supported_reasoning_levels.is_empty() {
+                if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
+                    return Ok(());
+                }
+                config.model_reasoning_effort = model_info.default_reasoning_level;
+                return Ok(());
+            }
+
             if !model_info
                 .supported_reasoning_levels
                 .iter()
                 .any(|preset| &preset.effort == reasoning_effort)
             {
-                let role_changed_reasoning_effort =
-                    config.model_reasoning_effort != pre_role_reasoning_effort;
                 if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
                     validate_spawn_agent_reasoning_effort(
                         &model,
                         &model_info.supported_reasoning_levels,
-                        &reasoning_effort,
+                        reasoning_effort,
                     )?;
                 }
 
@@ -680,6 +689,10 @@ pub(crate) fn validate_spawn_agent_reasoning_effort(
     supported_reasoning_levels: &[ReasoningEffortPreset],
     requested_reasoning_effort: &ReasoningEffort,
 ) -> Result<(), FunctionCallError> {
+    if supported_reasoning_levels.is_empty() {
+        return Ok(());
+    }
+
     if supported_reasoning_levels
         .iter()
         .any(|preset| &preset.effort == requested_reasoning_effort)

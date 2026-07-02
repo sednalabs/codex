@@ -1278,13 +1278,13 @@ impl TranscriptOverlay {
             action_hints.push(FooterHint::new(
                 key_label(&previous_edit_keys),
                 "edit prev",
-                "prev",
+                "edit prev",
                 /*priority*/ 8,
             ));
             action_hints.push(FooterHint::new(
                 key_label(&first_or_empty(&self.view.keymap.next_user_prompt)),
                 "edit next",
-                "next",
+                "edit next",
                 /*priority*/ 9,
             ));
             action_hints.push(FooterHint::new(
@@ -1617,7 +1617,11 @@ mod tests {
     fn paragraph_block(label: &str, lines: usize) -> Box<dyn Renderable> {
         let text = Text::from(
             (0..lines)
-                .map(|i| Line::from(format!("{label}{i}")))
+                .map(|i| {
+                    let mut line = label.to_string();
+                    line.push_str(&i.to_string());
+                    Line::from(line)
+                })
                 .collect::<Vec<_>>(),
         );
         Box::new(Paragraph::new(text)) as Box<dyn Renderable>

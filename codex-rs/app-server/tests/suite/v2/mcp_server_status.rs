@@ -418,11 +418,22 @@ url = "{underscore_server_url}/mcp"
     let status_tools = response
         .data
         .iter()
-        .map(|status| (status.name.as_str(), status.tools.keys().count()))
+        .map(|status| {
+            (
+                status.name.as_str(),
+                status.tools.keys().cloned().collect::<BTreeSet<_>>(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         status_tools,
-        BTreeMap::from([("some-server", 0), ("some_server", 0)])
+        BTreeMap::from([
+            ("some-server", BTreeSet::from(["dash_lookup".to_string()]),),
+            (
+                "some_server",
+                BTreeSet::from(["underscore_lookup".to_string()]),
+            ),
+        ])
     );
 
     dash_server_handle.abort();

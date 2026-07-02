@@ -493,12 +493,12 @@ async fn run_turn_and_read_completion(
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams {
-            model: Some(REQUESTED_MODEL.to_string()),
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some(SERVER_MODEL.to_string()),
             ..Default::default()
         })
         .await?;

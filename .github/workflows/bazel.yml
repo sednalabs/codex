@@ -7,6 +7,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
   # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
@@ -20,7 +23,9 @@ jobs:
     # signal without putting PR latency back on the critical path. When
     # Code-mode unit tests run on every Bazel target. When authenticated RBE
     # is available, the Windows-cross shards exercise the source-built V8 path.
-    timeout-minutes: 30
+    # macOS runners keep test actions local; full-tree PR validation can exceed
+    # the default window while build actions execute remotely.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +144,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -384,6 +389,11 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_job=clippy
           )
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            # Hosted macOS runners can exhaust the Bazel client thread/process
+            # ceiling when inheriting the high remote-execution job count.
+            bazel_clippy_args+=(--jobs=96 --loading_phase_threads=8)
+          fi
           bazel_wrapper_args=()
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
@@ -501,6 +511,11 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            # Hosted macOS runners can exhaust the Bazel client thread/process
+            # ceiling when inheriting the high remote-execution job count.
+            bazel_build_args+=(--jobs=96 --loading_phase_threads=8)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()

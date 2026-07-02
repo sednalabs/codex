@@ -21,6 +21,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -42,6 +43,7 @@ const NETWORK_TIMEOUT_MS: u64 = 10_000;
 const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "bubblewrap is unavailable: no system bwrap was found";
+const LEGACY_LANDLOCK_DIRECT_RUNTIME_ERR: &str = "permission profiles requiring direct runtime enforcement are incompatible with --use-legacy-landlock";
 const BWRAP_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "setting up uid map: Permission denied",
     "No permissions to create a new namespace",
@@ -88,6 +90,18 @@ async fn run_cmd_output(
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
             if is_bwrap_unavailable_output(&output) =>
         {
+            let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
+                cmd,
+                writable_roots,
+                timeout_ms,
+                /*use_legacy_landlock*/ true,
+                /*network_access*/ false,
+            )
+            .await
+            .expect("sandboxed command should execute with legacy Landlock fallback");
+            output
+        }
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => {
             let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
                 cmd,
                 writable_roots,
@@ -232,6 +246,13 @@ fn is_bwrap_unavailable_output(output: &ExecToolCallOutput) -> bool {
                 || output.stderr.text.contains("Invalid argument")))
 }
 
+fn is_legacy_landlock_direct_runtime_output(output: &ExecToolCallOutput) -> bool {
+    output
+        .stderr
+        .text
+        .contains(LEGACY_LANDLOCK_DIRECT_RUNTIME_ERR)
+}
+
 async fn should_skip_bwrap_tests() -> bool {
     match run_cmd_result_with_writable_roots(
         &["bash", "-lc", "true"],
@@ -246,10 +267,33 @@ async fn should_skip_bwrap_tests() -> bool {
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => {
             is_bwrap_unavailable_output(&output)
         }
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
         // Probe timeouts are not actionable for the bwrap-specific assertions below;
         // skip rather than fail the whole suite.
         Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,
         Err(err) => panic!("bwrap availability probe failed unexpectedly: {err:?}"),
+    }
+}
+
+async fn should_skip_sandbox_helper_tests() -> bool {
+    match run_cmd_result_with_writable_roots(
+        &["bash", "-lc", "true"],
+        &[],
+        NETWORK_TIMEOUT_MS,
+        /*use_legacy_landlock*/ true,
+        /*network_access*/ true,
+    )
+    .await
+    {
+        Ok(_) => false,
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
+        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
+            if is_legacy_landlock_direct_runtime_output(&output) =>
+        {
+            true
+        }
+        Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,
+        Err(err) => panic!("sandbox helper availability probe failed unexpectedly: {err:?}"),
     }
 }
 
@@ -266,20 +310,38 @@ fn expect_denied(result: Result<ExecToolCallOutput>, context: &str) -> ExecToolC
 
 #[tokio::test]
 async fn test_root_read() {
+    if should_skip_sandbox_helper_tests().await {
+        eprintln!("skipping sandbox helper test: helper executable is unavailable");
+        return;
+    }
+
     run_cmd(&["ls", "-l", "/bin"], &[], SHORT_TIMEOUT_MS).await;
 }
 
 #[tokio::test]
-#[should_panic]
 async fn test_root_write() {
+    if should_skip_sandbox_helper_tests().await {
+        eprintln!("skipping sandbox helper test: helper executable is unavailable");
+        return;
+    }
+
     let tmpfile = NamedTempFile::new().unwrap();
     let tmpfile_path = tmpfile.path().to_string_lossy();
-    run_cmd(
-        &["bash", "-lc", &format!("echo blah > {tmpfile_path}")],
-        &[],
-        SHORT_TIMEOUT_MS,
-    )
-    .await;
+    let output = expect_denied(
+        run_cmd_result_with_writable_roots(
+            &["bash", "-lc", &format!("echo blah > {tmpfile_path}")],
+            &[],
+            SHORT_TIMEOUT_MS,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ false,
+        )
+        .await,
+        "root write",
+    );
+    assert_ne!(
+        output.exit_code, 0,
+        "root write: expected nonzero exit code"
+    );
 }
 
 #[tokio::test]
@@ -372,6 +434,11 @@ async fn bwrap_preserves_writable_dev_shm_bind_mount() {
 
 #[tokio::test]
 async fn test_writable_root() {
+    if should_skip_sandbox_helper_tests().await {
+        eprintln!("skipping sandbox helper test: helper executable is unavailable");
+        return;
+    }
+
     let tmpdir = tempfile::tempdir().unwrap();
     let file_path = tmpdir.path().join("test");
     run_cmd(
@@ -416,6 +483,11 @@ async fn sandbox_ignores_missing_writable_roots_under_bwrap() {
 
 #[tokio::test]
 async fn test_no_new_privs_is_enabled() {
+    if should_skip_sandbox_helper_tests().await {
+        eprintln!("skipping sandbox helper test: helper executable is unavailable");
+        return;
+    }
+
     let output = run_cmd_output(
         &["bash", "-lc", "grep '^NoNewPrivs:' /proc/self/status"],
         &[],
@@ -434,9 +506,24 @@ async fn test_no_new_privs_is_enabled() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "Sandbox(Timeout")]
 async fn test_timeout() {
-    run_cmd(&["sleep", "2"], &[], /*timeout_ms*/ 50).await;
+    if should_skip_sandbox_helper_tests().await {
+        eprintln!("skipping sandbox helper test: helper executable is unavailable");
+        return;
+    }
+
+    match run_cmd_result_with_writable_roots(
+        &["sleep", "2"],
+        &[],
+        /*timeout_ms*/ 50,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ false,
+    )
+    .await
+    {
+        Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => {}
+        other => panic!("expected Sandbox(Timeout), got: {other:?}"),
+    }
 }
 
 /// Helper that runs `cmd` under the Linux sandbox and asserts that the command
@@ -479,6 +566,10 @@ async fn assert_network_blocked(cmd: &[&str]) {
     let output = match result {
         Ok(output) => output,
         Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => *output,
+        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => {
+            eprintln!("skipping sandbox helper test: helper executable is unavailable");
+            return;
+        }
         _ => {
             panic!("expected sandbox denied error, got: {result:?}");
         }

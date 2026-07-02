@@ -257,6 +257,7 @@ impl TurnEnvironmentSnapshot {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn primary_environment(&self) -> Option<Arc<codex_exec_server::Environment>> {
         self.primary()
             .map(|environment| Arc::clone(&environment.environment))

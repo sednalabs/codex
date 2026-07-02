@@ -19,6 +19,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use wiremock::Mock;
+use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -51,6 +52,7 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
         .expect(1)
         .mount(&server)
         .await;
+    mount_empty_remote_installed_plugins(&server).await;
     let response = responses::sse(vec![
         responses::ev_response_created("resp-1"),
         responses::ev_assistant_message("msg-1", "done"),
@@ -68,13 +70,11 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
     let config = std::fs::read_to_string(&config_path)?;
     std::fs::write(
         config_path,
-        format!(
-            "{config}\n[features]\napps = true\nplugins = true\nremote_plugin = true\ntool_suggest = true\n"
-        ),
+        format!("{config}\n[features]\napps = true\nplugins = true\ntool_suggest = true\n"),
     )?;
 
     let sqlite_home = codex_home.path().to_string_lossy();
-    let mut app_server = TestAppServer::new_without_managed_config_with_env(
+    let mut app_server = TestAppServer::new_without_managed_config_with_auto_env_and_env(
         codex_home.path(),
         &[("CODEX_SQLITE_HOME", Some(sqlite_home.as_ref()))],
     )
@@ -103,9 +103,14 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
         to_response::<LoginAccountResponse>(login_response)?,
         LoginAccountResponse::ChatgptAuthTokens {}
     );
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        app_server.read_stream_until_notification_message("account/updated"),
+    )
+    .await??;
 
     let thread_id = app_server
-        .send_thread_start_request(ThreadStartParams {
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })
@@ -162,4 +167,17 @@ async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Resu
     assert!(tool_names.contains(&"request_plugin_install"));
     assert!(!tool_names.contains(&"list_available_plugins_to_install"));
     Ok(())
+}
+
+async fn mount_empty_remote_installed_plugins(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/ps/plugins/installed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "plugins": [],
+            "pagination": {
+                "next_page_token": null,
+            },
+        })))
+        .mount(server)
+        .await;
 }

@@ -250,13 +250,17 @@ impl RemoteAppServerClient {
                                     if let Some(response_tx) = pending_requests.remove(&request_id) {
                                         let _ = response_tx.send(Err(err));
                                     }
-                                    let _ = deliver_event(
+                                    if let Err(err) = deliver_event(
                                         &event_tx,
                                         &mut skipped_events,
                                         AppServerEvent::Disconnected {
                                             message: message.clone(),
                                         },
-                                    );
+                                    )
+                                    .await
+                                    {
+                                        warn!(%err, "failed to deliver remote app-server disconnect event");
+                                    }
                                     worker_exit_error = Some((ErrorKind::BrokenPipe, message));
                                     break;
                                 }
@@ -385,13 +389,17 @@ impl RemoteAppServerClient {
                                                     let message = format!(
                                                         "remote app server at `{endpoint}` write failed: {err_message}"
                                                     );
-                                                    let _ = deliver_event(
+                                                    if let Err(err) = deliver_event(
                                                         &event_tx,
                                                         &mut skipped_events,
                                                         AppServerEvent::Disconnected {
                                                             message: message.clone(),
                                                         },
-                                                    );
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!(%err, "failed to deliver remote app-server disconnect event");
+                                                    }
                                                     worker_exit_error =
                                                         Some((ErrorKind::BrokenPipe, message));
                                                     break;
@@ -403,13 +411,17 @@ impl RemoteAppServerClient {
                                         let message = format!(
                                             "remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"
                                         );
-                                        let _ = deliver_event(
+                                        if let Err(deliver_err) = deliver_event(
                                             &event_tx,
                                             &mut skipped_events,
                                             AppServerEvent::Disconnected {
                                                 message: message.clone(),
                                             },
-                                        );
+                                        )
+                                        .await
+                                        {
+                                            warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
+                                        }
                                         worker_exit_error =
                                             Some((ErrorKind::InvalidData, message));
                                         break;
@@ -425,13 +437,17 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` disconnected: {reason}"
                                 );
-                                let _ = deliver_event(
+                                if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
-                                );
+                                )
+                                .await
+                                {
+                                    warn!(%err, "failed to deliver remote app-server disconnect event");
+                                }
                                 worker_exit_error = Some((
                                     ErrorKind::ConnectionAborted,
                                     message,
@@ -446,13 +462,17 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` transport failed: {err}"
                                 );
-                                let _ = deliver_event(
+                                if let Err(deliver_err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
-                                );
+                                )
+                                .await
+                                {
+                                    warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
+                                }
                                 worker_exit_error = Some((ErrorKind::InvalidData, message));
                                 break;
                             }
@@ -460,13 +480,17 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` closed the connection"
                                 );
-                                let _ = deliver_event(
+                                if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
-                                );
+                                )
+                                .await
+                                {
+                                    warn!(%err, "failed to deliver remote app-server disconnect event");
+                                }
                                 worker_exit_error = Some((ErrorKind::UnexpectedEof, message));
                                 break;
                             }

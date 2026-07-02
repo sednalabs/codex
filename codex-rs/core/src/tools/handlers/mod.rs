@@ -4,6 +4,7 @@ pub(crate) mod apply_patch;
 pub(crate) mod apply_patch_spec;
 mod computer_use;
 mod current_time;
+#[allow(dead_code, unused_imports)]
 mod dynamic;
 pub(crate) mod extension_tools;
 mod get_context_remaining;
@@ -14,9 +15,12 @@ pub(crate) mod list_available_plugins_to_install_spec;
 mod mcp;
 mod mcp_resource;
 pub(crate) mod mcp_resource_spec;
+#[allow(dead_code, unused_imports)]
 pub(crate) mod multi_agents;
+#[allow(dead_code)]
 pub(crate) mod multi_agents_common;
 pub(crate) mod multi_agents_spec;
+#[allow(dead_code, unused_imports)]
 pub(crate) mod multi_agents_v2;
 mod new_context_window;
 pub(crate) mod new_context_window_spec;
@@ -27,6 +31,7 @@ mod request_plugin_install;
 pub(crate) mod request_plugin_install_spec;
 mod request_user_input;
 pub(crate) mod request_user_input_spec;
+#[allow(dead_code)]
 mod search_text;
 mod shell;
 pub(crate) mod shell_spec;
@@ -79,6 +84,7 @@ pub use shell::ShellCommandHandler;
 pub(crate) use shell::ShellCommandHandlerOptions;
 pub use sleep::SleepHandler;
 pub use test_sync::TestSyncHandler;
+#[allow(unused_imports)]
 pub use tool_search::ToolSearchHandler;
 pub(crate) use tool_search::ToolSearchHandlerCache;
 pub use unified_exec::ExecCommandHandler;

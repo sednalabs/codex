@@ -63,8 +63,9 @@ use pulldown_cmark::Options;
 use pulldown_cmark::Parser;
 use pulldown_cmark::Tag;
 use pulldown_cmark::TagEnd;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -104,20 +105,26 @@ struct MarkdownStyles {
 impl Default for MarkdownStyles {
     fn default() -> Self {
         Self {
-            h1: Style::new().bold().underlined(),
-            h2: Style::new().bold(),
-            h3: Style::new().bold().italic(),
-            h4: Style::new().italic(),
-            h5: Style::new().italic(),
-            h6: Style::new().italic(),
-            code: Style::new().cyan(),
-            emphasis: Style::new().italic(),
-            strong: Style::new().bold(),
-            strikethrough: Style::new().crossed_out(),
-            ordered_list_marker: Style::new().light_blue(),
+            h1: Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            h2: Style::new().add_modifier(Modifier::BOLD),
+            h3: Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC),
+            h4: Style::new().add_modifier(Modifier::ITALIC),
+            h5: Style::new().add_modifier(Modifier::ITALIC),
+            h6: Style::new().add_modifier(Modifier::ITALIC),
+            code: Style::new().fg(Color::Cyan),
+            emphasis: Style::new().add_modifier(Modifier::ITALIC),
+            strong: Style::new().add_modifier(Modifier::BOLD),
+            strikethrough: Style::new().add_modifier(Modifier::CROSSED_OUT),
+            ordered_list_marker: Style::new().fg(Color::LightBlue),
             unordered_list_marker: Style::new(),
-            link: Style::new().cyan().underlined(),
-            blockquote: Style::new().green(),
+            link: Style::new()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+            blockquote: Style::new().fg(Color::Green),
         }
     }
 }
@@ -1098,7 +1105,7 @@ where
         let header_style =
             foreground_style_for_scopes(&["entity.name.type", "support.type", "variable"])
                 .unwrap_or(self.styles.strong)
-                .bold();
+                .add_modifier(Modifier::BOLD);
         let separator_style = table_separator_style();
 
         let Some(column_widths) = widths else {

@@ -500,7 +500,7 @@ async fn review_uses_runtime_effort_after_model_override() {
         start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
-        cfg.model = Some("gpt-5.3-codex-spark".to_string());
+        cfg.model = Some("gpt-5.3-codex".to_string());
         cfg.model_reasoning_effort = Some(ReasoningEffort::XHigh);
         cfg.review_model = None;
     })
@@ -509,7 +509,7 @@ async fn review_uses_runtime_effort_after_model_override() {
     core_test_support::submit_thread_settings(
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
-            model: Some("gpt-5.1-codex-mini".to_string()),
+            model: Some("gpt-5.4-mini".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             ..Default::default()
         },
@@ -545,7 +545,7 @@ async fn review_uses_runtime_effort_after_model_override() {
     let request = request_log.single_request();
     assert_eq!(request.path(), "/v1/responses");
     let body = request.body_json();
-    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.1-codex-mini");
+    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.4-mini");
     assert_eq!(body["reasoning"]["effort"].as_str().unwrap(), "high");
 
     let _codex_home_guard = codex_home;
@@ -562,16 +562,16 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
         start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
-        cfg.model = Some("gpt-5.3-codex-spark".to_string());
+        cfg.model = Some("gpt-5.3-codex".to_string());
         cfg.model_reasoning_effort = Some(ReasoningEffort::XHigh);
-        cfg.review_model = Some("gpt-5.1-codex-mini".to_string());
+        cfg.review_model = Some("gpt-5.4-mini".to_string());
     })
     .await;
 
     core_test_support::submit_thread_settings(
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
-            model: Some("gpt-5.3-codex-spark".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             ..Default::default()
         },
@@ -608,7 +608,7 @@ async fn review_uses_runtime_effort_with_explicit_review_model() {
     let request = request_log.single_request();
     assert_eq!(request.path(), "/v1/responses");
     let body = request.body_json();
-    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.1-codex-mini");
+    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.4-mini");
     assert_eq!(body["reasoning"]["effort"].as_str().unwrap(), "high");
 
     let _codex_home_guard = codex_home;
@@ -625,16 +625,27 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
         start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
-        cfg.model = Some("gpt-5.3-codex-spark".to_string());
+        let mut catalog =
+            codex_models_manager::bundled_models_response().expect("bundled models should parse");
+        let review_model = catalog
+            .models
+            .iter_mut()
+            .find(|model| model.slug == "gpt-5.4-mini")
+            .expect("gpt-5.4-mini exists in bundled models");
+        review_model
+            .supported_reasoning_levels
+            .retain(|preset| preset.effort != ReasoningEffort::XHigh);
+        cfg.model_catalog = Some(catalog);
+        cfg.model = Some("gpt-5.3-codex".to_string());
         cfg.model_reasoning_effort = Some(ReasoningEffort::XHigh);
-        cfg.review_model = Some("gpt-5.1-codex-mini".to_string());
+        cfg.review_model = Some("gpt-5.4-mini".to_string());
     })
     .await;
 
     core_test_support::submit_thread_settings(
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
-            model: Some("gpt-5.3-codex-spark".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
             effort: Some(Some(ReasoningEffort::XHigh)),
             ..Default::default()
         },
@@ -670,7 +681,7 @@ async fn review_clamps_runtime_effort_with_explicit_review_model() {
     let request = request_log.single_request();
     assert_eq!(request.path(), "/v1/responses");
     let body = request.body_json();
-    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.1-codex-mini");
+    assert_eq!(body["model"].as_str().unwrap(), "gpt-5.4-mini");
     assert_eq!(body["reasoning"]["effort"].as_str().unwrap(), "medium");
 
     let _codex_home_guard = codex_home;

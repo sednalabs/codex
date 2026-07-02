@@ -35,9 +35,13 @@ describe("Codex", () => {
         },
         {
           type: "turn.started",
+          thread_id: expect.any(String),
+          turn_id: expect.any(String),
         },
         {
           type: "item.completed",
+          thread_id: expect.any(String),
+          turn_id: expect.any(String),
           item: {
             id: "item_0",
             type: "agent_message",
@@ -46,6 +50,8 @@ describe("Codex", () => {
         },
         {
           type: "turn.completed",
+          thread_id: expect.any(String),
+          turn_id: expect.any(String),
           usage: {
             cached_input_tokens: 12,
             input_tokens: 42,

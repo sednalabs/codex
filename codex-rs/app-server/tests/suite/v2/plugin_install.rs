@@ -1342,6 +1342,7 @@ async fn plugin_install_starts_mcp_oauth_with_formerly_disallowed_plugin_app() -
 async fn plugin_install_starts_mcp_oauth_through_protected_resource_metadata() -> Result<()> {
     let resource_server = MockServer::start().await;
     let authorization_server = MockServer::start().await;
+    let resource_url = format!("{}/mcp", resource_server.uri());
     let resource_metadata_url = format!("{}/oauth-resource", resource_server.uri());
     let challenge = format!("Bearer resource_metadata=\"{resource_metadata_url}\"");
     Mock::given(method("GET"))
@@ -1354,7 +1355,7 @@ async fn plugin_install_starts_mcp_oauth_through_protected_resource_metadata() -
     Mock::given(method("GET"))
         .and(path("/oauth-resource"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "resource": resource_server.uri(),
+            "resource": resource_url,
             "authorization_servers": [authorization_server.uri()],
         })))
         .mount(&resource_server)
@@ -2027,7 +2028,6 @@ chatgpt_base_url = "{base_url}"
 
 [features]
 plugins = true
-remote_plugin = true
 "#
         ),
     )
@@ -2057,7 +2057,6 @@ chatgpt_base_url = "{}/backend-api/"
 
 [features]
 plugins = true
-remote_plugin = true
 connectors = true
 "#,
             server.uri()

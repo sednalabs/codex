@@ -434,9 +434,10 @@ impl ChatWidget {
         let suffix = if delta.abs() < 0.5 {
             "on pace".to_string()
         } else if delta > 0.0 {
-            format!("under {:.0}%", delta)
+            format!("under {delta:.0}%")
         } else {
-            format!("over {:.0}%", delta.abs())
+            let delta = delta.abs();
+            format!("over {delta:.0}%")
         };
 
         Some(format!("{base} ({suffix})"))

@@ -493,7 +493,7 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
         .expect("channel open");
     assert!(matches!(
         first.msg,
-        EventMsg::TurnStarted(TurnStartedEvent { started_at: Some(0),  turn_id, .. }) if turn_id == tc.sub_id
+        EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. }) if turn_id == tc.sub_id
     ));
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
@@ -4501,7 +4501,7 @@ fn turn_environments_for_tests(
             codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             Arc::clone(environment),
             codex_utils_path_uri::PathUri::from_abs_path(cwd),
-            None,
+            /*shell*/ None,
         )],
         starting: Vec::new(),
     }
@@ -6782,7 +6782,7 @@ async fn primary_environment_uses_first_turn_environment() {
             "second".to_string(),
             Arc::clone(&first_environment.environment),
             codex_utils_path_uri::PathUri::from_abs_path(&second_cwd),
-            None,
+            /*shell*/ None,
         ));
     let second_cwd_uri = codex_utils_path_uri::PathUri::from_abs_path(&second_cwd);
 
@@ -8310,10 +8310,11 @@ async fn build_initial_context_includes_turn_context_fragments_from_extensions()
     session.services.extensions = Arc::new(builder.build());
     turn_context.model_info.context_window = Some(100);
     turn_context.model_info.effective_context_window_percent = 50;
+    let expected_model_context_window = turn_context.model_context_window();
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
-            expected_model_context_window: Some(50),
+            expected_model_context_window,
         });
     let turn_context = Arc::new(turn_context);
 
@@ -8337,10 +8338,11 @@ async fn record_context_updates_includes_turn_context_fragments_on_steady_state_
     session.services.extensions = Arc::new(builder.build());
     turn_context.model_info.context_window = Some(200);
     turn_context.model_info.effective_context_window_percent = 25;
+    let expected_model_context_window = turn_context.model_context_window();
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
-            expected_model_context_window: Some(50),
+            expected_model_context_window,
         });
     let mut previous_context_item = turn_context.to_turn_context_item();
     previous_context_item.turn_id = Some("previous-turn-id".to_string());
@@ -10254,9 +10256,7 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
 
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
-        vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
-        ))],
+        vec![TurnInput::InterAgentCommunication(communication)],
     );
 }
 
@@ -10345,7 +10345,7 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::InterAgentCommunication(communication),
         ],
     );
 }
@@ -10403,7 +10403,7 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::InterAgentCommunication(communication),
         ],
     );
 }
@@ -10459,9 +10459,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     assert!(output.tool_future.is_some());
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
-        vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
-        ))],
+        vec![TurnInput::InterAgentCommunication(communication)],
     );
 }
 
@@ -10571,6 +10569,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         status: None,
         call_id: "call-1".to_string(),
         name: "shell_command".to_string(),
+        namespace: None,
         input: "{}".to_string(),
         internal_chat_message_metadata_passthrough: None,
     };

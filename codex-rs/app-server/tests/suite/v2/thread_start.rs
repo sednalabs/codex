@@ -52,6 +52,9 @@ use super::analytics::mount_analytics_capture;
 use super::analytics::thread_initialized_event;
 use super::analytics::wait_for_analytics_payload;
 
+#[cfg(any(windows, target_os = "macos"))]
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 

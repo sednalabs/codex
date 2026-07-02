@@ -738,6 +738,17 @@
       ],
       "type": "object"
     },
+    "EnvironmentInfoParams": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {
@@ -2936,6 +2947,12 @@
             "name": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "type": [
                 "string",
@@ -3911,6 +3928,13 @@
           "description": "When true, return only thread metadata and live fork state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after forking.",
           "type": "boolean"
         },
+        "lastTurnId": {
+          "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork.\nThe referenced turn cannot be in progress.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "description": "Configuration overrides for the forked thread, if any.",
           "type": [
@@ -3978,13 +4002,6 @@
             }
           ],
           "description": "Optional client-supplied analytics source classification for this forked thread."
-        },
-        "lastTurnId": {
-          "description": "Optional last turn id to fork through, inclusive.\n\nWhen specified, turns after `last_turn_id` are omitted from the fork.\nThe referenced turn cannot be in progress.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [

@@ -165,6 +165,7 @@ impl SlashCommand {
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Raw
+                | SlashCommand::Usage
                 | SlashCommand::Pets
                 | SlashCommand::Side
                 | SlashCommand::Btw
@@ -194,7 +195,6 @@ impl SlashCommand {
             SlashCommand::New
             | SlashCommand::Archive
             | SlashCommand::Delete
-            | SlashCommand::Resume
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
@@ -214,6 +214,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Resume
             | SlashCommand::Rename
             | SlashCommand::Mention
             | SlashCommand::Skills

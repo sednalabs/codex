@@ -39,8 +39,15 @@ fn client_initialize_error_requires_authentication(error: &ClientInitializeError
 }
 
 fn auth_error_requires_authentication(error: &AuthError) -> bool {
+    // RMCP reports unrecoverable refresh attempts as reauthentication.
     matches!(
         error,
-        AuthError::AuthorizationRequired | AuthError::TokenExpired
+        AuthError::AuthorizationRequired
+            | AuthError::TokenExpired
+            | AuthError::TokenRefreshFailed(_)
     )
 }
+
+#[cfg(test)]
+#[path = "startup_error_tests.rs"]
+mod tests;

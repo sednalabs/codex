@@ -20,6 +20,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
+use core_test_support::is_remote_test_environment;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -107,6 +108,11 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Result<()> {
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
+
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
@@ -118,7 +124,6 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     .await;
 
     let namespace = "resume_tools";
-    let namespace_description = "Tools available after resume.";
     let tool_name = "resume_lookup";
     let tool_description = "Look up a value after resume.";
     let input_schema = json!({
@@ -198,7 +203,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         &json!({
             "type": "namespace",
             "name": namespace,
-            "description": namespace_description,
+            "description": "Tools in the resume_tools namespace.",
             "tools": [{
                 "type": "function",
                 "name": tool_name,
@@ -613,6 +618,10 @@ async fn standalone_web_search_marks_thread_memory_mode_polluted_when_configured
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if is_remote_test_environment() {
+        eprintln!("skipping local stdio MCP fixture test under remote executor");
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let call_id = "call-123";

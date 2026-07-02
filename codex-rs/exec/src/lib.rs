@@ -371,7 +371,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         /*enable_codex_api_key_env*/ false,
         bootstrap_config_toml
             .cli_auth_credentials_store
-            .clone()
             .unwrap_or_default(),
         resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
@@ -1449,6 +1448,10 @@ fn should_process_notification(
         ServerNotification::TurnStarted(notification) => {
             notification.thread_id == thread_id && notification.turn.id == turn_id
         }
+        ServerNotification::Warning(notification) => notification
+            .thread_id
+            .as_deref()
+            .is_none_or(|candidate| candidate == thread_id),
         _ => false,
     }
 }

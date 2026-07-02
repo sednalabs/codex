@@ -720,6 +720,12 @@ impl App {
                 store.active_turn_id = Some(response.turn.id);
                 Ok(true)
             }
+            AppCommand::RealtimeConversationAudio { audio } => {
+                app_server
+                    .thread_realtime_append_audio(thread_id, audio.clone())
+                    .await?;
+                Ok(true)
+            }
             AppCommand::CleanBackgroundTerminals => {
                 app_server
                     .thread_background_terminals_clean(thread_id)
@@ -1017,7 +1023,7 @@ impl App {
         } else if rollout_path.is_some() {
             session.model.clear();
         }
-        session.reasoning_effort = model_settings.reasoning_effort.map(Into::into);
+        session.reasoning_effort = model_settings.reasoning_effort;
         session.message_history = None;
         session.rollout_path = rollout_path;
         self.upsert_agent_picker_thread(

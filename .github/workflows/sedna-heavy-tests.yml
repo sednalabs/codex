@@ -267,18 +267,31 @@ jobs:
             esac
           done
 
-          files_json="$(printf '%s\n' "${files[@]}" | jq -R . | jq -sc .)"
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py heavy --event-name "${GITHUB_EVENT_NAME}" --requested-lane "${REQUESTED_LANE}" --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json "${files_json}" --rust-batching "${INPUT_RUST_BATCHING}" --rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}")"
+          changed_files_json_path="${RUNNER_TEMP:-.}/sedna-heavy-changed-files.json"
+          if ((${#files[@]} == 0)); then
+            printf '[]\n' > "${changed_files_json_path}"
+          else
+            printf '%s\n' "${files[@]}" | jq -R . | jq -sc . > "${changed_files_json_path}"
+          fi
+          selection_meta="$(
+            env -i \
+              HOME="${HOME:-}" \
+              PATH="${PATH}" \
+              python3 .github/scripts/resolve_validation_plan.py heavy --event-name "${GITHUB_EVENT_NAME}" --requested-lane "${REQUESTED_LANE}" --run-all-lanes "${run_all_lanes}" --run-core-family "${run_core_family}" --run-attestation-family "${run_attestation_family}" --run-workflow-family "${run_workflow_family}" --run-ui-protocol-family "${run_ui_protocol_family}" --run-docs-family "${run_docs_family}" --changed-files-json-file "${changed_files_json_path}" --rust-batching "${INPUT_RUST_BATCHING}" --rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}"
+          )"
+          selection_meta_path="${RUNNER_TEMP:-.}/sedna-heavy-selection-meta.json"
+          printf '%s\n' "${selection_meta}" > "${selection_meta_path}"
 
           parse_meta() {
             local field="$1"
-            python3 - "$field" <<'PY'
+            env -i PATH="${PATH}" SELECTION_META_PATH="${selection_meta_path}" python3 - "$field" <<'PY'
           import json
           import os
           import sys
+          from pathlib import Path
 
           field = sys.argv[1]
-          meta = json.loads(os.environ["SELECTION_META"])
+          meta = json.loads(Path(os.environ["SELECTION_META_PATH"]).read_text(encoding="utf-8"))
           value = meta[field]
           if isinstance(value, (dict, list)):
               print(json.dumps(value, separators=(",", ":")))
@@ -287,47 +300,47 @@ jobs:
           PY
           }
 
-          run_smoke_gate="$(SELECTION_META="${selection_meta}" parse_meta "run_smoke_gate")"
-          smoke_gate_kind="$(SELECTION_META="${selection_meta}" parse_meta "smoke_gate_kind")"
-          smoke_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_matrix")"
-          smoke_workflow_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_matrix")"
-          smoke_node_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_matrix")"
-          smoke_rust_minimal_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_matrix")"
-          smoke_rust_integration_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_matrix")"
-          smoke_release_json="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_matrix")"
-          planned_json="$(SELECTION_META="${selection_meta}" parse_meta "planned_matrix")"
-          selected_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_matrix")"
-          selected_workflow_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_matrix")"
-          selected_node_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_matrix")"
-          selected_rust_minimal_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_matrix")"
-          selected_rust_integration_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_matrix")"
-          selected_release_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_matrix")"
-          selected_rust_minimal_batch_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_matrix")"
-          selected_rust_integration_batch_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_matrix")"
-          selected_lane_ids_json="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
-          smoke_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_lane_count")"
-          smoke_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_lane_count")"
-          smoke_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_lane_count")"
-          smoke_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_lane_count")"
-          smoke_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_lane_count")"
-          selected_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_lane_count")"
-          selected_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_lane_count")"
-          selected_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_lane_count")"
-          selected_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_lane_count")"
-          selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
-          selected_rust_minimal_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_count")"
-          selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
-          rust_batching_mode="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_mode")"
-          rust_batching_reason="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_reason")"
-          eager_release_lanes="$(SELECTION_META="${selection_meta}" parse_meta "eager_release_lanes")"
-          workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
-          node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
-          rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
-          rust_integration_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_integration_max_parallel")"
-          release_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "release_max_parallel")"
-          matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
-          continue_after_smoke_failure="$(SELECTION_META="${selection_meta}" parse_meta "continue_after_smoke_failure")"
-          planner_fingerprint="$(SELECTION_META="${selection_meta}" REQUESTED_LANE="${REQUESTED_LANE}" python3 -c 'import hashlib, json, os; payload = json.loads(os.environ["SELECTION_META"]); source = json.dumps({"requested_lane": os.environ["REQUESTED_LANE"], "run_smoke_gate": payload["run_smoke_gate"], "selected_lane_ids": payload["selected_lane_ids"]}, sort_keys=True, separators=(",", ":")); print(hashlib.sha256(source.encode("utf-8")).hexdigest()[:16])')"
+          run_smoke_gate="$(parse_meta "run_smoke_gate")"
+          smoke_gate_kind="$(parse_meta "smoke_gate_kind")"
+          smoke_json="$(parse_meta "smoke_matrix")"
+          smoke_workflow_json="$(parse_meta "smoke_workflow_matrix")"
+          smoke_node_json="$(parse_meta "smoke_node_matrix")"
+          smoke_rust_minimal_json="$(parse_meta "smoke_rust_minimal_matrix")"
+          smoke_rust_integration_json="$(parse_meta "smoke_rust_integration_matrix")"
+          smoke_release_json="$(parse_meta "smoke_release_matrix")"
+          planned_json="$(parse_meta "planned_matrix")"
+          selected_json="$(parse_meta "selected_matrix")"
+          selected_workflow_json="$(parse_meta "selected_workflow_matrix")"
+          selected_node_json="$(parse_meta "selected_node_matrix")"
+          selected_rust_minimal_json="$(parse_meta "selected_rust_minimal_matrix")"
+          selected_rust_integration_json="$(parse_meta "selected_rust_integration_matrix")"
+          selected_release_json="$(parse_meta "selected_release_matrix")"
+          selected_rust_minimal_batch_json="$(parse_meta "selected_rust_minimal_batch_matrix")"
+          selected_rust_integration_batch_json="$(parse_meta "selected_rust_integration_batch_matrix")"
+          selected_lane_ids_json="$(parse_meta "selected_lane_ids")"
+          smoke_workflow_lane_count="$(parse_meta "smoke_workflow_lane_count")"
+          smoke_node_lane_count="$(parse_meta "smoke_node_lane_count")"
+          smoke_rust_minimal_lane_count="$(parse_meta "smoke_rust_minimal_lane_count")"
+          smoke_rust_integration_lane_count="$(parse_meta "smoke_rust_integration_lane_count")"
+          smoke_release_lane_count="$(parse_meta "smoke_release_lane_count")"
+          selected_workflow_lane_count="$(parse_meta "selected_workflow_lane_count")"
+          selected_node_lane_count="$(parse_meta "selected_node_lane_count")"
+          selected_rust_minimal_lane_count="$(parse_meta "selected_rust_minimal_lane_count")"
+          selected_rust_integration_lane_count="$(parse_meta "selected_rust_integration_lane_count")"
+          selected_release_lane_count="$(parse_meta "selected_release_lane_count")"
+          selected_rust_minimal_batch_count="$(parse_meta "selected_rust_minimal_batch_count")"
+          selected_rust_integration_batch_count="$(parse_meta "selected_rust_integration_batch_count")"
+          rust_batching_mode="$(parse_meta "rust_batching_mode")"
+          rust_batching_reason="$(parse_meta "rust_batching_reason")"
+          eager_release_lanes="$(parse_meta "eager_release_lanes")"
+          workflow_max_parallel="$(parse_meta "workflow_max_parallel")"
+          node_max_parallel="$(parse_meta "node_max_parallel")"
+          rust_minimal_max_parallel="$(parse_meta "rust_minimal_max_parallel")"
+          rust_integration_max_parallel="$(parse_meta "rust_integration_max_parallel")"
+          release_max_parallel="$(parse_meta "release_max_parallel")"
+          matrix_fail_fast="$(parse_meta "matrix_fail_fast")"
+          continue_after_smoke_failure="$(parse_meta "continue_after_smoke_failure")"
+          planner_fingerprint="$(env -i PATH="${PATH}" REQUESTED_LANE="${REQUESTED_LANE}" SELECTION_META_PATH="${selection_meta_path}" python3 -c 'import hashlib, json, os; from pathlib import Path; payload = json.loads(Path(os.environ["SELECTION_META_PATH"]).read_text(encoding="utf-8")); source = json.dumps({"requested_lane": os.environ["REQUESTED_LANE"], "run_smoke_gate": payload["run_smoke_gate"], "selected_lane_ids": payload["selected_lane_ids"]}, sort_keys=True, separators=(",", ":")); print(hashlib.sha256(source.encode("utf-8")).hexdigest()[:16])')"
           dedupe_reason=""
           run_selected_lanes="true"
 
