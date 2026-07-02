@@ -2,7 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::create_apply_patch_sse_response;
-use app_test_support::create_exec_command_sse_response;
+use app_test_support::create_exec_command_wait_until_terminal_sse_response;
 use app_test_support::create_fake_rollout;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_repeating_assistant;
@@ -4355,7 +4355,7 @@ async fn command_execution_completion_precedes_turn_completion_and_preserves_pro
     skip_if_no_network!(Ok(()));
 
     let responses = vec![
-        create_exec_command_sse_response("uexec-1")?,
+        create_exec_command_wait_until_terminal_sse_response("uexec-1")?,
         create_final_assistant_message_sse_response("done")?,
     ];
     let server = create_mock_responses_server_sequence(responses).await;
