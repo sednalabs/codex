@@ -248,7 +248,7 @@ pub(crate) fn thread_spawn_source(
 pub(crate) fn parse_collab_input(
     message: Option<String>,
     items: Option<Vec<UserInput>>,
-) -> Result<Op, FunctionCallError> {
+) -> Result<Vec<UserInput>, FunctionCallError> {
     match (message, items) {
         (Some(_), Some(_)) => Err(FunctionCallError::RespondToModel(
             "Provide either message or items, but not both".to_string(),
@@ -265,8 +265,7 @@ pub(crate) fn parse_collab_input(
             Ok(vec![UserInput::Text {
                 text: message,
                 text_elements: Vec::new(),
-            }]
-            .into())
+            }])
         }
         (None, Some(items)) => {
             if items.is_empty() {
@@ -274,7 +273,7 @@ pub(crate) fn parse_collab_input(
                     "Items can't be empty".to_string(),
                 ));
             }
-            Ok(items.into())
+            Ok(items)
         }
     }
 }
