@@ -542,7 +542,7 @@ where
                     }
                 }
                 Ok(Err(error)) => {
-                    warn!("Noise multiplexed environment websocket write failed: {error}");
+                    warn!(%error, "Noise multiplexed environment websocket write failed");
                     break RendezvousDisconnectReason::WriteError;
                 }
                 Err(_) => {

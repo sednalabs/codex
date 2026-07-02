@@ -7,6 +7,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
   # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
@@ -20,9 +23,9 @@ jobs:
     # signal without putting PR latency back on the critical path. When
     # Code-mode unit tests run on every Bazel target. When authenticated RBE
     # is available, the Windows-cross shards exercise the source-built V8 path.
-    # macOS runners keep test actions local and can exceed 30 minutes under
-    # full-tree PR validation even when build actions execute remotely.
-    timeout-minutes: 60
+    # macOS runners keep test actions local; full-tree PR validation can exceed
+    # the default window while build actions execute remotely.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
