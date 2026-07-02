@@ -291,7 +291,12 @@ where
                 )
                 .await
                 {
-                    warn!(%error, "failed to write Noise relay keepalive ping");
+                    let error_message = error.to_string();
+                    if error_message.is_empty() {
+                        warn!("failed to write Noise relay keepalive ping");
+                    } else {
+                        warn!("failed to write Noise relay keepalive ping: {error_message}");
+                    }
                     break;
                 }
                 frames_drained_after_pong_deadline = 0;

@@ -182,9 +182,9 @@ common:ci-macos --build_metadata=TAG_os=macos
 common:ci-macos --strategy=TestRunner=darwin-sandbox,local
 # Hosted macOS runners run tests locally; keep Bazel and libtest concurrency
 # bounded so async integration tests do not starve their own event loops.
-common:ci-macos --jobs=32
+common:ci-macos --jobs=24
 common:ci-macos --loading_phase_threads=8
-common:ci-macos --local_test_jobs=4
+common:ci-macos --local_test_jobs=2
 common:ci-macos --test_env=RUST_TEST_THREADS=1
 
 # On Windows, use Linux remote execution for build actions but keep test actions
