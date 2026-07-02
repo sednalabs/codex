@@ -134,6 +134,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - The workspace JWT dependency stays on the `jsonwebtoken` `aws_lc_rs`
     provider so hosted Cargo/Bazel `--locked` runs do not pull the RustCrypto
     RSA graph or trip the cargo-deny RSA advisory.
+  - The direct `quick-xml` workspace dependency stays on the fixed `0.41` line,
+    and cargo-deny/cargo-audit exceptions for the remaining transitive
+    `plist`/`syntect` and `wayland-scanner`/`arboard` paths stay synchronized
+    until those upstream crates can use `quick-xml >=0.41.0`.
   - `v8-canary.yml` staging, macOS Bazel clippy, and macOS Bazel
     release-build verification keep hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the heavy

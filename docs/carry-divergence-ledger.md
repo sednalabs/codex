@@ -65,7 +65,11 @@ docs-only refresh commit that records this snapshot.
   stage. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
-  RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
+  RustCrypto RSA graph. The direct `quick-xml` workspace dependency stays on a
+  fixed line, while temporary RustSec exceptions for the remaining transitive
+  `plist`/`syntect` and `wayland-scanner`/`arboard` paths are mirrored in
+  `deny.toml` and `.cargo/audit.toml` until those upstream crates can use
+  `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
