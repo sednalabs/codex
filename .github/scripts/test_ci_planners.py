@@ -3177,6 +3177,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
             if step.get("name") == "remote tests"
         ).get("run") or ""
         self.assertNotIn(" -E ", remote_run)
+        remote_setup_run = next(
+            step
+            for step in (jobs.get("remote_tests") or {}).get("steps") or []
+            if step.get("name") == "Set up remote test env (Docker)"
+        ).get("run") or ""
+        self.assertIn("CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR", remote_setup_run)
+        remote_cleanup_run = next(
+            step
+            for step in (jobs.get("remote_tests") or {}).get("steps") or []
+            if step.get("name") == "Reclaim remote env build artifacts"
+        ).get("run") or ""
+        self.assertIn("20 GiB extraction safety floor", remote_cleanup_run)
 
     def test_rust_ci_full_summary_parser_extracts_compact_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
