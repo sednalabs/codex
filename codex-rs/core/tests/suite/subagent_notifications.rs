@@ -1302,11 +1302,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let _ = wait_for_requests(&child_request).await?;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
-    let request = wait_for_request_matching(
-        &agent_request,
-        "agent message request",
-        |request| !request.inputs_of_type("agent_message").is_empty(),
-    )
+    let request = wait_for_request_matching(&agent_request, "agent message request", |request| {
+        !request.inputs_of_type("agent_message").is_empty()
+    })
     .await?;
     assert_eq!(
         strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message"))),

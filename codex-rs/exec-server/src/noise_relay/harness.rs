@@ -291,11 +291,10 @@ where
                 )
                 .await
                 {
-                    let error_message = error.to_string();
-                    if error_message.is_empty() {
+                    if error.is_empty() {
                         warn!("failed to write Noise relay keepalive ping");
                     } else {
-                        warn!("failed to write Noise relay keepalive ping: {error_message}");
+                        warn!("failed to write Noise relay keepalive ping: {error}");
                     }
                     break;
                 }
