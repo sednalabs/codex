@@ -389,7 +389,6 @@ pub async fn wait_for_event_with_timeout<F>(
 where
     F: FnMut(&codex_protocol::protocol::EventMsg) -> bool,
 {
-    use tokio::time::Duration;
     use tokio::time::timeout;
     loop {
         // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
