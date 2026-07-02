@@ -67,6 +67,9 @@ artifacts.
   - artifact reuse: builds one nextest archive for the Linux `x86_64` dev
     profile, then reuses that archive for both the normal all-features test
     lane and the full Docker-backed remote-env lane
+  - archive footprint: disables debug info and strips symbols for the `ci-test`
+    archive producer so standard hosted runners have enough disk headroom to
+    build the shared payload
   - remote-env disk hygiene: the Docker-backed replay builds the temporary
     Codex remote executor into `${RUNNER_TEMP}` and removes that isolated Cargo
     target directory before extracting the shared nextest archive
