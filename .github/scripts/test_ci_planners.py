@@ -2050,6 +2050,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         )
+        archive_env = ((payload.get("jobs") or {}).get("archive") or {}).get("env") or {}
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_DEBUG"), "0")
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_STRIP"), "symbols")
+
         tool_values: list[str] = []
         for job in (payload.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
@@ -2067,6 +2071,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             tool_values,
             ["sccache@0.7.5", "nextest@0.9.103", "nextest@0.9.103"],
         )
+        workflow_text = (
+            REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
+        self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
+        self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
 
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3110,6 +3120,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
+        archive_env = (jobs.get("nextest_archive") or {}).get("env") or {}
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_DEBUG"), "0")
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_STRIP"), "symbols")
+
         archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
         disk_reclaim_step = next(
             step for step in archive_steps if step.get("name") == "Reclaim runner disk headroom"
@@ -3177,6 +3191,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
             if step.get("name") == "remote tests"
         ).get("run") or ""
         self.assertNotIn(" -E ", remote_run)
+        remote_setup_run = next(
+            step
+            for step in (jobs.get("remote_tests") or {}).get("steps") or []
+            if step.get("name") == "Set up remote test env (Docker)"
+        ).get("run") or ""
+        self.assertIn("CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR", remote_setup_run)
+        remote_cleanup_run = next(
+            step
+            for step in (jobs.get("remote_tests") or {}).get("steps") or []
+            if step.get("name") == "Reclaim remote env build artifacts"
+        ).get("run") or ""
+        self.assertIn("20 GiB extraction safety floor", remote_cleanup_run)
 
     def test_rust_ci_full_summary_parser_extracts_compact_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

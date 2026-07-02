@@ -42,11 +42,16 @@ docs-only refresh commit that records this snapshot.
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
-  `cargo nextest archive`, stay archive-only, and leave test execution to the
-  archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
+  `cargo nextest archive`, build the `ci-test` archive payload with debug info
+  disabled and symbols stripped, stay archive-only, and leave test execution
+  to the archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
   install `bubblewrap` and reclaim hosted disk before archive extraction so
   sandbox and remote replay failures are not artifacts of runner packaging or
-  disk pressure. The `remote_tests` replay job keeps a 45-minute hosted budget
+  disk pressure. The `remote_tests` replay job builds its Docker remote-env
+  Codex binary in an isolated temporary Cargo target directory and removes
+  those host-side build artifacts before replaying the shared nextest archive,
+  so remote-env setup does not consume the extraction headroom needed by the
+  227-binary archive. The `remote_tests` replay job keeps a 45-minute hosted budget
   so long archive download and remote-environment setup time does not masquerade
   as a product failure. The rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
@@ -65,7 +70,11 @@ docs-only refresh commit that records this snapshot.
   stage. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
-  RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
+  RustCrypto RSA graph. The direct `quick-xml` workspace dependency stays on a
+  fixed line, while temporary RustSec exceptions for the remaining transitive
+  `plist`/`syntect` and `wayland-scanner`/`arboard` paths are mirrored in
+  `deny.toml` and `.cargo/audit.toml` until those upstream crates can use
+  `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before

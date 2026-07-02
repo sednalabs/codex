@@ -604,6 +604,8 @@ jobs:
       # sccache here so the archive has maximum workspace headroom.
       USE_SCCACHE: "false"
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      CARGO_PROFILE_CI_TEST_STRIP: "symbols"
 
     strategy:
       fail-fast: false
@@ -952,10 +954,37 @@ jobs:
         run: |
           set -euo pipefail
           export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
+          export CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR="${RUNNER_TEMP}/remote-env-target"
           # shellcheck source=/dev/null
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
+          echo "CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR=${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
+
+      - name: Reclaim remote env build artifacts
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          hard_threshold_bytes=$((20 * 1024 * 1024 * 1024))
+
+          available_bytes() {
+            df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
+          }
+
+          before_bytes="$(available_bytes)"
+          echo "Available disk before remote env artifact cleanup: $(numfmt --to=iec "${before_bytes}")"
+
+          rm -rf "${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR:-${RUNNER_TEMP}/remote-env-target}"
+
+          after_bytes="$(available_bytes)"
+          echo "Available disk after remote env artifact cleanup: $(numfmt --to=iec "${after_bytes}")"
+
+          if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
+            echo "::error title=Insufficient runner disk::Available disk after remote env artifact cleanup is $(numfmt --to=iec "${after_bytes}"), below the 20 GiB extraction safety floor for rust-ci-full remote nextest replay."
+            exit 1
+          fi
 
       - name: remote tests
         id: test
