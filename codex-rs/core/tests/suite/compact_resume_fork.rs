@@ -45,7 +45,9 @@ use wiremock::MockServer;
 
 const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
 const AFTER_ROLLBACK: &str = "AFTER_ROLLBACK";
-const COMPACT_RESUME_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+// Hosted archive/replay sweeps can cross nextest's 30s slow threshold while
+// rollback persistence catches up under remote-executor load.
+const COMPACT_RESUME_EVENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn network_disabled() -> bool {
     std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
