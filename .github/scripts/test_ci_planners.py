@@ -2050,6 +2050,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         )
+        archive_env = ((payload.get("jobs") or {}).get("archive") or {}).get("env") or {}
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_DEBUG"), "0")
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_STRIP"), "symbols")
+
         tool_values: list[str] = []
         for job in (payload.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
@@ -3109,6 +3113,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_rust_ci_full_nextest_archive_is_reused_by_test_families(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
+
+        archive_env = (jobs.get("nextest_archive") or {}).get("env") or {}
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_DEBUG"), "0")
+        self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_STRIP"), "symbols")
 
         archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
         disk_reclaim_step = next(

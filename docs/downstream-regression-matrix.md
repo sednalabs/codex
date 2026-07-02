@@ -122,8 +122,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Workflow and route-map edits also run cheap planner fixture tests so
     follow-up lane selection does not silently drift.
   - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
-    headroom, skip archive-job sccache, and stay archive-only so hosted test
-    execution happens in the archive-consuming test jobs. The archive-consuming
+    headroom, skip archive-job sccache, build the `ci-test` archive payload
+    with debug info disabled and symbols stripped, and stay archive-only so
+    hosted test execution happens in the archive-consuming test jobs. The archive-consuming
     jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
     `remote_tests` builds its Docker remote-env Codex binary in an isolated
     temporary Cargo target directory and deletes those host-side build artifacts
