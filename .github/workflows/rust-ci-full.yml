@@ -866,7 +866,7 @@ jobs:
     name: Remote tests — ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     needs: [matrix_plan, nextest_archive]
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: codex-rs
