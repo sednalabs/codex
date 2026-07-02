@@ -92,7 +92,9 @@ docs-only refresh commit that records this snapshot.
   Remote executor sweeps skip host-local managed-network approval and denial
   fixtures until the remote harness provides a proxy endpoint reachable from the
   target process; environment-specific approval scoping remains covered by unit
-  tests and host-local integration.
+  tests and host-local integration. Compact/resume rollback fixtures keep their
+  event wait above nextest's 30-second slow threshold so hosted remote replay
+  load does not masquerade as a product hang.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in

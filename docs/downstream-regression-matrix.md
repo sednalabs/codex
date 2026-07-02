@@ -132,7 +132,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     the `remote_tests` replay job uses a 45-minute hosted budget for long
     archive download plus remote-environment setup, and the archive builders
     fail early if the hosted runner is still below the
-    archive safety floor. The workflow summary parser understands nextest
+    archive safety floor. Compact/resume rollback fixtures keep their event
+    wait above nextest's 30-second slow threshold so hosted remote replay load
+    does not masquerade as a product hang. The workflow summary parser
+    understands nextest
     retry-status lines so structured harvest artifacts show persistent retry
     failures instead of reporting a false zero-failure summary.
   - The workspace JWT dependency stays on the `jsonwebtoken` `aws_lc_rs`
