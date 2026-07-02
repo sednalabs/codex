@@ -125,7 +125,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     headroom, skip archive-job sccache, and stay archive-only so hosted test
     execution happens in the archive-consuming test jobs. The archive-consuming
     jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
-    and the archive builders fail early if the hosted runner is still below the
+    the `remote_tests` replay job uses a 45-minute hosted budget for long
+    archive download plus remote-environment setup, and the archive builders
+    fail early if the hosted runner is still below the
     archive safety floor. The workflow summary parser understands nextest
     retry-status lines so structured harvest artifacts show persistent retry
     failures instead of reporting a false zero-failure summary.
