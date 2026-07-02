@@ -361,8 +361,6 @@ jobs:
       - name: tests
         id: test
         shell: bash
-        env:
-          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           archive_file="${RUNNER_TEMP}/nextest-archive/${NEXTEST_ARCHIVE_FILE}"
@@ -420,6 +418,7 @@ jobs:
 
           "${test_command[@]}"
         env:
+          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
           RUST_BACKTRACE: 1
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
