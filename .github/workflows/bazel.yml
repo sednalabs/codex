@@ -25,7 +25,7 @@ jobs:
     # is available, the Windows-cross shards exercise the source-built V8 path.
     # macOS runners keep test actions local; full-tree PR validation can exceed
     # the default window while build actions execute remotely.
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -144,7 +144,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

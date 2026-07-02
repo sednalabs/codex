@@ -343,6 +343,24 @@ async fn wait_for_requests(
     }
 }
 
+async fn wait_for_request_matching(
+    mock: &core_test_support::responses::ResponseMock,
+    description: &str,
+    predicate: impl Fn(&ResponsesRequest) -> bool,
+) -> Result<ResponsesRequest> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let requests = mock.requests();
+        if let Some(request) = requests.into_iter().find(|request| predicate(request)) {
+            return Ok(request);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("expected {description} request");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn setup_turn_one_with_spawned_child(
     server: &MockServer,
     child_response_delay: Option<Duration>,
@@ -1129,11 +1147,12 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
-    let child_request = wait_for_requests(&child_request_log)
-        .await?
-        .into_iter()
-        .find(|request| !request.inputs_of_type("agent_message").is_empty())
-        .expect("child request with agent_message");
+    let child_request = wait_for_request_matching(
+        &child_request_log,
+        "child request with agent_message",
+        |request| !request.inputs_of_type("agent_message").is_empty(),
+    )
+    .await?;
     assert_eq!(
         strip_metadata_from_json(Value::Array(child_request.inputs_of_type("agent_message"))),
         Value::Array(vec![json!({
@@ -1283,10 +1302,12 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let _ = wait_for_requests(&child_request).await?;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
-    let request = wait_for_requests(&agent_request)
-        .await?
-        .pop()
-        .expect("agent message request");
+    let request = wait_for_request_matching(
+        &agent_request,
+        "agent message request",
+        |request| !request.inputs_of_type("agent_message").is_empty(),
+    )
+    .await?;
     assert_eq!(
         strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message"))),
         Value::Array(vec![json!({

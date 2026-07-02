@@ -2353,7 +2353,8 @@ mod tests {
         let codex_home = TempDir::new()?;
         let socket_path =
             codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
-        std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
+        let socket_parent = socket_path.as_path().parent().expect("socket parent");
+        tokio::fs::create_dir_all(socket_parent).await?;
         let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
 
         assert_eq!(
