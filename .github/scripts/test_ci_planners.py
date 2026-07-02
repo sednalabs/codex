@@ -2071,6 +2071,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             tool_values,
             ["sccache@0.7.5", "nextest@0.9.103", "nextest@0.9.103"],
         )
+        workflow_text = (
+            REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
+        self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
+        self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
 
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1199,9 +1199,16 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
         .expect("child thread ID");
     let logs = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let logs = String::from_utf8(output.lock().expect("buffer lock").clone())
-                .expect("logs should be UTF-8");
-            if logs.contains("kind=\"spawn\"") && logs.contains("state=\"receive\"") {
+            let logs = {
+                let output = output.lock().expect("buffer lock");
+                std::str::from_utf8(&output)
+                    .ok()
+                    .filter(|logs| {
+                        logs.contains("kind=\"spawn\"") && logs.contains("state=\"receive\"")
+                    })
+                    .map(str::to_owned)
+            };
+            if let Some(logs) = logs {
                 break logs;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
