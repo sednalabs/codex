@@ -426,7 +426,11 @@ impl ChatWidget {
                                     "`/diff` — _not inside a git repository_".to_string()
                                 }
                             }
-                            Err(e) => format!("Failed to compute diff: {e}"),
+                            Err(e) => {
+                                let mut message = "Failed to compute diff: ".to_string();
+                                message.push_str(e.as_str());
+                                message
+                            }
                         },
                         None => "Failed to compute diff: workspace command runner unavailable"
                             .to_string(),
@@ -452,7 +456,7 @@ impl ChatWidget {
                     let request_id = self.next_status_refresh_request_id;
                     self.next_status_refresh_request_id =
                         self.next_status_refresh_request_id.wrapping_add(1);
-                    self.add_status_output(/*refreshing_rate_limits*/ true, Some(request_id));
+                    self.add_status_output(/*refreshing_rate_limits*/ false, Some(request_id));
                     self.app_event_tx.send(AppEvent::RefreshRateLimits {
                         origin: RateLimitRefreshOrigin::StatusCommand { request_id },
                     });

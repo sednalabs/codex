@@ -17,6 +17,13 @@ from typing import Any
 
 RETRY_RUSTY_V8_RE = re.compile(r"rusty_v8", re.IGNORECASE)
 RETRY_HTTP_502_RE = re.compile(r"HTTP Error 502", re.IGNORECASE)
+RETRY_CARGO_REGISTRY_TRANSPORT_RES = (
+    re.compile(r"unable to update registry [`']crates-io[`']", re.IGNORECASE),
+    re.compile(r"download of .+ failed", re.IGNORECASE),
+    re.compile(r"curl failed", re.IGNORECASE),
+    re.compile(r"Error in the HTTP2 framing layer|unexpected eof while reading", re.IGNORECASE),
+)
+DISK_HEADROOM_FLOOR_BYTES = 12 * 1024 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,7 +96,9 @@ def stream_command(cmd: list[str], *, cwd: Path, log_path: Path) -> int:
 
 def should_retry(log_path: Path) -> bool:
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    return bool(RETRY_RUSTY_V8_RE.search(text) and RETRY_HTTP_502_RE.search(text))
+    if RETRY_RUSTY_V8_RE.search(text) and RETRY_HTTP_502_RE.search(text):
+        return True
+    return all(pattern.search(text) for pattern in RETRY_CARGO_REGISTRY_TRANSPORT_RES)
 
 
 def clean_workspace(repo_root: Path) -> None:
@@ -111,12 +120,48 @@ def clean_workspace(repo_root: Path) -> None:
     )
 
 
+def workspace_free_bytes(repo_root: Path) -> int:
+    result = subprocess.run(
+        ["df", "-Pk", "."],
+        cwd=repo_root,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    lines = result.stdout.splitlines()
+    if len(lines) < 2:
+        raise SystemExit(f"unable to read workspace disk usage: {result.stdout!r}")
+    fields = lines[1].split()
+    if len(fields) < 4:
+        raise SystemExit(f"unexpected workspace disk usage output: {result.stdout!r}")
+    return int(fields[3]) * 1024
+
+
+def reclaim_batch_disk_headroom(repo_root: Path, lane_id: str) -> None:
+    free_bytes = workspace_free_bytes(repo_root)
+    if free_bytes >= DISK_HEADROOM_FLOOR_BYTES:
+        return
+
+    print(
+        "::warning title=Reclaiming validation workspace disk headroom::"
+        f"{free_bytes // (1024 * 1024)} MiB free before {lane_id}; "
+        "removing codex-rs/target via git clean while preserving .sccache."
+    )
+    subprocess.run(
+        ["git", "clean", "-ffdx", "--", "codex-rs/target"],
+        cwd=repo_root,
+        check=True,
+    )
+
+
 def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[str, Any], index: int) -> dict[str, Any]:
     lane_id = lane["lane_id"]
     lane_slug = slugify(lane_id)
     log_path = output_dir / f"validation-lane-{index + 1:02d}-{lane_slug}.log"
     if index > 0:
         clean_workspace(repo_root)
+    reclaim_batch_disk_headroom(repo_root, lane_id)
 
     started_at_ms = int(time.time() * 1000)
     attempt = 1
@@ -125,7 +170,7 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
         if attempt > 1:
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n=== retry attempt {attempt}/{max_attempts} ===\n")
-            print(f"::warning title=Retrying flaky rusty_v8 download::{lane_id} hit HTTP 502 while downloading rusty_v8; retrying once.")
+            print(f"::warning title=Retrying transient validation dependency fetch::{lane_id} hit a retryable dependency download error; retrying once.")
         cmd = [
             "python3",
             str(workflow_src / ".github" / "scripts" / "run_validation_lane.py"),

@@ -128,7 +128,7 @@ impl UsageLogger {
             .unwrap_or_else(|| thread_id.to_string());
         let created_at = Utc::now();
         let source_str = source.to_string();
-        let thread_source_str = thread_source.as_ref().map(|source| source.as_str());
+        let thread_source_str = thread_source.as_ref().map(ThreadSource::as_str);
         sqlx::query(
             r#"
 INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, thread_source, created_at)

@@ -452,10 +452,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub fn set_realtime_conversation_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub fn set_audio_device_selection_enabled(&mut self, _enabled: bool) {
         self.request_redraw();
     }
@@ -805,6 +807,18 @@ impl BottomPane {
     fn pre_draw_tick_at(&mut self, now: Instant) {
         self.composer.sync_popups();
         self.maybe_show_delayed_approval_requests_at(now);
+        let (view_changed, view_complete, completion) =
+            if let Some(view) = self.view_stack.last_mut() {
+                let view_changed = view.pre_draw_tick(now);
+                (view_changed, view.is_complete(), view.completion())
+            } else {
+                (false, false, None)
+            };
+        if view_complete {
+            self.pop_active_view_with_completion(completion);
+        } else if view_changed {
+            self.request_redraw();
+        }
         self.schedule_active_view_frame();
     }
 
@@ -963,8 +977,32 @@ impl BottomPane {
             .is_some_and(|view| view.will_interrupt_turn_on_key_event(key_event))
     }
 
-    pub(crate) fn should_interrupt_running_task(&mut self, key_event: KeyEvent) -> bool {
-        self.active_view_will_interrupt_turn_on_key_event(key_event)
+    pub(crate) fn should_interrupt_running_task(&self, key_event: KeyEvent) -> bool {
+        if self.active_view_will_interrupt_turn_on_key_event(key_event) {
+            return true;
+        }
+        let is_agent_command = self
+            .composer_text()
+            .lines()
+            .next()
+            .and_then(parse_slash_name)
+            .is_some_and(|(name, _, _)| name == "agent");
+        let is_bare_esc = key_event.code == KeyCode::Esc && key_event.modifiers.is_empty();
+        if !self.keymap.chat.interrupt_turn.is_pressed(key_event)
+            || !self.is_task_running
+            || (is_agent_command && key_event.code == KeyCode::Esc)
+            || self.composer.popup_active()
+            || self.composer_should_handle_vim_insert_escape(key_event)
+            || self.status.is_none()
+        {
+            return false;
+        }
+
+        !(self.esc_interrupt_requires_double_press
+            && is_bare_esc
+            && self
+                .pending_esc_interrupt_deadline
+                .is_none_or(|deadline| Instant::now() > deadline))
     }
 
     pub(crate) fn take_remote_image_urls(&mut self) -> Vec<String> {
@@ -1132,6 +1170,7 @@ impl BottomPane {
         }
     }
 
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn set_esc_interrupt_requires_double_press(&mut self, requires_double_press: bool) {
         let effective_requires_double_press =
             esc_interrupt_requires_double_press_from_env().unwrap_or(requires_double_press);
@@ -1216,9 +1255,25 @@ impl BottomPane {
     pub(crate) fn replace_selection_view_if_present(
         &mut self,
         view_id: &'static str,
-        params: list_selection_view::SelectionViewParams,
+        mut params: list_selection_view::SelectionViewParams,
     ) -> bool {
-        self.replace_selection_view_if_active(view_id, params)
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+
+        self.apply_standard_popup_hint(&mut params);
+        let view = list_selection_view::ListSelectionView::new(
+            params,
+            self.app_event_tx.clone(),
+            self.keymap.list.clone(),
+        );
+        self.view_stack[index] = Box::new(view);
+        self.request_redraw();
+        true
     }
 
     pub(crate) fn standard_popup_hint_line(&self) -> Line<'static> {
@@ -1292,7 +1347,17 @@ impl BottomPane {
     }
 
     pub(crate) fn dismiss_view_by_id(&mut self, view_id: &'static str) -> bool {
-        self.dismiss_active_view_if_id(view_id)
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|view| view.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+
+        self.view_stack.remove(index);
+        self.request_redraw();
+        true
     }
 
     /// Update the pending-input preview shown above the composer.
@@ -1321,6 +1386,7 @@ impl BottomPane {
     }
 
     #[cfg(test)]
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pub(crate) fn pending_input_preview_queued_messages(&self) -> &[String] {
         &self.pending_input_preview.queued_messages
     }
@@ -1889,6 +1955,7 @@ impl Renderable for ChatComposerRightReserveRenderable<'_> {
 
 #[cfg(not(target_os = "linux"))]
 impl BottomPane {
+    #[allow(dead_code)]
     pub(crate) fn insert_recording_meter_placeholder(&mut self, text: &str) -> String {
         let id = self.composer.insert_recording_meter_placeholder(text);
         self.composer.sync_popups();
@@ -1905,6 +1972,7 @@ impl BottomPane {
         updated
     }
 
+    #[allow(dead_code)]
     pub(crate) fn remove_recording_meter_placeholder(&mut self, id: &str) {
         self.composer.remove_recording_meter_placeholder(id);
         self.composer.sync_popups();
@@ -1968,6 +2036,14 @@ mod tests {
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
         snapshot_buffer(&buf)
+    }
+
+    fn render_snapshot_trimmed(pane: &BottomPane, area: Rect) -> String {
+        render_snapshot(pane, area)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn test_pane(app_event_tx: AppEventSender) -> BottomPane {
@@ -2583,7 +2659,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "status_with_details_and_queued_messages_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 
@@ -2615,7 +2691,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "queued_messages_visible_when_status_hidden_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 
@@ -2646,7 +2722,7 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         assert_snapshot!(
             "status_and_queued_messages_snapshot",
-            render_snapshot(&pane, area)
+            render_snapshot_trimmed(&pane, area)
         );
     }
 

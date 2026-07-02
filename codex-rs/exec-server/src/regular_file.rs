@@ -2,18 +2,42 @@ use std::io;
 use std::path::Path;
 
 pub(crate) async fn open(path: &Path) -> io::Result<tokio::fs::File> {
+    #[cfg(windows)]
+    if has_named_pipe_prefix(path) {
+        return Err(not_file_error(path));
+    }
+
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     configure_open(&mut options);
 
     let file = options.open(path).await?;
     if !is_disk_file(&file) || !file.metadata().await?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("path `{}` is not a file", path.display()),
-        ));
+        return Err(not_file_error(path));
     }
     Ok(file)
+}
+
+fn not_file_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("path `{}` is not a file", path.display()),
+    )
+}
+
+#[cfg(windows)]
+fn has_named_pipe_prefix(path: &Path) -> bool {
+    use std::path::Component;
+    use std::path::Prefix;
+
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(
+                prefix.kind(),
+                Prefix::DeviceNS(device) if device.to_string_lossy().eq_ignore_ascii_case("pipe")
+            )
+    )
 }
 
 #[cfg(unix)]

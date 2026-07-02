@@ -41,6 +41,47 @@ docs-only refresh commit that records this snapshot.
   by `blocking-ci.yml`. Downstream preserves that upstream topology and carries
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
+- Hosted Rust archive builders reclaim common Linux runner disk headroom before
+  `cargo nextest archive`, stay archive-only, and leave test execution to the
+  archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
+  install `bubblewrap` and reclaim hosted disk before archive extraction so
+  sandbox and remote replay failures are not artifacts of runner packaging or
+  disk pressure. The `remote_tests` replay job keeps a 45-minute hosted budget
+  so long archive download and remote-environment setup time does not masquerade
+  as a product failure. The rust-ci-full summary parser records final nextest
+  retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
+  persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
+  harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
+  the first lane and between later lanes when hosted disk falls below the safety
+  floor, archive jobs skip sccache, and validation-lab Rust batches retry once
+  on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF
+  download flakes, and argument-comment lint retries once on the same narrow
+  Cargo metadata/fetch failure class before reporting a lint blocker. Runtime
+  permission policy keeps the configured `codex_linux_sandbox_exe` readable
+  under restricted filesystem profiles so GitHub-hosted archived nextest runs
+  can re-enter the sandbox helper from extracted test binaries; the Linux bwrap
+  launch path also adds the helper directory and `:minimal` system runtime roots
+  to the outer bootstrap filesystem view before re-entering the inner seccomp
+  stage. The
+  workspace JWT dependency uses `jsonwebtoken` with the
+  `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
+  RustCrypto RSA graph. Hosted macOS V8 staging, Bazel clippy, and Bazel
+  release-build verification keep fanout below runner process/thread ceilings.
+  Hosted frontier argument-comment lint uses the prebuilt linter package so
+  cold validation-lab runs do not spend the lane compiling V8/ICU before
+  linting ordinary Rust call sites; V8 proof-of-concept buildability remains
+  covered by build/test workflows. Hosted `rust-ci` callers pass `GH_TOKEN`
+  through to the composite action so DotSlash can use authenticated
+  `gh release download` fallback on Windows. Direct-runtime permission profiles
+  stay on the bubblewrap/seccomp
+  enforcement path when legacy Landlock is configured so sandbox validation
+  fails safely instead of weakening policy. TUI carry smoke uses the same
+  hosted test stack floor as core carry smoke so frontier/checkpoint validation
+  can stay on GitHub hosted compute instead of falling back to local compute.
+  Remote executor sweeps skip host-local managed-network approval and denial
+  fixtures until the remote harness provides a proxy endpoint reachable from the
+  target process; environment-specific approval scoping remains covered by unit
+  tests and host-local integration.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -52,7 +93,19 @@ docs-only refresh commit that records this snapshot.
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
+  - `.github/scripts/run_validation_lane_batch.py`
+  - `.github/scripts/rusty_v8_bazel.py`
+  - `.github/scripts/test_ci_planners.py`
   - `.github/workflows/blocking-ci.yml`
+  - `.github/workflows/bazel.yml`
+  - `.github/workflows/rust-ci-full.yml`
+  - `.github/workflows/v8-canary.yml`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/config/permissions.rs`
+  - `codex-rs/core/src/config/permissions_tests.rs`
+  - `codex-rs/linux-sandbox/src/linux_run_main.rs`
+  - `codex-rs/Cargo.toml`
+  - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
   - `docs/downstream.md`
 
@@ -92,7 +145,10 @@ docs-only refresh commit that records this snapshot.
 - `usage_provider_calls` also stores provider-confirmed `final_model` and
   `model_snapshot` values when turn completion reports them, preserving the
   downstream distinction between requested/configured model, historical
-  `actual_model_used`, and final provider identity.
+  `actual_model_used`, and final provider identity. Core turn completion
+  captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
+  TUI, and usage-ledger consumers receive provider-confirmed identity instead
+  of falling back to `None`.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -100,6 +156,9 @@ docs-only refresh commit that records this snapshot.
   parent/session model.
 - Primary files:
   - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/tasks/mod.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -123,6 +182,10 @@ docs-only refresh commit that records this snapshot.
 - Usage-ledger lineage records side forks in `usage_threads` and
   `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
   writes normal provider-call rows for side turns.
+- Forks created from an existing side conversation inherit the side
+  `thread_source` unless the caller explicitly supplies a different source,
+  keeping nested side-chat forks hidden from default history surfaces and
+  marked in usage-ledger lineage.
 - `scripts/codex-resume-recent.sh` skips side chats by default, with
   `--include-side` available when an operator deliberately wants side-chat
   resume candidates.
@@ -207,7 +270,7 @@ docs-only refresh commit that records this snapshot.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
-- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling. The v2 schema also permits omitting `targets` when the caller intentionally wants a current-turn input-activity wait, including mailbox delivery or user steering, or timeout.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
@@ -229,6 +292,26 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/utils/absolute-path/src/lib.rs`
   - `codex-rs/utils/absolute-path/tests/dead_cwd.rs`
 
+### Session Environment And Thread-Tail State
+
+- Session environment updates validate duplicate and unknown environment ids
+  before mutating stored session state.
+- When a session cwd/environment update changes the legacy fallback cwd,
+  sticky environment selections retarget to that cwd instead of retaining stale
+  path selections.
+- Default turns refresh runtime `ThreadEnvironments` from stored selections so
+  explicit empty or non-fallback stored environments are honored.
+- Mailbox deferral must not overtake explicit steered user input, while
+  response-only queued items may still defer after an answer boundary.
+- Legacy active turns that only contain `UserMessageEvent` tails are still
+  treated as mid-turn so replay/fork state does not discard the active start.
+- Primary files:
+  - `codex-rs/core/src/session/input_queue.rs`
+  - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/core/src/session/session.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/thread_manager.rs`
+
 ### Blocking Unified-Exec Waits And Compaction-Aware Turn Completion
 
 - `exec_command` and `write_stdin` support blocking wait semantics via
@@ -241,6 +324,17 @@ docs-only refresh commit that records this snapshot.
 - Timeout notes are appended to returned `raw_output`.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
+- Code-mode nested `exec_command` output follows the same model-policy bounded
+  unified-exec summary shape before JavaScript observes `result.output`; do not
+  restore raw large-output preservation expectations in code-mode tests when
+  the tool response already carries truncation warning headers.
+- Remote unified-exec command resolution must keep the session/user shell for
+  commands that omit `shell`, while matching explicit aliases such as
+  `powershell` reuse the selected environment shell instead of resolving that
+  alias on the host running Codex.
+- Code mode may expose the read-only `get_context_remaining` helper so scripts
+  can inspect remaining budget, but interactive direct-model-only tools such as
+  `request_user_input` remain hidden from nested execution.
 - In local downstream workflows, this composes with existing blocking
   coordination primitives such as `wait_agent` and helper-backed `*_and_wait`
   calls so joins happen on state transitions rather than transcript churn.
@@ -251,12 +345,40 @@ docs-only refresh commit that records this snapshot.
 - Sub-agent delegate forwarding should continue to surface `TokenCount` events
   back to the parent session; preserve this behavior even when re-homing the
   delegate code onto newer upstream structure.
+- Provider `ServerOverloaded` responses use cancellable capacity-retry backoff
+  for sampling, inline compaction, and remote compaction instead of terminating
+  the turn immediately. Preserve the `capacity_retry` loops in
+  `session/turn.rs`, `compact.rs`, and `compact_remote.rs` during upstream
+  syncs.
 - Primary files:
+  - `codex-rs/core/src/capacity_retry.rs`
+  - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/compact.rs`
+  - `codex-rs/core/src/compact_remote.rs`
+  - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
+  - `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`
+  - `codex-rs/core/tests/suite/code_mode.rs`
+  - `codex-rs/core/tests/suite/remote_env.rs`
+  - `codex-rs/core/tests/suite/unified_exec.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
+
+### App-Server Remote Control Account Wake
+
+- Remote-control enrollment waits must wake when cached ChatGPT auth changes
+  the account id, not only when refresh-token material changes.
+- `AuthManager::auth_change_receiver()` is therefore account-scoped for
+  request recovery, while `auth_changed_for_refresh` remains the narrower
+  token-refresh decision.
+- This prevents remote control from sleeping until the retry interval after an
+  account-id-only reload, and keeps `UnauthorizedRecovery` aligned with the
+  fresh auth state before reconnect/enroll attempts.
+- Primary files:
+  - `codex-rs/app-server-transport/src/transport/remote_control/websocket.rs`
+  - `codex-rs/login/src/auth/manager.rs`
 
 ### Native Computer-Use Adapter Bridge
 
@@ -316,6 +438,10 @@ docs-only refresh commit that records this snapshot.
   cannot hit an old localhost target before an explicit requested navigation.
   Provider-managed `state.json`, cookies, local storage, and other profile data
   are preserved.
+- Plugin app declarations are validated on the authenticated ChatGPT app
+  projection. The unauthenticated plugin projection may intentionally omit apps,
+  so future syncs should not treat app absence from unauthenticated manager
+  tests as evidence that downstream app/plugin carry is removable.
 - Primary files:
   - `codex-rs/protocol/src/computer_use.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -386,6 +512,9 @@ docs-only refresh commit that records this snapshot.
 - Cached expired tokens remain visibly expired when reloaded so the OAuth
   manager refreshes them before reconnecting instead of treating stale access
   tokens as usable.
+- Proactive refresh failures such as missing refresh tokens are classified as
+  authentication-required startup failures, so operators get the reauth path
+  instead of a generic MCP startup failure.
 - The selected keyring backend is intentional carry now that upstream supports
   encrypted local secrets storage. Syncs must preserve both upstream
   `AuthKeyringBackendKind::Secrets` support and the downstream resolved-store
@@ -397,6 +526,7 @@ docs-only refresh commit that records this snapshot.
 - Primary files:
   - `codex-rs/rmcp-client/src/oauth.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
 
 ### MCP OAuth Device Login For Headless Servers
@@ -450,17 +580,29 @@ docs-only refresh commit that records this snapshot.
 - Active-turn runtime choice commands such as `/model`, `/permissions`, `/plan`,
   and model service-tier slash commands remain selectable while a task is
   running so their chosen settings apply to queued follow-up turns.
-- Interrupt handling defaults to double-`Esc` confirmation and preserves queued
-  follow-ups and queued model changes coherently.
+- Interrupt handling defaults to double-`Esc` confirmation, including status-row
+  interrupts while a turn is running, and preserves queued follow-ups and
+  queued model changes coherently.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
+- Bottom-pane transient views run their pre-draw tick and completion path so
+  request-user-input overlays and other timed active views can redraw,
+  auto-resolve, and pop through the same active-view seam instead of stalling
+  behind static composer redraws. Stacked selection popups can be replaced or
+  dismissed by view id even when another view sits above them, `/resume` stays
+  available during MCP startup while active-turn blocking remains in force, and
+  `/status` history preserves cached status text while a refresh is pending.
 - TUI realtime voice remains a downstream carry on non-Linux targets even
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
-  `audio_device.rs` or the Linux `voice` stub as stale code.
+  `audio_device.rs` or the Linux `voice` stub as stale code. The non-Linux
+  split also depends on the target-scoped `cpal` entry in
+  `codex-rs/tui/Cargo.toml` and its `codex-rs/Cargo.lock` graph.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
+- Upgradeable legacy models stay visible in the model picker even when ordinary
+  hidden presets are excluded.
 - `/quit` and `/exit` inside an active `/side` conversation close only that side
   conversation and return to the parent session; the same commands in the main
   conversation remain application exits.
@@ -469,7 +611,12 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
   - `codex-rs/tui/src/app_event.rs`
+  - `codex-rs/tui/Cargo.toml`
+  - `codex-rs/Cargo.lock`
   - `codex-rs/tui/src/audio_device.rs`
+  - `codex-rs/tui/src/bottom_pane/mod.rs`
+  - `codex-rs/tui/src/bottom_pane/textarea.rs`
+  - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/voice.rs`
   - `codex-rs/tui/src/slash_command.rs`
@@ -567,8 +714,12 @@ docs-only refresh commit that records this snapshot.
 - `upstream/main` still emits the older inline
   `declare const tools: { ... }` example.
 - This is a live carry-only divergence.
+- `ToolRouter` preserves `ResponseItem::CustomToolCall.namespace` when
+  constructing registry tool names, so namespaced MCP/app custom tools do not
+  flatten into plain names before routing.
 - Primary files:
   - `codex-rs/core/src/tools/code_mode_description.rs`
+  - `codex-rs/core/src/tools/router.rs`
 
 ## Not Counted As Standalone Live Divergences
 

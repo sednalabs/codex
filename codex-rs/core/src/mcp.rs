@@ -40,9 +40,11 @@ enum OrderedMcpOverlay {
 }
 
 pub(crate) mod auth {
+    #[allow(unused_imports)]
     pub(crate) use codex_mcp::compute_auth_statuses;
 }
 
+#[allow(unused_imports)]
 pub(crate) use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 
 #[derive(Clone)]

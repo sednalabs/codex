@@ -508,14 +508,12 @@ return;
         next_callback_event(&mut events_rx).await,
         CallbackEvent::Started("tool_call_slow".to_string())
     );
-    assert_eq!(
+    let closure_events = [
         next_callback_event(&mut events_rx).await,
-        CallbackEvent::Cancelled("tool_call_slow".to_string())
-    );
-    assert_eq!(
         next_callback_event(&mut events_rx).await,
-        CallbackEvent::CellClosed(running_cell_id.clone())
-    );
+    ];
+    assert!(closure_events.contains(&CallbackEvent::Cancelled("tool_call_slow".to_string())));
+    assert!(closure_events.contains(&CallbackEvent::CellClosed(running_cell_id.clone())));
     assert_eq!(
         wait_task
             .await

@@ -124,7 +124,7 @@ core-carry-core-smoke:
 
 # Carry-only downstream behavior smoke checks (TUI/UI seam).
 core-carry-ui-smoke:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::slash_commands::queued_popup_command_replay_waits_before_submitting_next_message chatwidget::tests::slash_commands::slash_quit_in_side_conversation_requests_side_exit chatwidget::tests::slash_commands::slash_exit_in_side_conversation_requests_side_exit chatwidget::tests::composer_submission::alt_up_restores_most_recent_queued_slash_command chatwidget::tests::composer_submission::alt_up_restored_state_with_missing_insert_order_preserves_front_back_recall_order app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
+    RUST_MIN_STACK={{ rust_min_stack }} CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-tui --no-fail-fast -- chatwidget::tests::slash_commands::queued_popup_command_replay_waits_before_submitting_next_message chatwidget::tests::slash_commands::slash_quit_in_side_conversation_requests_side_exit chatwidget::tests::slash_commands::slash_exit_in_side_conversation_requests_side_exit chatwidget::tests::composer_submission::alt_up_restores_most_recent_queued_slash_command chatwidget::tests::composer_submission::alt_up_restored_state_with_missing_insert_order_preserves_front_back_recall_order app::tests::replayed_turn_complete_submits_restored_queued_follow_up app::agent_navigation::tests::active_agent_label_tracks_current_thread --exact
 
 # Compatibility wrapper while callers migrate to split core/UI smoke lanes.
 core-carry-smoke:
@@ -289,6 +289,7 @@ blocking-waits-unified-exec-targeted:
 
 blocking-waits-app-server-targeted:
     cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
+    cargo clean -p codex-tui
     cargo nextest run -j 1 -p codex-app-server --test all -- suite::v2::turn_start::command_execution_completion_precedes_turn_completion_and_preserves_process_id --exact
 
 blocking-waits-mcp-targeted:

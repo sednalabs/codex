@@ -1518,18 +1518,15 @@ mod tests {
     use super::*;
     use crate::Anchor;
     use crate::DirectionalThreadSpawnEdgeStatus;
-    use crate::extract::enum_to_string;
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use anyhow::Result;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GitInfo;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
-    use codex_protocol::protocol::TurnContextItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;

@@ -140,6 +140,17 @@ pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
     ))
 }
 
+pub(super) fn cache_project_root_name(chat: &mut ChatWidget, root_name: Option<&str>) {
+    chat.status_line_project_root_name_cache = Some(CachedProjectRootName {
+        cwd: chat.config.cwd.to_path_buf(),
+        root_name: root_name.map(str::to_string),
+    });
+}
+
+pub(super) fn cache_missing_project_root(chat: &mut ChatWidget) {
+    cache_project_root_name(chat, /*root_name*/ None);
+}
+
 // --- Helpers for tests that need direct construction and event draining ---
 pub(super) async fn make_chatwidget_manual(
     model_override: Option<&str>,
@@ -1491,8 +1502,12 @@ pub(super) fn plugins_test_detail(
             .enumerate()
             .flat_map(|(event_index, (event_name, handler_count))| {
                 (0..*handler_count).map(move |handler_index| {
+                    let mut key = "plugin:".to_string();
+                    key.push_str(&event_index.to_string());
+                    key.push(':');
+                    key.push_str(&handler_index.to_string());
                     codex_app_server_protocol::PluginHookSummary {
-                        key: format!("plugin:{event_index}:{handler_index}"),
+                        key,
                         event_name: *event_name,
                     }
                 })

@@ -85,7 +85,7 @@ impl EventProcessorWithHumanOutput {
             ThreadItem::ComputerUseCall { adapter, tool, .. } => {
                 eprintln!(
                     "{} {}",
-                    computer_use_human_label(&adapter, ComputerUseCallStatus::InProgress)
+                    computer_use_human_label(adapter, ComputerUseCallStatus::InProgress)
                         .style(self.bold),
                     tool.style(self.dimmed)
                 );

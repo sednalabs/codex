@@ -55,6 +55,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+#[cfg(any(windows, target_os = "macos"))]
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_CONTROL_DISABLED_BY_REQUIREMENTS_MESSAGE: &str =

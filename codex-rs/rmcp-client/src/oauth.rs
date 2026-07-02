@@ -261,6 +261,7 @@ fn refresh_expires_in_from_timestamp(tokens: &mut StoredOAuthTokens) {
     }
 }
 
+#[cfg(test)]
 fn load_oauth_tokens_from_keyring_with_fallback_to_file<K: KeyringStore + Clone + 'static>(
     keyring_store: &K,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -1241,6 +1242,7 @@ fn fallback_file_path() -> Result<PathBuf> {
     Ok(find_codex_home()?.join(FALLBACK_FILENAME).to_path_buf())
 }
 
+#[cfg(test)]
 fn read_fallback_file() -> Result<Option<FallbackFile>> {
     let _store_lock = OAuthStoreLock::acquire(OAuthStore::File)?;
     read_fallback_file_unlocked()
@@ -1467,7 +1469,7 @@ mod tests {
 
         let loaded = super::load_oauth_tokens_from_keyring(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens.url,
         )?
@@ -1559,7 +1561,7 @@ mod tests {
 
         super::save_oauth_tokens_with_keyring_with_fallback_to_file(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens,
         )?;
@@ -1581,7 +1583,7 @@ mod tests {
 
         super::save_oauth_tokens_with_keyring_with_fallback_to_file(
             &store,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             &tokens.server_name,
             &tokens,
         )?;
@@ -1817,7 +1819,7 @@ mod tests {
             tokens.url.clone(),
             manager.clone(),
             ResolvedOAuthCredentialStore::Keyring,
-            AuthKeyringBackendKind::default(),
+            AuthKeyringBackendKind::Direct,
             Some(tokens.clone()),
         );
         let refresh_timeout = Duration::from_secs(1);
@@ -1832,11 +1834,11 @@ mod tests {
                 .contains("failed to reread OAuth tokens from resolved keyring storage"),
             "unexpected error: {error:#}"
         );
-        #[expect(
-            clippy::await_holding_invalid_type,
-            reason = "test verifies refresh leaves the serialized OAuth manager unchanged"
-        )]
-        let access_token = manager.lock().await.get_access_token().await?;
+        drop(persistor);
+        let manager = Arc::try_unwrap(manager)
+            .unwrap_or_else(|_| panic!("persistor should be the only cloned OAuth manager owner"))
+            .into_inner();
+        let access_token = manager.get_access_token().await?;
         assert_eq!(
             access_token,
             tokens.token_response.0.access_token().secret().as_str()

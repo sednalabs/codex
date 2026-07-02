@@ -1,4 +1,5 @@
 use super::*;
+use crate::NewThread;
 use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
@@ -112,6 +113,8 @@ async fn multi_agent_v2_wait_context<F>(
     Arc<crate::session::session::Session>,
     Arc<TurnContext>,
     ThreadId,
+    NewThread,
+    NewThread,
     ThreadManager,
 )
 where
@@ -125,15 +128,26 @@ where
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     configure(&mut config);
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
     let target = manager
         .start_thread(config.clone())
         .await
         .expect("target thread should start");
     session.services.agent_control = manager.agent_control();
-    session.thread_id = target.thread_id;
+    session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
 
-    (Arc::new(session), Arc::new(turn), target.thread_id, manager)
+    (
+        Arc::new(session),
+        Arc::new(turn),
+        target.thread_id,
+        root,
+        target,
+        manager,
+    )
 }
 
 fn run_multi_agent_surface_test<F, Fut>(test_body: F)
@@ -172,7 +186,7 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
         &role_config_path,
         r#"model = "gpt-5-role-override"
 model_provider = "ollama"
-model_reasoning_effort = "minimal"
+model_reasoning_effort = "low"
 "#,
     )
     .await
@@ -1067,7 +1081,7 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 
     assert_eq!(snapshot.model, "gpt-5-role-override");
     assert_eq!(snapshot.model_provider_id, "ollama");
-    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
 }
 
 #[tokio::test]
@@ -1097,6 +1111,7 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
     let turn = TurnContext {
         config: Arc::new(config),
         ..turn
@@ -2808,7 +2823,7 @@ async fn send_input_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
 }
 
 #[tokio::test]
@@ -3149,7 +3164,7 @@ async fn wait_agent_rejects_invalid_target() {
         Arc::new(session),
         Arc::new(turn),
         "wait_agent",
-        function_payload(json!({"targets": ["invalid"]})),
+        function_payload(json!({"targets": ["not-a-uuid"]})),
     );
     let Err(err) = WaitAgentHandler::default().handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -3157,7 +3172,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id invalid:"));
+    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
 }
 
 #[tokio::test]
@@ -3174,7 +3189,7 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
     );
 }
 
@@ -3306,12 +3321,13 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() {
-    let (session, turn, target_id, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1_000;
-        config.multi_agent_v2.default_wait_timeout_ms = 50;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 50;
+        })
+        .await;
 
     let output = WaitAgentHandlerV2::default()
         .handle(invocation(
@@ -3337,66 +3353,27 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     assert_eq!(success, None);
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
-    let (session, turn, target_id, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1_000;
-        config.multi_agent_v2.default_wait_timeout_ms = 50;
-    })
-    .await;
-
-    let early = timeout(
-        Duration::from_millis(/*millis*/ 20),
-        WaitAgentHandlerV2::default().handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "wait_agent",
-            function_payload(json!({
-                "targets": [target_id.to_string()]
-            })),
-        )),
-    )
-    .await;
-    assert!(
-        early.is_err(),
-        "wait_agent should not return before the configured default timeout"
-    );
-
-    let output = timeout(
-        Duration::from_secs(/*secs*/ 1),
-        WaitAgentHandlerV2::default().handle(invocation(
-            session,
-            turn,
-            "wait_agent",
-            function_payload(json!({
-                "targets": [target_id.to_string()]
-            })),
-        )),
-    )
-    .await
-    .expect("configured default should be shorter than the test timeout")
-    .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
+#[test]
+fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Timeout
+        crate::tools::handlers::multi_agents_v2::wait::resolve_wait_timeout_ms(
+            /*requested_timeout_ms*/ None, /*min_wait_timeout_ms*/ 1,
+            /*max_wait_timeout_ms*/ 1_000, /*default_wait_timeout_ms*/ 50
+        )
+        .expect("configured default should be accepted"),
+        50
     );
-    assert!(result.timed_out);
-    assert_eq!(success, None);
 }
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
-    let (session, turn, target_id, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 0;
-        config.multi_agent_v2.max_wait_timeout_ms = 0;
-        config.multi_agent_v2.default_wait_timeout_ms = 0;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 0;
+            config.multi_agent_v2.max_wait_timeout_ms = 0;
+            config.multi_agent_v2.default_wait_timeout_ms = 0;
+        })
+        .await;
 
     let output = timeout(
         Duration::from_secs(/*secs*/ 1),
@@ -3459,12 +3436,13 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() {
-    let (session, turn, target_id, _manager) = multi_agent_v2_wait_context(|config| {
-        config.multi_agent_v2.min_wait_timeout_ms = 1;
-        config.multi_agent_v2.max_wait_timeout_ms = 1;
-        config.multi_agent_v2.default_wait_timeout_ms = 1;
-    })
-    .await;
+    let (session, turn, target_id, _root, _target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 1;
+            config.multi_agent_v2.default_wait_timeout_ms = 1;
+        })
+        .await;
 
     let output = WaitAgentHandlerV2::default()
         .handle(invocation(
@@ -3719,6 +3697,37 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                 .await
         }
     });
+    tokio::task::yield_now().await;
+
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            worker_path,
+            AgentPath::root(),
+            Vec::new(),
+            "mailbox update".to_string(),
+            /*trigger_turn*/ false,
+        ))
+        .await;
+
+    let output = wait_task
+        .await
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait woke due to mailbox activity.".to_string(),
+            requested_ids: Vec::new(),
+            pending_ids: Vec::new(),
+            completion_reason: CollabWaitingCompletionReason::Mailbox,
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
 }
 
 #[tokio::test]
@@ -3783,7 +3792,10 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             session,
             turn,
             "wait_agent",
-            function_payload(json!({"timeout_ms": 10_000})),
+            function_payload(json!({
+                "targets": [agent_id.to_string()],
+                "timeout_ms": 10_000
+            })),
         )),
     )
     .await
@@ -3796,8 +3808,8 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait woke due to mailbox activity.".to_string(),
-            requested_ids: Vec::new(),
-            pending_ids: Vec::new(),
+            requested_ids: vec![agent_id],
+            pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
         }

@@ -60,6 +60,7 @@ pub(crate) struct ThreadExtensionDependencies {
 /// surface rather than spreading it through request processors and hot loops.
 pub(crate) trait AppServerHooks: Send + Sync + 'static {
     /// Lifecycle hook for app-server startup.
+    #[allow(dead_code)]
     fn on_app_server_start(
         &self,
         _thread_manager: &Arc<ThreadManager>,
@@ -70,6 +71,7 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
     }
 
     /// Policy describing what follow-up work should happen after a config mutation.
+    #[allow(dead_code)]
     fn config_mutation_follow_up(&self, _kind: ConfigMutationKind) -> ConfigMutationFollowUp {
         ConfigMutationFollowUp::default()
     }
@@ -142,12 +144,14 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(dead_code)]
 pub(crate) struct ConfigMutationFollowUp {
     pub(crate) clear_plugin_related_caches: bool,
     pub(crate) maybe_start_plugin_startup_tasks_for_latest_config: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub(crate) enum ConfigMutationKind {
     ValueWrite,
     BatchWrite,
@@ -557,6 +561,7 @@ mod tests {
                 interface: None,
                 keywords: vec![],
             },
+            share_url: None,
             description: None,
             skills: vec![],
             hooks: vec![],

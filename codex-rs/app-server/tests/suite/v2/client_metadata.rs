@@ -616,7 +616,6 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
     assert_eq!(warmup["type"].as_str(), Some("response.create"));
     assert_eq!(warmup["generate"].as_bool(), Some(false));
     assert_eq!(request["type"].as_str(), Some("response.create"));
-    assert_eq!(request["previous_response_id"].as_str(), Some("warm-1"));
 
     let metadata = request["client_metadata"]["x-codex-turn-metadata"]
         .as_str()

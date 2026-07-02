@@ -2080,11 +2080,10 @@ impl App {
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch { cwd, changes, .. } => {
                     let _ = tui.enter_alt_screen();
-                    let diff_summary = DiffSummary::new(
-                        changes,
-                        AbsolutePathBuf::from_absolute_path(cwd.as_path())
-                            .expect("approval cwd should be absolute"),
-                    );
+                    let Ok(cwd) = AbsolutePathBuf::from_absolute_path(cwd.as_path()) else {
+                        return Ok(AppRunControl::Continue);
+                    };
+                    let diff_summary = DiffSummary::new(changes, cwd);
                     self.overlay = Some(Overlay::new_static_with_renderables(
                         vec![diff_summary.into()],
                         "P A T C H".to_string(),
@@ -2279,6 +2278,12 @@ impl App {
             }
             AppEvent::OpenKeymapDebug => {
                 self.chat_widget.open_keymap_debug(&self.keymap);
+            }
+            #[cfg(not(target_os = "linux"))]
+            AppEvent::UpdateRecordingMeter { id, text } => {
+                if self.chat_widget.update_recording_meter_in_place(&id, &text) {
+                    tui.frame_requester().schedule_frame();
+                }
             }
             AppEvent::KeymapCaptured {
                 context,

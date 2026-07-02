@@ -1,22 +1,24 @@
+use super::turn_context::TurnResponseModelIdentity;
 use super::*;
 use std::sync::atomic::AtomicBool;
 
 /// Spawn a review thread using the given prompt.
 pub(super) async fn spawn_review_thread(
     sess: Arc<Session>,
-    config: Arc<Config>,
+    _config: Arc<Config>,
     parent_turn_context: Arc<TurnContext>,
     sub_id: String,
     resolved: crate::review_prompts::ResolvedReviewRequest,
 ) {
-    let model = config
+    let base_config = parent_turn_context.config.clone();
+    let model = base_config
         .review_model
         .clone()
         .unwrap_or_else(|| parent_turn_context.model_info.slug.clone());
     let review_model_info = sess
         .services
         .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
+        .get_model_info(&model, &base_config.to_models_manager_config())
         .await;
     // For reviews, disable web_search and view_image regardless of global settings.
     let mut review_features = sess.features.clone();
@@ -42,7 +44,7 @@ pub(super) async fn spawn_review_thread(
     let model_info = review_model_info.clone();
 
     // Build per‑turn client with the requested model/family.
-    let mut per_turn_config = (*config).clone();
+    let mut per_turn_config = (*base_config).clone();
     per_turn_config.model = Some(model.clone());
     per_turn_config.features = review_features.clone();
     per_turn_config.permissions.shell_environment_policy = parent_turn_context
@@ -70,7 +72,28 @@ pub(super) async fn spawn_review_thread(
     let auth_manager_for_context = auth_manager.clone();
     let provider_for_context = provider.clone();
     let session_telemetry_for_context = session_telemetry.clone();
-    let reasoning_effort = per_turn_config.model_reasoning_effort.clone();
+    let supported_reasoning_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.clone())
+        .collect::<Vec<_>>();
+    let reasoning_effort =
+        if let Some(current_reasoning_effort) = per_turn_config.model_reasoning_effort.clone() {
+            if supported_reasoning_levels.contains(&current_reasoning_effort) {
+                Some(current_reasoning_effort)
+            } else {
+                supported_reasoning_levels
+                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                    .cloned()
+                    .or_else(|| model_info.default_reasoning_level.clone())
+            }
+        } else {
+            supported_reasoning_levels
+                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+                .cloned()
+                .or_else(|| model_info.default_reasoning_level.clone())
+        };
+    per_turn_config.model_reasoning_effort = reasoning_effort.clone();
     let reasoning_summary = per_turn_config
         .model_reasoning_summary
         .unwrap_or(model_info.default_reasoning_summary);
@@ -142,6 +165,9 @@ pub(super) async fn spawn_review_thread(
         turn_skills: TurnSkillsContext::new(parent_turn_context.turn_skills.snapshot.clone()),
         turn_timing_state: Arc::new(TurnTimingState::default()),
         terminal_error: Arc::new(Mutex::new(None)),
+        terminal_response_model_identity: Arc::new(
+            Mutex::new(TurnResponseModelIdentity::default()),
+        ),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),
     };

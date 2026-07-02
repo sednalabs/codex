@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
+use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Styled;
-use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 const TAG_WIDTH: usize = "Plugin".len();
@@ -31,9 +32,9 @@ impl MentionType {
 
     pub(super) fn span(self, base_style: Style) -> Span<'static> {
         let style = match self {
-            Self::Plugin => base_style.magenta(),
-            Self::Skill => base_style.dim(),
-            Self::File => base_style.cyan(),
+            Self::Plugin => base_style.fg(Color::Magenta),
+            Self::Skill => base_style.add_modifier(Modifier::DIM),
+            Self::File => base_style.fg(Color::Cyan),
             Self::Directory => base_style,
         };
         format!("{:<width$}", self.label(), width = TAG_WIDTH).set_style(style)

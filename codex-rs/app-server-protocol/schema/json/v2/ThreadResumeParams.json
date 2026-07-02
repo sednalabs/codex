@@ -174,26 +174,26 @@
       "properties": {
         "capabilityScope": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "family": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "leaseMode": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "mutationClass": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         }
       },
@@ -224,8 +224,8 @@
         },
         "namespace": {
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "persistOnResume": {
@@ -234,9 +234,9 @@
         }
       },
       "required": [
+        "name",
         "description",
-        "inputSchema",
-        "name"
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -855,6 +855,12 @@
             },
             "name": {
               "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "type": [

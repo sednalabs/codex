@@ -265,11 +265,19 @@ impl SessionConfiguration {
         }
 
         let current_cwd = self.cwd().clone();
-        let next_environments = updates
+        let mut next_environments = updates
             .environments
             .clone()
             .unwrap_or_else(|| self.environments.clone());
         let cwd_changed = next_environments.legacy_fallback_cwd.as_path() != current_cwd.as_path();
+        if updates.environments.is_some() && cwd_changed {
+            let cwd = codex_utils_path_uri::PathUri::from_abs_path(
+                &next_environments.legacy_fallback_cwd,
+            );
+            for environment in &mut next_environments.environments {
+                environment.cwd = cwd.clone();
+            }
+        }
         next_configuration.environments = next_environments;
         if let Some(workspace_roots) = updates.workspace_roots.clone() {
             next_configuration.workspace_roots = workspace_roots;
@@ -472,9 +480,7 @@ async fn maybe_create_usage_logger(
     agent_nickname: Option<String>,
     agent_role: Option<String>,
 ) -> Option<Mutex<codex_state::UsageLogger>> {
-    let Some(state_db) = state_db else {
-        return None;
-    };
+    let state_db = state_db?;
 
     match codex_state::UsageLogger::try_new_with_thread_source(
         state_db,
@@ -682,11 +688,7 @@ impl Session {
             session_init.ephemeral = config.ephemeral,
         ));
         let state_db_fut = async {
-            if config.ephemeral {
-                None
-            } else if let Some(local_store) =
-                thread_store.as_any().downcast_ref::<LocalThreadStore>()
-            {
+            if let Some(local_store) = thread_store.as_any().downcast_ref::<LocalThreadStore>() {
                 local_store.state_db().await
             } else {
                 None

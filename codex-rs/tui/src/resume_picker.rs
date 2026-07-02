@@ -638,7 +638,11 @@ fn spawn_app_server_page_loader(
             }
         }
         if let Err(err) = app_server.shutdown().await {
-            warn!(%err, "Failed to shut down app-server picker session");
+            let err = err.to_string();
+            warn!(
+                err = err.as_str(),
+                "Failed to shut down app-server picker session"
+            );
         }
     });
 
@@ -3177,7 +3181,12 @@ mod tests {
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
-        assert_eq!(params.source_kinds, Some(crate::resume_source_kinds(false)));
+        assert_eq!(
+            params.source_kinds,
+            Some(crate::resume_source_kinds(
+                /*include_non_interactive*/ false
+            ))
+        );
         assert_eq!(params.thread_sources, None);
     }
 

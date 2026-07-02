@@ -14,17 +14,23 @@ use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
-use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandBeginEvent;
+use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathConvention;
+use codex_utils_path_uri::PathUri;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -34,10 +40,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
-use core_test_support::wait_for_event;
-use codex_utils_path_uri::LegacyAppPathString;
-use codex_utils_path_uri::PathConvention;
-use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -48,42 +50,84 @@ use tokio::time::timeout;
 use wine_exec_server_test_support::WineExecServer;
 
 const APP_SERVER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const REMOTE_WINDOWS_COMMAND_YIELD_MS: u64 = 10_000;
+const REMOTE_WINDOWS_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+struct RemoteWindowsSmokeEvents {
+    command_begin: ExecCommandBeginEvent,
+    command_end: ExecCommandEndEvent,
+    patch_end: PatchApplyEndEvent,
+}
+
+fn record_remote_windows_smoke_event(observed_events: &mut Vec<String>, msg: &EventMsg) {
+    let label = match msg {
+        EventMsg::ExecCommandBegin(event) => {
+            format!("ExecCommandBegin({})", event.call_id)
+        }
+        EventMsg::ExecCommandEnd(event) => {
+            format!(
+                "ExecCommandEnd({}: exit={:?}, status={:?})",
+                event.call_id, event.exit_code, event.status
+            )
+        }
+        EventMsg::PatchApplyEnd(event) => {
+            format!("PatchApplyEnd({}: success={})", event.call_id, event.success)
+        }
+        EventMsg::TurnComplete(_) => "TurnComplete".to_string(),
+        EventMsg::Error(event) => format!("Error({})", event.message),
+        _ => return,
+    };
+
+    observed_events.push(label);
+    if observed_events.len() > 16 {
+        observed_events.remove(0);
+    }
+}
+
+fn remote_windows_smoke_progress(
+    command_begin_seen: bool,
+    command_end_seen: bool,
+    patch_end_seen: bool,
+    turn_complete: bool,
+    observed_events: &[String],
+) -> String {
+    format!(
+        "seen command_begin={command_begin_seen}, command_end={command_end_seen}, patch_end={patch_end_seen}, turn_complete={turn_complete}; recent events={observed_events:?}"
+    )
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
     const CALL_ID: &str = "wine-cmd-smoke";
     const PATCH_CALL_ID: &str = "wine-apply-patch";
-    const VERIFY_CALL_ID: &str = "wine-verify-patch";
     const PATCH_FILE: &str = "codex-apply-patch-smoke.txt";
     const COMMAND: &str = r#"if ((Get-Location).Path -ne 'C:\windows') { exit 1 }"#;
-    const VERIFY_COMMAND: &str = r#"$path = Join-Path (Get-Location) 'codex-apply-patch-smoke.txt'; if (-not (Test-Path $path)) { exit 1 }; if ([IO.File]::ReadAllText($path) -ne "patched through unified exec`n") { exit 2 }; Remove-Item $path; Write-Output 'PATCH_VERIFIED'"#;
 
     WineExecServer
-        .scope(|exec_server_url, _wine_prefix| async move {
+        .scope(|exec_server_url, wine_prefix| async move {
             let server = start_mock_server().await;
             let arguments = serde_json::to_string(&json!({
                 "cmd": COMMAND,
+                // Request the selected Windows environment shell for PowerShell syntax.
+                "shell": "powershell",
                 "login": false,
                 // An absolute foreign workdir should replace the selected environment cwd and
                 // reach exec-server without conversion to the host path convention.
                 "workdir": r"C:\windows",
-                "yield_time_ms": 10_000,
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
             let patch = format!(
                 "*** Begin Patch\n*** Add File: {PATCH_FILE}\n+patched through unified exec\n*** End Patch"
             );
             let patch_arguments = serde_json::to_string(&json!({
                 "cmd": format!("apply_patch <<'EOF'\n{patch}\nEOF\n"),
+                // Use the selected Windows shell for remote-environment shell
+                // resolution; apply_patch is intercepted before execution.
+                "shell": "powershell",
                 "login": false,
                 // Resolve this relative workdir using the selected Windows environment cwd.
                 "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": 10_000,
-            }))?;
-            let verify_arguments = serde_json::to_string(&json!({
-                "cmd": VERIFY_COMMAND,
-                "login": false,
-                "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": 10_000,
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
             let response_mock = mount_sse_sequence(
                 &server,
@@ -100,13 +144,8 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                     ]),
                     sse(vec![
                         ev_response_created("resp-3"),
-                        ev_function_call(VERIFY_CALL_ID, "exec_command", &verify_arguments),
-                        ev_completed("resp-3"),
-                    ]),
-                    sse(vec![
-                        ev_response_created("resp-4"),
                         ev_assistant_message("msg-1", "done"),
-                        ev_completed("resp-4"),
+                        ev_completed("resp-3"),
                     ]),
                 ],
             )
@@ -160,75 +199,118 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 })
                 .await?;
 
-            let mut begin = None;
-            let mut end = None;
+            let mut command_begin = None;
+            let mut command_end = None;
             let mut patch_end = None;
             let mut turn_complete = false;
-            loop {
-                match wait_for_event(&test.codex, |_| true).await {
-                    EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
-                        begin = Some(event)
+            let mut observed_events = Vec::new();
+            let wait_result = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
+                loop {
+                    let event = test
+                        .codex
+                        .next_event()
+                        .await
+                        .context("event stream ended unexpectedly")?;
+                    record_remote_windows_smoke_event(&mut observed_events, &event.msg);
+                    match event.msg {
+                        EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
+                            command_begin = Some(event)
+                        }
+                        EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
+                            command_end = Some(event)
+                        }
+                        EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
+                            patch_end = Some(event)
+                        }
+                        EventMsg::TurnComplete(_) => turn_complete = true,
+                        EventMsg::Error(_) => {
+                            return Err(anyhow::Error::msg("codex emitted error event"));
+                        }
+                        _ => {}
                     }
-                    EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
-                        end = Some(event)
+                    if turn_complete
+                        && command_begin.is_some()
+                        && command_end.is_some()
+                        && patch_end.is_some()
+                    {
+                        break;
                     }
-                    EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
-                        patch_end = Some(event)
-                    }
-                    EventMsg::TurnComplete(_) => turn_complete = true,
-                    _ => {}
                 }
-                if turn_complete && end.is_some() {
-                    break;
-                }
-            }
 
-            let begin = begin.context("exec_command should emit a begin event")?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .map_err(|_| {
+                anyhow::Error::msg(format!(
+                    "timeout waiting for remote Windows smoke events: {}",
+                    remote_windows_smoke_progress(
+                        command_begin.is_some(),
+                        command_end.is_some(),
+                        patch_end.is_some(),
+                        turn_complete,
+                        &observed_events,
+                    )
+                ))
+            })?;
+            wait_result?;
+
+            let events = RemoteWindowsSmokeEvents {
+                command_begin: command_begin.context("exec_command should emit a begin event")?,
+                command_end: command_end.context("exec_command should emit an end event")?,
+                patch_end: patch_end.context("intercepted apply_patch should emit an end event")?,
+            };
+
             assert!(
-                begin.command.first().is_some_and(|command| command
+                events.command_begin.command.first().is_some_and(|command| command
                     .to_ascii_lowercase()
                     .ends_with("pwsh.exe")),
                 "unexpected command: {:?}",
-                begin.command
+                events.command_begin.command
             );
-            assert_eq!(&begin.command[1..], ["-NoProfile", "-Command", COMMAND]);
+            assert_eq!(
+                &events.command_begin.command[1..],
+                ["-NoProfile", "-Command", COMMAND]
+            );
 
-            let end = end.context("exec_command should emit an end event")?;
             let expected_cwd = PathUri::parse("file:///C:/windows")?;
-            assert_eq!((&begin.cwd, &end.cwd), (&expected_cwd, &expected_cwd));
-            assert_eq!((end.exit_code, end.status), (0, ExecCommandStatus::Completed));
+            assert_eq!(
+                (&events.command_begin.cwd, &events.command_end.cwd),
+                (&expected_cwd, &expected_cwd)
+            );
+            assert_eq!(
+                (events.command_end.exit_code, events.command_end.status),
+                (0, ExecCommandStatus::Completed)
+            );
 
-            let patch_end = patch_end.context("intercepted apply_patch should emit an end event")?;
             assert!(
-                patch_end.success,
+                events.patch_end.success,
                 "intercepted apply_patch failed: stdout={:?} stderr={:?}",
-                patch_end.stdout, patch_end.stderr
+                events.patch_end.stdout, events.patch_end.stderr
             );
             assert!(
-                patch_end
+                events
+                    .patch_end
                     .changes
                     .contains_key(&std::path::PathBuf::from(format!(
                         r"C:\codex-home\apply-patch-smoke\nested\{PATCH_FILE}"
                     ))),
                 "apply_patch should retain the Windows cwd: {:?}",
-                patch_end.changes
+                events.patch_end.changes
+            );
+            let patched_path = wine_prefix
+                .join("drive_c")
+                .join("codex-home")
+                .join("apply-patch-smoke")
+                .join("nested")
+                .join(PATCH_FILE);
+            assert_eq!(
+                fs::read_to_string(&patched_path)
+                    .with_context(|| format!("failed to read {}", patched_path.display()))?,
+                "patched through unified exec\n"
             );
             let request = response_mock
                 .last_request()
                 .context("model should receive the command output")?;
-            let (verify_output, verify_success) = request
-                .function_call_output_content_and_success(VERIFY_CALL_ID)
-                .context("verification output should be present")?;
-            anyhow::ensure!(
-                verify_success != Some(false),
-                "verification command failed: {verify_output:?}"
-            );
-            anyhow::ensure!(
-                verify_output
-                    .as_deref()
-                    .is_some_and(|output| output.contains("PATCH_VERIFIED")),
-                "verification command did not confirm the patched file: {verify_output:?}"
-            );
 
             let (_output, success) = request
                 .function_call_output_content_and_success(CALL_ID)
@@ -254,7 +336,10 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
         .scope(|exec_server_url, wine_prefix| async move {
             let agents_path = PathUri::parse("file:///C:/windows/AGENTS.md")?;
             fs::write(
-                wine_prefix.join("drive_c").join("windows").join("AGENTS.md"),
+                wine_prefix
+                    .join("drive_c")
+                    .join("windows")
+                    .join("AGENTS.md"),
                 AGENTS_INSTRUCTIONS,
             )?;
 

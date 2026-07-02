@@ -142,7 +142,7 @@ pub async fn discover_supported_scopes(
     transport: &McpServerTransportConfig,
 ) -> Option<Vec<String>> {
     match oauth_login_support(transport).await {
-        McpOAuthLoginSupport::Supported(config) => (*config).discovered_scopes,
+        McpOAuthLoginSupport::Supported(config) => config.discovered_scopes,
         McpOAuthLoginSupport::Unsupported | McpOAuthLoginSupport::Unknown(_) => None,
     }
 }
@@ -152,7 +152,7 @@ pub async fn discover_supported_scopes_with_http_client(
     http_client: Arc<dyn HttpClient>,
 ) -> Option<Vec<String>> {
     match oauth_login_support_with_http_client(transport, http_client).await {
-        McpOAuthLoginSupport::Supported(config) => (*config).discovered_scopes,
+        McpOAuthLoginSupport::Supported(config) => config.discovered_scopes,
         McpOAuthLoginSupport::Unsupported | McpOAuthLoginSupport::Unknown(_) => None,
     }
 }

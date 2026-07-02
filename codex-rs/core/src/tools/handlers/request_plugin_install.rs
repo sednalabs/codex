@@ -35,6 +35,7 @@ use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
 use crate::connectors::AppInfo;
 use crate::function_tool::FunctionCallError;
+use crate::session::turn::CachedEndpointRecommendedPluginCandidates;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -367,7 +368,7 @@ async fn verify_request_plugin_install_completed(
         }),
         DiscoverableTool::Plugin(plugin) => {
             if is_remote_plugin_install_suggestion(&plugin.id) {
-                let (_, accessible_connectors) = tokio::join!(
+                let (remote_installed_plugins_refreshed, accessible_connectors) = tokio::join!(
                     refresh_remote_installed_plugins_cache_after_install(
                         session,
                         turn,
@@ -382,6 +383,9 @@ async fn verify_request_plugin_install_completed(
                         plugin.id.as_str(),
                     )
                 );
+                if remote_installed_plugins_refreshed {
+                    remove_cached_endpoint_recommended_plugin_candidate(turn, plugin.id.as_str());
+                }
                 return accessible_connectors.is_some_and(|accessible_connectors| {
                     all_requested_connectors_picked_up(
                         &plugin.app_connector_ids,
@@ -415,7 +419,7 @@ async fn refresh_remote_installed_plugins_cache_after_install(
     turn: &crate::session::turn_context::TurnContext,
     auth: Option<&codex_login::CodexAuth>,
     tool_id: &str,
-) {
+) -> bool {
     let plugins_manager = &session.services.plugins_manager;
     let plugins_config = turn.config.plugins_config_input();
     if let Err(err) = plugins_manager
@@ -430,6 +434,41 @@ async fn refresh_remote_installed_plugins_cache_after_install(
         warn!(
             "failed to refresh remote installed plugins cache after plugin install request for {tool_id}: {err:#}"
         );
+        return false;
+    }
+    true
+}
+
+fn remove_cached_endpoint_recommended_plugin_candidate(
+    turn: &crate::session::turn_context::TurnContext,
+    installed_plugin_id: &str,
+) {
+    let Some(cached) = turn
+        .extension_data
+        .get::<CachedEndpointRecommendedPluginCandidates>()
+    else {
+        return;
+    };
+
+    let mut tools = cached.tools.clone();
+    let original_len = tools.len();
+    tools.retain(|tool| !discoverable_tool_has_plugin_id(tool, installed_plugin_id));
+    if tools.len() == original_len {
+        return;
+    }
+    if tools.is_empty() {
+        turn.extension_data
+            .remove::<CachedEndpointRecommendedPluginCandidates>();
+    } else {
+        turn.extension_data
+            .insert(CachedEndpointRecommendedPluginCandidates { tools });
+    }
+}
+
+fn discoverable_tool_has_plugin_id(tool: &DiscoverableTool, plugin_id: &str) -> bool {
+    match tool {
+        DiscoverableTool::Plugin(plugin) => plugin.id == plugin_id,
+        _ => false,
     }
 }
 

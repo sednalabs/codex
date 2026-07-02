@@ -51,6 +51,9 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
+#[cfg(any(windows, target_os = "macos"))]
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
@@ -2132,7 +2135,6 @@ chatgpt_base_url = "{base_url}"
 
 [features]
 plugins = true
-remote_plugin = true
 "#
         ),
     )

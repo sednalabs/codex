@@ -11,7 +11,7 @@ expression: commands
 /approve - approve one retry of a recent auto-review denial
 /memories - configure memory use and generation
 /skills - use skills to improve how Codex performs specific tasks
-/import - import setup, this project, and recent chats from Claude Code
+/import - import setup, this project, and recent chats from another coding agent
 /hooks - view and manage lifecycle hooks
 /review - review my current changes and find issues
 /rename - rename the current thread
@@ -24,7 +24,7 @@ expression: commands
 /init - create an AGENTS.md file with instructions for Codex
 /compact - summarize conversation to prevent hitting the context limit
 /agent - switch the active agent thread
-/side - start a side conversation in an ephemeral fork
+/side - start a resumable side conversation
 /copy - copy last response as markdown
 /raw - toggle raw scrollback mode for copy-friendly terminal selection
 /diff - show git diff (including untracked files)
@@ -42,5 +42,7 @@ expression: commands
 /ps - list background terminals
 /stop - stop all background terminals
 /clear - clear the terminal and start a new chat
+/realtime - toggle realtime voice mode (experimental)
+/settings - configure realtime microphone/speaker
 /test-approval - test approval request
 /subagents - switch the active agent thread

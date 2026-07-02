@@ -554,6 +554,12 @@ def parse_changed_files(raw: str) -> list[str]:
     return [item.strip() for item in payload if item.strip()]
 
 
+def parse_changed_files_input(raw: str, path: str = "") -> list[str]:
+    if path:
+        return parse_changed_files(Path(path).read_text(encoding="utf-8"))
+    return parse_changed_files(raw)
+
+
 def parse_recommendation_changed_files(raw: str) -> tuple[list[str], str]:
     if not raw.strip():
         return [], "changed-file metadata was empty"
@@ -1393,7 +1399,10 @@ def heavy_plan(args: argparse.Namespace) -> None:
     catalog = normalize_catalog(load_catalog(catalog_file))
     validate_catalog(catalog, repo_root=catalog_repo_root(catalog_file))
     catalog_by_id = {spec["lane_id"]: spec for spec in catalog["lanes"]}
-    changed_files = json.loads(args.changed_files_json) if args.changed_files_json else []
+    changed_files = parse_changed_files_input(
+        args.changed_files_json,
+        args.changed_files_json_file,
+    )
     route_lanes = (
         []
         if parse_bool(args.run_all_lanes)
@@ -1555,6 +1564,7 @@ def build_parser() -> argparse.ArgumentParser:
     heavy.add_argument("--run-ui-protocol-family", required=True)
     heavy.add_argument("--run-docs-family", required=True)
     heavy.add_argument("--changed-files-json", default="")
+    heavy.add_argument("--changed-files-json-file", default="")
     heavy.add_argument("--rust-batching", default="auto")
     heavy.add_argument("--rust-batching-override", default="")
     heavy.set_defaults(func=heavy_plan)

@@ -308,7 +308,8 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
-                SlashCommand::Usage,
+                SlashCommand::Quit,
+                SlashCommand::Exit,
             ]
         );
     }

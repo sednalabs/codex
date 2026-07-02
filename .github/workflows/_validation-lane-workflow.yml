@@ -143,6 +143,9 @@ jobs:
           target: ${{ runner.os }}
           install-test-prereqs: ${{ inputs.needs_dotslash && 'true' || 'false' }}
 
+      - uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v0.5.9
+        if: ${{ inputs.needs_dotslash && !inputs.needs_bazel }}
+
       - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
         if: ${{ inputs.needs_just }}
         with:

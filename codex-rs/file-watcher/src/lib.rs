@@ -733,7 +733,6 @@ impl FileWatcher {
     }
 
     #[doc(hidden)]
-    #[cfg(any(test, debug_assertions))]
     pub async fn send_paths_for_test(&self, paths: Vec<PathBuf>) {
         Self::notify_subscribers(&self.state, self.inner.as_ref(), &paths).await;
     }

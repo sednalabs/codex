@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::session::input_queue::InputQueueActivity;
 use crate::session::session::Session;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
@@ -30,6 +31,28 @@ pub(crate) struct Handler {
 impl Handler {
     pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
         Self { options }
+    }
+}
+
+pub(crate) fn resolve_wait_timeout_ms(
+    requested_timeout_ms: Option<i64>,
+    min_wait_timeout_ms: i64,
+    max_wait_timeout_ms: i64,
+    default_wait_timeout_ms: i64,
+) -> Result<i64, FunctionCallError> {
+    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_WAIT_TIMEOUT_MS);
+    let max_timeout_ms = max_wait_timeout_ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+    let default_timeout_ms = default_wait_timeout_ms.clamp(min_timeout_ms, max_timeout_ms);
+
+    match requested_timeout_ms {
+        Some(ms) if ms < min_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
+            "timeout_ms must be at least {min_timeout_ms}"
+        ))),
+        Some(ms) if ms > max_timeout_ms => Err(FunctionCallError::RespondToModel(format!(
+            "timeout_ms must be at most {max_timeout_ms}"
+        ))),
+        Some(ms) => Ok(ms),
+        None => Ok(default_timeout_ms),
     }
 }
 
@@ -65,6 +88,10 @@ impl CompletionRule {
         statuses: &HashMap<ThreadId, AgentStatus>,
         receiver_thread_ids: &[ThreadId],
     ) -> bool {
+        if receiver_thread_ids.is_empty() {
+            return false;
+        }
+
         match self.return_when {
             ReturnWhen::Any => !statuses.is_empty(),
             ReturnWhen::All => receiver_thread_ids
@@ -102,7 +129,11 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let receiver_thread_ids = resolve_agent_targets(&session, &turn, args.targets).await?;
+        let receiver_thread_ids = if args.targets.is_empty() {
+            Vec::new()
+        } else {
+            resolve_agent_targets(&session, &turn, args.targets).await?
+        };
         let mut seen = HashSet::with_capacity(receiver_thread_ids.len());
         for id in &receiver_thread_ids {
             if !seen.insert(*id) {
@@ -125,36 +156,16 @@ impl Handler {
             });
         }
 
-        let min_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .min_wait_timeout_ms
-            .clamp(1, MAX_WAIT_TIMEOUT_MS);
-        let max_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .max_wait_timeout_ms
-            .clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
-        let default_timeout_ms = turn
-            .config
-            .multi_agent_v2
-            .default_wait_timeout_ms
-            .clamp(min_timeout_ms, max_timeout_ms);
-        let timeout_ms = match args.timeout_ms {
-            Some(ms) if ms < min_timeout_ms => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "timeout_ms must be at least {min_timeout_ms}"
-                )));
-            }
-            Some(ms) if ms > max_timeout_ms => {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "timeout_ms must be at most {max_timeout_ms}"
-                )));
-            }
-            Some(ms) => ms,
-            None => default_timeout_ms,
-        };
-        let mut mailbox_rx = session.input_queue.subscribe_mailbox().await;
+        let timeout_ms = resolve_wait_timeout_ms(
+            args.timeout_ms,
+            turn.config.multi_agent_v2.min_wait_timeout_ms,
+            turn.config.multi_agent_v2.max_wait_timeout_ms,
+            turn.config.multi_agent_v2.default_wait_timeout_ms,
+        )?;
+        let (mut input_activity_rx, pending_input_activity) = session
+            .input_queue
+            .subscribe_activity(/*turn_state*/ None)
+            .await;
 
         session
             .send_event(
@@ -219,6 +230,7 @@ impl Handler {
             &final_statuses,
             &receiver_thread_ids,
             wake_on_mailbox,
+            pending_input_activity,
         )
         .await
         {
@@ -226,7 +238,7 @@ impl Handler {
         } else {
             wait_for_wake_source(
                 session.clone(),
-                &mut mailbox_rx,
+                &mut input_activity_rx,
                 status_rxs,
                 &receiver_thread_ids,
                 completion_rule,
@@ -318,10 +330,17 @@ async fn ready_wake_source(
     final_statuses: &HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
+    pending_input_activity: Option<InputQueueActivity>,
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
-    } else if wake_on_mailbox && session.input_queue.has_pending_mailbox_items().await {
+    } else if wake_on_mailbox
+        && (pending_input_activity.is_some()
+            || session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await)
+    {
         Some(WakeSource::Mailbox)
     } else {
         None
@@ -429,9 +448,10 @@ async fn wait_for_final_status(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_wake_source(
     session: std::sync::Arc<Session>,
-    mailbox_rx: &mut tokio::sync::watch::Receiver<()>,
+    input_activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
     status_rxs: Vec<(ThreadId, Receiver<AgentStatus>)>,
     receiver_thread_ids: &[ThreadId],
     completion_rule: CompletionRule,
@@ -463,8 +483,8 @@ async fn wait_for_wake_source(
                     None => {}
                 }
             }
-            mailbox_changed = mailbox_rx.changed(), if wake_on_mailbox => {
-                if mailbox_changed.is_ok() {
+            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox => {
+                if input_activity_changed.is_ok() {
                     return WakeSource::Mailbox;
                 }
             }
@@ -528,6 +548,18 @@ mod tests {
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
         assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
+    }
+
+    #[test]
+    fn resolve_wait_timeout_uses_configured_default() {
+        assert_eq!(
+            resolve_wait_timeout_ms(
+                /*requested_timeout_ms*/ None, /*min_wait_timeout_ms*/ 1,
+                /*max_wait_timeout_ms*/ 1_000, /*default_wait_timeout_ms*/ 50
+            )
+            .expect("configured default should be accepted"),
+            50
+        );
     }
 
     #[test]

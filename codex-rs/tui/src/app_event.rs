@@ -54,6 +54,7 @@ use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
 use crate::history_cell::HistoryCell;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeAudioDeviceKind {
     Microphone,
@@ -78,6 +79,7 @@ pub(crate) struct HistoryLookupResponse {
 }
 
 impl RealtimeAudioDeviceKind {
+    #[allow(dead_code)]
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Microphone => "Microphone",
@@ -165,6 +167,10 @@ pub(crate) enum KeymapEditIntent {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[expect(
+    dead_code,
+    reason = "downstream TUI event bus includes feature- and platform-gated carry variants"
+)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
@@ -1164,6 +1170,7 @@ pub(crate) struct PermissionProfileSelection {
     pub display_label: String,
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct RealtimeWebrtcOffer {
     pub(crate) offer_sdp: String,

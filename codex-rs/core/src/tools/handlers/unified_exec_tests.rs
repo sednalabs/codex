@@ -7,6 +7,7 @@ use codex_tools::ZshForkConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
 use pretty_assertions::assert_eq;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::session::step_context::StepContext;
@@ -50,9 +51,11 @@ fn test_get_command_uses_default_shell_when_unspecified() -> anyhow::Result<()> 
 
     assert!(args.shell.is_none());
 
+    let default_shell = default_user_shell();
     let resolved = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -72,9 +75,11 @@ fn test_get_command_respects_explicit_bash_shell() -> anyhow::Result<()> {
 
     assert_eq!(args.shell.as_deref(), Some("/bin/bash"));
 
+    let default_shell = default_user_shell();
     let resolved = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -113,17 +118,89 @@ fn test_get_command_respects_explicit_powershell_shell() -> anyhow::Result<()> {
         Some(powershell_path.to_string_lossy().as_ref())
     );
 
+    let default_shell = default_user_shell();
     let resolved = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
     .map_err(anyhow::Error::msg)?;
     let command = resolved.command;
 
+    assert_eq!(
+        command.first().map(String::as_str),
+        Some(powershell_path.to_string_lossy().as_ref())
+    );
     assert_eq!(command[2], "echo hello");
     assert_eq!(resolved.shell_type, ShellType::PowerShell);
+    Ok(())
+}
+
+#[test]
+fn test_get_command_reuses_selected_environment_shell_for_matching_alias() -> anyhow::Result<()> {
+    let session_shell = default_user_shell();
+    let environment_shell = crate::shell::Shell {
+        shell_type: ShellType::PowerShell,
+        shell_path: PathBuf::from("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    };
+    let json = r#"{"cmd": "Write-Output hello", "shell": "powershell", "login": false}"#;
+
+    let args: ExecCommandArgs = parse_arguments(json)?;
+
+    let resolved = get_command(
+        &args,
+        &session_shell,
+        Some(&environment_shell),
+        &UnifiedExecShellMode::Direct,
+        /*allow_login_shell*/ true,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    assert_eq!(resolved.shell_type, ShellType::PowerShell);
+    assert_eq!(
+        resolved.command.first().map(String::as_str),
+        Some("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    );
+    assert_eq!(
+        resolved.command.last(),
+        Some(&"Write-Output hello".to_string())
+    );
+    assert!(resolved.command.contains(&"-NoProfile".to_string()));
+    Ok(())
+}
+
+#[test]
+fn test_get_command_uses_session_shell_when_shell_unspecified_even_with_environment_shell()
+-> anyhow::Result<()> {
+    let session_shell = crate::shell::Shell {
+        shell_type: ShellType::Bash,
+        shell_path: PathBuf::from("/bin/bash"),
+    };
+    let environment_shell = crate::shell::Shell {
+        shell_type: ShellType::PowerShell,
+        shell_path: PathBuf::from("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    };
+    let json = r#"{"cmd": "echo hello"}"#;
+
+    let args: ExecCommandArgs = parse_arguments(json)?;
+
+    let resolved = get_command(
+        &args,
+        &session_shell,
+        Some(&environment_shell),
+        &UnifiedExecShellMode::Direct,
+        /*allow_login_shell*/ true,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    assert_eq!(resolved.shell_type, ShellType::Bash);
+    assert_eq!(
+        resolved.command.first().map(String::as_str),
+        Some("/bin/bash")
+    );
+    assert_eq!(resolved.command.last(), Some(&"echo hello".to_string()));
     Ok(())
 }
 
@@ -135,9 +212,11 @@ fn test_get_command_respects_explicit_cmd_shell() -> anyhow::Result<()> {
 
     assert_eq!(args.shell.as_deref(), Some("cmd"));
 
+    let default_shell = default_user_shell();
     let resolved = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ true,
     )
@@ -153,9 +232,11 @@ fn test_get_command_rejects_explicit_login_when_disallowed() -> anyhow::Result<(
     let json = r#"{"cmd": "echo hello", "login": true}"#;
 
     let args: ExecCommandArgs = parse_arguments(json)?;
+    let default_shell = default_user_shell();
     let err = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &UnifiedExecShellMode::Direct,
         /*allow_login_shell*/ false,
     )
@@ -186,9 +267,11 @@ fn test_get_command_rejects_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
         })?,
     });
 
+    let default_shell = default_user_shell();
     let err = get_command(
         &args,
-        Arc::new(default_user_shell()),
+        &default_shell,
+        /*environment_shell*/ None,
         &shell_mode,
         /*allow_login_shell*/ true,
     )

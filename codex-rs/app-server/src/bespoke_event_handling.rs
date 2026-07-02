@@ -653,7 +653,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 reason,
                 network_approval_context,
                 command,
-                cwd: cwd.map(Into::into),
+                cwd,
                 command_actions,
                 additional_permissions,
                 proposed_execpolicy_amendment: proposed_execpolicy_amendment_v2,
@@ -1206,14 +1206,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                     .command_execution_started
                     .insert(item_id.clone())
             };
-            if first_start {
-                if let Some(notification) = item_event_to_server_notification(
+            if first_start
+                && let Some(notification) = item_event_to_server_notification(
                     EventMsg::ExecCommandBegin(exec_command_begin_event),
                     &conversation_id.to_string(),
                     &event_turn_id,
-                ) {
-                    outgoing.send_server_notification(notification).await;
-                }
+                )
+            {
+                outgoing.send_server_notification(notification).await;
             }
         }
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
@@ -2253,7 +2253,6 @@ mod tests {
     use anyhow::anyhow;
     use anyhow::bail;
     use chrono::Utc;
-    use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::TurnPlanStepStatus;
@@ -2348,6 +2347,7 @@ mod tests {
             reasoning_effort: None,
             created_at,
             updated_at: created_at,
+            recency_at: created_at,
             archived_at: None,
             cwd: test_path_buf("/tmp").abs().into(),
             cli_version: "0.0.0".to_string(),
@@ -3682,8 +3682,8 @@ mod tests {
                         additional_details: None,
                     })
                 );
-                assert_eq!(n.turn.completed_at, None);
-                assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
+                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
             }
             other => bail!("unexpected message: {other:?}"),
         }

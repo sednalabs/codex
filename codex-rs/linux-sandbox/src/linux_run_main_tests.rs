@@ -511,6 +511,50 @@ fn non_managed_inner_command_omits_route_spec() {
 }
 
 #[test]
+fn bwrap_bootstrap_policy_leaves_full_read_policy_unchanged() {
+    let policy = read_only_file_system_policy();
+
+    assert_eq!(
+        file_system_policy_with_bwrap_bootstrap_roots(&policy),
+        policy
+    );
+}
+
+#[test]
+fn bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let workspace = temp_dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let workspace = AbsolutePathBuf::from_absolute_path(&workspace).expect("absolute workspace");
+    let requested = FileSystemSandboxPolicy::restricted(vec![
+        codex_protocol::permissions::FileSystemSandboxEntry {
+            path: codex_protocol::permissions::FileSystemPath::Path { path: workspace },
+            access: codex_protocol::permissions::FileSystemAccessMode::Write,
+        },
+    ]);
+    let current_exe =
+        AbsolutePathBuf::from_absolute_path(std::env::current_exe().expect("current exe"))
+            .expect("absolute current exe");
+    let current_exe_parent = current_exe
+        .parent()
+        .expect("current executable should have a parent");
+
+    assert!(!requested.include_platform_defaults());
+    assert!(
+        !requested.can_read_path_with_cwd(current_exe_parent.as_path(), temp_dir.path()),
+        "requested policy should not already expose the test helper dir"
+    );
+
+    let bootstrap = file_system_policy_with_bwrap_bootstrap_roots(&requested);
+
+    assert!(bootstrap.include_platform_defaults());
+    assert!(
+        bootstrap.can_read_path_with_cwd(current_exe_parent.as_path(), temp_dir.path()),
+        "bwrap must be able to exec the inner sandbox helper stage"
+    );
+}
+
+#[test]
 fn managed_proxy_inner_command_requires_route_spec() {
     let result = std::panic::catch_unwind(|| {
         let permission_profile = read_only_permission_profile();

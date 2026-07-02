@@ -291,7 +291,12 @@ fn stdio_transport(
     env: Option<HashMap<String, String>>,
     env_vars: Vec<McpServerEnvVar>,
 ) -> McpServerTransportConfig {
-    stdio_transport_with_cwd(command, env, env_vars, /*cwd*/ None)
+    let cwd = if is_remote_test_environment() {
+        Some(PathBuf::from("/tmp"))
+    } else {
+        None
+    };
+    stdio_transport_with_cwd(command, env, env_vars, cwd)
 }
 
 fn stdio_transport_with_cwd(
@@ -819,7 +824,7 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
     let server_name = "rmcp_local_fallback_cwd";
     let expected_cwd = Arc::new(Mutex::new(None::<PathBuf>));
     let expected_cwd_for_config = Arc::clone(&expected_cwd);
-    let rmcp_test_server_bin = cargo_bin("test_stdio_server")?;
+    let rmcp_test_server_bin = PathBuf::from(stdio_server_bin()?);
     let relative_server_path = PathBuf::from("mcp-bin").join(
         rmcp_test_server_bin
             .file_name()
@@ -844,13 +849,14 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
             insert_mcp_server(
                 config,
                 server_name,
-                stdio_transport(
+                stdio_transport_with_cwd(
                     relative_command,
                     Some(HashMap::from([(
                         "MCP_TEST_VALUE".to_string(),
                         "local-fallback-cwd".to_string(),
                     )])),
                     Vec::new(),
+                    /*cwd*/ None,
                 ),
                 TestMcpServerOptions::default(),
             );
@@ -952,7 +958,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta() -> anyhow::Result<()>
             permission_profile: PermissionProfile::read_only(),
             codex_linux_sandbox_exe: fixture.config.codex_linux_sandbox_exe.clone(),
             sandbox_cwd: PathUri::from_abs_path(&fixture.config.cwd),
-            use_legacy_landlock: false,
+            use_legacy_landlock: fixture.config.features.use_legacy_landlock(),
         }
     );
 
@@ -1655,6 +1661,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 upgrade: None,
                 base_instructions: "base instructions".to_string(),
                 model_messages: None,
+                include_skills_usage_instructions: false,
                 supports_reasoning_summaries: false,
                 default_reasoning_summary: ReasoningSummary::Auto,
                 support_verbosity: false,
@@ -2833,13 +2840,15 @@ async fn start_remote_streamable_http_test_server(
         wait_for_remote_bound_addr(container_name, &bound_addr_file, Duration::from_secs(5))
             .await?;
     let container_ip = remote_container_ip(container_name)?;
-    let server_url = format!("http://{}:{}/mcp", container_ip, remote_bind_addr.port());
-    // The orchestrator can see the Docker container IP, but the behavior under
-    // test is whether the remote-side MCP client can reach it. Probe through
-    // remote HTTP before handing the URL to the Codex fixture.
+    let port = remote_bind_addr.port();
+    let orchestrator_url = format!("http://{container_ip}:{port}/mcp");
+    let server_url = format!("http://127.0.0.1:{port}/mcp");
+    // The orchestrator can see the Docker container IP, but the MCP client runs
+    // inside the same container as the test server. Give Codex the loopback URL
+    // so the RMCP transport's host-header guard sees a local endpoint.
     wait_for_remote_streamable_http_server(&server_url, Duration::from_secs(5)).await?;
     if auth.is_some() {
-        wait_for_streamable_http_metadata(&server_url, Duration::from_secs(5)).await?;
+        wait_for_streamable_http_metadata(&orchestrator_url, Duration::from_secs(5)).await?;
     }
 
     Ok(StreamableHttpTestServer {

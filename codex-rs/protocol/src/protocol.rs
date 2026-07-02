@@ -1599,8 +1599,8 @@ pub struct HookCompletedEvent {
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RealtimeConversationVersion {
-    #[default]
     V1,
+    #[default]
     V2,
 }
 
@@ -5093,6 +5093,8 @@ mod tests {
                 .expect("canonical docs/public");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
+        let expected_cwd =
+            AbsolutePathBuf::from_absolute_path(&canonical_cwd).expect("canonical cwd");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -5115,7 +5117,7 @@ mod tests {
             sorted_writable_roots(policy.get_writable_roots_with_cwd(cwd.path())),
             vec![
                 (
-                    canonical_cwd,
+                    expected_cwd.to_path_buf(),
                     vec![
                         expected_dot_codex.to_path_buf(),
                         expected_docs.to_path_buf()

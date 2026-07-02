@@ -778,7 +778,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(lane["script_args"], [])
         self.assertFalse(lane["needs_just"])
 
-    def test_argument_comment_lint_lane_uses_bazel_setup_contract(self) -> None:
+    def test_argument_comment_lint_lane_uses_prebuilt_setup_contract(self) -> None:
         lane = next(
             lane
             for lane in self.catalog["lanes"]
@@ -791,11 +791,23 @@ class RouteSelectionTests(unittest.TestCase):
             ".github/scripts/validation-lanes/argument-comment-lint.sh",
         )
         self.assertEqual(lane["script_args"], [])
-        self.assertTrue(lane["needs_bazel"])
+        self.assertFalse(lane["needs_bazel"])
         self.assertTrue(lane["needs_linux_build_deps"])
         self.assertTrue(lane["needs_dotslash"])
         self.assertFalse(lane["needs_sccache"])
-        self.assertEqual(lane["timeout_minutes"], 120)
+        self.assertEqual(lane["timeout_minutes"], 30)
+
+    def test_bazel_macos_clippy_caps_hosted_runner_fanout(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get("steps") or []
+        clippy_run = next(
+            step
+            for step in clippy_steps
+            if step.get("name") == "bazel build --config=clippy lint targets"
+        ).get("run") or ""
+        self.assertIn('[[ "${RUNNER_OS}" == "macOS" ]]', clippy_run)
+        self.assertIn("--jobs=96", clippy_run)
+        self.assertIn("--loading_phase_threads=8", clippy_run)
 
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
@@ -2849,7 +2861,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
         jobs = payload.get("jobs") or {}
 
-        for job_name in ["lint_build", "nextest_archive"]:
+        for job_name in ["lint_build"]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 workflow_text = (REPO_ROOT / ".github/workflows/rust-ci-full.yml").read_text(
@@ -2896,6 +2908,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                             "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py",
                             step.get("run") or "",
                         )
+
+        archive_job = jobs.get("nextest_archive") or {}
+        archive_env = archive_job.get("env") or {}
+        self.assertEqual(archive_env.get("USE_SCCACHE"), "false")
+        self.assertNotIn("SCCACHE_CACHE_SIZE", archive_env)
+        archive_steps_json = json.dumps(archive_job.get("steps") or [], sort_keys=True)
+        self.assertNotIn("RUSTC_WRAPPER=sccache", archive_steps_json)
+        self.assertNotIn("Configure sccache backend", archive_steps_json)
+        self.assertNotIn("cargo nextest run", archive_steps_json)
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
@@ -3090,15 +3111,38 @@ class ValidationPlanScriptTests(unittest.TestCase):
         jobs = payload.get("jobs") or {}
 
         archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
+        disk_reclaim_step = next(
+            step for step in archive_steps if step.get("name") == "Reclaim runner disk headroom"
+        )
+        self.assertEqual(disk_reclaim_step.get("if"), "${{ runner.os == 'Linux' }}")
+        self.assertIn("/usr/share/dotnet", disk_reclaim_step.get("run") or "")
+        self.assertIn("6 GiB safety floor", disk_reclaim_step.get("run") or "")
+
         archive_run = next(
             step for step in archive_steps if step.get("name") == "Build nextest archive"
         ).get("run") or ""
         self.assertIn("cargo nextest archive", archive_run)
         self.assertIn("--archive-file", archive_run)
+        self.assertNotIn("cargo nextest run", archive_run)
+        self.assertNotIn("tests", [step.get("name") for step in archive_steps])
 
         for job_name in ["tests", "remote_tests"]:
             with self.subTest(job=job_name):
                 steps = (jobs.get(job_name) or {}).get("steps") or []
+                install_step = next(
+                    step
+                    for step in steps
+                    if step.get("name") == "Install Linux build dependencies"
+                )
+                self.assertIn("bubblewrap", install_step.get("run") or "")
+
+                replay_disk_step = next(
+                    step for step in steps if step.get("name") == "Reclaim runner disk headroom"
+                )
+                self.assertEqual(replay_disk_step.get("if"), "${{ runner.os == 'Linux' }}")
+                self.assertIn("/usr/share/dotnet", replay_disk_step.get("run") or "")
+                self.assertIn("6 GiB safety floor", replay_disk_step.get("run") or "")
+
                 download_step = next(
                     step for step in steps if step.get("name") == "Download nextest archive"
                 )
@@ -3141,9 +3185,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             nextest_log.write_text(
                 "\n".join(
                     [
-                        "Starting 3 tests across 2 binaries (1 tests skipped)",
+                        "Starting 6 tests across 2 binaries (1 tests skipped)",
                         "        FAIL [   0.042s] (1/3) codex_core::remote_env::fails_cleanly",
                         "     TIMEOUT [  60.000s] (2/3) codex_core::remote_exec_server::hangs",
+                        "   TRY 1 FAIL [   0.120s] codex_core::flaky_once",
+                        "   TRY 2 PASS [   0.011s] codex_core::flaky_once",
+                        "   TRY 1 FAIL [   0.220s] codex-core session::stable_failure",
+                        "   TRY 2 FAIL [   0.230s] codex-core session::stable_failure",
+                        "   TRY 1 TIMEOUT [  30.000s] codex-core remote::stable_timeout",
+                        "   TRY 2 TIMEOUT [  30.001s] codex-core remote::stable_timeout",
                     ]
                 ),
                 encoding="utf-8",
@@ -3169,10 +3219,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "type": "nextest",
                 "suite": "nextest-linux",
                 "log_missing": False,
-                "started": {"tests": 3, "binaries": 2, "skipped": 1},
-                "failure_signal_count": 2,
-                "unique_failure_count": 2,
-                "status_counts": {"FAIL": 1, "TIMEOUT": 1},
+                "started": {"tests": 6, "binaries": 2, "skipped": 1},
+                "failure_signal_count": 4,
+                "unique_failure_count": 4,
+                "status_counts": {"FAIL": 2, "TIMEOUT": 2},
                 "failures": [
                     {
                         "status": "fail",
@@ -3183,6 +3233,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
                         "status": "timeout",
                         "duration": "60.000s",
                         "test": "codex_core::remote_exec_server::hangs",
+                    },
+                    {
+                        "status": "fail",
+                        "duration": "0.230s",
+                        "test": "codex-core session::stable_failure",
+                    },
+                    {
+                        "status": "timeout",
+                        "duration": "30.001s",
+                        "test": "codex-core remote::stable_timeout",
                     },
                 ],
                 "truncated": False,
@@ -6064,6 +6124,22 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_df = fake_bin / "df"
+            fake_df.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'",
+                        "printf 'fake 100000000 1 100000000 1%% .\\n'",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_df.chmod(0o755)
 
             proc = subprocess.run(
                 [
@@ -6085,6 +6161,7 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
                 check=False,
                 capture_output=True,
                 text=True,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
             )
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -6093,6 +6170,134 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
             self.assertEqual(
                 results["results"][0]["lane_id"],
                 "codex.branch-only-targeted",
+            )
+
+    def test_batch_runner_reclaims_disk_headroom_before_first_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo_root = root / "repo"
+            output_dir = root / "out"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            script_dir.mkdir(parents=True)
+
+            (script_dir / "assert-clean-target.sh").write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "test ! -e codex-rs/target/stale-artifact",
+                        "echo first-lane-target-was-reclaimed",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (repo_root / ".github/validation-lanes.json").write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "lane_id": "codex.low-disk-targeted",
+                                "groups": ["core"],
+                                "lane_sets": ["all"],
+                                "status_class": "active",
+                                "setup_class": "rust_integration",
+                                "frontier_default": True,
+                                "frontier_role": "sentinel",
+                                "summary_family": "low-disk",
+                                "cost_class": "high",
+                                "checkout_fetch_depth": 1,
+                                "timeout_minutes": 30,
+                                "working_directory": ".",
+                                "script_path": ".github/scripts/validation-lanes/assert-clean-target.sh",
+                                "script_args": [],
+                                "needs_just": False,
+                                "needs_node": False,
+                                "needs_nextest": False,
+                                "needs_linux_build_deps": False,
+                                "needs_dotslash": False,
+                                "needs_sccache": False,
+                                "needs_bazel": False,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(
+                ["git", "init", "--initial-branch=main"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "CI Planner Tests"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "ci-planner-tests@example.invalid"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "initial"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            target_dir = repo_root / "codex-rs/target"
+            target_dir.mkdir(parents=True)
+            (target_dir / "stale-artifact").write_text("stale\n", encoding="utf-8")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_df = fake_bin / "df"
+            fake_df.write_text(
+                "\n".join(
+                    [
+                        "#!/usr/bin/env bash",
+                        "set -euo pipefail",
+                        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'",
+                        "printf 'fake 1 1 0 100%% .\\n'",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fake_df.chmod(0o755)
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "run_validation_lane_batch.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--workflow-src",
+                    str(REPO_ROOT),
+                    "--setup-class",
+                    "rust_integration",
+                    "--batch-id",
+                    "rust_integration-01",
+                    "--lane-ids-json",
+                    '["codex.low-disk-targeted"]',
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("first-lane-target-was-reclaimed", proc.stdout)
+            self.assertIn(
+                "Reclaiming validation workspace disk headroom",
+                proc.stdout,
             )
 
 

@@ -531,7 +531,7 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
 
 #[tokio::test]
 async fn replay_thread_snapshot_restores_draft_and_queued_input() {
-    let mut app = make_test_app().await;
+    let mut app = Box::pin(make_test_app()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.thread_event_channels.insert(
@@ -575,7 +575,7 @@ async fn replay_thread_snapshot_restores_draft_and_queued_input() {
     };
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
 
     app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ true);
@@ -612,7 +612,7 @@ async fn active_turn_id_for_thread_uses_snapshot_turns() {
 
 #[tokio::test]
 async fn replayed_turn_complete_submits_restored_queued_follow_up() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -634,7 +634,7 @@ async fn replayed_turn_complete_submits_restored_queued_follow_up() {
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -664,7 +664,7 @@ async fn replayed_turn_complete_submits_restored_queued_follow_up() {
 
 #[tokio::test]
 async fn replay_only_thread_keeps_restored_queue_visible() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -686,7 +686,7 @@ async fn replay_only_thread_keeps_restored_queue_visible() {
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -715,7 +715,7 @@ async fn replay_only_thread_keeps_restored_queue_visible() {
 
 #[tokio::test]
 async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_snapshot() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -737,7 +737,7 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -764,7 +764,7 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
 
 #[tokio::test]
 async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -786,7 +786,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -813,10 +813,11 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
 
 #[tokio::test]
 async fn replay_thread_snapshot_in_progress_turn_restores_running_state_without_input_state() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
-    let (chat_widget, _app_event_tx, _rx, _new_op_rx) = make_chatwidget_manual_with_sender().await;
+    let (chat_widget, _app_event_tx, _rx, _new_op_rx) =
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session);
 
@@ -835,7 +836,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_state_without_
 
 #[tokio::test]
 async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -857,7 +858,7 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -907,7 +908,7 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
 
 #[tokio::test]
 async fn replay_thread_snapshot_restores_pending_pastes_for_submit() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.thread_event_channels.insert(
@@ -941,7 +942,7 @@ async fn replay_thread_snapshot_restores_pending_pastes_for_submit() {
     };
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ true);
 
@@ -964,7 +965,7 @@ async fn replay_thread_snapshot_restores_pending_pastes_for_submit() {
 
 #[tokio::test]
 async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -986,7 +987,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
         .expect("expected draft input state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     app.chat_widget
@@ -1048,7 +1049,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
 
 #[tokio::test]
 async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -1067,7 +1068,8 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
         .capture_thread_input_state()
         .expect("expected collaboration-only input state");
 
-    let (chat_widget, _app_event_tx, _rx, _new_op_rx) = make_chatwidget_manual_with_sender().await;
+    let (chat_widget, _app_event_tx, _rx, _new_op_rx) =
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     app.chat_widget
@@ -1104,7 +1106,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
 
 #[tokio::test]
 async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let thread_id = ThreadId::new();
     let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
     app.chat_widget.handle_thread_session(session.clone());
@@ -1126,7 +1128,7 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
         .expect("expected queued follow-up state");
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
-        make_chatwidget_manual_with_sender().await;
+        Box::pin(make_chatwidget_manual_with_sender()).await;
     app.chat_widget = chat_widget;
     app.chat_widget.handle_thread_session(session.clone());
     while new_op_rx.try_recv().is_ok() {}
@@ -2241,7 +2243,7 @@ async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
     app.refresh_pending_thread_approvals().await;
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.active_thread_id = Some(agent_thread_id);
@@ -2297,7 +2299,7 @@ async fn inactive_thread_approval_bubbles_into_active_view() -> Result<()> {
     assert_eq!(app.chat_widget.has_active_view(), true);
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     Ok(())
@@ -2458,7 +2460,7 @@ async fn side_defers_subagent_approval_overlay_until_side_exits() -> Result<()> 
     assert_eq!(app.chat_widget.has_active_view(), false);
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.side_threads.remove(&side_thread_id);
@@ -2842,7 +2844,7 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
     .await?;
     assert_eq!(
         app.chat_widget.pending_thread_approvals(),
-        &["Robie [explorer]".to_string()]
+        &["Subagent: Robie [explorer]".to_string()]
     );
 
     app.enqueue_thread_notification(

@@ -2,7 +2,7 @@
 source: tui/src/chatwidget/tests/app_server.rs
 expression: combined
 ---
-• Waiting via wait_agent · 2 agents
+• Waiting · primitive: wait_agent · 2 agents
   └ Robie [explorer]
     Ada [reviewer]
 

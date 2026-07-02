@@ -94,6 +94,7 @@ fn tracker_update_for_known_delta<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_exec_command_begin(
     ctx: ToolEventCtx<'_>,
     command: &[String],

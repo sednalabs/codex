@@ -18,6 +18,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::RecommendedPluginsInstructions;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -45,6 +46,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::session::turn_context::TurnResponseModelIdentity;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
 use crate::stream_events_utils::finalize_non_tool_response_item;
@@ -106,6 +108,7 @@ use codex_protocol::protocol::SafetyBufferingEvent;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
+use codex_tools::DiscoverableTool;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -125,6 +128,11 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+#[derive(Clone, Debug)]
+pub(crate) struct CachedEndpointRecommendedPluginCandidates {
+    pub(crate) tools: Vec<DiscoverableTool>,
+}
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -148,6 +156,7 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    turn_context.reset_terminal_response_model_identity().await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -307,6 +316,7 @@ pub(crate) async fn run_turn(
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
+                    response_model_identity: sampling_request_response_model_identity,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
                 let (has_pending_input, token_status, estimated_token_count) = async {
@@ -408,8 +418,18 @@ pub(crate) async fn run_turn(
                         }
                     }
                     if stop_outcome.should_stop {
+                        turn_context
+                            .set_terminal_response_model_identity(
+                                sampling_request_response_model_identity,
+                            )
+                            .await;
                         break;
                     }
+                    turn_context
+                        .set_terminal_response_model_identity(
+                            sampling_request_response_model_identity,
+                        )
+                        .await;
                     if run_legacy_after_agent_hook(
                         &sess,
                         &turn_context,
@@ -442,9 +462,14 @@ pub(crate) async fn run_turn(
                 let error = CodexErrorInfo::BadRequest;
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
+                let message = "Invalid image in your last message. Please remove it and try again."
+                    .to_string();
+                {
+                    let mut terminal_error = turn_context.terminal_error.lock().await;
+                    *terminal_error = Some(message.clone());
+                }
                 let event = EventMsg::Error(ErrorEvent {
-                    message: "Invalid image in your last message. Please remove it and try again."
-                        .to_string(),
+                    message,
                     codex_error_info: Some(error),
                 });
                 sess.send_event(&turn_context, event).await;
@@ -456,8 +481,13 @@ pub(crate) async fn run_turn(
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
-                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
-                sess.send_event(&turn_context, event).await;
+                let error_event = e.to_error_event(/*message_prefix*/ None);
+                {
+                    let mut terminal_error = turn_context.terminal_error.lock().await;
+                    *terminal_error = Some(error_event.message.clone());
+                }
+                sess.send_event(&turn_context, EventMsg::Error(error_event))
+                    .await;
                 // let the user continue the conversation
                 break;
             }
@@ -549,6 +579,29 @@ async fn build_skills_and_plugins(
         .plugins_manager
         .plugins_for_config(&turn_context.config.plugins_config_input())
         .await;
+    let endpoint_recommended_plugin_candidates = if tool_suggest_enabled(turn_context) {
+        let plugins_config = turn_context.config.plugins_config_input();
+        let auth = sess.services.auth_manager.auth().await;
+        sess.services
+            .plugins_manager
+            .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                plugins_config: &plugins_config,
+                loaded_plugins: &loaded_plugins,
+                auth: auth.as_ref(),
+                disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                app_server_client_name: turn_context.app_server_client_name.as_deref(),
+            })
+            .await
+    } else {
+        None
+    };
+    if let Some(tools) = endpoint_recommended_plugin_candidates.as_ref() {
+        turn_context
+            .extension_data
+            .insert(CachedEndpointRecommendedPluginCandidates {
+                tools: tools.clone(),
+            });
+    }
     // Structured plugin:// mentions are resolved from the current session's
     // enabled plugins, then converted into turn-scoped guidance below.
     let mentioned_plugins =
@@ -679,6 +732,12 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
+    if let Some(recommended_plugins) = endpoint_recommended_plugin_candidates
+        .as_ref()
+        .and_then(|tools| RecommendedPluginsInstructions::from_plugins(tools))
+    {
+        injection_items.push(ContextualUserFragment::into(recommended_plugins));
+    }
     injection_items.extend(extension_injection_items);
     Some((injection_items, explicitly_enabled_connectors))
 }
@@ -1255,21 +1314,28 @@ pub(crate) async fn built_tools(
     } else {
         None
     };
-    let endpoint_recommended_plugin_candidates = if tool_suggest_is_enabled {
-        let plugins_config = turn_context.config.plugins_config_input();
-        sess.services
-            .plugins_manager
-            .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                plugins_config: &plugins_config,
-                loaded_plugins: &loaded_plugins,
-                auth: auth.as_ref(),
-                disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                app_server_client_name: turn_context.app_server_client_name.as_deref(),
-            })
-            .await
-    } else {
-        None
-    };
+    let cached_endpoint_recommended_plugin_candidates = turn_context
+        .extension_data
+        .get::<CachedEndpointRecommendedPluginCandidates>(
+    );
+    let endpoint_recommended_plugin_candidates =
+        if let Some(cached) = cached_endpoint_recommended_plugin_candidates.as_ref() {
+            Some(cached.tools.clone())
+        } else if tool_suggest_is_enabled {
+            let plugins_config = turn_context.config.plugins_config_input();
+            sess.services
+                .plugins_manager
+                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                    plugins_config: &plugins_config,
+                    loaded_plugins: &loaded_plugins,
+                    auth: auth.as_ref(),
+                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
+                })
+                .await
+        } else {
+            None
+        };
     let tool_suggest_candidates =
         if let Some(recommended_plugin_candidates) = endpoint_recommended_plugin_candidates {
             Some(ToolSuggestCandidates {
@@ -1346,6 +1412,7 @@ pub(crate) async fn built_tools(
 struct SamplingRequestResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
+    response_model_identity: TurnResponseModelIdentity,
 }
 
 /// Ephemeral per-response state for streaming a single proposed plan.
@@ -1962,6 +2029,7 @@ async fn try_run_sampling_request(
         FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
+    let mut response_model_identity = TurnResponseModelIdentity::default();
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
         String,
@@ -2111,12 +2179,19 @@ async fn try_run_sampling_request(
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
+                        response_model_identity,
                     });
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
-                if let ResponseItem::CustomToolCall { call_id, name, .. } = &item {
-                    let tool_name = ToolName::plain(name.as_str());
+                if let ResponseItem::CustomToolCall {
+                    call_id,
+                    name,
+                    namespace,
+                    ..
+                } = &item
+                {
+                    let tool_name = ToolName::new(namespace.clone(), name.as_str());
                     active_tool_argument_diff_consumer = tool_runtime
                         .create_diff_consumer(&tool_name)
                         .map(|consumer| (call_id.clone(), consumer));
@@ -2199,7 +2274,12 @@ async fn try_run_sampling_request(
                         .store(true, Ordering::Relaxed);
                 }
             }
-            ResponseEvent::ServerModelIdentity(_) => {}
+            ResponseEvent::ServerModelIdentity(identity) => {
+                response_model_identity = TurnResponseModelIdentity {
+                    final_model: identity.final_model,
+                    model_snapshot: identity.model_snapshot,
+                };
+            }
             ResponseEvent::ModelVerifications(verifications) => {
                 if !turn_context
                     .model_verification_emitted
@@ -2253,6 +2333,9 @@ async fn try_run_sampling_request(
                 .await;
                 sess.record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
+                if let Some(token_usage) = token_usage.as_ref() {
+                    sess.record_rollout_budget_usage(token_usage)?;
+                }
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
                 if let Some(false) = end_turn {
@@ -2261,6 +2344,7 @@ async fn try_run_sampling_request(
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,
+                    response_model_identity,
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {

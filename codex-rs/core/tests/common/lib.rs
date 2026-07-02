@@ -307,6 +307,14 @@ where
     wait_for_event_with_timeout(codex, predicate, Duration::from_secs(1)).await
 }
 
+fn default_event_wait_floor() -> tokio::time::Duration {
+    if cfg!(any(windows, target_os = "macos")) {
+        tokio::time::Duration::from_secs(30)
+    } else {
+        tokio::time::Duration::from_secs(10)
+    }
+}
+
 /// Waits for a configured MCP server to finish startup and requires it to be ready.
 pub async fn wait_for_mcp_server(codex: &CodexThread, server_name: &str) -> anyhow::Result<()> {
     use codex_protocol::protocol::EventMsg;
@@ -381,14 +389,16 @@ pub async fn wait_for_event_with_timeout<F>(
 where
     F: FnMut(&codex_protocol::protocol::EventMsg) -> bool,
 {
-    use tokio::time::Duration;
     use tokio::time::timeout;
     loop {
         // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
-        let ev = timeout(wait_time.max(Duration::from_secs(10)), codex.next_event())
-            .await
-            .expect("timeout waiting for event")
-            .expect("stream ended unexpectedly");
+        let ev = timeout(
+            wait_time.max(default_event_wait_floor()),
+            codex.next_event(),
+        )
+        .await
+        .expect("timeout waiting for event")
+        .expect("stream ended unexpectedly");
         if predicate(&ev.msg) {
             return ev.msg;
         }
@@ -492,7 +502,7 @@ fn current_test_target_dir() -> Option<PathBuf> {
     if profile_dir.ends_with("deps") {
         profile_dir.pop();
     }
-    profile_dir.parent().map(|path| path.to_path_buf())
+    profile_dir.parent().map(std::path::Path::to_path_buf)
 }
 
 pub mod fs_wait {

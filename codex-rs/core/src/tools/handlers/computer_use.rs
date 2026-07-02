@@ -645,7 +645,13 @@ mod tests {
         let (_session, turn_context, _rx) = make_session_and_context_with_rx().await;
         let mut turn_context =
             Arc::into_inner(turn_context).expect("turn context should have one owner");
-        let cwd = turn_context.cwd.clone();
+        let cwd = turn_context
+            .environments
+            .primary()
+            .expect("turn context should have a primary environment")
+            .cwd()
+            .to_abs_path()
+            .expect("primary test environment cwd should be native");
         let first_environment = Arc::new(
             codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
                 .expect("create first environment"),
@@ -660,13 +666,13 @@ mod tests {
                     "first".to_string(),
                     first_environment,
                     codex_utils_path_uri::PathUri::from_abs_path(&cwd),
-                    None,
+                    /*shell*/ None,
                 ),
                 TurnEnvironment::new(
                     "second".to_string(),
                     second_environment,
                     codex_utils_path_uri::PathUri::from_abs_path(&cwd),
-                    None,
+                    /*shell*/ None,
                 ),
             ],
             starting: Vec::new(),
@@ -674,13 +680,18 @@ mod tests {
 
         assert_eq!(
             selected_computer_use_environment_id(&turn_context),
-            Some("second".to_string())
+            Some("first".to_string())
         );
     }
 
     #[tokio::test]
     async fn unavailable_environment_does_not_emit_external_computer_use_request() {
         let (session, turn, rx) = make_session_and_context_with_rx().await;
+        let mut turn = Arc::into_inner(turn).expect("turn context should have one owner");
+        turn.environments = crate::environment_selection::TurnEnvironmentSnapshot {
+            turn_environments: Vec::new(),
+            starting: Vec::new(),
+        };
 
         let response = request_computer_use(
             &session,

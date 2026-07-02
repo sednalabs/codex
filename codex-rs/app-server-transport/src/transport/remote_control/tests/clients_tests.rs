@@ -404,11 +404,11 @@ async fn list_remote_control_clients_preserves_decode_error_context() {
     .expect_err("malformed client list should fail");
     server_task.await.expect("server task should finish");
 
-    assert!(
-        err.to_string().contains(
-            "failed to parse remote control client list response from `http://127.0.0.1:"
-        )
-    );
+    let expected_url =
+        format!("{remote_control_url}wham/remote/control/environments/env-123/clients");
+    assert!(err.to_string().contains(&format!(
+        "failed to parse remote control client list response from `{expected_url}`"
+    )));
     assert!(err.to_string().contains("HTTP 200 OK"));
     assert!(err.to_string().contains("body: {"));
     assert!(err.to_string().contains("decode error:"));

@@ -83,6 +83,9 @@ use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
+use codex_app_server_protocol::ThreadRealtimeAppendAudioResponse;
+use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
@@ -876,6 +879,26 @@ impl AppServerSession {
                 },
             })
             .await
+    }
+
+    pub(crate) async fn thread_realtime_append_audio(
+        &mut self,
+        thread_id: ThreadId,
+        audio: ThreadRealtimeAudioChunk,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadRealtimeAppendAudioResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadRealtimeAppendAudio {
+                request_id,
+                params: ThreadRealtimeAppendAudioParams {
+                    thread_id: thread_id.to_string(),
+                    audio,
+                },
+            })
+            .await
+            .wrap_err("thread/realtime/appendAudio failed in TUI")?;
+        Ok(())
     }
 
     pub(crate) async fn thread_set_name(

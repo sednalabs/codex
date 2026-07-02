@@ -260,6 +260,7 @@ Payload:
 You may also see them addressed as to=/root/..., which indicates your identity is /root/...
 "#;
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
+#[allow(dead_code)]
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
 All agents share the same directory. In detail:
@@ -3804,6 +3805,7 @@ impl Config {
         let mut helper_readable_roots = get_readable_roots_required_for_codex_runtime(
             &codex_home,
             zsh_path.as_ref(),
+            codex_linux_sandbox_exe.as_ref(),
             main_execve_wrapper_exe.as_ref(),
         );
         if features.enabled(Feature::MemoryTool) && memories_config.use_memories {
