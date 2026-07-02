@@ -98,7 +98,7 @@ async fn pong_keeps_physical_relay_connected() -> Result<()> {
                     pings += 1;
                 }
                 Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
-                Some(Ok(message)) => anyhow::bail!("expected keepalive ping, got {message:?}"),
+                Some(Ok(_message)) => anyhow::bail!("expected keepalive ping"),
                 Some(Err(error)) => return Err(error.into()),
                 None => anyhow::bail!("environment disconnected before six keepalive pings"),
             }

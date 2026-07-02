@@ -291,7 +291,7 @@ where
                 )
                 .await
                 {
-                    warn!("failed to write Noise relay keepalive ping: {error}");
+                    warn!(%error, "failed to write Noise relay keepalive ping");
                     break;
                 }
                 frames_drained_after_pong_deadline = 0;
