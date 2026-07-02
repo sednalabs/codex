@@ -1483,7 +1483,7 @@ pub(crate) fn render_input_preview(initial_operation: &Op) -> String {
     }
 }
 
-fn render_user_input_preview(input: &[UserInput]) -> String {
+pub(crate) fn render_user_input_preview(input: &[UserInput]) -> String {
     input
         .iter()
         .map(|item| match item {
