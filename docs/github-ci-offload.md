@@ -67,6 +67,9 @@ artifacts.
   - artifact reuse: builds one nextest archive for the Linux `x86_64` dev
     profile, then reuses that archive for both the normal all-features test
     lane and the full Docker-backed remote-env lane
+  - remote-env disk hygiene: the Docker-backed replay builds the temporary
+    Codex remote executor into `${RUNNER_TEMP}` and removes that isolated Cargo
+    target directory before extracting the shared nextest archive
   - result signal: uploads a compact `rust-ci-full-summary` JSON artifact with
     job results plus first clippy/nextest blockers
   - cache policy: keep the `sccache` GitHub backend disabled and use explicit

@@ -125,6 +125,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     headroom, skip archive-job sccache, and stay archive-only so hosted test
     execution happens in the archive-consuming test jobs. The archive-consuming
     jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
+    `remote_tests` builds its Docker remote-env Codex binary in an isolated
+    temporary Cargo target directory and deletes those host-side build artifacts
+    before replaying the shared nextest archive,
     the `remote_tests` replay job uses a 45-minute hosted budget for long
     archive download plus remote-environment setup, and the archive builders
     fail early if the hosted runner is still below the

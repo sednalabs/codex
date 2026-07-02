@@ -46,7 +46,11 @@ docs-only refresh commit that records this snapshot.
   archive-consuming `tests` and `remote_tests` jobs. Those replay jobs also
   install `bubblewrap` and reclaim hosted disk before archive extraction so
   sandbox and remote replay failures are not artifacts of runner packaging or
-  disk pressure. The `remote_tests` replay job keeps a 45-minute hosted budget
+  disk pressure. The `remote_tests` replay job builds its Docker remote-env
+  Codex binary in an isolated temporary Cargo target directory and removes
+  those host-side build artifacts before replaying the shared nextest archive,
+  so remote-env setup does not consume the extraction headroom needed by the
+  227-binary archive. The `remote_tests` replay job keeps a 45-minute hosted budget
   so long archive download and remote-environment setup time does not masquerade
   as a product failure. The rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
