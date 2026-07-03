@@ -754,6 +754,10 @@ docs-only refresh commit that records this snapshot.
   - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
+- Schema-generation adapters that preserve legacy wire deserialization while
+  keeping generated app-server schemas on the current public shape, such as
+  `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
+  app-server/protocol maintenance rather than as standalone behavior.
 
 ## Historical Carry Commits Now Upstream-Equivalent
 
