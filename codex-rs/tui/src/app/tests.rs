@@ -2861,120 +2861,122 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
     Ok(())
 }
 
-#[tokio::test]
-async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
-    let mut app = make_test_app().await;
-    let temp_dir = tempdir()?;
-    let main_thread_id =
-        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
-    let agent_thread_id =
-        ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
-    let primary_cwd = test_path_buf("/tmp/main").abs();
-    let shared_root = test_path_buf("/tmp/shared").abs();
-    let primary_session = ThreadSessionState {
-        model: "gpt-5.5".to_string(),
-        reasoning_effort: None,
-        approval_policy: AskForApproval::OnRequest,
-        permission_profile: PermissionProfile::workspace_write(),
-        runtime_workspace_roots: vec![primary_cwd.clone(), shared_root.clone()],
-        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
-    };
+#[test]
+fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let temp_dir = tempdir()?;
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+        let agent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+        let primary_cwd = test_path_buf("/tmp/main").abs();
+        let shared_root = test_path_buf("/tmp/shared").abs();
+        let primary_session = ThreadSessionState {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: None,
+            approval_policy: AskForApproval::OnRequest,
+            permission_profile: PermissionProfile::workspace_write(),
+            runtime_workspace_roots: vec![primary_cwd.clone(), shared_root.clone()],
+            ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
+        };
 
-    app.primary_thread_id = Some(main_thread_id);
-    app.active_thread_id = Some(main_thread_id);
-    app.primary_session_configured = Some(primary_session.clone());
-    app.thread_event_channels.insert(
-        main_thread_id,
-        ThreadEventChannel::new_with_session(
-            /*capacity*/ 4,
-            primary_session.clone(),
-            Vec::new(),
-        ),
-    );
+        app.primary_thread_id = Some(main_thread_id);
+        app.active_thread_id = Some(main_thread_id);
+        app.primary_session_configured = Some(primary_session.clone());
+        app.thread_event_channels.insert(
+            main_thread_id,
+            ThreadEventChannel::new_with_session(
+                /*capacity*/ 4,
+                primary_session.clone(),
+                Vec::new(),
+            ),
+        );
 
-    let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
-    let rollout = serde_json::json!({
-        "timestamp": "t0",
-        "type": "turn_context",
-        "payload": {
-            "cwd": test_path_buf("/tmp/agent"),
-            "model": "gpt-agent",
-            "effort": "high",
-        },
-    });
-    std::fs::write(
-        &rollout_path,
-        format!("{}\n", serde_json::to_string(&rollout)?),
-    )?;
-    app.enqueue_thread_notification(
-        agent_thread_id,
-        ServerNotification::ThreadStarted(ThreadStartedNotification {
-            thread: Thread {
-                id: agent_thread_id.to_string(),
-                extra: None,
-                session_id: agent_thread_id.to_string(),
-                forked_from_id: None,
-                parent_thread_id: None,
-                preview: "agent thread".to_string(),
-                ephemeral: false,
-                history_mode: Default::default(),
-                model_provider: "agent-provider".to_string(),
-                model: None,
-                reasoning_effort: None,
-                created_at: 1,
-                updated_at: 2,
-                recency_at: Some(2),
-                status: codex_app_server_protocol::ThreadStatus::Idle,
-                path: Some(rollout_path.clone()),
-                cwd: test_path_buf("/tmp/agent").abs(),
-                cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
-                thread_source: None,
+        let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
+        let rollout = serde_json::json!({
+            "timestamp": "t0",
+            "type": "turn_context",
+            "payload": {
+                "cwd": test_path_buf("/tmp/agent"),
+                "model": "gpt-agent",
+                "effort": "high",
+            },
+        });
+        std::fs::write(
+            &rollout_path,
+            format!("{}\n", serde_json::to_string(&rollout)?),
+        )?;
+        app.enqueue_thread_notification(
+            agent_thread_id,
+            ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: Thread {
+                    id: agent_thread_id.to_string(),
+                    extra: None,
+                    session_id: agent_thread_id.to_string(),
+                    forked_from_id: None,
+                    parent_thread_id: None,
+                    preview: "agent thread".to_string(),
+                    ephemeral: false,
+                    history_mode: Default::default(),
+                    model_provider: "agent-provider".to_string(),
+                    model: None,
+                    reasoning_effort: None,
+                    created_at: 1,
+                    updated_at: 2,
+                    recency_at: Some(2),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    path: Some(rollout_path.clone()),
+                    cwd: test_path_buf("/tmp/agent").abs(),
+                    cli_version: "0.0.0".to_string(),
+                    source: codex_app_server_protocol::SessionSource::Unknown,
+                    thread_source: None,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    git_info: None,
+                    name: Some("agent thread".to_string()),
+                    turns: Vec::new(),
+                },
+            }),
+        )
+        .await?;
+
+        let store = app
+            .thread_event_channels
+            .get(&agent_thread_id)
+            .expect("agent thread channel")
+            .store
+            .lock()
+            .await;
+        let session = store.session.clone().expect("inferred session");
+        drop(store);
+
+        assert_eq!(session.thread_id, agent_thread_id);
+        assert_eq!(session.thread_name, Some("agent thread".to_string()));
+        assert_eq!(session.model, "gpt-agent");
+        assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
+        assert_eq!(session.model_provider_id, "agent-provider");
+        assert_eq!(session.approval_policy, primary_session.approval_policy);
+        assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
+        assert_eq!(
+            session.runtime_workspace_roots,
+            vec![test_path_buf("/tmp/agent").abs(), shared_root]
+        );
+        assert_eq!(session.rollout_path, Some(rollout_path));
+        assert_eq!(
+            app.agent_navigation.get(&agent_thread_id),
+            Some(&AgentPickerThreadEntry {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
-                git_info: None,
-                name: Some("agent thread".to_string()),
-                turns: Vec::new(),
-            },
-        }),
-    )
-    .await?;
+                agent_path: None,
+                is_running: false,
+                is_closed: false,
+                ..AgentPickerThreadEntry::default()
+            })
+        );
 
-    let store = app
-        .thread_event_channels
-        .get(&agent_thread_id)
-        .expect("agent thread channel")
-        .store
-        .lock()
-        .await;
-    let session = store.session.clone().expect("inferred session");
-    drop(store);
-
-    assert_eq!(session.thread_id, agent_thread_id);
-    assert_eq!(session.thread_name, Some("agent thread".to_string()));
-    assert_eq!(session.model, "gpt-agent");
-    assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
-    assert_eq!(session.model_provider_id, "agent-provider");
-    assert_eq!(session.approval_policy, primary_session.approval_policy);
-    assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
-    assert_eq!(
-        session.runtime_workspace_roots,
-        vec![test_path_buf("/tmp/agent").abs(), shared_root]
-    );
-    assert_eq!(session.rollout_path, Some(rollout_path));
-    assert_eq!(
-        app.agent_navigation.get(&agent_thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: Some("Robie".to_string()),
-            agent_role: Some("explorer".to_string()),
-            agent_path: None,
-            is_running: false,
-            is_closed: false,
-            ..AgentPickerThreadEntry::default()
-        })
-    );
-
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tokio::test]

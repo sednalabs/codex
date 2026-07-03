@@ -2070,7 +2070,10 @@
           ]
         },
         "multi_agent_mode_hint_text": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "non_code_mode_only": {
           "type": [
