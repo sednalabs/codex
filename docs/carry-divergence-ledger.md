@@ -58,10 +58,12 @@ docs-only refresh commit that records this snapshot.
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
   the first lane and between later lanes when hosted disk falls below the safety
-  floor, archive jobs skip sccache, and validation-lab Rust batches retry once
-  on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF
-  download flakes, and argument-comment lint retries once on the same narrow
-  Cargo metadata/fetch failure class before reporting a lint blocker. Runtime
+  floor, the link-heavy native computer-use tool-registry lane is weighted as a
+  singleton batch, archive jobs skip sccache, and validation-lab Rust batches
+  retry once on narrow Cargo registry transport failures such as crates.io
+  HTTP/2 or EOF download flakes, and argument-comment lint retries once on the
+  same narrow Cargo metadata/fetch failure class before reporting a lint blocker.
+  Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
   can re-enter the sandbox helper from extracted test binaries; the Linux bwrap
