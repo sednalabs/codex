@@ -1166,12 +1166,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
         self.assertEqual(len(payload["selected_matrix"]["include"]), 24)
-        self.assertEqual(payload["planned_job_count"], 14)
+        self.assertEqual(payload["planned_job_count"], 15)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 8)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 9)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 6)
         self.assertEqual(payload["selected_release_lane_count"], 0)
@@ -1206,6 +1206,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 blocking_wait_batches[lane_ids[0]] = batch
         self.assertEqual(set(blocking_wait_batches), blocking_wait_lanes)
         for batch in blocking_wait_batches.values():
+            self.assertEqual(batch["batch_lane_count"], 1)
+            self.assertEqual(batch["estimated_weight_seconds"], 720)
+
+        native_registry_batches = {}
+        for batch in payload["selected_rust_minimal_batch_matrix"]["include"]:
+            lane_ids = batch["lane_ids"]
+            if lane_ids == ["codex.native-computer-use-tool-registry-targeted"]:
+                native_registry_batches[lane_ids[0]] = batch
+        self.assertEqual(
+            set(native_registry_batches),
+            {"codex.native-computer-use-tool-registry-targeted"},
+        )
+        for batch in native_registry_batches.values():
             self.assertEqual(batch["batch_lane_count"], 1)
             self.assertEqual(batch["estimated_weight_seconds"], 720)
 

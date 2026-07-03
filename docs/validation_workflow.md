@@ -287,6 +287,9 @@ ownership boundary:
   `codex.app-server-computer-use-targeted`,
   `codex.tui-native-computer-use-targeted`, and
   `codex.native-computer-use-tool-registry-targeted`.
+  The tool-registry lane is intentionally weighted as a singleton Rust batch
+  because it is link-heavy enough to exhaust hosted runner disk when paired
+  with another native computer-use lane.
 - `codex exec` native browser advertisement or provider-handling changes
   should add `codex.exec-native-computer-use-targeted`.
 - Provider configuration diagnostics should add
