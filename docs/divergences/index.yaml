@@ -935,7 +935,7 @@
         "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
