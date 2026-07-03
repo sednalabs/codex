@@ -496,16 +496,18 @@ mod tests {
             timing_event.contains("handler_duration_ms=0"),
             "tool cancelled before admission should report zero handler duration: {timing_event}"
         );
-        let duration_field = |name: &str| {
+        fn duration_field(timing_event: &str, field_name: &str) -> Option<u64> {
+            let prefix = format!("{field_name}=");
             timing_event.split_whitespace().find_map(|field| {
                 field
-                    .strip_prefix(&format!("{name}="))
+                    .strip_prefix(&prefix)
                     .and_then(|value| value.parse::<u64>().ok())
             })
-        };
-        let dispatch_duration_ms = duration_field("dispatch_duration_ms")
+        }
+
+        let dispatch_duration_ms = duration_field(timing_event, "dispatch_duration_ms")
             .expect("timing event should include dispatch_duration_ms");
-        let total_duration_ms = duration_field("total_duration_ms")
+        let total_duration_ms = duration_field(timing_event, "total_duration_ms")
             .expect("timing event should include total_duration_ms");
         assert_eq!(
             dispatch_duration_ms, total_duration_ms,

@@ -132,8 +132,21 @@ mod tests {
     #[test]
     fn gpt_5_bedrock_models_do_not_include_availability_nux_or_upgrade() {
         let catalog = static_model_catalog();
+        let gpt_5_bedrock_model_ids = [
+            AMAZON_BEDROCK_GPT_5_5_MODEL_ID,
+            AMAZON_BEDROCK_GPT_5_4_MODEL_ID,
+            AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID,
+            AMAZON_BEDROCK_GPT_5_6_TERRA_MODEL_ID,
+            AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID,
+        ];
+        let gpt_5_bedrock_models = catalog
+            .models
+            .iter()
+            .filter(|model| gpt_5_bedrock_model_ids.contains(&model.slug.as_str()))
+            .collect::<Vec<_>>();
 
-        for model in catalog.models {
+        assert_eq!(gpt_5_bedrock_models.len(), gpt_5_bedrock_model_ids.len());
+        for model in gpt_5_bedrock_models {
             assert_eq!((model.availability_nux, model.upgrade), (None, None));
         }
     }
