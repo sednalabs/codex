@@ -252,7 +252,7 @@ impl TestAppServer {
 
     /// Returns every stderr line parsed and validated as a JSON log event.
     pub fn json_log_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.json_logs.events()
+        Ok(self.json_logs.events())
     }
 
     pub async fn new_without_managed_config(codex_home: &Path) -> anyhow::Result<Self> {
