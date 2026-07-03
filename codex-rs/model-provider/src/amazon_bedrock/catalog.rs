@@ -147,7 +147,10 @@ mod tests {
 
         assert_eq!(gpt_5_bedrock_models.len(), gpt_5_bedrock_model_ids.len());
         for model in gpt_5_bedrock_models {
-            assert_eq!((model.availability_nux, model.upgrade), (None, None));
+            assert_eq!(
+                (model.availability_nux.as_ref(), model.upgrade.as_ref()),
+                (None, None)
+            );
         }
     }
 
