@@ -2069,6 +2069,12 @@
             "null"
           ]
         },
+        "multi_agent_mode_hint_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "non_code_mode_only": {
           "type": [
             "boolean",

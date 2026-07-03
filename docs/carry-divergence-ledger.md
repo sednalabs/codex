@@ -58,10 +58,12 @@ docs-only refresh commit that records this snapshot.
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
   the first lane and between later lanes when hosted disk falls below the safety
-  floor, archive jobs skip sccache, and validation-lab Rust batches retry once
-  on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF
-  download flakes, and argument-comment lint retries once on the same narrow
-  Cargo metadata/fetch failure class before reporting a lint blocker. Runtime
+  floor, the link-heavy native computer-use tool-registry lane is weighted as a
+  singleton batch, archive jobs skip sccache, and validation-lab Rust batches
+  retry once on narrow Cargo registry transport failures such as crates.io
+  HTTP/2 or EOF download flakes, and argument-comment lint retries once on the
+  same narrow Cargo metadata/fetch failure class before reporting a lint blocker.
+  Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
   can re-enter the sandbox helper from extracted test binaries; the Linux bwrap
@@ -70,11 +72,13 @@ docs-only refresh commit that records this snapshot.
   stage. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
-  RustCrypto RSA graph. The direct `quick-xml` workspace dependency stays on a
-  fixed line, while temporary RustSec exceptions for the remaining transitive
-  `plist`/`syntect` and `wayland-scanner`/`arboard` paths are mirrored in
-  `deny.toml` and `.cargo/audit.toml` until those upstream crates can use
-  `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel clippy, and Bazel
+  RustCrypto RSA graph. Downstream dependency-policy validation preserves
+  upstream's current `quick-xml` advisory shape: the direct workspace
+  dependency is on the fixed line, and the remaining trusted transitive
+  `plist`/`syntect` and `wayland-scanner`/`arboard` paths keep synchronized
+  RustSec exceptions in `deny.toml` and `.cargo/audit.toml` until those
+  upstream crates can use `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel
+  clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
@@ -90,7 +94,9 @@ docs-only refresh commit that records this snapshot.
   Remote executor sweeps skip host-local managed-network approval and denial
   fixtures until the remote harness provides a proxy endpoint reachable from the
   target process; environment-specific approval scoping remains covered by unit
-  tests and host-local integration.
+  tests and host-local integration. Compact/resume rollback fixtures keep their
+  event wait above nextest's 30-second slow threshold so hosted remote replay
+  load does not masquerade as a product hang.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -748,6 +754,10 @@ docs-only refresh commit that records this snapshot.
   - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec.rs`
+- Schema-generation adapters that preserve legacy wire deserialization while
+  keeping generated app-server schemas on the current public shape, such as
+  `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
+  app-server/protocol maintenance rather than as standalone behavior.
 
 ## Historical Carry Commits Now Upstream-Equivalent
 

@@ -42,6 +42,19 @@ pub fn create_apply_patch_sse_response(
 }
 
 pub fn create_exec_command_sse_response(call_id: &str) -> anyhow::Result<String> {
+    create_exec_command_sse_response_with_terminal_wait(call_id, /*wait_until_terminal*/ false)
+}
+
+pub fn create_exec_command_wait_until_terminal_sse_response(
+    call_id: &str,
+) -> anyhow::Result<String> {
+    create_exec_command_sse_response_with_terminal_wait(call_id, /*wait_until_terminal*/ true)
+}
+
+fn create_exec_command_sse_response_with_terminal_wait(
+    call_id: &str,
+    wait_until_terminal: bool,
+) -> anyhow::Result<String> {
     let (cmd, args) = if cfg!(windows) {
         ("cmd.exe", vec!["/d", "/c", "echo hi"])
     } else {
@@ -50,10 +63,15 @@ pub fn create_exec_command_sse_response(call_id: &str) -> anyhow::Result<String>
     let command = std::iter::once(cmd.to_string())
         .chain(args.into_iter().map(str::to_string))
         .collect::<Vec<_>>();
-    let tool_call_arguments = serde_json::to_string(&json!({
+    let mut tool_call_args = json!({
         "cmd": command.join(" "),
         "yield_time_ms": 500
-    }))?;
+    });
+    if wait_until_terminal {
+        tool_call_args["wait_until_terminal"] = json!(true);
+        tool_call_args["max_wait_ms"] = json!(5_000);
+    }
+    let tool_call_arguments = serde_json::to_string(&tool_call_args)?;
     Ok(responses::sse(vec![
         responses::ev_response_created("resp-1"),
         responses::ev_function_call(call_id, "exec_command", &tool_call_arguments),

@@ -132,14 +132,18 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     the `remote_tests` replay job uses a 45-minute hosted budget for long
     archive download plus remote-environment setup, and the archive builders
     fail early if the hosted runner is still below the
-    archive safety floor. The workflow summary parser understands nextest
+    archive safety floor. Compact/resume rollback fixtures keep their event
+    wait above nextest's 30-second slow threshold so hosted remote replay load
+    does not masquerade as a product hang. The workflow summary parser
+    understands nextest
     retry-status lines so structured harvest artifacts show persistent retry
     failures instead of reporting a false zero-failure summary.
   - The workspace JWT dependency stays on the `jsonwebtoken` `aws_lc_rs`
     provider so hosted Cargo/Bazel `--locked` runs do not pull the RustCrypto
     RSA graph or trip the cargo-deny RSA advisory.
-  - The direct `quick-xml` workspace dependency stays on the fixed `0.41` line,
-    and cargo-deny/cargo-audit exceptions for the remaining transitive
+  - Dependency-policy validation preserves upstream's current `quick-xml`
+    advisory shape: the direct workspace dependency is on the fixed line, and
+    cargo-deny/cargo-audit exceptions for the remaining trusted transitive
     `plist`/`syntect` and `wayland-scanner`/`arboard` paths stay synchronized
     until those upstream crates can use `quick-xml >=0.41.0`.
   - `v8-canary.yml` staging, macOS Bazel clippy, and macOS Bazel
@@ -188,6 +192,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Rust-integration lane batches reclaim `codex-rs/target` before the first
     lane as well as between later lanes when hosted workspace disk falls below
     the safety floor.
+  - The link-heavy native computer-use tool-registry lane is weighted as a
+    singleton Rust batch so frontier harvests keep enough hosted disk headroom.
   - Rust lane batches retry once on narrow Cargo registry transport failures
     such as crates.io HTTP/2 or EOF download flakes, so frontier harvests do
     not report dependency-fetch noise as the next product blocker.
