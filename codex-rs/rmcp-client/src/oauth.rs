@@ -1824,12 +1824,14 @@ mod tests {
             expected_response.access_token().secret()
         );
         assert_eq!(
-            staged_response.refresh_token().map(|token| token.secret()),
-            expected_response.refresh_token().map(|token| token.secret())
+            staged_response.refresh_token().map(RefreshToken::secret),
+            expected_response
+                .refresh_token()
+                .map(RefreshToken::secret)
         );
         assert_eq!(
-            staged_response.scopes().map(|scopes| scopes.as_slice()),
-            expected_response.scopes().map(|scopes| scopes.as_slice())
+            staged_response.scopes().map(Vec::as_slice),
+            expected_response.scopes().map(Vec::as_slice)
         );
         assert_eq!(stored_credentials.granted_scopes, Vec::<String>::new());
         assert!(stored_credentials.token_received_at.is_some());
