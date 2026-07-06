@@ -308,7 +308,10 @@ async fn forward_events(
                     }
                     Event {
                         id: _,
-                        msg: EventMsg::SessionConfigured(_),
+                        msg:
+                            EventMsg::SessionConfigured(_)
+                            | EventMsg::McpStartupUpdate(_)
+                            | EventMsg::McpStartupComplete(_),
                     } => {}
                     Event {
                         id,
