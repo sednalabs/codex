@@ -1825,9 +1825,7 @@ mod tests {
         );
         assert_eq!(
             staged_response.refresh_token().map(RefreshToken::secret),
-            expected_response
-                .refresh_token()
-                .map(RefreshToken::secret)
+            expected_response.refresh_token().map(RefreshToken::secret)
         );
         assert_eq!(
             staged_response.scopes().map(Vec::as_slice),
