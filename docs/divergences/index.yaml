@@ -501,15 +501,17 @@
         "oauth fallback credentials file",
         "best-effort fallback recovery",
         "cached token expiry restoration",
-        "encrypted local secrets keyring backend"
+        "encrypted local secrets keyring backend",
+        "refresh scope hygiene"
       ],
       "files": [
         "codex-rs/rmcp-client/src/oauth.rs",
         "codex-rs/rmcp-client/src/startup_error.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs",
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, proactive refresh failures route to reauthentication, and the selected direct-vs-secrets keyring backend is preserved through load, refresh, save, and delete paths.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, proactive refresh failures route to reauthentication, the selected direct-vs-secrets keyring backend is preserved through load, refresh, save, and delete paths, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -520,11 +522,13 @@
         "load_oauth_tokens_ignores_empty_fallback_file",
         "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors",
         "refresh_expires_in_from_timestamp_marks_expired_tokens",
+        "refresh_credentials_do_not_expose_granted_scopes_to_rmcp",
+        "refreshes_expired_persisted_token_before_initialize",
         "token_refresh_failure_requires_authentication",
         "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken, partially-written, expired, refresh-missing, or backend-mismatched credential state from turning into opaque MCP startup failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking while also retaining upstream AuthKeyringBackendKind::Secrets support.",
+      "notes": "Keeps broken, partially-written, expired, refresh-missing, backend-mismatched, or over-broad refresh-scope credential state from turning into opaque MCP startup failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking and no-unrequested-offline-access refresh staging while also retaining upstream AuthKeyringBackendKind::Secrets support.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [

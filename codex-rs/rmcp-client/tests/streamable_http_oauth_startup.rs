@@ -17,6 +17,7 @@ use codex_rmcp_client::is_authentication_required_error;
 use codex_rmcp_client::save_oauth_tokens;
 use oauth2::AccessToken;
 use oauth2::RefreshToken;
+use oauth2::Scope;
 use oauth2::basic::BasicTokenType;
 use pretty_assertions::assert_eq;
 use rmcp::transport::auth::OAuthTokenResponse;
@@ -53,7 +54,7 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
             "token_endpoint": format!("{}/oauth/token", server.uri()),
-            "scopes_supported": [""],
+            "scopes_supported": ["profile", "offline_access"],
         })))
         .expect(1)
         .mount(&server)
@@ -64,12 +65,19 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
         .and(body_string_contains(format!(
             "refresh_token={REFRESH_TOKEN}"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": REFRESHED_ACCESS_TOKEN,
-            "token_type": "Bearer",
-            "expires_in": 7200,
-            "refresh_token": REFRESH_TOKEN,
-        })))
+        .respond_with(|request: &Request| {
+            let body = String::from_utf8_lossy(&request.body);
+            assert!(
+                !body.contains("scope="),
+                "refresh must not broaden explicit persisted scopes from AS metadata: {body}"
+            );
+            ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": REFRESHED_ACCESS_TOKEN,
+                "token_type": "Bearer",
+                "expires_in": 7200,
+                "refresh_token": REFRESH_TOKEN,
+            }))
+        })
         .expect(1)
         .mount(&server)
         .await;
@@ -299,6 +307,10 @@ async fn oauth_startup_child() -> anyhow::Result<()> {
         VendorExtraTokenFields::default(),
     );
     response.set_refresh_token(Some(RefreshToken::new(REFRESH_TOKEN.to_string())));
+    response.set_scopes(Some(vec![
+        Scope::new("profile".to_string()),
+        Scope::new("ops:read".to_string()),
+    ]));
     response.set_expires_in(Some(&Duration::from_secs(7200)));
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
