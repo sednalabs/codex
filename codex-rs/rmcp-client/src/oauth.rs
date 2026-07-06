@@ -1814,9 +1814,22 @@ mod tests {
             super::stored_credentials_from_tokens(&tokens, super::CredentialExposure::Refresh);
 
         assert_eq!(stored_credentials.client_id, tokens.client_id);
+        let staged_response = stored_credentials
+            .token_response
+            .as_ref()
+            .expect("refresh credentials should stage the full token response");
+        let expected_response = &tokens.token_response.0;
         assert_eq!(
-            stored_credentials.token_response,
-            Some(tokens.token_response.0)
+            staged_response.access_token().secret(),
+            expected_response.access_token().secret()
+        );
+        assert_eq!(
+            staged_response.refresh_token().map(|token| token.secret()),
+            expected_response.refresh_token().map(|token| token.secret())
+        );
+        assert_eq!(
+            staged_response.scopes().map(|scopes| scopes.as_slice()),
+            expected_response.scopes().map(|scopes| scopes.as_slice())
         );
         assert_eq!(stored_credentials.granted_scopes, Vec::<String>::new());
         assert!(stored_credentials.token_received_at.is_some());
