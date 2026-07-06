@@ -272,7 +272,7 @@ async fn cancelled_review_does_not_forward_delegate_mcp_startup() {
                 event @ (EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_)) => {
                     panic!("cancelled review forwarded delegate MCP startup: {event:?}")
                 }
-                EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output }) => {
+                EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output, .. }) => {
                     assert_eq!(review_output, None);
                     exited_review = true;
                 }
