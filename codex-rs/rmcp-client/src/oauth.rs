@@ -1009,10 +1009,16 @@ fn stored_credentials_from_tokens(
         CredentialExposure::Request => request_oauth_token_response(tokens),
         CredentialExposure::Refresh => tokens.token_response.0.clone(),
     };
-    let granted_scopes = token_response
-        .scopes()
-        .map(|scopes| scopes.iter().map(|scope| scope.to_string()).collect())
-        .unwrap_or_default();
+    let granted_scopes = match exposure {
+        CredentialExposure::Request => token_response
+            .scopes()
+            .map(|scopes| scopes.iter().map(|scope| scope.to_string()).collect())
+            .unwrap_or_default(),
+        // RFC 6749 treats omitted refresh scopes as the originally granted scope set.
+        // Keep Codex's durable scopes authoritative instead of letting RMCP broaden
+        // this refresh request from authorization-server discovery metadata.
+        CredentialExposure::Refresh => Vec::new(),
+    };
     let token_received_at = match exposure {
         CredentialExposure::Request => None,
         CredentialExposure::Refresh => SystemTime::now()
@@ -1798,6 +1804,22 @@ mod tests {
         assert!(request_tokens.refresh_token().is_none());
         assert!(request_tokens.expires_in().is_none());
         assert_eq!(request_tokens.scopes(), tokens.token_response.0.scopes());
+    }
+
+    #[test]
+    fn refresh_credentials_do_not_expose_granted_scopes_to_rmcp() {
+        let tokens = sample_tokens();
+
+        let stored_credentials =
+            super::stored_credentials_from_tokens(&tokens, super::CredentialExposure::Refresh);
+
+        assert_eq!(stored_credentials.client_id, tokens.client_id);
+        assert_eq!(
+            stored_credentials.token_response,
+            Some(tokens.token_response.0)
+        );
+        assert_eq!(stored_credentials.granted_scopes, Vec::<String>::new());
+        assert!(stored_credentials.token_received_at.is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]
