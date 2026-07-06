@@ -535,11 +535,17 @@ docs-only refresh commit that records this snapshot.
   `AuthKeyringBackendKind::Secrets` support and the downstream resolved-store
   refresh lock that prevents replaying stale rotating refresh tokens from a
   different backend.
+- Refresh-only credential staging deliberately omits granted scopes when
+  handing credentials to RMCP so refresh requests do not broaden explicit
+  persisted scopes with authorization-server-advertised `offline_access`; Codex
+  preserves the durable stored scope set when the provider omits scopes.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
-  discipline unless an upstream replacement covers both behaviors.
+  discipline unless an upstream replacement covers those behaviors and the
+  no-unrequested-`offline_access` refresh contract.
 - Primary files:
   - `codex-rs/rmcp-client/src/oauth.rs`
+  - `codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
