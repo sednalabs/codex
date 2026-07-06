@@ -546,6 +546,7 @@ mod tests {
             summary: codex_app_server_protocol::PluginSummary {
                 id: "plugin.one".into(),
                 remote_plugin_id: None,
+                version: None,
                 local_version: None,
                 name: "Plugin One".into(),
                 share_context: None,
