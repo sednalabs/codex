@@ -1351,6 +1351,7 @@ pub(super) fn plugins_test_summary(
     PluginSummary {
         id: id.to_string(),
         remote_plugin_id: None,
+        version: None,
         local_version: None,
         name: name.to_string(),
         share_context: None,
@@ -1381,6 +1382,7 @@ pub(super) fn plugins_test_remote_summary(
     PluginSummary {
         id: remote_plugin_id.to_string(),
         remote_plugin_id: Some(remote_plugin_id.to_string()),
+        version: None,
         local_version: None,
         name: name.to_string(),
         share_context: None,
