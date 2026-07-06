@@ -2400,6 +2400,31 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     save_step.get("if") or "",
                 )
 
+    def test_rust_batch_workflow_reclaims_disk_and_uses_small_debug_profiles(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/_validation-lane-rust-batch.yml"
+        )
+        run_job = (payload.get("jobs") or {}).get("run") or {}
+        env = run_job.get("env") or {}
+
+        self.assertEqual(env.get("CARGO_PROFILE_DEV_DEBUG"), "0")
+        self.assertEqual(env.get("CARGO_PROFILE_DEV_STRIP"), "symbols")
+        self.assertEqual(env.get("CARGO_PROFILE_TEST_DEBUG"), "0")
+        self.assertEqual(env.get("CARGO_PROFILE_TEST_STRIP"), "symbols")
+
+        cleanup_step = next(
+            step
+            for step in run_job.get("steps") or []
+            if step.get("name") == "Reclaim runner disk headroom"
+        )
+        cleanup_script = cleanup_step.get("run") or ""
+        self.assertIn("/usr/local/lib/android", cleanup_script)
+        self.assertIn("/usr/share/dotnet", cleanup_script)
+        self.assertIn("/opt/ghc", cleanup_script)
+        self.assertIn("/usr/local/share/boost", cleanup_script)
+        self.assertIn("/opt/hostedtoolcache/CodeQL", cleanup_script)
+        self.assertIn("12 GiB safety floor", cleanup_script)
+
     def test_reusable_validation_lane_workflows_source_helpers_from_workflow_ref(self) -> None:
         for workflow_name in [
             "_validation-lane-workflow.yml",
