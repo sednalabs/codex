@@ -851,11 +851,11 @@ mod tests {
                 &[],
                 &[
                     FeedbackAttachmentPath {
-                        path: gzip_path.clone(),
+                        path: gzip_path,
                         attachment_filename_override: None,
                     },
                     FeedbackAttachmentPath {
-                        path: unknown_path.clone(),
+                        path: unknown_path,
                         attachment_filename_override: None,
                     },
                 ],
