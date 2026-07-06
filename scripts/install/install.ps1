@@ -238,7 +238,7 @@ function Resolve-Release {
     }
 
     try {
-        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri
+        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri -ErrorAction Stop
     } catch {
         throw "Could not fetch GitHub release metadata for Codex $requestedRelease. GitHub API may be unavailable or rate limited. $($_.Exception.Message)"
     }
