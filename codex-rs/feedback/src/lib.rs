@@ -813,15 +813,36 @@ mod tests {
 
     #[test]
     fn path_backed_attachments_use_binary_content_types() {
-        let suffix = ThreadId::new();
-        let gzip_filename = format!("codex-desktop-app-logs-{suffix}.tar.gz");
-        let unknown_filename = format!("codex-feedback-extra-{suffix}.binunknown");
-        let gzip_path = std::env::temp_dir().join(&gzip_filename);
-        let unknown_path = std::env::temp_dir().join(&unknown_filename);
+        let mut gzip_file = tempfile::Builder::new()
+            .prefix("codex-desktop-app-logs-")
+            .suffix(".tar.gz")
+            .tempfile()
+            .expect("gzip attachment file should be created");
+        let mut unknown_file = tempfile::Builder::new()
+            .prefix("codex-feedback-extra-")
+            .suffix(".binunknown")
+            .tempfile()
+            .expect("unknown attachment file should be created");
         let gzip_bytes = b"\x1f\x8b\x08\x00\xff";
         let unknown_bytes = b"\x00\x9f\x92\x96";
-        fs::write(&gzip_path, gzip_bytes).expect("gzip attachment should be written");
-        fs::write(&unknown_path, unknown_bytes).expect("unknown attachment should be written");
+        gzip_file
+            .write_all(gzip_bytes)
+            .expect("gzip attachment should be written");
+        unknown_file
+            .write_all(unknown_bytes)
+            .expect("unknown attachment should be written");
+        let gzip_path = gzip_file.path().to_path_buf();
+        let unknown_path = unknown_file.path().to_path_buf();
+        let gzip_filename = gzip_path
+            .file_name()
+            .expect("gzip attachment should have a filename")
+            .to_string_lossy()
+            .into_owned();
+        let unknown_filename = unknown_path
+            .file_name()
+            .expect("unknown attachment should have a filename")
+            .to_string_lossy()
+            .into_owned();
 
         let attachments = CodexFeedback::new()
             .snapshot(/*session_id*/ None)
@@ -841,8 +862,6 @@ mod tests {
                 /*logs_override*/ None,
             );
 
-        fs::remove_file(gzip_path).expect("gzip attachment should be removed");
-        fs::remove_file(unknown_path).expect("unknown attachment should be removed");
         assert_eq!(
             attachments
                 .iter()
