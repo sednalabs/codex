@@ -239,8 +239,8 @@ async fn cancelled_review_does_not_forward_delegate_mcp_startup() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match codex.next_event().await.expect("review event").msg {
-                event @ (EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_)) => {
-                    panic!("review forwarded delegate MCP startup: {event:?}")
+                EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_) => {
+                    panic!("review forwarded delegate MCP startup")
                 }
                 EventMsg::EnteredReviewMode(_) => break,
                 _ => {}
@@ -269,13 +269,19 @@ async fn cancelled_review_does_not_forward_delegate_mcp_startup() {
                 .expect("review cancellation event")
                 .msg
             {
-                event @ (EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_)) => {
-                    panic!("cancelled review forwarded delegate MCP startup: {event:?}")
+                EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_) => {
+                    panic!("cancelled review forwarded delegate MCP startup")
                 }
-                EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output, .. }) => {
-                    assert_eq!(review_output, None);
+                EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                    review_output: None,
+                    ..
+                }) => {
                     exited_review = true;
                 }
+                EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                    review_output: Some(_),
+                    ..
+                }) => panic!("cancelled review emitted review output"),
                 EventMsg::TurnAborted(_) if exited_review => break,
                 EventMsg::TurnAborted(_) => panic!("review turn aborted before review mode exited"),
                 _ => {}
