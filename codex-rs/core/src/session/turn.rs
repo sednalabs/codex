@@ -2011,6 +2011,11 @@ async fn try_run_sampling_request(
         turn_context.provider.info().name.as_str(),
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
+    let uses_sequential_cutoff_reasoning_summaries = turn_context
+        .config
+        .features
+        .enabled(Feature::ConcurrentReasoningSummaries)
+        && turn_context.provider.info().is_openai();
     let mut stream = client_session
         .stream(
             prompt,
@@ -2401,6 +2406,9 @@ async fn try_run_sampling_request(
                 delta,
                 summary_index,
             } => {
+                if uses_sequential_cutoff_reasoning_summaries {
+                    continue;
+                }
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;
@@ -2419,6 +2427,9 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+                if uses_sequential_cutoff_reasoning_summaries {
+                    continue;
+                }
                 if let Some(active) = active_item.as_ref() {
                     if !active_item_is_streaming_to_client {
                         continue;
@@ -2432,6 +2443,40 @@ async fn try_run_sampling_request(
                 } else {
                     error_or_panic("ReasoningSummaryPartAdded without active item".to_string());
                 }
+            }
+            ResponseEvent::ReasoningSummaryDone {
+                item_id,
+                text,
+                summary_index,
+            } => {
+                if !uses_sequential_cutoff_reasoning_summaries {
+                    continue;
+                }
+                let Some(active) = active_item.as_ref() else {
+                    continue;
+                };
+                if !active_item_is_streaming_to_client || active.id() != item_id {
+                    continue;
+                }
+                if summary_index > 0 {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {
+                            item_id: item_id.clone(),
+                            summary_index,
+                        }),
+                    )
+                    .await;
+                }
+                let event = ReasoningContentDeltaEvent {
+                    thread_id: sess.thread_id.to_string(),
+                    turn_id: turn_context.sub_id.clone(),
+                    item_id,
+                    delta: text,
+                    summary_index,
+                };
+                sess.send_event(&turn_context, EventMsg::ReasoningContentDelta(event))
+                    .await;
             }
             ResponseEvent::ReasoningContentDelta {
                 delta,

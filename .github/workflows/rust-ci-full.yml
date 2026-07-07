@@ -151,12 +151,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
-        with:
-          tool: just
       - name: cargo fmt
         run: cargo fmt -- --config imports_granularity=Item --check
       - name: Rust benchmark smoke test
@@ -173,6 +171,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
@@ -191,6 +190,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: nightly-2025-09-18
@@ -238,7 +238,6 @@ jobs:
       - uses: ./.github/actions/setup-bazel-ci
         with:
           target: ${{ runner.os }}
-          install-test-prereqs: true
       - name: Install Linux sandbox build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -308,6 +307,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-ci
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash

@@ -1361,6 +1361,7 @@ pub(super) fn plugins_test_summary(
         installed,
         enabled,
         install_policy,
+        install_policy_source: None,
         auth_policy: PluginAuthPolicy::OnInstall,
         availability: PluginAvailability::Available,
         interface: Some(plugins_test_interface(
@@ -1390,6 +1391,7 @@ pub(super) fn plugins_test_remote_summary(
         installed,
         enabled: true,
         install_policy: PluginInstallPolicy::Available,
+        install_policy_source: None,
         auth_policy: PluginAuthPolicy::OnInstall,
         availability: PluginAvailability::Available,
         interface: Some(plugins_test_interface(

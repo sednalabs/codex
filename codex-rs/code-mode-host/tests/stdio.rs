@@ -508,12 +508,18 @@ return;
         next_callback_event(&mut events_rx).await,
         CallbackEvent::Started("tool_call_slow".to_string())
     );
-    let closure_events = [
+    let mut closure_events = vec![
         next_callback_event(&mut events_rx).await,
         next_callback_event(&mut events_rx).await,
     ];
-    assert!(closure_events.contains(&CallbackEvent::Cancelled("tool_call_slow".to_string())));
-    assert!(closure_events.contains(&CallbackEvent::CellClosed(running_cell_id.clone())));
+    closure_events.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    assert_eq!(
+        closure_events,
+        vec![
+            CallbackEvent::Cancelled("tool_call_slow".to_string()),
+            CallbackEvent::CellClosed(running_cell_id.clone()),
+        ]
+    );
     assert_eq!(
         wait_task
             .await
@@ -681,12 +687,9 @@ async fn oversized_initial_response_does_not_close_the_shared_host() {
 async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
     let host_program =
         codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary");
-    let proxy_dir =
-        std::env::temp_dir().join(format!("codex-code-mode-host-loss-{}", std::process::id()));
-    let proxy_program = proxy_dir.join("host-proxy.sh");
-    let pid_path = proxy_dir.join("host.pid");
-    let _ = std::fs::remove_dir_all(&proxy_dir);
-    std::fs::create_dir_all(&proxy_dir).expect("create host proxy directory");
+    let proxy_dir = tempfile::tempdir().expect("create host proxy directory");
+    let proxy_program = proxy_dir.path().join("host-proxy.sh");
+    let pid_path = proxy_dir.path().join("host.pid");
     std::fs::write(
         &proxy_program,
         format!(
@@ -875,6 +878,4 @@ async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
         events_a.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
-
-    std::fs::remove_dir_all(proxy_dir).expect("remove host proxy directory");
 }
