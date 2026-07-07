@@ -4,6 +4,7 @@ use std::collections::btree_map::Entry;
 use std::fs;
 use std::io::Write;
 use std::io::{self};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -593,10 +594,22 @@ impl FeedbackSnapshot {
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| "extra-log.log".to_string())
                 });
+            let content_type = match Path::new(&filename)
+                .extension()
+                .and_then(|extension| extension.to_str())
+            {
+                Some(extension) if extension.eq_ignore_ascii_case("jsonl") => {
+                    "text/plain".to_string()
+                }
+                _ => mime_guess::from_path(&filename)
+                    .first_or_octet_stream()
+                    .essence_str()
+                    .to_string(),
+            };
             attachments.push(Attachment {
                 buffer: data,
                 filename,
-                content_type: Some("text/plain".to_string()),
+                content_type: Some(content_type),
                 ty: None,
             });
         }
@@ -775,6 +788,10 @@ mod tests {
         );
         assert_eq!(attachments_with_diagnostics[3].buffer, b"rollout".to_vec());
         assert_eq!(
+            attachments_with_diagnostics[3].content_type.as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(
             OsStr::new(attachments_with_diagnostics[3].filename.as_str()),
             OsStr::new(extra_filename.as_str())
         );
@@ -792,6 +809,81 @@ mod tests {
         );
         assert_eq!(attachments_without_diagnostics[0].buffer, vec![1]);
         fs::remove_file(extra_path).expect("extra attachment should be removed");
+    }
+
+    #[test]
+    fn path_backed_attachments_use_binary_content_types() {
+        let mut gzip_file = tempfile::Builder::new()
+            .prefix("codex-desktop-app-logs-")
+            .suffix(".tar.gz")
+            .tempfile()
+            .expect("gzip attachment file should be created");
+        let mut unknown_file = tempfile::Builder::new()
+            .prefix("codex-feedback-extra-")
+            .suffix(".binunknown")
+            .tempfile()
+            .expect("unknown attachment file should be created");
+        let gzip_bytes = b"\x1f\x8b\x08\x00\xff";
+        let unknown_bytes = b"\x00\x9f\x92\x96";
+        gzip_file
+            .write_all(gzip_bytes)
+            .expect("gzip attachment should be written");
+        unknown_file
+            .write_all(unknown_bytes)
+            .expect("unknown attachment should be written");
+        let gzip_path = gzip_file.path().to_path_buf();
+        let unknown_path = unknown_file.path().to_path_buf();
+        let gzip_filename = gzip_path
+            .file_name()
+            .expect("gzip attachment should have a filename")
+            .to_string_lossy()
+            .into_owned();
+        let unknown_filename = unknown_path
+            .file_name()
+            .expect("unknown attachment should have a filename")
+            .to_string_lossy()
+            .into_owned();
+
+        let attachments = CodexFeedback::new()
+            .snapshot(/*session_id*/ None)
+            .feedback_attachments(
+                /*include_logs*/ false,
+                &[],
+                &[
+                    FeedbackAttachmentPath {
+                        path: gzip_path,
+                        attachment_filename_override: None,
+                    },
+                    FeedbackAttachmentPath {
+                        path: unknown_path,
+                        attachment_filename_override: None,
+                    },
+                ],
+                /*logs_override*/ None,
+            );
+
+        assert_eq!(
+            attachments
+                .iter()
+                .map(|attachment| (
+                    attachment.filename.as_str(),
+                    attachment.content_type.as_deref(),
+                    attachment.buffer.as_slice(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    gzip_filename.as_str(),
+                    Some("application/gzip"),
+                    gzip_bytes.as_slice(),
+                ),
+                (
+                    unknown_filename.as_str(),
+                    Some("application/octet-stream"),
+                    unknown_bytes.as_slice(),
+                ),
+            ]
+        );
     }
 
     #[test]
