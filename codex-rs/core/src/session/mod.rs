@@ -22,7 +22,6 @@ use crate::compact;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
-use crate::context::AvailablePluginsInstructions;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
@@ -3409,9 +3408,6 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&turn_context.config.plugins_config_input())
             .await;
-        if !loaded_plugins.capability_summaries().is_empty() {
-            developer_sections.push(AvailablePluginsInstructions.render());
-        }
         let recommended_plugin_candidates =
             if crate::tools::spec_plan::tool_suggest_enabled(turn_context) {
                 let auth = self.services.auth_manager.auth().await;
