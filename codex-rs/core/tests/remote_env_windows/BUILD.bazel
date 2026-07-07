@@ -12,8 +12,8 @@ wine_rust_test(
         "wine-windows-exec-server": "//codex-rs/exec-server/testing:windows-exec-server",
     },
     deps = [
-        "//codex-rs/app-server/tests/common",
         "//codex-rs/app-server-protocol",
+        "//codex-rs/app-server/tests/common",
         "//codex-rs/core/tests/common",
         "//codex-rs/exec-server",
         "//codex-rs/exec-server/testing:wine-exec-server-test-support",
