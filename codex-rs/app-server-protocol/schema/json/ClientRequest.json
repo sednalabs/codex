@@ -559,7 +559,7 @@
     "ConsumeAccountRateLimitResetCreditParams": {
       "properties": {
         "creditId": {
-          "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next available credit.",
+          "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
           "type": [
             "string",
             "null"
@@ -4540,6 +4540,13 @@
         },
         "codexResponsesAsItems": {
           "description": "Sends automatic Codex responses as realtime conversation items instead of handoff appends.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "flushTranscriptTailOnSessionEnd": {
+          "description": "Routes any transcript tail remaining at session end through Codex. Defaults to false.\nTODO: Remove this rollout knob once transcript-tail flushing is always enabled.",
           "type": [
             "boolean",
             "null"

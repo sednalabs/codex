@@ -1152,7 +1152,10 @@ mod tests {
             .collect::<Vec<_>>();
         let raw = line_texts(&cell.transcript_lines_for_mode(/*width*/ 80, HistoryRenderMode::Raw));
 
-        assert!(rich.iter().any(|line| line.contains("hook context: line one")));
+        assert!(
+            rich.iter()
+                .any(|line| line.contains("hook context: line one"))
+        );
         assert!(
             rich.iter()
                 .any(|line| line.contains("warning: stay visible"))

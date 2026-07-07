@@ -8409,7 +8409,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "creditId": {
-            "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next available credit.",
+            "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
             "type": [
               "string",
               "null"
@@ -14148,10 +14148,10 @@
           }
         },
         "required": [
-          "grantedAt",
           "id",
           "resetType",
-          "status"
+          "status",
+          "grantedAt"
         ],
         "type": "object"
       },
@@ -14171,7 +14171,7 @@
             "type": "integer"
           },
           "credits": {
-            "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched and no available credits were returned. The backend may cap this list, so its length can be less than `availableCount`.",
+            "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched\nand no available credits were returned. The backend may cap this list, so its length can be\nless than `availableCount`.",
             "items": {
               "$ref": "#/definitions/v2/RateLimitResetCredit"
             },

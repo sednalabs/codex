@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "creditId": {
-      "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next available credit.",
+      "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
       "type": [
         "string",
         "null"

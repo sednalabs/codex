@@ -38,3 +38,4 @@ pub use crate::transport::ByteStream;
 pub use crate::transport::HttpTransport;
 pub use crate::transport::ReqwestTransport;
 pub use crate::transport::StreamResponse;
+pub use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
