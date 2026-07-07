@@ -440,7 +440,7 @@
         "installPolicySource": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PluginInstallPolicySource"
+              "$ref": "#/$defs/PluginInstallPolicySource"
             },
             {
               "type": "null"
