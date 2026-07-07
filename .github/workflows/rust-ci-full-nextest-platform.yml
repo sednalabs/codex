@@ -32,11 +32,6 @@ on:
         default: false
         type: boolean
 
-# Caller workflow-level env does not flow through workflow_call, so keep the
-# Cargo git transport hardening on the archive and shard jobs directly here.
-env:
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-
 jobs:
   archive:
     name: Build nextest archive
@@ -67,6 +62,8 @@ jobs:
         shell: pwsh
         run: ../.github/scripts/setup-dev-drive.ps1
 
+      - uses: ./.github/actions/setup-ci
+
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -76,9 +73,6 @@ jobs:
             sudo apt-get update -y
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
           fi
-
-      - name: Install DotSlash
-        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
@@ -290,6 +284,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/setup-ci
+
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -299,9 +295,6 @@ jobs:
             sudo apt-get update -y
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
           fi
-
-      - name: Install DotSlash
-        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:

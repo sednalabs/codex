@@ -13,7 +13,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v0.5.9
+    - uses: ./.github/actions/setup-ci
 
     - name: Install Linux build dependencies
       if: ${{ runner.os == 'Linux' }}

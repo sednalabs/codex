@@ -532,6 +532,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
     )
     .new_session()
@@ -1080,6 +1081,22 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
             _ctx: crate::tools::sandboxing::ApprovalCtx<'a>,
         ) -> futures::future::BoxFuture<'a, ReviewDecision> {
             Box::pin(async { ReviewDecision::Approved })
+        }
+
+        fn approval_action(
+            &self,
+            _req: &(),
+            ctx: &crate::tools::sandboxing::ApprovalCtx<'_>,
+        ) -> std::io::Result<crate::tools::sandboxing::ApprovalAction> {
+            Ok(crate::tools::sandboxing::ApprovalAction::Shell {
+                id: ctx.call_id.to_string(),
+                command: Vec::new(),
+                #[allow(deprecated)]
+                cwd: ctx.turn.cwd.clone(),
+                sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
+                additional_permissions: None,
+                justification: None,
+            })
         }
     }
 
@@ -5496,7 +5513,11 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
-            config.features.enabled(Feature::ItemIds),
+            /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            /*concurrent_reasoning_summaries_enabled*/
+            config
+                .features
+                .enabled(Feature::ConcurrentReasoningSummaries),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
@@ -7669,7 +7690,11 @@ where
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
-            config.features.enabled(Feature::ItemIds),
+            /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            /*concurrent_reasoning_summaries_enabled*/
+            config
+                .features
+                .enabled(Feature::ConcurrentReasoningSummaries),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(

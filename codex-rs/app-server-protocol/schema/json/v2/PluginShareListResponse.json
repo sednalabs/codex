@@ -34,6 +34,13 @@
       ],
       "type": "string"
     },
+    "PluginInstallPolicySource": {
+      "enum": [
+        "WORKSPACE_SETTING",
+        "IMPLICIT_CANONICAL_APP"
+      ],
+      "type": "string"
+    },
     "PluginInterface": {
       "properties": {
         "brandColor": {
@@ -429,6 +436,16 @@
         },
         "installPolicy": {
           "$ref": "#/$defs/PluginInstallPolicy"
+        },
+        "installPolicySource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginInstallPolicySource"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "installed": {
           "type": "boolean"
