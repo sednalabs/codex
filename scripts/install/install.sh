@@ -153,10 +153,37 @@ release_metadata_url() {
   printf 'https://api.github.com/repos/%s/releases/tags/%s\n' "$RELEASE_REPOSITORY" "$release_tag"
 }
 
+resolve_release() {
+  normalized_version="$(normalize_version "$RELEASE")"
+  validate_version "$normalized_version"
+
+  if [ "$normalized_version" = "latest" ]; then
+    requested_release="latest"
+    metadata_url="https://api.github.com/repos/$RELEASE_REPOSITORY/releases/latest"
+  else
+    resolved_version="$normalized_version"
+    requested_release="$resolved_version"
+    metadata_url="$(release_metadata_url "$resolved_version")"
+  fi
+
+  if ! release_json="$(download_text "$metadata_url")"; then
+    echo "Could not fetch GitHub release metadata for Codex $requested_release. GitHub API may be unavailable or rate limited." >&2
+    exit 1
+  fi
+
+  if [ "$normalized_version" = "latest" ]; then
+    resolved_tag="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    if [ -z "$resolved_tag" ]; then
+      echo "Failed to resolve the latest Codex release version." >&2
+      exit 1
+    fi
+    resolved_version="$(normalize_version "$resolved_tag")"
+    validate_version "$resolved_version"
+  fi
+}
+
 release_asset_digest_or_empty() {
   asset="$1"
-  resolved_version="$2"
-  release_json="$(download_text "$(release_metadata_url "$resolved_version")")"
 
   digest="$(printf '%s\n' "$release_json" | awk -v asset="$asset" '
     /"name":[[:space:]]*"[^"]+"/ {
@@ -205,16 +232,14 @@ release_asset_digest_or_empty() {
 
 release_asset_exists() {
   asset="$1"
-  resolved_version="$2"
 
-  release_asset_digest_or_empty "$asset" "$resolved_version" >/dev/null 2>&1
+  release_asset_digest_or_empty "$asset" >/dev/null 2>&1
 }
 
 release_asset_digest() {
   asset="$1"
-  resolved_version="$2"
 
-  digest="$(release_asset_digest_or_empty "$asset" "$resolved_version" || true)"
+  digest="$(release_asset_digest_or_empty "$asset" || true)"
   if [ -z "$digest" ]; then
     echo "Could not find SHA-256 digest for release asset $asset." >&2
     exit 1
@@ -288,28 +313,6 @@ require_command() {
     echo "$1 is required to install Codex." >&2
     exit 1
   fi
-}
-
-resolve_version() {
-  normalized_version="$(normalize_version "$RELEASE")"
-  validate_version "$normalized_version"
-
-  if [ "$normalized_version" != "latest" ]; then
-    printf '%s\n' "$normalized_version"
-    return
-  fi
-
-  release_json="$(download_text "https://api.github.com/repos/$RELEASE_REPOSITORY/releases/latest")"
-  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-
-  if [ -z "$resolved" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
-    exit 1
-  fi
-
-  normalized="$(normalize_version "$resolved")"
-  validate_version "$normalized"
-  printf '%s\n' "$normalized"
 }
 
 pick_profile() {
@@ -855,14 +858,14 @@ else
   fi
 fi
 
-resolved_version="$(resolve_version)"
+resolve_release
 package_asset="codex-package-$vendor_target.tar.gz"
 checksum_asset="codex-package_SHA256SUMS"
-if release_asset_exists "$package_asset" "$resolved_version" &&
-  release_asset_exists "$checksum_asset" "$resolved_version"; then
+if release_asset_exists "$package_asset" &&
+  release_asset_exists "$checksum_asset"; then
   install_layout="package"
   asset="$package_asset"
-elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz" "$resolved_version"; then
+elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz"; then
   install_layout="legacy-platform-npm"
   asset="codex-npm-$npm_tag-$resolved_version.tgz"
 else
@@ -909,12 +912,12 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
 
   step "Downloading Codex CLI"
   if [ "$install_layout" = "package" ]; then
-    checksum_digest="$(release_asset_digest "$checksum_asset" "$resolved_version")"
+    checksum_digest="$(release_asset_digest "$checksum_asset")"
     download_file "$checksum_url" "$checksum_path"
     verify_archive_digest "$checksum_path" "$checksum_digest"
     expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
   else
-    expected_digest="$(release_asset_digest "$asset" "$resolved_version")"
+    expected_digest="$(release_asset_digest "$asset")"
   fi
   download_file "$download_url" "$archive_path"
   verify_archive_digest "$archive_path" "$expected_digest"

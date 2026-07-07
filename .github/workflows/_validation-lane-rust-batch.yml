@@ -63,6 +63,10 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: symbols
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: symbols
       SCCACHE_CACHE_SIZE: 2G
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
@@ -88,23 +92,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soft_threshold_bytes=$((12 * 1024 * 1024 * 1024))
-          hard_threshold_bytes=$((6 * 1024 * 1024 * 1024))
+          hard_threshold_bytes=$((12 * 1024 * 1024 * 1024))
           available_bytes() {
             df --block-size=1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | tr -d '[:space:]'
           }
           before_bytes="$(available_bytes)"
-          if [[ "${before_bytes}" -lt "${soft_threshold_bytes}" ]]; then
-            echo "::warning title=Low runner disk before batch setup::Available disk is $(numfmt --to=iec "${before_bytes}") before dependency setup; reclaiming headroom."
-            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
-            sudo apt-get clean || true
-            sudo rm -rf /var/lib/apt/lists/* || true
-          fi
+          echo "Available disk before cleanup: $(numfmt --to=iec "${before_bytes}")"
+          # Hosted Ubuntu images carry large SDK/toolchain bundles that Rust validation
+          # batches do not use. Remove them proactively before Cargo fills target/.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
           after_bytes="$(available_bytes)"
           if [[ "${after_bytes}" -lt "${hard_threshold_bytes}" ]]; then
-            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 6 GiB safety floor for validation lanes."
+            echo "::error title=Insufficient runner disk::Available disk after cleanup is $(numfmt --to=iec "${after_bytes}"), below the 12 GiB safety floor for Rust validation batches."
             exit 1
           fi
+          echo "Available disk after cleanup: $(numfmt --to=iec "${after_bytes}")"
 
       - name: Set up Node.js for js_repl tests
         if: ${{ inputs.needs_node }}

@@ -3646,6 +3646,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     remote_plugin_id: Some(
                         "plugins~Plugin_00000000000000000000000000000000".to_string(),
                     ),
+                    version: None,
                     local_version: None,
                     name: "gmail".to_string(),
                     share_context: None,
@@ -3667,6 +3668,7 @@ fn plugin_share_list_response_serializes_share_items() {
                 "plugin": {
                     "id": "gmail@openai-curated-remote",
                     "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                    "version": null,
                     "localVersion": null,
                     "name": "gmail",
                     "shareContext": null,
