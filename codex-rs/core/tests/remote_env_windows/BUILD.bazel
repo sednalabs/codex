@@ -13,6 +13,7 @@ wine_rust_test(
     },
     deps = [
         "//codex-rs/app-server/tests/common",
+        "//codex-rs/app-server-protocol",
         "//codex-rs/core/tests/common",
         "//codex-rs/exec-server",
         "//codex-rs/exec-server/testing:wine-exec-server-test-support",
@@ -22,6 +23,7 @@ wine_rust_test(
         "@crates//:anyhow",
         "@crates//:pretty_assertions",
         "@crates//:serde_json",
+        "@crates//:tempfile",
         "@crates//:tokio",
     ],
 )
