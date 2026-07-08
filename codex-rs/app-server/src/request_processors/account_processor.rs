@@ -1,6 +1,14 @@
 use super::*;
 use crate::auth_mode::auth_mode_to_api;
 use chrono::DateTime;
+use codex_state::UsageAccountContext;
+use codex_state::UsageRateLimitResetCreditEventRecord;
+use codex_state::UsageRateLimitSnapshotRecord;
+use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
+use std::fmt::Write as _;
+use std::path::Path;
 
 mod rate_limit_resets;
 
@@ -12,6 +20,30 @@ const ACCOUNT_WORKSPACE_MESSAGES_FETCH_TIMEOUT: Duration =
 // The override is intentionally available only in debug builds, matching the login path below.
 #[cfg(debug_assertions)]
 const LOGIN_ISSUER_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_ISSUER";
+
+fn hash_audit_path(namespace: &str, path: &Path) -> Option<String> {
+    Some(hash_audit_value(namespace, path.to_str()?))
+}
+
+fn hash_audit_value(namespace: &str, value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(namespace.as_bytes());
+    hasher.update(b":");
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn serialized_enum_string<T: Serialize>(value: &T) -> Option<String> {
+    match serde_json::to_value(value).ok()? {
+        serde_json::Value::String(value) => Some(value),
+        _ => None,
+    }
+}
 
 enum ActiveLogin {
     Browser {
@@ -67,6 +99,7 @@ pub(crate) struct AccountRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     config_manager: ConfigManager,
+    state_db: Option<StateDbHandle>,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
 }
 
@@ -77,6 +110,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        state_db: Option<StateDbHandle>,
     ) -> Self {
         Self {
             auth_manager,
@@ -84,6 +118,7 @@ impl AccountRequestProcessor {
             outgoing,
             config,
             config_manager,
+            state_db,
             active_login: Arc::new(Mutex::new(None)),
         }
     }
@@ -175,6 +210,81 @@ impl AccountRequestProcessor {
         self.thread_manager
             .plugins_manager()
             .set_auth_mode(self.auth_manager.get_api_auth_mode());
+    }
+
+    fn usage_account_context(&self, auth: &CodexAuth) -> UsageAccountContext {
+        UsageAccountContext {
+            auth_mode: Some(auth.api_auth_mode().to_string()),
+            account_id_hash: auth
+                .get_account_id()
+                .as_deref()
+                .map(|account_id| hash_audit_value("account_id", account_id)),
+            chatgpt_user_id_hash: auth
+                .get_chatgpt_user_id()
+                .as_deref()
+                .map(|user_id| hash_audit_value("chatgpt_user_id", user_id)),
+            account_plan_type: auth
+                .account_plan_type()
+                .and_then(|plan_type| serialized_enum_string(&plan_type)),
+            codex_home_hash: hash_audit_path("codex_home", self.config.codex_home.as_path()),
+            sqlite_home_hash: hash_audit_path("sqlite_home", self.config.sqlite_home.as_path()),
+        }
+    }
+
+    async fn record_account_rate_limit_snapshots(
+        &self,
+        auth: &CodexAuth,
+        rate_limits: &[codex_protocol::protocol::RateLimitSnapshot],
+        reset_credits: Option<&RateLimitResetCreditsSummary>,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let account = self.usage_account_context(auth);
+        let reset_credits_json =
+            reset_credits.and_then(|summary| serde_json::to_string(summary).ok());
+        let record = UsageRateLimitSnapshotRecord {
+            thread_id: None,
+            turn_id: None,
+            observed_from: "account_rate_limits",
+            account: &account,
+            rate_limits,
+            reset_credits_available_count: reset_credits.map(|summary| summary.available_count),
+            reset_credits_json: reset_credits_json.as_deref(),
+        };
+        if let Err(err) = state_db.record_usage_rate_limit_snapshots(record).await {
+            tracing::warn!("failed to record rate-limit audit snapshot: {err}");
+        }
+    }
+
+    async fn record_rate_limit_reset_credit_event(
+        &self,
+        account: &UsageAccountContext,
+        idempotency_key: &str,
+        credit_id: Option<&str>,
+        outcome: Option<&str>,
+        status: &str,
+        error: Option<&str>,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let record = UsageRateLimitResetCreditEventRecord {
+            event_type: "consume",
+            account,
+            idempotency_key,
+            credit_id,
+            outcome,
+            status,
+            error,
+            metadata_json: None,
+        };
+        if let Err(err) = state_db
+            .record_usage_rate_limit_reset_credit_event(record)
+            .await
+        {
+            tracing::warn!("failed to record rate-limit reset-credit audit event: {err}");
+        }
     }
 
     fn current_account_updated_notification(&self) -> AccountUpdatedNotification {
@@ -930,6 +1040,12 @@ impl AccountRequestProcessor {
                     credits: None,
                 })
         });
+        self.record_account_rate_limit_snapshots(
+            &auth,
+            response.rate_limits.as_slice(),
+            rate_limit_reset_credits.as_ref(),
+        )
+        .await;
 
         Ok(GetAccountRateLimitsResponse {
             rate_limits: rate_limits.into(),

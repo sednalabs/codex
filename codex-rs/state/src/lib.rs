@@ -25,6 +25,9 @@ pub use model::Phase2AttestedBaseline;
 pub use model::Phase2JobClaimOutcome;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use runtime::usage::UsageAccountContext;
+pub use runtime::usage::UsageRateLimitResetCreditEventRecord;
+pub use runtime::usage::UsageRateLimitSnapshotRecord;
 
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;

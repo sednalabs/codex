@@ -53,7 +53,7 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
-        let client = self.rate_limit_reset_backend_client().await?;
+        let (client, account) = self.rate_limit_reset_backend_client().await?;
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)
@@ -61,7 +61,7 @@ impl AccountRequestProcessor {
             .and_then(|value| value.parse::<u64>().ok())
             .map(Duration::from_millis)
             .unwrap_or(request_timeout);
-        let response = tokio::time::timeout(request_timeout, async {
+        let response = match tokio::time::timeout(request_timeout, async {
             match params.credit_id.as_deref() {
                 Some(credit_id) => {
                     client
@@ -76,8 +76,35 @@ impl AccountRequestProcessor {
             }
         })
         .await
-        .map_err(|_| internal_error("rate limit reset consume timed out"))?
-        .map_err(|err| internal_error(format!("failed to consume rate limit reset: {err}")))?;
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let error = format!("failed to consume rate limit reset: {err}");
+                self.record_rate_limit_reset_credit_event(
+                    &account,
+                    &params.idempotency_key,
+                    params.credit_id.as_deref(),
+                    None,
+                    "error",
+                    Some(&error),
+                )
+                .await;
+                return Err(internal_error(error));
+            }
+            Err(_) => {
+                let error = "rate limit reset consume timed out";
+                self.record_rate_limit_reset_credit_event(
+                    &account,
+                    &params.idempotency_key,
+                    params.credit_id.as_deref(),
+                    None,
+                    "error",
+                    Some(error),
+                )
+                .await;
+                return Err(internal_error(error));
+            }
+        };
         let outcome = match response.code {
             BackendConsumeRateLimitResetCreditCode::Reset => {
                 ConsumeAccountRateLimitResetCreditOutcome::Reset
@@ -92,12 +119,23 @@ impl AccountRequestProcessor {
                 ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed
             }
         };
+        self.record_rate_limit_reset_credit_event(
+            &account,
+            &params.idempotency_key,
+            params.credit_id.as_deref(),
+            Some(rate_limit_reset_outcome_name(outcome)),
+            "success",
+            None,
+        )
+        .await;
         Ok(Some(
             ConsumeAccountRateLimitResetCreditResponse { outcome }.into(),
         ))
     }
 
-    async fn rate_limit_reset_backend_client(&self) -> Result<BackendClient, JSONRPCErrorError> {
+    async fn rate_limit_reset_backend_client(
+        &self,
+    ) -> Result<(BackendClient, UsageAccountContext), JSONRPCErrorError> {
         let Some(auth) = self.auth_manager.auth().await else {
             return Err(invalid_request(
                 "codex account authentication required for rate limit reset credits",
@@ -109,8 +147,21 @@ impl AccountRequestProcessor {
             ));
         }
 
-        BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
-            .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))
+        let account = self.usage_account_context(&auth);
+        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+            .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
+        Ok((client, account))
+    }
+}
+
+fn rate_limit_reset_outcome_name(
+    outcome: ConsumeAccountRateLimitResetCreditOutcome,
+) -> &'static str {
+    match outcome {
+        ConsumeAccountRateLimitResetCreditOutcome::Reset => "reset",
+        ConsumeAccountRateLimitResetCreditOutcome::NothingToReset => "nothing_to_reset",
+        ConsumeAccountRateLimitResetCreditOutcome::NoCredit => "no_credit",
+        ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed => "already_redeemed",
     }
 }
 
