@@ -773,19 +773,11 @@ async fn insert_rate_limit_reset_credit_event(
 }
 
 fn non_empty_or_unknown(value: &str) -> &str {
-    if value.is_empty() {
-        "unknown"
-    } else {
-        value
-    }
+    if value.is_empty() { "unknown" } else { value }
 }
 
 fn bool_to_sql(value: bool) -> i64 {
-    if value {
-        1
-    } else {
-        0
-    }
+    if value { 1 } else { 0 }
 }
 
 fn serialized_enum_string<T: Serialize>(value: &T) -> Option<String> {
@@ -1378,18 +1370,16 @@ WHERE thread_id = ?
             })
             .await?;
         runtime
-            .record_usage_rate_limit_reset_credit_event(
-                UsageRateLimitResetCreditEventRecord {
-                    event_type: "consume",
-                    account: &account,
-                    idempotency_key: "redeem-1",
-                    credit_id: Some("credit-1"),
-                    outcome: Some("reset"),
-                    status: "success",
-                    error: None,
-                    metadata_json: None,
-                },
-            )
+            .record_usage_rate_limit_reset_credit_event(UsageRateLimitResetCreditEventRecord {
+                event_type: "consume",
+                account: &account,
+                idempotency_key: "redeem-1",
+                credit_id: Some("credit-1"),
+                outcome: Some("reset"),
+                status: "success",
+                error: None,
+                metadata_json: None,
+            })
             .await?;
 
         let rich_row: RichRateLimitSnapshotRow = sqlx::query_as(
