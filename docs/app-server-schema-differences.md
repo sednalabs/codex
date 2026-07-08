@@ -28,6 +28,7 @@ These are the app-server differences that are still meant to survive downstream:
 | `collabToolCall.timedOut`           | protocol + server runtime                                                                                                         | Preserve downstream timeout visibility on collab wait calls.                                                                                   |
 | Downstream MCP safety controls      | config/protocol surfaces                                                                                                          | Keep downstream MCP safety fields while remaining compatible with upstream OAuth resource support.                                             |
 | Runtime-context overlay             | replay/read paths + extension seam                                                                                                | Preserve downstream preference for fresher live runtime/accounting state over stale replay-only summaries when a thread is still active.       |
+| Rate-limit audit ledger hooks       | `codex-rs/app-server/src/request_processors/account_processor.rs`, `codex-rs/app-server/src/request_processors/account_processor/rate_limit_resets.rs` | Persist secret-safe reset-credit inventory and redemption audit rows in the downstream usage ledger.                                           |
 
 ## Internal extension seam
 

@@ -84,11 +84,16 @@
       "surface": [
         "usage event log",
         "spawn and quota metadata",
-        "provider model identity display evidence"
+        "provider model identity display evidence",
+        "rate-limit reset-credit audit rows"
       ],
       "files": [
         "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/state/service.rs",
+        "codex-rs/app-server/Cargo.toml",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/rate_limit_resets.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/protocol/src/protocol.rs",
@@ -99,32 +104,39 @@
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql",
         "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
+        "codex-rs/state/usage_migrations/0004_usage_rate_limit_audit.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, final provider model identity, rate-limit snapshot, and reset-credit consume metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-ledger-smoke",
+      "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
         "usage_logger_* focused table-contract tests",
+        "state_runtime_records_rate_limit_reset_audit_rows",
+        "get_account_rate_limits_returns_snapshot",
+        "consume_account_rate_limit_reset_credit_maps_backend_outcomes",
+        "consume_account_rate_limit_reset_credit_forwards_selected_credit_id",
         "usage_logger_records_provider_final_model_identity",
         "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None.",
+      "notes": "Extends the ledger with event-level auditing data, including account-rate-limit observations and reset-credit consume attempts with secret-safe hashed account/path anchors, and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/rate_limit_resets.rs",
         "codex-rs/core/src/codex.rs",
         "codex-rs/state/src/migrations.rs",
         "codex-rs/state/src/runtime.rs"
       ],
-      "extraction_target": "extension-owned usage event and spawn metadata storage"
+      "extraction_target": "extension-owned usage event, rate-limit, and spawn metadata storage"
     },
     {
       "id": "phase2-memory-attestation-and-fingerprinting",
