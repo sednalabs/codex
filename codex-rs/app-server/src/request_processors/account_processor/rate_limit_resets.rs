@@ -84,7 +84,7 @@ impl AccountRequestProcessor {
                     &account,
                     &params.idempotency_key,
                     params.credit_id.as_deref(),
-                    None,
+                    /*outcome*/ None,
                     "error",
                     Some(&error),
                 )
@@ -97,7 +97,7 @@ impl AccountRequestProcessor {
                     &account,
                     &params.idempotency_key,
                     params.credit_id.as_deref(),
-                    None,
+                    /*outcome*/ None,
                     "error",
                     Some(error),
                 )
@@ -125,7 +125,7 @@ impl AccountRequestProcessor {
             params.credit_id.as_deref(),
             Some(rate_limit_reset_outcome_name(outcome)),
             "success",
-            None,
+            /*error*/ None,
         )
         .await;
         Ok(Some(
