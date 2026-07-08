@@ -75,10 +75,10 @@
           "type": "string"
         },
         "resetType": {
-          "$ref": "#/definitions/RateLimitResetType"
+          "$ref": "#/$defs/RateLimitResetType"
         },
         "status": {
-          "$ref": "#/definitions/RateLimitResetCreditStatus"
+          "$ref": "#/$defs/RateLimitResetCreditStatus"
         },
         "title": {
           "description": "Backend-provided display title for this credit, or `null` when unavailable.",
@@ -114,7 +114,7 @@
         "credits": {
           "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched\nand no available credits were returned. The backend may cap this list, so its length can be\nless than `availableCount`.",
           "items": {
-            "$ref": "#/definitions/RateLimitResetCredit"
+            "$ref": "#/$defs/RateLimitResetCredit"
           },
           "type": [
             "array",
