@@ -14,6 +14,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use log::warn;
+use serde::Serialize;
 use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
@@ -55,6 +56,39 @@ pub struct UsageThreadRecord {
     pub root_thread_id: Option<String>,
     pub fork_parent_thread_id: Option<String>,
     pub thread_source: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsageAccountContext {
+    pub auth_mode: Option<String>,
+    pub account_id_hash: Option<String>,
+    pub chatgpt_user_id_hash: Option<String>,
+    pub account_plan_type: Option<String>,
+    pub codex_home_hash: Option<String>,
+    pub sqlite_home_hash: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UsageRateLimitSnapshotRecord<'a> {
+    pub thread_id: Option<&'a str>,
+    pub turn_id: Option<&'a str>,
+    pub observed_from: &'a str,
+    pub account: &'a UsageAccountContext,
+    pub rate_limits: &'a [RateLimitSnapshot],
+    pub reset_credits_available_count: Option<i64>,
+    pub reset_credits_json: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UsageRateLimitResetCreditEventRecord<'a> {
+    pub event_type: &'a str,
+    pub account: &'a UsageAccountContext,
+    pub idempotency_key: &'a str,
+    pub credit_id: Option<&'a str>,
+    pub outcome: Option<&'a str>,
+    pub status: &'a str,
+    pub error: Option<&'a str>,
+    pub metadata_json: Option<&'a str>,
 }
 
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the
@@ -394,6 +428,25 @@ WHERE provider_call_id = ?
         turn_id: Option<&str>,
         snapshot: &RateLimitSnapshot,
     ) -> anyhow::Result<()> {
+        let account = UsageAccountContext::default();
+        let thread_id = self.thread_id.to_string();
+        if let Err(err) = insert_rate_limit_snapshot_rows(
+            self.pool.as_ref(),
+            UsageRateLimitSnapshotRecord {
+                thread_id: Some(thread_id.as_str()),
+                turn_id,
+                observed_from: "token_count",
+                account: &account,
+                rate_limits: std::slice::from_ref(snapshot),
+                reset_credits_available_count: None,
+                reset_credits_json: None,
+            },
+        )
+        .await
+        {
+            warn!("usage rich rate-limit snapshot: {err}");
+        }
+
         let Some(primary) = snapshot.primary.as_ref() else {
             return Ok(());
         };
@@ -587,7 +640,182 @@ WHERE provider_call_id = ?
     }
 }
 
+async fn insert_rate_limit_snapshot_rows(
+    pool: &SqlitePool,
+    record: UsageRateLimitSnapshotRecord<'_>,
+) -> anyhow::Result<()> {
+    if record.rate_limits.is_empty() {
+        return Ok(());
+    }
+    let observed_from = non_empty_or_unknown(record.observed_from);
+    for snapshot in record.rate_limits {
+        let primary = snapshot.primary.as_ref();
+        let secondary = snapshot.secondary.as_ref();
+        let credits = snapshot.credits.as_ref();
+        let individual_limit = snapshot.individual_limit.as_ref();
+        let plan = snapshot.plan_type.as_ref().and_then(serialized_enum_string);
+        let rate_limit_reached_type = snapshot
+            .rate_limit_reached_type
+            .as_ref()
+            .and_then(serialized_enum_string);
+        let snapshot_json = serialized_json_string(snapshot);
+        sqlx::query(
+            r#"INSERT INTO usage_rate_limit_snapshots (
+            snapshot_id,
+            thread_id,
+            turn_id,
+            observed_from,
+            auth_mode,
+            account_id_hash,
+            chatgpt_user_id_hash,
+            account_plan_type,
+            codex_home_hash,
+            sqlite_home_hash,
+            limit_id,
+            limit_name,
+            primary_used_percent,
+            primary_window_minutes,
+            primary_resets_at,
+            secondary_used_percent,
+            secondary_window_minutes,
+            secondary_resets_at,
+            credits_has_credits,
+            credits_unlimited,
+            credits_balance,
+            individual_limit_limit,
+            individual_limit_used,
+            individual_limit_remaining_percent,
+            individual_limit_resets_at,
+            plan,
+            rate_limit_reached_type,
+            reset_credits_available_count,
+            reset_credits_json,
+            snapshot_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(record.thread_id)
+        .bind(record.turn_id)
+        .bind(observed_from)
+        .bind(record.account.auth_mode.as_deref())
+        .bind(record.account.account_id_hash.as_deref())
+        .bind(record.account.chatgpt_user_id_hash.as_deref())
+        .bind(record.account.account_plan_type.as_deref())
+        .bind(record.account.codex_home_hash.as_deref())
+        .bind(record.account.sqlite_home_hash.as_deref())
+        .bind(snapshot.limit_id.as_deref())
+        .bind(snapshot.limit_name.as_deref())
+        .bind(primary.map(|window| window.used_percent))
+        .bind(primary.and_then(|window| window.window_minutes))
+        .bind(primary.and_then(|window| window.resets_at))
+        .bind(secondary.map(|window| window.used_percent))
+        .bind(secondary.and_then(|window| window.window_minutes))
+        .bind(secondary.and_then(|window| window.resets_at))
+        .bind(credits.map(|value| bool_to_sql(value.has_credits)))
+        .bind(credits.map(|value| bool_to_sql(value.unlimited)))
+        .bind(credits.and_then(|value| value.balance.as_deref()))
+        .bind(individual_limit.map(|value| value.limit.as_str()))
+        .bind(individual_limit.map(|value| value.used.as_str()))
+        .bind(individual_limit.map(|value| value.remaining_percent))
+        .bind(individual_limit.map(|value| value.resets_at))
+        .bind(plan.as_deref())
+        .bind(rate_limit_reached_type.as_deref())
+        .bind(record.reset_credits_available_count)
+        .bind(record.reset_credits_json)
+        .bind(snapshot_json.as_deref())
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_rate_limit_reset_credit_event(
+    pool: &SqlitePool,
+    record: UsageRateLimitResetCreditEventRecord<'_>,
+) -> anyhow::Result<()> {
+    let event_type = non_empty_or_unknown(record.event_type);
+    let status = non_empty_or_unknown(record.status);
+    sqlx::query(
+        r#"INSERT INTO usage_rate_limit_reset_credit_events (
+            event_id,
+            event_type,
+            auth_mode,
+            account_id_hash,
+            chatgpt_user_id_hash,
+            account_plan_type,
+            codex_home_hash,
+            sqlite_home_hash,
+            idempotency_key,
+            credit_id,
+            outcome,
+            status,
+            error,
+            metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(event_type)
+    .bind(record.account.auth_mode.as_deref())
+    .bind(record.account.account_id_hash.as_deref())
+    .bind(record.account.chatgpt_user_id_hash.as_deref())
+    .bind(record.account.account_plan_type.as_deref())
+    .bind(record.account.codex_home_hash.as_deref())
+    .bind(record.account.sqlite_home_hash.as_deref())
+    .bind(record.idempotency_key)
+    .bind(record.credit_id)
+    .bind(record.outcome)
+    .bind(status)
+    .bind(record.error)
+    .bind(record.metadata_json)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn non_empty_or_unknown(value: &str) -> &str {
+    if value.is_empty() {
+        "unknown"
+    } else {
+        value
+    }
+}
+
+fn bool_to_sql(value: bool) -> i64 {
+    if value {
+        1
+    } else {
+        0
+    }
+}
+
+fn serialized_enum_string<T: Serialize>(value: &T) -> Option<String> {
+    match serde_json::to_value(value).ok()? {
+        serde_json::Value::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn serialized_json_string<T: Serialize>(value: &T) -> Option<String> {
+    serde_json::to_string(value).ok()
+}
+
 impl StateRuntime {
+    pub async fn record_usage_rate_limit_snapshots(
+        &self,
+        record: UsageRateLimitSnapshotRecord<'_>,
+    ) -> anyhow::Result<()> {
+        let pool = self.usage_ledger_pool();
+        insert_rate_limit_snapshot_rows(pool.as_ref(), record).await
+    }
+
+    pub async fn record_usage_rate_limit_reset_credit_event(
+        &self,
+        record: UsageRateLimitResetCreditEventRecord<'_>,
+    ) -> anyhow::Result<()> {
+        let pool = self.usage_ledger_pool();
+        insert_rate_limit_reset_credit_event(pool.as_ref(), record).await
+    }
+
     pub async fn get_usage_thread_record(
         &self,
         thread_id: &str,
@@ -773,19 +1001,23 @@ mod tests {
     use crate::DirectionalThreadSpawnEdgeStatus;
     use anyhow::Result;
     use codex_protocol::ThreadId;
+    use codex_protocol::account::PlanType as AccountPlanType;
     use codex_protocol::mcp::CallToolResult;
     use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
     use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
     use codex_protocol::protocol::CollabAgentSpawnEndEvent;
+    use codex_protocol::protocol::CreditsSnapshot;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallBeginEvent;
     use codex_protocol::protocol::McpToolCallEndEvent;
+    use codex_protocol::protocol::RateLimitReachedType;
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SpendControlLimitSnapshot;
     use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TokenCountEvent;
     use codex_protocol::protocol::TokenUsage;
@@ -822,6 +1054,42 @@ mod tests {
         quota_source: Option<String>,
         quota_percent_remaining: f64,
         quota_percent_used: f64,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct RichRateLimitSnapshotRow {
+        observed_from: String,
+        auth_mode: Option<String>,
+        account_id_hash: Option<String>,
+        chatgpt_user_id_hash: Option<String>,
+        account_plan_type: Option<String>,
+        limit_id: Option<String>,
+        limit_name: Option<String>,
+        primary_used_percent: Option<f64>,
+        secondary_used_percent: Option<f64>,
+        credits_has_credits: Option<i64>,
+        credits_unlimited: Option<i64>,
+        credits_balance: Option<String>,
+        individual_limit_remaining_percent: Option<i64>,
+        plan: Option<String>,
+        rate_limit_reached_type: Option<String>,
+        reset_credits_available_count: Option<i64>,
+        reset_credits_json: Option<String>,
+        snapshot_json: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+    struct ResetCreditEventRow {
+        event_type: String,
+        auth_mode: Option<String>,
+        account_id_hash: Option<String>,
+        chatgpt_user_id_hash: Option<String>,
+        account_plan_type: Option<String>,
+        idempotency_key: String,
+        credit_id: Option<String>,
+        outcome: Option<String>,
+        status: String,
+        error: Option<String>,
     }
 
     #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
@@ -863,6 +1131,36 @@ mod tests {
         source: Option<String>,
     }
 
+    fn sample_rate_limit_snapshot() -> RateLimitSnapshot {
+        RateLimitSnapshot {
+            limit_id: Some("codex".to_string()),
+            limit_name: Some("primary".to_string()),
+            primary: Some(RateLimitWindow {
+                used_percent: 12.5,
+                window_minutes: Some(60),
+                resets_at: Some(0),
+            }),
+            secondary: Some(RateLimitWindow {
+                used_percent: 34.5,
+                window_minutes: Some(1440),
+                resets_at: Some(3600),
+            }),
+            credits: Some(CreditsSnapshot {
+                has_credits: true,
+                unlimited: false,
+                balance: Some("12.34".to_string()),
+            }),
+            individual_limit: Some(SpendControlLimitSnapshot {
+                limit: "100.00".to_string(),
+                used: "25.00".to_string(),
+                remaining_percent: 75,
+                resets_at: 7200,
+            }),
+            plan_type: Some(AccountPlanType::Pro),
+            rate_limit_reached_type: Some(RateLimitReachedType::RateLimitReached),
+        }
+    }
+
     fn token_count_event(turn_id: &str, include_rate_limit: bool) -> Event {
         let usage = TokenUsage {
             input_tokens: 10,
@@ -876,20 +1174,7 @@ mod tests {
             last_token_usage: usage,
             model_context_window: Some(4096),
         };
-        let rate_limits = include_rate_limit.then_some(RateLimitSnapshot {
-            limit_id: None,
-            limit_name: Some("primary".to_string()),
-            primary: Some(RateLimitWindow {
-                used_percent: 12.5,
-                window_minutes: Some(60),
-                resets_at: Some(0),
-            }),
-            secondary: None,
-            credits: None,
-            rate_limit_reached_type: None,
-            plan_type: None,
-            individual_limit: None,
-        });
+        let rate_limits = include_rate_limit.then_some(sample_rate_limit_snapshot());
         Event {
             id: turn_id.to_string(),
             msg: EventMsg::TokenCount(TokenCountEvent {
@@ -993,6 +1278,61 @@ WHERE thread_id = ?
             }
         );
 
+        let rich_row: RichRateLimitSnapshotRow = sqlx::query_as(
+            r#"
+SELECT
+  observed_from,
+  auth_mode,
+  account_id_hash,
+  chatgpt_user_id_hash,
+  account_plan_type,
+  limit_id,
+  limit_name,
+  primary_used_percent,
+  secondary_used_percent,
+  credits_has_credits,
+  credits_unlimited,
+  credits_balance,
+  individual_limit_remaining_percent,
+  plan,
+  rate_limit_reached_type,
+  reset_credits_available_count,
+  reset_credits_json,
+  snapshot_json
+FROM usage_rate_limit_snapshots
+WHERE thread_id = ?
+"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        let snapshot_json = rich_row.snapshot_json.clone();
+        assert_eq!(
+            rich_row,
+            RichRateLimitSnapshotRow {
+                observed_from: "token_count".to_string(),
+                auth_mode: None,
+                account_id_hash: None,
+                chatgpt_user_id_hash: None,
+                account_plan_type: None,
+                limit_id: Some("codex".to_string()),
+                limit_name: Some("primary".to_string()),
+                primary_used_percent: Some(12.5),
+                secondary_used_percent: Some(34.5),
+                credits_has_credits: Some(1),
+                credits_unlimited: Some(0),
+                credits_balance: Some("12.34".to_string()),
+                individual_limit_remaining_percent: Some(75),
+                plan: Some("pro".to_string()),
+                rate_limit_reached_type: Some("rate_limit_reached".to_string()),
+                reset_credits_available_count: None,
+                reset_credits_json: None,
+                snapshot_json: snapshot_json.clone(),
+            }
+        );
+        let snapshot_json = snapshot_json.as_deref().unwrap_or_default();
+        assert!(snapshot_json.contains(r#""limit_id":"codex""#));
+
         assert_eq!(
             runtime
                 .latest_usage_provider_display_model(thread_id)
@@ -1008,6 +1348,138 @@ WHERE thread_id = ?
             Some(&"actual-model".to_string())
         );
         assert!(!display_models.contains_key(&missing_thread_id));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_runtime_records_rate_limit_reset_audit_rows() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let account = UsageAccountContext {
+            auth_mode: Some("chatgpt".to_string()),
+            account_id_hash: Some("account-hash".to_string()),
+            chatgpt_user_id_hash: Some("user-hash".to_string()),
+            account_plan_type: Some("pro".to_string()),
+            codex_home_hash: Some("codex-home-hash".to_string()),
+            sqlite_home_hash: Some("sqlite-home-hash".to_string()),
+        };
+        let snapshots = vec![sample_rate_limit_snapshot()];
+        runtime
+            .record_usage_rate_limit_snapshots(UsageRateLimitSnapshotRecord {
+                thread_id: None,
+                turn_id: None,
+                observed_from: "account_rate_limits",
+                account: &account,
+                rate_limits: snapshots.as_slice(),
+                reset_credits_available_count: Some(4),
+                reset_credits_json: Some(r#"{"availableCount":4}"#),
+            })
+            .await?;
+        runtime
+            .record_usage_rate_limit_reset_credit_event(
+                UsageRateLimitResetCreditEventRecord {
+                    event_type: "consume",
+                    account: &account,
+                    idempotency_key: "redeem-1",
+                    credit_id: Some("credit-1"),
+                    outcome: Some("reset"),
+                    status: "success",
+                    error: None,
+                    metadata_json: None,
+                },
+            )
+            .await?;
+
+        let rich_row: RichRateLimitSnapshotRow = sqlx::query_as(
+            r#"
+SELECT
+  observed_from,
+  auth_mode,
+  account_id_hash,
+  chatgpt_user_id_hash,
+  account_plan_type,
+  limit_id,
+  limit_name,
+  primary_used_percent,
+  secondary_used_percent,
+  credits_has_credits,
+  credits_unlimited,
+  credits_balance,
+  individual_limit_remaining_percent,
+  plan,
+  rate_limit_reached_type,
+  reset_credits_available_count,
+  reset_credits_json,
+  snapshot_json
+FROM usage_rate_limit_snapshots
+WHERE account_id_hash = ?
+"#,
+        )
+        .bind("account-hash")
+        .fetch_one(pool)
+        .await?;
+        let snapshot_json = rich_row.snapshot_json.clone();
+        assert_eq!(
+            rich_row,
+            RichRateLimitSnapshotRow {
+                observed_from: "account_rate_limits".to_string(),
+                auth_mode: Some("chatgpt".to_string()),
+                account_id_hash: Some("account-hash".to_string()),
+                chatgpt_user_id_hash: Some("user-hash".to_string()),
+                account_plan_type: Some("pro".to_string()),
+                limit_id: Some("codex".to_string()),
+                limit_name: Some("primary".to_string()),
+                primary_used_percent: Some(12.5),
+                secondary_used_percent: Some(34.5),
+                credits_has_credits: Some(1),
+                credits_unlimited: Some(0),
+                credits_balance: Some("12.34".to_string()),
+                individual_limit_remaining_percent: Some(75),
+                plan: Some("pro".to_string()),
+                rate_limit_reached_type: Some("rate_limit_reached".to_string()),
+                reset_credits_available_count: Some(4),
+                reset_credits_json: Some(r#"{"availableCount":4}"#.to_string()),
+                snapshot_json,
+            }
+        );
+
+        let event_row: ResetCreditEventRow = sqlx::query_as(
+            r#"
+SELECT
+  event_type,
+  auth_mode,
+  account_id_hash,
+  chatgpt_user_id_hash,
+  account_plan_type,
+  idempotency_key,
+  credit_id,
+  outcome,
+  status,
+  error
+FROM usage_rate_limit_reset_credit_events
+WHERE idempotency_key = ?
+"#,
+        )
+        .bind("redeem-1")
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            event_row,
+            ResetCreditEventRow {
+                event_type: "consume".to_string(),
+                auth_mode: Some("chatgpt".to_string()),
+                account_id_hash: Some("account-hash".to_string()),
+                chatgpt_user_id_hash: Some("user-hash".to_string()),
+                account_plan_type: Some("pro".to_string()),
+                idempotency_key: "redeem-1".to_string(),
+                credit_id: Some("credit-1".to_string()),
+                outcome: Some("reset".to_string()),
+                status: "success".to_string(),
+                error: None,
+            }
+        );
 
         Ok(())
     }
