@@ -164,12 +164,20 @@ Why:
 - Downstream keeps usage-ledger ownership in this repo so the CLI and runtime can emit authoritative local facts without depending on transcript reconstruction or an external sibling repository.
 - Usage-ledger ownership stays here: any upstream-native reimplementation must replicate the canonical per-turn ledger, rate/provider metadata, and billing-turn reporting semantics before the ledger can move out of this repo.
 - Billing turns still need stable canonical identities and historical AUD cost reporting that upstream does not provide.
+- Reset-credit inventory and redemption attempts need the same local audit
+  treatment: operators must be able to answer when a reset credit was observed
+  or consumed from `usage.sqlite`, without scraping transcripts or inspecting
+  running Codex processes.
 
 User-visible behavior:
 
 - Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
-- `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
+- `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, reset-credit audit rows, and fork snapshots.
 - Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
+- Account rate-limit reads write `usage_rate_limit_snapshots`, and reset-credit
+  consume attempts write `usage_rate_limit_reset_credit_events` with stable
+  hashed account/path anchors, idempotency key, selected credit id, outcome,
+  status, and error details.
 - Rollout JSONL remains a compatibility fallback for historical or unpatched installs, not the primary ledger source.
 
 ### MCP tool orchestration: blocking waits before task support matured

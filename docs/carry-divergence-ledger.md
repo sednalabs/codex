@@ -157,6 +157,12 @@ docs-only refresh commit that records this snapshot.
   `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
   tool invocation lifecycles, rate-limit snapshots, and parent/child thread
   relationships for spawn requests.
+- Account rate-limit reads also mirror richer, account-hashed snapshots into
+  `usage_rate_limit_snapshots`, and reset-credit redemption attempts are
+  recorded in `usage_rate_limit_reset_credit_events` with idempotency key,
+  selected credit id, outcome, status, and error details. This is intentional
+  downstream audit carry so operators can answer reset-credit questions from
+  `usage.sqlite` without transcript scraping or process inspection.
 - `usage_provider_calls` also stores provider-confirmed `final_model` and
   `model_snapshot` values when turn completion reports them, preserving the
   downstream distinction between requested/configured model, historical
@@ -174,6 +180,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/tasks/mod.rs`
+  - `codex-rs/app-server/src/message_processor.rs`
+  - `codex-rs/app-server/src/request_processors/account_processor.rs`
+  - `codex-rs/app-server/src/request_processors/account_processor/rate_limit_resets.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/core/src/state/service.rs`
   - `codex-rs/protocol/src/protocol.rs`
@@ -183,6 +192,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/state/usage_migrations/0004_usage_rate_limit_audit.sql`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
