@@ -1998,6 +1998,7 @@ dependencies = [
  "codex-guardian",
  "codex-home",
  "codex-hooks",
+ "codex-http-client",
  "codex-image-generation-extension",
  "codex-login",
  "codex-mcp",
@@ -3591,6 +3592,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "codex-collaboration-mode-templates",
+ "codex-http-client",
  "codex-login",
  "codex-otel",
  "codex-protocol",
