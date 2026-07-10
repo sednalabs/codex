@@ -2880,7 +2880,6 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
     const MAX_LEN: usize = 64;
     const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
         "api_tool",
-        "agents",
         "browser",
         "collaboration",
         "computer",
