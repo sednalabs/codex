@@ -219,7 +219,6 @@
         "codex-rs/core/src/agent/builtins/awaiter.toml",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
@@ -228,7 +227,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider. V2 defaults an omitted fork_turns to an independent child when role, model, or reasoning settings change, while an explicit full-history fork rejects those changes.",
+      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -237,7 +236,6 @@
       "guardrail_lane": "codex.core-subagent-surface-targeted",
       "tests": [
         "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
-        "multi_agent_v2_spawn_model_and_reasoning_overrides_default_to_independent_child",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
         "multi_agent_v2_list_agents_flags_active_descendants",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",

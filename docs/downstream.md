@@ -229,11 +229,6 @@ Why:
 User-visible behavior:
 
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
-- In v2, an omitted `fork_turns` retains the full-history default only when the
-  child inherits its role/model/reasoning configuration. Supplying a role,
-  `model`, or `reasoning_effort` defaults to an independent child so lower-cost
-  model and distinct reasoning requests are accepted; an explicit
-  `fork_turns: "all"` still deliberately rejects those configuration changes.
 - The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
