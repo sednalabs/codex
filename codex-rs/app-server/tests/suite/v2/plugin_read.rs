@@ -36,6 +36,9 @@ use codex_app_server_protocol::PluginSkillReadParams;
 use codex_app_server_protocol::PluginSkillReadResponse;
 use codex_app_server_protocol::PluginSource;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ScheduledTaskSchedule;
+use codex_app_server_protocol::ScheduledTaskSummary;
+use codex_app_server_protocol::ScheduledTaskWeekday;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -179,6 +182,27 @@ apps = true
       "logo_url_dark": "https://example.com/example-plugin-dark.png"
     },
     "skills": [],
+    "scheduled_tasks": [
+      {
+        "key": "weekday-triage",
+        "name": "Weekday triage",
+        "prompt": "Triage the support queue.",
+        "schedule": {
+          "type": "weekdays",
+          "time": "08:30"
+        }
+      },
+      {
+        "key": "queue-monitor",
+        "name": "Queue monitor",
+        "prompt": "Check the queue.",
+        "schedule": {
+          "type": "hourly",
+          "intervalHours": 2,
+          "days": ["MO", "WE", "FR"]
+        }
+      }
+    ],
     "mcp_servers": [
       {
         "key": "example-server",
@@ -309,6 +333,32 @@ apps = true
     assert_eq!(
         response.plugin.mcp_servers,
         vec!["other-server".to_string()]
+    );
+    assert_eq!(
+        response.plugin.scheduled_tasks,
+        Some(vec![
+            ScheduledTaskSummary {
+                key: "weekday-triage".to_string(),
+                name: "Weekday triage".to_string(),
+                prompt: "Triage the support queue.".to_string(),
+                schedule: ScheduledTaskSchedule::Weekdays {
+                    time: "08:30".to_string(),
+                },
+            },
+            ScheduledTaskSummary {
+                key: "queue-monitor".to_string(),
+                name: "Queue monitor".to_string(),
+                prompt: "Check the queue.".to_string(),
+                schedule: ScheduledTaskSchedule::Hourly {
+                    interval_hours: 2,
+                    days: Some(vec![
+                        ScheduledTaskWeekday::Mo,
+                        ScheduledTaskWeekday::We,
+                        ScheduledTaskWeekday::Fr,
+                    ]),
+                },
+            },
+        ])
     );
     assert_eq!(
         response
@@ -978,6 +1028,7 @@ enabled = true
         mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
     )
     .await??;
+    assert_eq!(response.result["plugin"]["scheduledTasks"], json!(null));
     let response: PluginReadResponse = to_response(response)?;
 
     assert_eq!(response.plugin.marketplace_name, "openai-curated");
