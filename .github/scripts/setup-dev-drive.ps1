@@ -73,3 +73,6 @@ if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {
 }
 
 "CI_BUILD_ROOT=$Drive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+# A failed fsutil probe sets LASTEXITCODE even when the fallback succeeds.
+$global:LASTEXITCODE = 0
