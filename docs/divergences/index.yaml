@@ -1453,7 +1453,7 @@
         "retains_and_labels_both_routes_when_callable_schemas_drift"
       ],
       "owner": "downstream",
-      "notes": "The equivalence check includes descriptions, input and output schemas, safety annotations, task execution, icons, and parallel-call behavior. Routing names and connector metadata remain provenance rather than callable-contract fields.",
+      "notes": "The equivalence check includes descriptions, input and output schemas, safety annotations, and task execution. Routing names, connector metadata, icons, and server scheduling policy remain provenance rather than callable-contract fields.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-policy",
       "hotspot_files": [

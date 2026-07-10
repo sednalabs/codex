@@ -5,6 +5,7 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 use codex_tools::ToolName;
 use pretty_assertions::assert_eq;
+use rmcp::model::Icon;
 use rmcp::model::JsonObject;
 use rmcp::model::Meta;
 use rmcp::model::Tool;
@@ -104,6 +105,7 @@ fn equivalent_ops_tool_pair() -> (ToolInfo, ToolInfo) {
         /*connector_id*/ None,
         /*connector_name*/ None,
     );
+    direct_tool.supports_parallel_tool_calls = true;
     direct_tool.namespace_description = Some("Direct Ops tools".to_string());
 
     let mut app_tool = make_mcp_tool(
@@ -116,6 +118,7 @@ fn equivalent_ops_tool_pair() -> (ToolInfo, ToolInfo) {
     );
     app_tool.namespace_description = Some("App-backed Ops tools".to_string());
     app_tool.tool.description = direct_tool.tool.description.clone();
+    app_tool.tool.icons = Some(vec![Icon::new("https://example.test/ops.png")]);
 
     (direct_tool, app_tool)
 }
