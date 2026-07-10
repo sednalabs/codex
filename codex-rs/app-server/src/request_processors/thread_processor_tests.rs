@@ -191,6 +191,50 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool() {
+        let tools = vec![dynamic_tool(
+            /*namespace*/ None,
+            "android_observe",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ true,
+        )];
+
+        validate_dynamic_tools(&tools).expect("deferred native computer-use tool is valid");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_deferred_bare_ordinary_tool() {
+        let tools = vec![dynamic_tool(
+            /*namespace*/ None,
+            "ordinary_tool",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ true,
+        )];
+
+        let err = validate_dynamic_tools(&tools).expect_err("ordinary deferred tool is invalid");
+        assert!(err.contains("must include a namespace"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn capability_bearing_native_dynamic_tool_requires_thread_reload() {
+        let mut tool = dynamic_tool(
+            /*namespace*/ None,
+            "browser_observe",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ false,
+        );
+        tool.persist_on_resume = false;
+        tool.capability = Some(codex_app_server_protocol::DynamicToolCapability {
+            family: Some("computer_use".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: None,
+            lease_mode: None,
+        });
+
+        assert!(dynamic_tools_require_thread_reload(Some(&[tool])));
+    }
+
+    #[test]
     fn validate_dynamic_tools_accepts_nullable_field_schema() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,

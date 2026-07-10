@@ -12,7 +12,7 @@ wine_rust_test(
         "codex-app-server": "//codex-rs/app-server:codex-app-server",
     },
     windows_binaries = {
-        "wine-windows-exec-server": "//codex-rs/exec-server/testing:windows-exec-server",
+        "wine-windows-exec-server": "//codex-rs/exec-server/testing:exec-server",
     },
     deps = [
         "//codex-rs/app-server-protocol",

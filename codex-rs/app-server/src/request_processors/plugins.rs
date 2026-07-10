@@ -1,7 +1,7 @@
 use super::*;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
-use crate::extensions::app_server_hooks;
+use codex_analytics::PluginInstallSource;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginSharePrincipalRole;
@@ -560,18 +560,14 @@ impl PluginRequestProcessor {
             featured_plugin_ids: Vec::new(),
         };
         if !config.features.enabled(Feature::Plugins) {
-            let mut response = empty_response();
-            app_server_hooks().augment_plugin_list(&mut response);
-            return Ok(response);
+            return Ok(empty_response());
         }
         let auth = self.auth_manager.auth().await;
         if !self
             .workspace_codex_plugins_enabled(&config, auth.as_ref())
             .await
         {
-            let mut response = empty_response();
-            app_server_hooks().augment_plugin_list(&mut response);
-            return Ok(response);
+            return Ok(empty_response());
         }
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
         plugins_manager.set_auth_mode(auth_mode);
@@ -786,13 +782,11 @@ impl PluginRequestProcessor {
             Vec::new()
         };
 
-        let mut response = PluginListResponse {
+        Ok(PluginListResponse {
             marketplaces: data,
             marketplace_load_errors,
             featured_plugin_ids,
-        };
-        app_server_hooks().augment_plugin_list(&mut response);
-        Ok(response)
+        })
     }
 
     async fn plugin_installed_response(
@@ -1018,7 +1012,7 @@ impl PluginRequestProcessor {
         let auth = self.auth_manager.auth().await;
         plugins_manager.set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode));
 
-        let mut plugin = match read_source {
+        let plugin = match read_source {
             Ok(marketplace_path) => {
                 let request = PluginReadRequest {
                     plugin_name,
@@ -1175,7 +1169,6 @@ impl PluginRequestProcessor {
             }
         };
 
-        app_server_hooks().augment_plugin_read(&mut plugin);
         Ok(PluginReadResponse { plugin })
     }
 
@@ -1518,12 +1511,10 @@ impl PluginRequestProcessor {
             )
             .await;
 
-        let mut response = PluginInstallResponse {
+        Ok(PluginInstallResponse {
             auth_policy: result.auth_policy.into(),
             apps_needing_auth,
-        };
-        app_server_hooks().augment_plugin_install_response(&mut response);
-        Ok(response)
+        })
     }
 
     async fn remote_plugin_install_response(
@@ -1558,6 +1549,7 @@ impl PluginRequestProcessor {
                     &remote_marketplace_name,
                     /*plugin_id*/ None,
                     error_type,
+                    /*sub_error_type*/ None,
                     err.to_string(),
                 );
                 remote_plugin_catalog_error_to_jsonrpc(
@@ -1601,11 +1593,13 @@ impl PluginRequestProcessor {
         )
         .map_err(|err| {
             let error_type = remote_plugin_bundle_install_error_type(&err);
+            let sub_error_type = err.sub_error_type();
             self.track_plugin_install_failed_for_remote_plugin(
                 &remote_plugin_id,
                 &actual_remote_marketplace_name,
                 Some(&resolved_plugin_id),
                 error_type,
+                sub_error_type,
                 err.to_string(),
             );
             remote_plugin_bundle_install_error_to_jsonrpc(err)
@@ -1618,11 +1612,13 @@ impl PluginRequestProcessor {
         .await
         .map_err(|err| {
             let error_type = remote_plugin_bundle_install_error_type(&err);
+            let sub_error_type = err.sub_error_type();
             self.track_plugin_install_failed_for_remote_plugin(
                 &remote_plugin_id,
                 &actual_remote_marketplace_name,
                 Some(&resolved_plugin_id),
                 error_type,
+                sub_error_type,
                 err.to_string(),
             );
             remote_plugin_bundle_install_error_to_jsonrpc(err)
@@ -1645,6 +1641,7 @@ impl PluginRequestProcessor {
                 &actual_remote_marketplace_name,
                 Some(&result.plugin_id),
                 error_type,
+                /*sub_error_type*/ None,
                 err.to_string(),
             );
             remote_plugin_catalog_error_to_jsonrpc(err, "install remote plugin")
@@ -1730,12 +1727,10 @@ impl PluginRequestProcessor {
             .await
         };
 
-        let mut response = PluginInstallResponse {
+        Ok(PluginInstallResponse {
             auth_policy: remote_detail.summary.auth_policy,
             apps_needing_auth,
-        };
-        app_server_hooks().augment_plugin_install_response(&mut response);
-        Ok(response)
+        })
     }
 
     fn track_plugin_install_failed_for_remote_plugin(
@@ -1744,12 +1739,14 @@ impl PluginRequestProcessor {
         marketplace_name: &str,
         plugin_id: Option<&PluginId>,
         error_type: &'static str,
+        sub_error_type: Option<String>,
         error_message: String,
     ) {
         tracing::warn!(
             remote_plugin_id = %remote_plugin_id,
             marketplace_name = %marketplace_name,
             error_type = %error_type,
+            sub_error_type = sub_error_type.as_deref(),
             error = %error_message,
             "remote plugin install failed"
         );
@@ -1764,8 +1761,11 @@ impl PluginRequestProcessor {
                 capability_summary: None,
             }
         };
-        self.analytics_events_client
-            .track_plugin_install_failed(plugin, error_type.to_string());
+        self.analytics_events_client.track_plugin_install_failed(
+            plugin,
+            PluginInstallSource::Manual,
+            error_type.to_string(),
+        );
     }
 
     async fn plugin_apps_needing_auth_for_install(
@@ -1840,7 +1840,7 @@ impl PluginRequestProcessor {
     ) {
         for (name, server) in plugin_mcp_servers {
             let oauth_config = match oauth_login_support(&server.transport).await {
-                McpOAuthLoginSupport::Supported(config) => *config,
+                McpOAuthLoginSupport::Supported(config) => config,
                 McpOAuthLoginSupport::Unsupported => continue,
                 McpOAuthLoginSupport::Unknown(err) => {
                     warn!(
@@ -1946,9 +1946,7 @@ impl PluginRequestProcessor {
                 self.clear_plugin_related_caches();
             }
         }
-        let mut response = PluginUninstallResponse {};
-        app_server_hooks().augment_plugin_uninstall_response(&mut response);
-        Ok(response)
+        Ok(PluginUninstallResponse {})
     }
 
     fn plugin_install_error(err: CorePluginInstallError) -> JSONRPCErrorError {
@@ -2072,9 +2070,7 @@ impl PluginRequestProcessor {
         uninstall_result.map_err(|err| {
             remote_plugin_catalog_error_to_jsonrpc(err, "uninstall remote plugin")
         })?;
-        let mut response = PluginUninstallResponse {};
-        app_server_hooks().augment_plugin_uninstall_response(&mut response);
-        Ok(response)
+        Ok(PluginUninstallResponse {})
     }
 }
 

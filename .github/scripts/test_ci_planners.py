@@ -558,7 +558,6 @@ class RouteSelectionTests(unittest.TestCase):
             lanes,
             [
                 "codex.spawn-agent-tool-model-surface-targeted",
-                "codex.core-subagent-spawn-approval-targeted",
             ],
         )
 
@@ -1552,7 +1551,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             [
                 "codex.spawn-agent-tool-model-surface-targeted",
-                "codex.core-subagent-spawn-approval-targeted",
             ],
         )
 
@@ -4327,7 +4325,6 @@ class RustCiModeScriptTests(unittest.TestCase):
             ",".join(
                 [
                     "codex.spawn-agent-tool-model-surface-targeted",
-                    "codex.core-subagent-spawn-approval-targeted",
                 ]
             ),
         )
@@ -4474,7 +4471,6 @@ class RustCiModeScriptTests(unittest.TestCase):
             ",".join(
                 [
                     "codex.spawn-agent-tool-model-surface-targeted",
-                    "codex.core-subagent-spawn-approval-targeted",
                 ]
             ),
         )

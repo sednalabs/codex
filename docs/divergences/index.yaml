@@ -223,9 +223,7 @@
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/tools/spec.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
@@ -238,10 +236,10 @@
       "guardrail_lane": "codex.core-subagent-surface-targeted",
       "tests": [
         "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
-        "multi_agent_v2_list_agents_returns_completed_status_and_last_task_message",
+        "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
         "multi_agent_v2_list_agents_flags_active_descendants",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
-        "multi_agent_v2_wait_agent_honors_return_when_all",
+        "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
@@ -256,9 +254,7 @@
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/tools/spec.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
@@ -388,7 +384,7 @@
         "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
-        "multi_agent_v2_wait_agent_honors_return_when_all",
+        "completion_rule_distinguishes_any_from_all",
         "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
         "exec_command_tool_matches_expected_spec",
@@ -502,16 +498,21 @@
         "best-effort fallback recovery",
         "cached token expiry restoration",
         "encrypted local secrets keyring backend",
+        "concrete credential-store pinning",
+        "serialized durable credential reconciliation",
         "refresh scope hygiene"
       ],
       "files": [
         "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/resolved_store.rs",
+        "codex-rs/rmcp-client/src/oauth/store_lock.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/startup_error.rs",
         "codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs",
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, proactive refresh failures route to reauthentication, the selected direct-vs-secrets keyring backend is preserved through load, refresh, save, and delete paths, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh and reauthentication. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -521,14 +522,20 @@
       "tests": [
         "load_oauth_tokens_ignores_empty_fallback_file",
         "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors",
+        "request_oauth_token_response_strips_refresh_material",
         "refresh_expires_in_from_timestamp_marks_expired_tokens",
         "refresh_credentials_do_not_expose_granted_scopes_to_rmcp",
+        "persist_if_needed_waits_for_refresh_credential_lock",
+        "persist_if_needed_preserves_newer_durable_credentials",
+        "persist_if_needed_preserves_durable_fields_from_request_only_credentials",
+        "oauth_authorization_required_refreshes_oauth",
+        "streamable_http_auth_required_refreshes_oauth",
         "refreshes_expired_persisted_token_before_initialize",
         "token_refresh_failure_requires_authentication",
         "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken, partially-written, expired, refresh-missing, backend-mismatched, or over-broad refresh-scope credential state from turning into opaque MCP startup failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking and no-unrequested-offline-access refresh staging while also retaining upstream AuthKeyringBackendKind::Secrets support.",
+      "notes": "Keeps broken, partially-written, expired, refresh-missing, backend-mismatched, stale-writer, or over-broad refresh-scope credential state from turning into opaque MCP startup failures during login and reconnect flows. During upstream syncs, preserve upstream concrete-store pinning, RMCP persistence, and Secrets support together with downstream request-only staging, resolved-store refresh locking, durable-state reconciliation, and no-unrequested-offline-access refresh behavior.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [
@@ -1017,7 +1024,6 @@
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
         "thread_fork_injects_native_android_tools_into_model_requests",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
-        "android_dynamic_tools_use_canonical_codex_tool_definitions",
         "action_kind_accepts_current_and_compatibility_fields",
         "action_failure_summary_lists_completed_actions_without_payload_echo",
         "configured_android_tools_load_from_explicit_codex_home",
@@ -1054,16 +1060,11 @@
         "desktop_provider_response_without_native_image_fails_loudly",
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
         "native_computer_use_check_reports_android_browser_and_desktop_config_files",
-        "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
-        "duplicate_bare_android_dynamic_tools_register_native_handler_once",
-        "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
         "computer_use_call_times_out_and_unregisters_pending_response",
-        "reconstructs_computer_use_items_from_request_and_response_events",
-        "computer_use_call_request_is_tool_runtime_start",
-        "computer_use_call_response_is_tool_runtime_end"
+        "computer_use_started_and_completed_translate_to_thread_events"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams.",
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, and provider registries until the tracked tagged function/namespace migration can preserve those boundaries losslessly.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "computer-use-provider-registry",
       "hotspot_files": [
@@ -1420,6 +1421,50 @@
         "scripts/codex-resume-recent.sh"
       ],
       "extraction_target": "side-thread persistence and history filtering contract"
+    },
+    {
+      "id": "app-server-thread-metadata-compatibility",
+      "title": "App-server thread source and history mode compatibility",
+      "status": "live",
+      "category": "app-server-protocol",
+      "surface": [
+        "app-server thread list/read/resume",
+        "rollout and thread-store metadata",
+        "generated thread protocol schemas"
+      ],
+      "files": [
+        "codex-rs/protocol/",
+        "codex-rs/rollout/",
+        "codex-rs/state/",
+        "codex-rs/thread-store/",
+        "codex-rs/app-server-protocol/",
+        "codex-rs/app-server/tests/suite/conversation_summary.rs"
+      ],
+      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata. App-server, rollout, state, and thread-store paths retain both independent fields; paginated-history metadata must not erase side, agent, or other source provenance.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-protocol-test; core-ledger-smoke",
+      "tests": [
+        "thread_list_hides_side_threads_until_side_filter_requested",
+        "observed_metadata_rebuilds_history_mode_from_canonical_session_meta",
+        "live_thread_memory_mode_update_before_rollout_materializes_keeps_history_mode",
+        "generated thread protocol schema fixtures"
+      ],
+      "owner": "downstream",
+      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode itself remains upstream-owned.",
+      "upstreamability_tier": "compatibility-carry",
+      "boundary_type": "thread-metadata-compatibility",
+      "hotspot_files": [
+        "codex-rs/protocol/",
+        "codex-rs/rollout/",
+        "codex-rs/state/",
+        "codex-rs/thread-store/",
+        "codex-rs/app-server-protocol/"
+      ],
+      "extraction_target": "thread provenance and history-mode coexistence contract"
     }
   ]
 }

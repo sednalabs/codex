@@ -279,24 +279,17 @@ Start a fresh thread when you need a new Codex conversation.
     // Experimental: requires opt-in
     "dynamicTools": [
         {
-            "type": "namespace",
-            "name": "tickets",
-            "description": "Ticket management tools",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "lookup_ticket",
-                    "description": "Fetch a ticket by id",
-                    "deferLoading": true,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" }
-                        },
-                        "required": ["id"]
-                    }
-                }
-            ]
+            "namespace": "tickets",
+            "name": "lookup_ticket",
+            "description": "Fetch a ticket by id",
+            "deferLoading": true,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }
         }
     ],
 } }
@@ -1556,14 +1549,26 @@ If the session approval policy uses `Granular` with `request_permissions: false`
 
 `dynamicTools` on `thread/start` and the corresponding `item/tool/call` request/response flow are experimental APIs. To enable them, set `initialize.params.capabilities.experimentalApi = true`.
 
-Each entry in `dynamicTools` is either a top-level function or a namespace containing function tools. Dynamic tool identifiers follow the same constraints as Responses tools:
+Each `dynamicTools` entry is a flat function object. Set its optional `namespace`
+to group related functions in model-facing tool projection; that grouping does not
+change the input representation. Tagged function/namespace input is deferred
+until app-server input, persisted state, resume filtering, and provider registries
+can migrate without losing legacy entries. Dynamic tool identifiers follow the
+same constraints as Responses tools:
 
 - `name` must match `^[a-zA-Z0-9_-]+$` and be between 1 and 128 characters.
 - Namespace names must match `^[a-zA-Z0-9_-]+$` and be between 1 and 64 characters.
 - Namespace descriptions must be at most 1,024 characters.
 - Namespace names must not collide with reserved Responses runtime namespaces such as `functions`, `multi_tool_use`, `file_search`, `web`, `browser`, `image_gen`, `computer`, `container`, `terminal`, `python`, `python_user_visible`, `api_tool`, `tool_search`, `submodel_delegator`, `collaboration`, or `agents`.
 
-Each function may set `deferLoading`. When omitted, it defaults to `false`. Deferred functions must belong to a namespace. Set it to `true` to keep the function registered and callable by runtime features such as `code_mode`, while excluding it from the model-facing tool list sent on ordinary turns. When `tool_search` is available, deferred dynamic tools are searchable and can be exposed by a matching search result.
+Each function may set `deferLoading`. When omitted, it defaults to `false`.
+Ordinary deferred functions must belong to a namespace. Bare native computer-use
+functions are the deliberate exception: they can defer-load so `tool_search` can
+expose their canonical Codex-owned schema. Set it to `true` to keep a function
+registered and callable by runtime features such as `code_mode`, while excluding
+it from the model-facing tool list sent on ordinary turns. When `tool_search` is
+available, deferred dynamic tools are searchable and can be exposed by a matching
+search result.
 
 When a dynamic tool is invoked during a turn, the server sends an `item/tool/call` JSON-RPC request to the client:
 
@@ -1879,7 +1884,9 @@ review when allowed by configuration requirements.
 
 Use `apps._default.default_tools_approval_mode` to set the approval mode for
 tools without a per-app or per-tool override. Supported values are `"auto"`,
-`"prompt"`, and `"approve"`. Tool-level `approval_mode` takes precedence over
+`"prompt"`, `"writes"`, and `"approve"`. The `"writes"` mode prompts for tools
+that do not advertise `readOnlyHint = true` and skips declared read-only tools.
+Tool-level `approval_mode` takes precedence over
 the per-app `default_tools_approval_mode`, which takes precedence over the
 `apps._default` value. Managed tool requirements take precedence over all of
 these settings. When none are configured, the mode defaults to `"auto"`.
@@ -1919,16 +1926,17 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 
 - **API key (`apiKey`)**: Caller supplies an OpenAI API key via `account/login/start` with `type: "apiKey"`. The API key is saved and used for API requests.
 - **ChatGPT managed (`chatgpt`)** (recommended): Codex owns the ChatGPT OAuth flow and refresh tokens. Start via `account/login/start` with `type: "chatgpt"` for the browser flow or `type: "chatgptDeviceCode"` for device code; Codex persists tokens to disk and refreshes them automatically.
+- **Codex managed Amazon Bedrock auth (`amazonBedrock`, experimental)**: Caller supplies an Amazon Bedrock API key and region via `account/login/start` with `type: "amazonBedrock"`. The client must enable the `experimentalApi` initialization capability for Codex-managed Amazon Bedrock login. Codex replaces the current primary auth with the Bedrock credential and writes `model_provider = "amazon-bedrock"` to the user config.
 - **Personal access token (`personalAccessToken`)**: Codex uses a ChatGPT-backed personal access token loaded outside the app-server login RPCs, such as with `codex login --with-access-token` or `CODEX_ACCESS_TOKEN`.
 
 ### API Overview
 
 - `account/read` — fetch current account info; optionally refresh tokens.
-- `account/login/start` — begin login (`apiKey`, `chatgpt`, `chatgptDeviceCode`).
+- `account/login/start` — begin login (`apiKey`, `chatgpt`, `chatgptDeviceCode`, `amazonBedrock`).
 - `account/login/completed` (notify) — emitted when a login attempt finishes (success or error).
 - `account/login/cancel` — cancel a pending managed ChatGPT login by `loginId`.
 - `account/logout` — sign out; triggers `account/updated`.
-- `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, `personalAccessToken`, or `null`) and includes the current ChatGPT `planType` when available.
+- `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `bedrockApiKey`, `chatgpt`, `personalAccessToken`, or `null`) and includes the current ChatGPT `planType` when available.
 - `account/rateLimits/read` — fetch ChatGPT rate limits, an optional effective monthly credit limit, and the earned rate-limit resets currently available, including expiry details when provided by the backend. Rate-limit updates arrive via `account/rateLimits/updated` (notify); reset-credit data is snapshot-only.
 - `account/rateLimitResetCredit/consume` — consume one earned reset using a caller-provided idempotency key, optionally selecting a reset-credit ID returned by `account/rateLimits/read`.
 - `account/usage/read` — fetch ChatGPT account token-activity summary and daily buckets.
@@ -1993,11 +2001,40 @@ Field notes:
    { "id": 3, "result": { "type": "chatgpt", "loginId": "<uuid>", "authUrl": "https://chatgpt.com/…&redirect_uri=http%3A%2F%2Flocalhost%3A<port>%2Fauth%2Fcallback" } }
    ```
 2. Open `authUrl` in a browser; the app-server hosts the local callback.
+   By default, a successful callback redirects to the local success page. Clients may set
+   `useHostedLoginSuccessPage: true` to redirect successful callbacks that do not require
+   organization setup to the hosted Codex success page instead. When hosted login success is
+   enabled, clients may set `appBrand` to `"codex"` or `"chatgpt"` to select the matching hosted
+   page artwork; omitted or `null` values default to `"codex"`.
 3. Wait for notifications:
    ```json
    { "method": "account/login/completed", "params": { "loginId": "<uuid>", "success": true, "error": null } }
    { "method": "account/updated", "params": { "authMode": "chatgpt", "planType": "plus" } }
    ```
+
+### 3) Log in with an Amazon Bedrock API key
+
+This experimental flow requires the client to initialize with `experimentalApi: true`.
+
+1. Send:
+   ```json
+   {
+     "method": "account/login/start",
+     "id": 3,
+     "params": { "type": "amazonBedrock", "apiKey": "…", "region": "us-west-2" }
+   }
+   ```
+2. Expect:
+   ```json
+   { "id": 3, "result": { "type": "amazonBedrock" } }
+   ```
+3. Notifications:
+   ```json
+   { "method": "account/login/completed", "params": { "loginId": null, "success": true, "error": null } }
+   { "method": "account/updated", "params": { "authMode": "bedrockApiKey", "planType": null } }
+   ```
+
+Codex stores the key and region as the primary Codex auth, replacing any previously stored login, and writes `model_provider = "amazon-bedrock"` to the active user config. Existing loaded sessions keep their current provider selection, so clients should restart the app-server before sending more model requests. This limitation will be addressed in a follow-up.
 
 ### 4) Log in with ChatGPT (device code flow)
 

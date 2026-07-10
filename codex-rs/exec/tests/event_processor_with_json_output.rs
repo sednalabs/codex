@@ -31,6 +31,7 @@ use codex_app_server_protocol::TurnPlanUpdatedNotification;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WebSearchAction as ApiWebSearchAction;
+use codex_app_server_protocol::WebSearchItem as ApiWebSearchItem;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
@@ -575,14 +576,14 @@ fn web_search_completion_preserves_query_and_action() {
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
-            item: ThreadItem::WebSearch {
+            item: ThreadItem::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: "rust async await".to_string(),
                 action: Some(ApiWebSearchAction::Search {
                     query: Some("rust async await".to_string()),
                     queries: None,
                 }),
-            },
+            }),
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
@@ -618,11 +619,11 @@ fn web_search_start_and_completion_reuse_item_id() {
 
     let started =
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::WebSearch {
+            item: ThreadItem::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: String::new(),
                 action: None,
-            },
+            }),
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
@@ -630,14 +631,14 @@ fn web_search_start_and_completion_reuse_item_id() {
 
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
-            item: ThreadItem::WebSearch {
+            item: ThreadItem::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: "rust async await".to_string(),
                 action: Some(ApiWebSearchAction::Search {
                     query: Some("rust async await".to_string()),
                     queries: None,
                 }),
-            },
+            }),
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
@@ -950,7 +951,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 prompt: Some("draft a plan".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: std::collections::HashMap::new(),
             },
             thread_id: "thread-parent".to_string(),
@@ -968,7 +968,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 prompt: Some("draft a plan".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: std::collections::HashMap::from([(
                     "thread-child".to_string(),
                     ApiCollabAgentState {
@@ -998,7 +997,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                         prompt: Some("draft a plan".to_string()),
                         agents_states: std::collections::HashMap::new(),
                         status: CollabToolCallStatus::InProgress,
-                        wait_metadata: None,
                     },),
                 },
             })],
@@ -1026,7 +1024,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                             },
                         )]),
                         status: CollabToolCallStatus::Completed,
-                        wait_metadata: None,
                     },),
                 },
             })],

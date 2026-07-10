@@ -121,7 +121,7 @@ User-visible behavior:
 Why:
 
 - Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
-- Let runtime providers supply Android or browser capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
+- Let runtime providers supply Android, browser, or desktop capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
 User-visible behavior:
@@ -129,7 +129,11 @@ User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
-- Namespaced Android-like and browser-like tools remain normal dynamic tools.
+- Namespaced Android-like, browser-like, and desktop-like tools remain normal dynamic tools.
+- The current compatibility contract still serializes dynamic functions in the
+  flat `DynamicToolSpec` shape with an optional namespace. A future tagged
+  function/namespace migration must preserve app-server input, persisted thread
+  state, resume filtering, and native promotion before this carry is removed.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
@@ -145,15 +149,16 @@ User-visible behavior:
   post-failure observations that help agents recover from partially completed
   mutating actions.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
-- TUI transcript and replay surfaces render native computer-use items with
-  compact adapter-specific labels such as `Used browser`, `Used computer`, and
-  `Used Android emulator`; exec JSON/human output projects the same calls as
-  compact computer-use events without embedding screenshot bytes in transcript
-  text.
+- The active TUI session renders live native computer-use items with compact
+  adapter-specific labels such as `Used browser`, `Used computer`, and `Used
+  Android emulator`; these transient app-server projections are not persisted
+  into thread snapshots or replayed after resume. Exec JSON/human output
+  projects the same calls as compact computer-use events without embedding
+  screenshot bytes in transcript text.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
-- Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
+- Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
 - See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for the sanitized desktop, browser-shell, Chrome-extension, and bundled-plugin cleanroom contracts.
 
@@ -218,7 +223,7 @@ Why:
 User-visible behavior:
 
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
-- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting callers see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
+- The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
@@ -235,8 +240,11 @@ Primary files:
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
 - `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-- `codex-rs/core/src/tools/spec.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+- `codex-rs/core/src/tools/spec_plan.rs`
+- `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
 - `docs/config.md`
 - `docs/downstream-tool-surface-matrix.md`
 
@@ -271,14 +279,15 @@ Why:
 - Keep MCP OAuth fallback credentials from becoming a brittle single point of failure when the keyring is unavailable or the fallback file is left empty/corrupt.
 - Reduce auth churn during login and reconnect flows by treating the fallback file as best-effort recovery state instead of authoritative required state.
 - Avoid partially-written replacement files by writing and syncing a temp file before the final rename.
-- Preserve the selected direct-vs-encrypted-secrets keyring backend while keeping downstream refresh locking tied to the store that originally supplied the tokens.
+- Preserve upstream's concrete-store pinning and RMCP persistence while keeping downstream refresh locking tied to the file or direct/encrypted-secrets store that originally supplied the tokens.
 
 User-visible behavior:
 
 - Empty fallback credential files are treated as absent instead of fatal.
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
-- MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; refresh rereads and persists through the resolved store instead of silently falling back to another backend mid-refresh.
+- MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; retries and session recovery stay pinned to the resolved concrete store instead of silently switching authority.
+- RMCP receives request-only credentials during normal operation. Refresh material is exposed only inside the serialized refresh transaction, and every RMCP-derived durable save or delete reacquires the per-server refresh lock and reconciles the current pinned store before mutating it.
 
 ### MCP OAuth: device-code login for headless servers
 
@@ -411,6 +420,9 @@ User-visible behavior:
 
 - Review token usage is aligned across live flows and app-server/history views.
 - Review flows reuse the runtime turn effort and preserve downstream sampling rollout context needed for faithful reconstruction.
+- Thread records preserve downstream `thread_source` provenance alongside
+  upstream `history_mode`; list, read, resume, and stored-session paths carry
+  both fields independently.
 
 ### Core: MCP forced approvals still participate in session remember keys
 

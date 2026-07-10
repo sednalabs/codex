@@ -9,6 +9,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
+use core_test_support::test_path_buf;
 use serde_json::json;
 use std::fs;
 use std::fs::FileTimes;
@@ -26,31 +27,6 @@ pub fn rollout_path(codex_home: &Path, filename_ts: &str, thread_id: &str) -> Pa
         .join(month)
         .join(day)
         .join(format!("rollout-{filename_ts}-{thread_id}.jsonl"))
-}
-
-pub fn default_rollout_cwd() -> Result<PathBuf> {
-    Ok(normalize_cwd_for_protocol_comparison(fs::canonicalize(
-        std::env::current_dir()?,
-    )?))
-}
-
-#[cfg(windows)]
-fn normalize_cwd_for_protocol_comparison(path: PathBuf) -> PathBuf {
-    // The app-server protocol uses ordinary absolute paths, while
-    // `fs::canonicalize` returns verbatim paths on Windows.
-    let path = path.as_os_str().to_string_lossy();
-    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{path}"))
-    } else if let Some(path) = path.strip_prefix(r"\\?\") {
-        PathBuf::from(path)
-    } else {
-        PathBuf::from(path.as_ref())
-    }
-}
-
-#[cfg(not(windows))]
-fn normalize_cwd_for_protocol_comparison(path: PathBuf) -> PathBuf {
-    path
 }
 
 /// Create a minimal rollout file under `CODEX_HOME/sessions/YYYY/MM/DD/`.
@@ -120,8 +96,6 @@ pub fn create_fake_rollout_with_token_usage(
             model_context_window: Some(200_000),
         }),
         rate_limits: None,
-        provider: None,
-        model_used: None,
     }))?;
     let file_path = rollout_path(codex_home, filename_ts, &thread_id);
     let line = json!({
@@ -216,7 +190,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
         forked_from_id: None,
         parent_thread_id,
         timestamp: meta_rfc3339.to_string(),
-        cwd: default_rollout_cwd()?,
+        cwd: test_path_buf("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source,
@@ -306,7 +280,7 @@ pub fn create_fake_rollout_with_text_elements(
         forked_from_id: None,
         parent_thread_id: None,
         timestamp: meta_rfc3339.to_string(),
-        cwd: default_rollout_cwd()?,
+        cwd: test_path_buf("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source: SessionSource::Cli,

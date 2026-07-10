@@ -47,7 +47,10 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
     write_models_cache(codex_home.path())?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
 
@@ -110,7 +113,10 @@ async fn thread_settings_update_cwd_retargets_default_environment() -> Result<()
     let workspace = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
 
@@ -160,7 +166,10 @@ async fn thread_settings_update_while_turn_is_active_emits_notification() -> Res
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
     start_text_turn(&mut mcp, thread.id.clone()).await?;
@@ -203,7 +212,10 @@ async fn thread_settings_update_null_service_tier_uses_default() -> Result<()> {
     write_models_cache(codex_home.path())?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
 
@@ -269,7 +281,10 @@ async fn thread_settings_update_rejects_sandbox_policy_with_permissions() -> Res
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
 
@@ -303,7 +318,10 @@ async fn turn_start_settings_override_emits_thread_settings_updated() -> Result<
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let thread = start_thread(&mut mcp).await?.thread;
     timeout(
@@ -381,7 +399,7 @@ async fn start_text_turn(mcp: &mut TestAppServer, thread_id: String) -> Result<(
 
 async fn start_thread(mcp: &mut TestAppServer) -> Result<ThreadStartResponse> {
     let request_id = mcp
-        .send_thread_start_request(ThreadStartParams {
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })
