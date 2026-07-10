@@ -50,6 +50,7 @@ on:
           - codex.blocking-waits-app-server-targeted
           - codex.blocking-waits-mcp-targeted
           - codex.custom-prompts-targeted
+          - codex.mcp-tool-exposure-targeted
           - codex.mcp-safety-targeted
           - codex.mcp-device-login-targeted
           - codex.core-subagent-model-pinning-targeted
