@@ -366,7 +366,6 @@ pub struct ModelInfo {
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
     pub include_skills_usage_instructions: bool,
-    pub supports_reasoning_summaries: bool,
     #[serde(default)]
     pub default_reasoning_summary: ReasoningSummary,
     pub support_verbosity: bool,
@@ -669,7 +668,6 @@ mod tests {
             base_instructions: "base".to_string(),
             model_messages: spec,
             include_skills_usage_instructions: false,
-            supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
             default_verbosity: None,
@@ -963,7 +961,6 @@ mod tests {
             "upgrade": null,
             "base_instructions": "base",
             "model_messages": null,
-            "supports_reasoning_summaries": false,
             "default_reasoning_summary": "auto",
             "support_verbosity": false,
             "default_verbosity": null,
