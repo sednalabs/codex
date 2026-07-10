@@ -18,6 +18,7 @@ mapfile -t mirror_audit_args < <(
 
 downstream_ref="$(git rev-parse HEAD)"
 
+set +e
 python3 scripts/downstream-divergence-audit.py \
   --repo "$PWD" \
   --downstream-ref "${downstream_ref}" \
@@ -30,3 +31,23 @@ python3 scripts/downstream-divergence-audit.py \
   --format both \
   --code-only \
   --enforce-registry
+audit_exit=$?
+set -e
+
+if [[ "${audit_exit}" -ne 0 ]]; then
+  python3 - target/downstream-divergence-audit/downstream-divergence-audit.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as audit_file:
+    audit = json.load(audit_file)
+
+registry = audit["registry_reconciliation"]
+for path in registry["uncovered_code_paths"]:
+    print(f"uncovered divergence path: {path}")
+for entry_id in registry["stale_entry_ids"]:
+    print(f"stale divergence entry: {entry_id}")
+PY
+fi
+
+exit "${audit_exit}"
