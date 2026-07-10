@@ -938,7 +938,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+                "Optional number of turns to fork. Defaults to `all` when no role, model, or reasoning override is requested; otherwise defaults to `none` so the child can use its requested configuration. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
                     .to_string(),
             )),
         ),
@@ -1016,7 +1016,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}
-The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.
+The `fork_turns` field is optional. It defaults to `all` when no role, model, or reasoning override is requested; otherwise it defaults to `none` so the child can use its requested configuration. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#
