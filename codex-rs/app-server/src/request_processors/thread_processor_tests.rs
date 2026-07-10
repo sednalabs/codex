@@ -334,18 +334,20 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_reserved_namespace() {
-        let tools = vec![dynamic_tool(
-            Some("mcp__server__"),
-            "my_tool",
-            json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-            /*defer_loading*/ false,
-        )];
-        let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
-        assert!(err.contains("reserved"), "unexpected error: {err}");
+        for namespace in ["mcp__server__", "collaboration"] {
+            let tools = vec![dynamic_tool(
+                Some(namespace),
+                "my_tool",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                /*defer_loading*/ false,
+            )];
+            let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
+            assert!(err.contains("reserved"), "unexpected error: {err}");
+        }
     }
 
     #[test]

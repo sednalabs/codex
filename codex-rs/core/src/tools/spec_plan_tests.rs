@@ -42,7 +42,7 @@ use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
 
-const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
+const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 
 #[derive(Default)]
 struct ToolPlanInputs {
