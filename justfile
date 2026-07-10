@@ -120,7 +120,7 @@ core-compile-smoke:
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
     RUST_MIN_STACK={{ rust_min_stack }} CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 # Carry-only downstream behavior smoke checks (TUI/UI seam).
 core-carry-ui-smoke:
@@ -269,9 +269,9 @@ tui-brokered-tool-replay-targeted:
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_and_last_task_message --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_wait_and_list_agents_tool_descriptions_have_guidance_updates -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
@@ -281,7 +281,7 @@ blocking-waits-core-targeted:
     cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::auto_remote_compact_retries_server_overloaded -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_wait_agent_honors_return_when_all --lib -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 blocking-waits-unified-exec-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
@@ -314,7 +314,12 @@ mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_serializes_tool_approval_overrides --lib -- --exact --test-threads=1
     cargo test -p codex-core config::service_tests::write_value_supports_custom_mcp_server_default_tool_approval_mode --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client load_oauth_tokens_ --lib -- --test-threads=1
-    cargo test -p codex-rmcp-client refresh_expires_in_from_timestamp_marks_expired_tokens --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client oauth::tests::request_oauth_token_response_strips_refresh_material --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client oauth::tests::refresh_expires_in_from_timestamp_marks_expired_tokens --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client oauth::tests::refresh_credentials_do_not_expose_granted_scopes_to_rmcp --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client persist_if_needed_ --lib -- --test-threads=1
+    cargo test -p codex-rmcp-client rmcp_client::tests::oauth_authorization_required_refreshes_oauth --lib -- --exact --test-threads=1
+    cargo test -p codex-rmcp-client rmcp_client::tests::streamable_http_auth_required_refreshes_oauth --lib -- --exact --test-threads=1
     cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
 
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
@@ -328,20 +333,8 @@ mcp-device-login-targeted:
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_preserves_exact_model_slug_override_through_role_layering --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_spawn_reports_requested_and_effective_model_metadata --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spec_tests::test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_ --lib -- --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering -- --exact --test-threads=1
-
-# Focused spawn-approval gate and schema slice.
-core-subagent-spawn-approval-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_requires_user_approval_when_requested --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_spawn_requires_user_approval_when_requested --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_approval_respects_request_user_input_mode_availability --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_approval_question_includes_preview_role_and_model_context --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-tools spawn_agent_tool_v1_exposes_runtime_metadata_fields --lib -- --exact --test-threads=1
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
@@ -410,7 +403,6 @@ exec-native-computer-use-targeted:
 
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
-    cargo test --locked -p codex-core-plugins bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools canonical_browser_dynamic_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools desktop_tool --lib -- --test-threads=1
@@ -419,10 +411,7 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-tools native_computer_use_registry_classifies_desktop_tools --lib -- --test-threads=1
     cargo test --locked -p codex-android-computer-use configured_android_tools_load_from_explicit_codex_home --lib -- --test-threads=1
     cargo test --locked -p codex-android-computer-use prefer_stable_ui_defaults_to_true_unless_disabled --lib -- --test-threads=1
-    cargo test --locked -p codex-core duplicate_bare_android_dynamic_tools_register_native_handler_once --lib -- --test-threads=1
-    cargo test --locked -p codex-core deferred_android_dynamic_tools_search_as_native_computer_use_tools --lib -- --test-threads=1
     cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
-    cargo test --locked -p codex-core thread_spawn_subagent_inherits_parent_dynamic_tools --lib -- --exact --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
     cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
     cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
@@ -566,6 +555,19 @@ core-test-progressive:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::truncation::
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::plugins::
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast
+
+# Run Bazel-backed end-to-end macrobenchmarks with optimized binaries.
+bench-e2e:
+    # Keep measured binaries comparable to production-style optimized builds.
+    bazel test --compilation_mode=opt --cache_test_results=no --test_output=streamed //codex-rs:e2e-benchmarks
+
+# Run Bazel-backed end-to-end macrobenchmarks once per case with release-like
+# Rust cfg paths but fastbuild codegen.
+bench-e2e-smoke:
+    # Avoid optimizer cost because smoke runs only check that benchmarks work.
+    # Compile target Rust code through the same release-only cfg paths as opt.
+    # Compile exec-platform Rust tools through those release-only cfg paths too.
+    bazel test --compilation_mode=fastbuild --@rules_rust//rust/settings:extra_rustc_flag=-Cdebug-assertions=no --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebug-assertions=no --cache_test_results=no --test_output=streamed --test_arg=--test //codex-rs:e2e-benchmarks
 
 # Build and run Codex from source using Bazel.
 # On Unix, use `[no-cd]` and `--run_under="cd $PWD &&"` to ensure Bazel runs

@@ -1322,6 +1322,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
     let fixture = test_codex()
+        .with_model("gpt-5.2")
         .with_config(move |config| {
             insert_mcp_server(
                 config,
@@ -1573,7 +1574,7 @@ async fn stdio_image_responses_preserve_original_detail_metadata() -> anyhow::Re
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
     let fixture = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.4")
         .with_config(move |config| {
             insert_mcp_server(
                 config,
@@ -1739,7 +1740,10 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     fixture
         .thread_manager
         .get_models_manager()
-        .list_models(RefreshStrategy::Online)
+        .list_models(
+            RefreshStrategy::Online,
+            codex_core::test_support::default_http_client_factory(),
+        )
         .await;
     assert_eq!(models_mock.requests().len(), 1);
 

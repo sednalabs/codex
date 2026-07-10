@@ -8,7 +8,6 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
-use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CollabAgentRef;
@@ -168,16 +167,20 @@ impl Handler {
             .await;
 
         session
-            .send_event(
+            .emit_turn_item_started(
                 &turn,
-                CollabWaitingBeginEvent {
-                    started_at_ms: now_unix_timestamp_ms(),
+                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id.clone(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
-                    call_id: call_id.clone(),
-                }
-                .into(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: Default::default(),
+                }),
             )
             .await;
 
@@ -197,20 +200,15 @@ impl Handler {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {
-                    let statuses =
-                        collect_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
-                    let pending_thread_ids =
-                        pending_wait_thread_ids(&receiver_thread_ids, &statuses);
-                    send_wait_end_event(
+                    let agents_states =
+                        collect_current_wait_statuses(session.as_ref(), &receiver_thread_ids).await;
+                    emit_wait_completion(
                         session.as_ref(),
                         turn.as_ref(),
                         call_id.clone(),
                         receiver_thread_ids.clone(),
-                        &receiver_agents,
-                        pending_thread_ids,
-                        CollabWaitingCompletionReason::Terminal,
-                        /*timed_out*/ false,
-                        statuses,
+                        receiver_agents.clone(),
+                        agents_states,
                     )
                     .await;
                     return Err(collab_agent_error(*id, err));
@@ -250,13 +248,13 @@ impl Handler {
         };
         let completion_reason = wake_source.completion_reason();
 
-        let pending_thread_ids = receiver_thread_ids
+        let candidate_pending_ids = receiver_thread_ids
             .iter()
             .filter(|receiver_thread_id| !final_statuses.contains_key(receiver_thread_id))
             .copied()
             .collect::<Vec<_>>();
-        let mut pending_statuses = Vec::with_capacity(pending_thread_ids.len());
-        for pending_thread_id in &pending_thread_ids {
+        let mut pending_statuses = Vec::with_capacity(candidate_pending_ids.len());
+        for pending_thread_id in &candidate_pending_ids {
             pending_statuses.push((
                 *pending_thread_id,
                 session
@@ -267,21 +265,20 @@ impl Handler {
             ));
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
+        let pending_thread_ids =
+            pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
         let result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
-            pending_thread_ids.clone(),
+            pending_thread_ids,
             completion_reason,
         );
 
-        send_wait_end_event(
+        emit_wait_completion(
             session.as_ref(),
             turn.as_ref(),
             call_id,
             receiver_thread_ids,
-            &receiver_agents,
-            pending_thread_ids,
-            completion_reason,
-            result.timed_out,
+            receiver_agents,
             statuses_by_id,
         )
         .await;
@@ -404,6 +401,80 @@ where
     final_statuses
 }
 
+fn pending_wait_thread_ids(
+    receiver_thread_ids: &[ThreadId],
+    statuses_by_id: &HashMap<ThreadId, AgentStatus>,
+) -> Vec<ThreadId> {
+    receiver_thread_ids
+        .iter()
+        .filter(|receiver_thread_id| {
+            !statuses_by_id
+                .get(receiver_thread_id)
+                .is_some_and(is_final)
+        })
+        .copied()
+        .collect()
+}
+
+async fn collect_current_wait_statuses(
+    session: &Session,
+    receiver_thread_ids: &[ThreadId],
+) -> HashMap<ThreadId, AgentStatus> {
+    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
+    for receiver_thread_id in receiver_thread_ids {
+        statuses.insert(
+            *receiver_thread_id,
+            session
+                .services
+                .agent_control
+                .get_status(*receiver_thread_id)
+                .await,
+        );
+    }
+    statuses
+}
+
+async fn emit_wait_completion(
+    session: &Session,
+    turn: &TurnContext,
+    call_id: String,
+    receiver_thread_ids: Vec<ThreadId>,
+    receiver_agents: Vec<CollabAgentRef>,
+    agents_states: HashMap<ThreadId, AgentStatus>,
+) {
+    let status = if agents_states
+        .values()
+        .any(|agent_status| {
+            matches!(
+                agent_status,
+                AgentStatus::Errored(_) | AgentStatus::NotFound
+            )
+        })
+    {
+        CollabAgentToolCallStatus::Failed
+    } else {
+        CollabAgentToolCallStatus::Completed
+    };
+
+    session
+        .emit_turn_item_completed(
+            turn,
+            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id,
+                tool: CollabAgentTool::Wait,
+                status,
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids,
+                receiver_agents,
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states,
+            }),
+        )
+        .await;
+}
+
 impl ToolOutput for WaitAgentResult {
     fn log_preview(&self) -> String {
         self.output_json_text(registered_tool_runtime_capabilities())
@@ -484,7 +555,12 @@ async fn wait_for_wake_source(
                 }
             }
             input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox => {
-                if input_activity_changed.is_ok() {
+                if input_activity_changed.is_ok()
+                    && session
+                        .input_queue
+                        .has_pending_input(&session.active_turn)
+                        .await
+                {
                     return WakeSource::Mailbox;
                 }
             }
@@ -534,20 +610,33 @@ mod tests {
     #[test]
     fn merge_wait_end_statuses_includes_pending_targets() {
         let completed_id = ThreadId::new();
-        let pending_id = ThreadId::new();
+        let refreshed_completed_id = ThreadId::new();
         let statuses_by_id = merge_wait_end_statuses(
             HashMap::from([(
                 completed_id,
                 AgentStatus::Completed(Some("done".to_string())),
             )]),
-            [(pending_id, AgentStatus::Running)],
+            [(
+                refreshed_completed_id,
+                AgentStatus::Completed(Some("just finished".to_string())),
+            )],
         );
 
         assert_eq!(
             statuses_by_id.get(&completed_id),
             Some(&AgentStatus::Completed(Some("done".to_string())))
         );
-        assert_eq!(statuses_by_id.get(&pending_id), Some(&AgentStatus::Running));
+        assert_eq!(
+            statuses_by_id.get(&refreshed_completed_id),
+            Some(&AgentStatus::Completed(Some("just finished".to_string())))
+        );
+        assert!(
+            pending_wait_thread_ids(
+                &[completed_id, refreshed_completed_id],
+                &statuses_by_id
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -592,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_thread_ids_for_statuses_includes_non_final_targets() {
+    fn status_classification_keeps_only_non_final_targets_pending() {
         let finished_id = ThreadId::new();
         let running_id = ThreadId::new();
         let errored_id = ThreadId::new();

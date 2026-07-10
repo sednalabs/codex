@@ -26,7 +26,7 @@ setup_remote_env() {
   local remote_exec_server_stdout_path
 
   container_name="${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME:-codex-remote-test-env-local-$(date +%s)-${RANDOM}}"
-  cargo_target_dir="${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR:-${REPO_ROOT}/codex-rs/target}"
+  cargo_target_dir="${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-${REPO_ROOT}/codex-rs/target}}"
   if [[ "${cargo_target_dir}" != /* ]]; then
     cargo_target_dir="${REPO_ROOT}/codex-rs/${cargo_target_dir}"
   fi

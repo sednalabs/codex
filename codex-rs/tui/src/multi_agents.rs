@@ -365,7 +365,6 @@ pub(crate) fn tool_call_history_cell(
         sender_thread_id: _,
         receiver_thread_ids,
         prompt,
-        timed_out,
         agents_states,
         ..
     } = item
@@ -422,7 +421,6 @@ pub(crate) fn tool_call_history_cell(
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
-                    *timed_out,
                     &mut agent_metadata,
                 ))
             }
@@ -590,15 +588,10 @@ fn waiting_begin(
 fn waiting_end(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
-    timed_out: bool,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let pending = pending_wait_thread_ids(receiver_thread_ids, agents_states);
-    let title = if timed_out && agents_states.is_empty() {
-        "Waiting timed out"
-    } else if timed_out {
-        "Waiting partially timed out"
-    } else if pending.is_empty() {
+    let title = if pending.is_empty() {
         "Finished waiting"
     } else {
         "Mailbox update received"
@@ -607,7 +600,6 @@ fn waiting_end(
         receiver_thread_ids,
         agents_states,
         &pending,
-        timed_out,
         agent_metadata,
     );
     collab_event(title_text(title), details)
@@ -819,7 +811,6 @@ fn wait_complete_lines(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
     pending_thread_ids: &[String],
-    timed_out: bool,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> Vec<Line<'static>> {
     let mut seen = HashSet::new();
@@ -859,13 +850,8 @@ fn wait_complete_lines(
     };
 
     if !pending_thread_ids.is_empty() {
-        let label = if timed_out {
-            "Pending"
-        } else {
-            "Still pending"
-        };
         lines.push(Line::from(format!(
-            "{label}: {}",
+            "Still pending: {}",
             pending_thread_ids.join(", ")
         )));
     }
@@ -1210,7 +1196,6 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
-                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1231,7 +1216,6 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -1252,7 +1236,6 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -1270,7 +1253,6 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -1297,7 +1279,6 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -1314,31 +1295,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
-    }
-
-    #[test]
-    fn collab_wait_timeout_snapshot() {
-        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
-            .expect("valid robie thread id");
-        let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
-            .expect("valid bob thread id");
-        let receiver_thread_ids = vec![robie_id.to_string(), bob_id.to_string()];
-        let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
-
-        let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(
-            &receiver_thread_ids,
-            &HashMap::new(),
-            /*timed_out*/ true,
-            &mut agent_metadata,
-        );
-
-        let snapshot = [waiting, finished]
-            .iter()
-            .map(cell_to_text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        assert_snapshot!("collab_wait_timeout", snapshot);
     }
 
     #[test]
@@ -1401,36 +1357,6 @@ mod tests {
             !rendered.contains("Return to parent:"),
             "expected rendered close message to omit parent resume target, got: {rendered}"
         );
-    }
-
-    #[test]
-    fn collab_wait_partial_timeout_snapshot() {
-        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
-            .expect("valid robie thread id");
-        let bob_id = ThreadId::from_string("00000000-0000-0000-0000-000000000003")
-            .expect("valid bob thread id");
-        let receiver_thread_ids = vec![robie_id.to_string(), bob_id.to_string()];
-        let mut agent_metadata = |thread_id| metadata_for(thread_id, robie_id, bob_id);
-
-        let mut statuses = std::collections::HashMap::new();
-        statuses.insert(
-            robie_id.to_string(),
-            agent_state(CollabAgentStatus::Completed, Some("39916800")),
-        );
-        let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(
-            &receiver_thread_ids,
-            &statuses,
-            /*timed_out*/ true,
-            &mut agent_metadata,
-        );
-
-        let snapshot = [waiting, finished]
-            .iter()
-            .map(cell_to_text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        assert_snapshot!("collab_wait_partial_timeout", snapshot);
     }
 
     #[cfg(target_os = "macos")]
@@ -1499,7 +1425,6 @@ mod tests {
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
-                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1541,7 +1466,6 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),

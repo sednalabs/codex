@@ -911,34 +911,6 @@
       "needs_sccache": true
     },
     {
-      "lane_id": "codex.core-subagent-spawn-approval-targeted",
-      "groups": [
-        "core"
-      ],
-      "lane_sets": [
-        "all",
-        "subagents",
-        "core-carry"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "subagents",
-        "core-carry"
-      ],
-      "setup_class": "rust_integration",
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
-      "script_args": [
-        "core-subagent-spawn-approval-targeted"
-      ],
-      "needs_just": true,
-      "needs_node": false,
-      "needs_nextest": false,
-      "needs_linux_build_deps": true,
-      "needs_dotslash": true,
-      "needs_sccache": true
-    },
-    {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "groups": [
         "core"
@@ -1981,8 +1953,7 @@
     {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
-        "codex.spawn-agent-tool-model-surface-targeted",
-        "codex.core-subagent-spawn-approval-targeted"
+        "codex.spawn-agent-tool-model-surface-targeted"
       ],
       "allowed_paths": [
         "codex-rs/protocol/src/openai_models.rs",
@@ -2003,26 +1974,6 @@
       "required_any_paths": [
         "codex-rs/tools/src/agent_tool.rs",
         "codex-rs/tools/src/agent_tool_tests.rs"
-      ]
-    },
-    {
-      "route_id": "core-subagent-spawn-approval",
-      "lane_ids": [
-        "codex.core-subagent-spawn-approval-targeted"
-      ],
-      "allowed_paths": [
-        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "docs/downstream-regression-matrix.md",
-        "justfile"
-      ],
-      "required_any_paths": [
-        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs"
       ]
     },
     {

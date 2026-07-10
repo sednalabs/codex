@@ -71,6 +71,8 @@ use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
 use codex_login::AuthRouteConfig;
@@ -329,7 +331,10 @@ fn resolve_mcp_oauth_credentials_store_mode(
 pub(crate) async fn test_config() -> Config {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     Config::load_from_base_config_with_overrides(
-        ConfigToml::default(),
+        ConfigToml {
+            model: Some("gpt-5.5".to_string()),
+            ..Default::default()
+        },
         ConfigOverrides::default(),
         AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("temp dir should resolve"),
     )
@@ -1500,6 +1505,16 @@ impl Config {
     pub fn auth_route_config(&self) -> Option<AuthRouteConfig> {
         self.respect_system_proxy
             .then(AuthRouteConfig::respect_system_proxy)
+    }
+
+    /// Creates the HTTP client factory resolved from the effective feature configuration.
+    pub fn http_client_factory(&self) -> HttpClientFactory {
+        let outbound_proxy_policy = if self.respect_system_proxy {
+            OutboundProxyPolicy::RespectSystemProxy
+        } else {
+            OutboundProxyPolicy::ReqwestDefault
+        };
+        HttpClientFactory::new(outbound_proxy_policy)
     }
 
     /// Build the plugin-manager input from the effective config.
@@ -3446,7 +3461,7 @@ impl Config {
                     network_proxy,
                 );
             }
-            configured_network_proxy_config.network.enabled = true;
+            configured_network_proxy_config.enabled = true;
         }
         let approval_policy_was_explicit =
             approval_policy_override.is_some() || cfg.approval_policy.is_some();
@@ -4213,7 +4228,7 @@ impl Config {
                         network_proxy,
                     );
                 }
-                configured_network_proxy_config.network.enabled = true;
+                configured_network_proxy_config.enabled = true;
             }
             configured_network_proxy_config
         } else {

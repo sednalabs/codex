@@ -612,6 +612,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 let mut server = codex_mcp::codex_apps_mcp_server_config(
                     "https://selected.invalid",
                     /*apps_mcp_product_sku*/ None,
+                    /*originator*/ None,
                 );
                 let CapabilityRootLocation::Environment { environment_id, .. } =
                     &selected_root.location;
@@ -633,6 +634,10 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
+    config
+        .features
+        .enable(Feature::Apps)
+        .expect("test config should allow apps");
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
     let lifecycle_observed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -679,7 +684,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
-            metrics_service_name: None,
+            metrics_service_name: Some("codex_work_desktop".to_string()),
             parent_trace: None,
             environments: Vec::new(),
             thread_extension_init: selected_root_init("selected-a", "env-a"),
@@ -705,6 +710,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
         .await
         .expect("start second thread");
     let first_session = &first_thread.thread.codex.session;
+    let first_originator = first_session.originator().await;
     let first_resolved = first_session
         .services
         .mcp_manager
@@ -712,10 +718,12 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &config,
             &first_session.services.mcp_thread_init,
             &first_session.services.thread_extension_data,
+            &first_originator,
             /*available_environment_ids*/ &[],
         )
         .await;
     let second_session = &second_thread.thread.codex.session;
+    let second_originator = second_session.originator().await;
     let second_resolved = second_session
         .services
         .mcp_manager
@@ -723,6 +731,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &config,
             &second_session.services.mcp_thread_init,
             &second_session.services.thread_extension_data,
+            &second_originator,
             /*available_environment_ids*/ &[],
         )
         .await;
@@ -764,6 +773,21 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
     assert_eq!(
         selected_servers(&second_resolved.config),
         std::collections::BTreeMap::from([("selected-b".to_string(), "env-b".to_string())])
+    );
+    let codex_apps_server = codex_mcp::configured_mcp_servers(&first_resolved.config)
+        .remove(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+        .expect("Codex Apps server should be configured");
+    let codex_apps_headers = match codex_apps_server.transport {
+        codex_config::McpServerTransportConfig::StreamableHttp { http_headers, .. } => http_headers,
+        codex_config::McpServerTransportConfig::Stdio { .. } => {
+            panic!("Codex Apps server should use streamable HTTP")
+        }
+    };
+    assert_eq!(
+        codex_apps_headers
+            .expect("Codex Apps headers should be configured")
+            .get("originator"),
+        Some(&"codex_work_desktop".to_string())
     );
 }
 
@@ -1395,7 +1419,12 @@ async fn new_uses_active_provider_for_model_refresh() {
         /*external_time_provider*/ None,
     );
 
-    let _ = manager.list_models(RefreshStrategy::Online).await;
+    let _ = manager
+        .list_models(
+            RefreshStrategy::Online,
+            crate::test_support::default_http_client_factory(),
+        )
+        .await;
     assert_eq!(models_mock.requests().len(), 1);
 }
 

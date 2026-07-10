@@ -53,7 +53,6 @@ on:
           - codex.mcp-safety-targeted
           - codex.mcp-device-login-targeted
           - codex.core-subagent-model-pinning-targeted
-          - codex.core-subagent-spawn-approval-targeted
           - codex.core-persisted-subagent-descendants-targeted
           - codex.core-context-serialization-targeted
           - codex.core-attestation-targeted

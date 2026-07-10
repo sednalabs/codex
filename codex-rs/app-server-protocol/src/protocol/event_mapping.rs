@@ -85,7 +85,6 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: Some(begin_event.model),
                 reasoning_effort: Some(begin_event.reasoning_effort),
-                timed_out: false,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -125,7 +124,6 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
-                timed_out: false,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -146,7 +144,6 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -175,7 +172,6 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -214,7 +210,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -236,14 +231,12 @@ pub fn item_event_to_server_notification(
             } else {
                 CollabAgentToolCallStatus::Completed
             };
-            let timed_out = end_event.timed_out
-                || end_event.completion_reason
-                    == codex_protocol::protocol::CollabWaitingCompletionReason::Timeout;
-            let receiver_thread_ids = end_event
-                .receiver_thread_ids
-                .iter()
+            let mut receiver_thread_ids = end_event
+                .statuses
+                .keys()
                 .map(ToString::to_string)
-                .collect();
+                .collect::<Vec<_>>();
+            receiver_thread_ids.sort();
             let agents_states = end_event
                 .statuses
                 .iter()
@@ -258,7 +251,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -278,7 +270,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -312,7 +303,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -332,7 +322,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -366,7 +355,6 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                timed_out: false,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -581,7 +569,6 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    timed_out: false,
                     agents_states: HashMap::new(),
                 },
             },
@@ -621,7 +608,6 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    timed_out: false,
                     agents_states: [(
                         receiver_id,
                         CollabAgentState::from(codex_protocol::protocol::AgentStatus::NotFound),

@@ -37,7 +37,7 @@ use tokio::time::sleep;
 const CHILD_MODEL: &str = "test-multi-agent-child";
 const ROOT_MODEL: &str = "test-multi-agent-root";
 const ROOT_PROMPT: &str = "spawn a child";
-const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
+const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const UNSUPPORTED_CODE_MODE_WARNING: &str = "does not advertise Code Mode support";
 
 struct RemoteModelResponse {
@@ -74,7 +74,10 @@ async fn wait_for_model_available(manager: &SharedModelsManager, slug: &str) -> 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(model) = manager
-            .list_models(RefreshStrategy::Online)
+            .list_models(
+                RefreshStrategy::Online,
+                codex_core::test_support::default_http_client_factory(),
+            )
             .await
             .iter()
             .find(|model| model.model == slug)
@@ -197,9 +200,9 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
             // Code-mode entrypoints.
             codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
             codex_code_mode::WAIT_TOOL_NAME.to_string(),
-            // Hosted Responses tools.
+            "request_user_input".to_string(),
+            // Hosted Responses tool.
             "web_search".to_string(),
-            "image_generation".to_string(),
         ]
     );
 
