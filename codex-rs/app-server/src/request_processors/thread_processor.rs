@@ -214,6 +214,7 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
         "api_tool",
         "browser",
+        "collaboration",
         "computer",
         "container",
         "file_search",
