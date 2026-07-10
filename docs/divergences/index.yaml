@@ -363,6 +363,8 @@
         "codex-rs/core/src/tools/parallel.rs",
         "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
@@ -388,6 +390,7 @@
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
         "command_execution_item_lifecycle_emits_legacy_exec_events",
+        "core_turn_item_into_thread_item_converts_supported_variants",
         "completion_rule_distinguishes_any_from_all",
         "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
@@ -407,7 +410,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. The canonical command-item bridge preserves live terminal-wait metadata after upstream lifecycle refactors without fabricating it during history reconstruction. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. The canonical command-item bridge preserves live terminal-wait metadata after upstream lifecycle refactors and projects it into app-server v2 command items without fabricating it during history reconstruction. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
@@ -422,6 +425,8 @@
         "codex-rs/core/src/tools/parallel.rs",
         "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs"

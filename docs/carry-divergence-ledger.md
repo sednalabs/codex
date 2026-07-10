@@ -393,8 +393,9 @@ docs-only refresh commit that records this snapshot.
 - Timeout notes are appended to returned `raw_output`.
 - Canonical command-execution items retain optional live `terminal_wait`
   metadata so upstream item-lifecycle adapters reproduce it on legacy begin
-  and end events. History reconstruction uses `None` when older persisted
-  items do not contain that live-only detail.
+  and end events and app-server v2 projects it into command items. History
+  reconstruction uses `None` when older persisted items do not contain that
+  live-only detail.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
 - Code-mode nested `exec_command` output follows the same model-policy bounded
@@ -432,6 +433,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`
   - `codex-rs/core/src/tools/events.rs`
+  - `codex-rs/app-server/src/bespoke_event_handling.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/core/tests/suite/code_mode.rs`
   - `codex-rs/core/tests/suite/remote_env.rs`
   - `codex-rs/core/tests/suite/unified_exec.rs`

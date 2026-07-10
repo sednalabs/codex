@@ -938,7 +938,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
-            outgoing.send_server_notification(notification).await;
+            if let Some(notification) = notification {
+                outgoing.send_server_notification(notification).await;
+            }
         }
         EventMsg::ContextCompacted(..) => {
             // Core still fans out this deprecated event for raw-event and rollout compatibility
@@ -1047,7 +1049,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                     &conversation_id.to_string(),
                     &event_turn_id,
                 );
-                outgoing.send_server_notification(notification).await;
+                if let Some(notification) = notification {
+                    outgoing.send_server_notification(notification).await;
+                }
             }
             if let Some(params) = dynamic_tool_call_params {
                 let call_id = params.call_id.clone();
@@ -1072,7 +1076,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
-            outgoing.send_server_notification(notification).await;
+            if let Some(notification) = notification {
+                outgoing.send_server_notification(notification).await;
+            }
         }
         msg @ (EventMsg::PatchApplyUpdated(_) | EventMsg::TerminalInteraction(_)) => {
             let notification = item_event_to_server_notification(
@@ -1080,7 +1086,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
-            outgoing.send_server_notification(notification).await;
+            if let Some(notification) = notification {
+                outgoing.send_server_notification(notification).await;
+            }
         }
         EventMsg::HookStarted(event) => {
             let notification = HookStartedNotification {
@@ -1122,7 +1130,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
-            outgoing.send_server_notification(notification).await;
+            if let Some(notification) = notification {
+                outgoing.send_server_notification(notification).await;
+            }
         }
         // If this is a TurnAborted, reply to any pending interrupt requests.
         EventMsg::TurnAborted(turn_aborted_event) => {
@@ -1301,6 +1311,8 @@ struct TurnCompletionMetadata {
     started_at: Option<i64>,
     completed_at: Option<i64>,
     duration_ms: Option<i64>,
+    final_model: Option<String>,
+    model_snapshot: Option<String>,
 }
 
 async fn emit_turn_completed_with_status(
@@ -1311,6 +1323,8 @@ async fn emit_turn_completed_with_status(
 ) {
     let notification = TurnCompletedNotification {
         thread_id: conversation_id.to_string(),
+        final_model: turn_completion_metadata.final_model,
+        model_snapshot: turn_completion_metadata.model_snapshot,
         turn: Turn {
             id: event_turn_id,
             items: vec![],
@@ -1405,6 +1419,7 @@ async fn start_command_execution_item(
                 source,
                 status: CommandExecutionStatus::InProgress,
                 command_actions,
+                terminal_wait: None,
                 aggregated_output: None,
                 exit_code: None,
                 duration_ms: None,
@@ -1449,6 +1464,7 @@ async fn complete_command_execution_item(
         source,
         status,
         command_actions,
+        terminal_wait: None,
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
@@ -1511,6 +1527,8 @@ async fn handle_turn_complete(
             started_at: turn_summary.started_at,
             completed_at: turn_complete_event.completed_at,
             duration_ms: turn_complete_event.duration_ms,
+            final_model: turn_complete_event.final_model,
+            model_snapshot: turn_complete_event.model_snapshot,
         },
         outgoing,
     )
@@ -1520,7 +1538,7 @@ async fn handle_turn_complete(
 async fn handle_turn_interrupted(
     conversation_id: ThreadId,
     event_turn_id: String,
-    turn_aborted_event: TurnAbortedEvent,
+    _turn_aborted_event: TurnAbortedEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1533,8 +1551,10 @@ async fn handle_turn_interrupted(
             status: TurnStatus::Interrupted,
             error: None,
             started_at: turn_summary.started_at,
-            completed_at: turn_aborted_event.completed_at,
-            duration_ms: turn_aborted_event.duration_ms,
+            completed_at: None,
+            duration_ms: None,
+            final_model: None,
+            model_snapshot: None,
         },
         outgoing,
     )
@@ -1599,7 +1619,9 @@ async fn handle_token_count_event(
     token_count_event: TokenCountEvent,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
-    let TokenCountEvent { info, rate_limits } = token_count_event;
+    let TokenCountEvent {
+        info, rate_limits, ..
+    } = token_count_event;
     if let Some(token_usage) = info.map(ThreadTokenUsage::from) {
         let notification = ThreadTokenUsageUpdatedNotification {
             thread_id: conversation_id.to_string(),
@@ -2274,6 +2296,9 @@ mod tests {
         TurnCompleteEvent {
             turn_id: turn_id.to_string(),
             last_agent_message: None,
+            compaction_events_in_turn: 0,
+            final_model: Some("provider-final".to_string()),
+            model_snapshot: Some("provider-snapshot".to_string()),
             completed_at: Some(TEST_TURN_COMPLETED_AT),
             duration_ms: Some(TEST_TURN_DURATION_MS),
             time_to_first_token_ms: None,
@@ -2284,8 +2309,6 @@ mod tests {
         TurnAbortedEvent {
             turn_id: Some(turn_id.to_string()),
             reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-            completed_at: Some(TEST_TURN_COMPLETED_AT),
-            duration_ms: Some(TEST_TURN_DURATION_MS),
         }
     }
 
@@ -2567,6 +2590,7 @@ mod tests {
                         source: CommandExecutionSource::Agent,
                         status: CommandExecutionStatus::InProgress,
                         command_actions: completion_item.command_actions.clone(),
+                        terminal_wait: None,
                         aggregated_output: None,
                         exit_code: None,
                         duration_ms: None,
@@ -3577,6 +3601,8 @@ mod tests {
                 assert_eq!(n.turn.started_at, Some(42));
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
                 assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.final_model.as_deref(), Some("provider-final"));
+                assert_eq!(n.model_snapshot.as_deref(), Some("provider-snapshot"));
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3625,8 +3651,10 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Interrupted);
                 assert_eq!(n.turn.error, None);
-                assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
-                assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.turn.completed_at, None);
+                assert_eq!(n.turn.duration_ms, None);
+                assert_eq!(n.final_model, None);
+                assert_eq!(n.model_snapshot, None);
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3684,6 +3712,8 @@ mod tests {
                 );
                 assert_eq!(n.turn.completed_at, Some(TEST_TURN_COMPLETED_AT));
                 assert_eq!(n.turn.duration_ms, Some(TEST_TURN_DURATION_MS));
+                assert_eq!(n.final_model.as_deref(), Some("provider-final"));
+                assert_eq!(n.model_snapshot.as_deref(), Some("provider-snapshot"));
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -3796,6 +3826,8 @@ mod tests {
             TokenCountEvent {
                 info: Some(info),
                 rate_limits: Some(rate_limits),
+                provider: Some("openai".to_string()),
+                model_used: Some("provider-final".to_string()),
             },
             &outgoing,
         )
@@ -3853,6 +3885,8 @@ mod tests {
             TokenCountEvent {
                 info: None,
                 rate_limits: None,
+                provider: None,
+                model_used: None,
             },
             &outgoing,
         )
