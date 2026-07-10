@@ -191,7 +191,7 @@
         },
         "scheduledTasks": {
           "items": {
-            "$ref": "#/definitions/ScheduledTaskSummary"
+            "$ref": "#/$defs/ScheduledTaskSummary"
           },
           "type": [
             "array",
@@ -718,7 +718,7 @@
           "properties": {
             "days": {
               "items": {
-                "$ref": "#/definitions/ScheduledTaskWeekday"
+                "$ref": "#/$defs/ScheduledTaskWeekday"
               },
               "type": [
                 "array",
@@ -783,7 +783,7 @@
           "properties": {
             "days": {
               "items": {
-                "$ref": "#/definitions/ScheduledTaskWeekday"
+                "$ref": "#/$defs/ScheduledTaskWeekday"
               },
               "type": "array"
             },
@@ -818,7 +818,7 @@
           "type": "string"
         },
         "schedule": {
-          "$ref": "#/definitions/ScheduledTaskSchedule"
+          "$ref": "#/$defs/ScheduledTaskSchedule"
         }
       },
       "required": [
