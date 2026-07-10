@@ -518,8 +518,11 @@
       ],
       "files": [
         "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_transaction.rs",
         "codex-rs/rmcp-client/src/oauth/resolved_store.rs",
         "codex-rs/rmcp-client/src/oauth/store_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/persistor_tests.rs",
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/startup_error.rs",
         "codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs",
@@ -539,10 +542,13 @@
         "request_oauth_token_response_strips_refresh_material",
         "refresh_expires_in_from_timestamp_marks_expired_tokens",
         "refresh_credentials_do_not_expose_granted_scopes_to_rmcp",
+        "locked_save_waits_for_refresh_transaction_lock",
         "persist_if_needed_waits_for_refresh_credential_lock",
         "persist_if_needed_preserves_newer_durable_credentials",
         "persist_if_needed_preserves_durable_fields_from_request_only_credentials",
         "durable_reconciliation_ignores_derived_expiry_drift",
+        "concurrent_refreshes_call_provider_once_and_carry_omitted_fields",
+        "caller_cancellation_does_not_cancel_refresh_persistence",
         "oauth_authorization_required_refreshes_oauth",
         "streamable_http_auth_required_refreshes_oauth",
         "refreshes_expired_persisted_token_before_initialize",
@@ -554,7 +560,10 @@
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [
-
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_transaction.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/persistor_tests.rs"
       ],
       "extraction_target": "upstreamable OAuth fallback-file hardening"
     },
