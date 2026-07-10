@@ -596,12 +596,7 @@ fn waiting_end(
     } else {
         "Mailbox update received"
     };
-    let details = wait_complete_lines(
-        receiver_thread_ids,
-        agents_states,
-        &pending,
-        agent_metadata,
-    );
+    let details = wait_complete_lines(receiver_thread_ids, agents_states, &pending, agent_metadata);
     collab_event(title_text(title), details)
 }
 
