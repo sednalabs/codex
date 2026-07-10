@@ -155,6 +155,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - `codex_rust_crate` forwards optional unit-test arguments through the
     workspace-root test wrapper so upstream's serialized exec-server unit tests
     remain valid Bazel targets.
+  - Windows hosted setup prefers Dev Drive acceleration and keeps an explicit
+    D:/C: fallback for runner images without the Dev Drive formatting switch.
   - `core-carry-ui-smoke` uses the same hosted test stack floor as
     `core-carry-core-smoke` so stack-heavy TUI replay checks fail on behavior,
     not on runner-default stack limits.

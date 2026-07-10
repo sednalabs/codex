@@ -1,9 +1,17 @@
 # Configure a fast drive for Windows CI jobs.
 #
 # GitHub-hosted Windows runners do not always expose a secondary D: volume. When
-# they do not, create a Dev Drive VHD. CI depends on this path for its
-# build directories where CI spends significant time doing I/O, so fail the
-# job if no real Dev Drive is available.
+# they do not, try to create a Dev Drive VHD. Some hosted images expose the
+# Hyper-V cmdlets without the DevDrive formatting switch, so fall back to an
+# existing secondary volume or C: rather than failing before validation starts.
+
+function Use-FallbackDrive {
+    param([string]$Reason)
+
+    $FallbackDrive = if (Test-Path "D:\") { "D:" } else { "C:" }
+    Write-Warning "$Reason Using $FallbackDrive without Dev Drive acceleration."
+    return $FallbackDrive
+}
 
 function Test-DevDrive {
     param([string]$Drive)
@@ -33,6 +41,10 @@ if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {
     try {
         $VhdPath = Join-Path $env:RUNNER_TEMP "codex-dev-drive.vhdx"
         $SizeBytes = 64GB
+        $FormatVolumeCommand = Get-Command Format-Volume -ErrorAction Stop
+        if (-not $FormatVolumeCommand.Parameters.ContainsKey("DevDrive")) {
+            throw "Format-Volume does not support the DevDrive switch on this runner image."
+        }
 
         if (Test-Path $VhdPath) {
             Remove-Item -Path $VhdPath -Force
@@ -56,7 +68,7 @@ if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {
 
         Write-Output "Using Dev Drive at $Drive"
     } catch {
-        throw "Failed to create Dev Drive: $($_.Exception.Message)"
+        $Drive = Use-FallbackDrive "Failed to create Dev Drive: $($_.Exception.Message)"
     }
 }
 

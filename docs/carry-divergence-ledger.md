@@ -100,6 +100,9 @@ docs-only refresh commit that records this snapshot.
 - The Bazel crate macro accepts and forwards optional unit-test arguments so
   upstream's serialized exec-server unit-test declaration remains analyzable
   until equivalent macro support lands upstream.
+- Windows hosted setup prefers a real Dev Drive but falls back to an existing
+  secondary or system volume when the runner image lacks Dev Drive formatting,
+  so validation does not fail before the requested command starts.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
