@@ -48,9 +48,10 @@ impl RefreshCredentialLock {
         // TODO(stevenlee): define that rendezvous before expanding this lock's scope.
         let mut hasher = Sha256::new();
         hasher.update(store_key.as_bytes());
+        let digest = hasher.finalize();
         let path = codex_home
             .join(REFRESH_LOCK_DIR)
-            .join(format!("{:x}.lock", hasher.finalize()));
+            .join(format!("{}.lock", super::sha256_lower_hex(digest)));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
