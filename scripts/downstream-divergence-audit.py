@@ -134,7 +134,6 @@ def main() -> int:
     diff_items = diff_items_between(
         repo, snapshot_1["upstream"].sha, snapshot_1["downstream"].sha
     )
-    code_items = [item for item in diff_items if item.is_code]
 
     mirror_health, mirror_counts = classify_mirror_health(
         repo, snapshot_1["mirror"].sha, snapshot_1["upstream"].sha
