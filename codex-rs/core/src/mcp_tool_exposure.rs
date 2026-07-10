@@ -19,10 +19,8 @@ pub(crate) struct McpToolExposure {
 
 const PREFERRED_DIRECT_ROUTE_NOTE: &str =
     "Codex uses this direct MCP route because an equivalent app-backed route is also available.";
-const DIRECT_ROUTE_DRIFT_NOTE: &str =
-    "This direct MCP route remains visible alongside an app-backed route because their callable contracts differ.";
-const APP_ROUTE_DRIFT_NOTE: &str =
-    "This app-backed MCP route remains visible alongside a direct route because their callable contracts differ.";
+const DIRECT_ROUTE_DRIFT_NOTE: &str = "This direct MCP route remains visible alongside an app-backed route because their callable contracts differ.";
+const APP_ROUTE_DRIFT_NOTE: &str = "This app-backed MCP route remains visible alongside a direct route because their callable contracts differ.";
 
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn build_mcp_tool_exposure(
