@@ -2953,7 +2953,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "url",
- "which 8.0.0",
+ "which 8.0.4",
  "wiremock",
  "zip 2.4.2",
 ]
@@ -4651,7 +4651,7 @@ dependencies = [
  "rustls",
  "tokio",
  "tokio-rustls",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.28.0",
  "url",
 ]
 
