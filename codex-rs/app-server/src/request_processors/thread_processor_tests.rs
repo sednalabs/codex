@@ -334,7 +334,7 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_reserved_namespace() {
-        for namespace in ["mcp__server__", "collaboration"] {
+        for namespace in ["mcp__server__", "collaboration", "agents"] {
             let tools = vec![dynamic_tool(
                 Some(namespace),
                 "my_tool",
