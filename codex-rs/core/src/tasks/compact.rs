@@ -55,12 +55,7 @@ impl SessionTask for CompactTask {
                     "remote",
                     /*manual*/ true,
                 );
-                crate::compact_remote::run_remote_compact_task(
-                    session.clone(),
-                    ctx,
-                    &cancellation_token,
-                )
-                .await
+                crate::compact_remote::run_remote_compact_task(session.clone(), ctx).await
             }
         } else {
             emit_compact_metric(

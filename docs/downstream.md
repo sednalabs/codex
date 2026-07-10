@@ -98,6 +98,9 @@ Why:
 User-visible behavior:
 
 - `exec_command` and `write_stdin` support blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
+- Live command lifecycle events preserve the selected terminal-wait primitive
+  through the canonical command item and its legacy begin/end projections;
+  reconstructed history leaves it absent when no persisted value is available.
 - `wait_until_terminal` gates provider resume until the process reaches a terminal state or the wait budget expires. The default and maximum wait budget is two hours.
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.

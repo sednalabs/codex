@@ -361,11 +361,14 @@
         "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
         "codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs",
         "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/core/src/codex.rs"
       ],
-      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -384,6 +387,7 @@
         "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
+        "command_execution_item_lifecycle_emits_legacy_exec_events",
         "completion_rule_distinguishes_any_from_all",
         "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
@@ -403,7 +407,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. The canonical command-item bridge preserves live terminal-wait metadata after upstream lifecycle refactors without fabricating it during history reconstruction. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
@@ -416,7 +420,10 @@
         "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
         "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "tool runtime wait and terminal-outcome capabilities"

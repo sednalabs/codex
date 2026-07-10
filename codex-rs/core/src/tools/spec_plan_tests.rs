@@ -1207,6 +1207,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "wait_agent",
         "interrupt_agent",
         "list_agents",
+        "inspect_agent_tree",
         "send_input",
         "resume_agent",
         "assign_task",
@@ -1219,6 +1220,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         "wait_agent",
         "interrupt_agent",
         "list_agents",
+        "inspect_agent_tree",
     ] {
         assert!(
             v2.namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
