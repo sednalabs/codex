@@ -95,7 +95,7 @@ on:
         type: choice
         options:
           - auto
-          - off
+          - 'off'
           - force
         default: auto
       artifact_build:
