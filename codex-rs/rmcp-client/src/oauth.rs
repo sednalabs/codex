@@ -1035,6 +1035,11 @@ mod tests {
     use rmcp::transport::auth::CredentialStore as _;
     use std::sync::Arc;
     use tokio::time;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
 
     #[path = "persistor_tests.rs"]
     mod persistor_tests;
@@ -1834,7 +1839,18 @@ mod tests {
     async fn authorization_manager_for(
         tokens: &StoredOAuthTokens,
     ) -> Result<Arc<Mutex<AuthorizationManager>>> {
-        let manager = Arc::new(Mutex::new(AuthorizationManager::new(&tokens.url).await?));
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
+                "token_endpoint": format!("{}/oauth/token", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        let manager = Arc::new(Mutex::new(
+            AuthorizationManager::new(format!("{}/mcp", server.uri())).await?,
+        ));
         let store = InMemoryCredentialStore::new();
         store
             .save(super::stored_credentials_from_tokens(
