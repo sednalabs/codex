@@ -1763,6 +1763,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -1821,6 +1824,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".into(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2032,6 +2038,9 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
