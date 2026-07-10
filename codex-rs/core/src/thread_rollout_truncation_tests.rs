@@ -82,6 +82,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
 fn turn_completed(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: turn_id.to_string(),
+        started_at: None,
         last_agent_message: None,
         compaction_events_in_turn: 0,
         final_model: None,

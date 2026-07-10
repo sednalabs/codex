@@ -2298,6 +2298,7 @@ mod tests {
     fn turn_complete_event(turn_id: &str) -> TurnCompleteEvent {
         TurnCompleteEvent {
             turn_id: turn_id.to_string(),
+            started_at: None,
             last_agent_message: None,
             compaction_events_in_turn: 0,
             final_model: Some("provider-final".to_string()),
@@ -2311,6 +2312,7 @@ mod tests {
     fn turn_aborted_event(turn_id: &str) -> TurnAbortedEvent {
         TurnAbortedEvent {
             turn_id: Some(turn_id.to_string()),
+            started_at: None,
             reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
         }
     }
