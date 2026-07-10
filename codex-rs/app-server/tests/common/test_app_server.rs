@@ -218,7 +218,7 @@ impl TestAppServer {
     }
 
     /// Returns every stderr line parsed and validated as a JSON log event.
-    pub fn json_log_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub fn json_log_events(&self) -> Vec<serde_json::Value> {
         self.json_logs.events()
     }
 

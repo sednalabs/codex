@@ -2180,7 +2180,7 @@ mod tests {
             assert_eq!(
                 credentials
                     .as_ref()
-                    .map(|credentials| credentials.access_token().secret()),
+                    .map(|credentials| credentials.access_token().secret().as_str()),
                 Some("newer-durable-token")
             );
         }

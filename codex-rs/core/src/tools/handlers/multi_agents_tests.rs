@@ -3488,14 +3488,16 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait completed.");
-    assert_eq!(result.requested_ids, vec![id_a, id_b]);
-    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Terminal
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([
+                (id_a.to_string(), AgentStatus::NotFound),
+                (id_b.to_string(), AgentStatus::NotFound),
+            ]),
+            timed_out: false,
+        }
     );
-    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3526,14 +3528,13 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
-    assert_eq!(result.requested_ids, vec![agent_id]);
-    assert_eq!(result.pending_ids, vec![agent_id]);
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Timeout
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::new(),
+            timed_out: true,
+        }
     );
-    assert!(result.timed_out);
     assert_eq!(success, None);
 
     let _ = thread
@@ -3623,14 +3624,13 @@ async fn wait_agent_returns_final_status_without_timeout() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait completed.");
-    assert_eq!(result.requested_ids, vec![agent_id]);
-    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Terminal
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
+            timed_out: false,
+        }
     );
-    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
