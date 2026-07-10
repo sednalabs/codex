@@ -1374,7 +1374,7 @@
         "py_compile of stage_npm_packages.py and policy verifier scripts"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
