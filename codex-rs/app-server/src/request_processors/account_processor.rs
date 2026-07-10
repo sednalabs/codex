@@ -21,8 +21,8 @@ const ACCOUNT_WORKSPACE_MESSAGES_FETCH_TIMEOUT: Duration =
 #[cfg(debug_assertions)]
 const LOGIN_ISSUER_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_ISSUER";
 
-fn hash_audit_path(namespace: &str, path: &Path) -> Option<String> {
-    Some(hash_audit_value(namespace, path.to_str()?))
+fn hash_audit_path(namespace: &str, path: &Path) -> String {
+    hash_audit_value(namespace, &path.to_string_lossy())
 }
 
 fn hash_audit_value(namespace: &str, value: &str) -> String {
@@ -226,8 +226,14 @@ impl AccountRequestProcessor {
             account_plan_type: auth
                 .account_plan_type()
                 .and_then(|plan_type| serialized_enum_string(&plan_type)),
-            codex_home_hash: hash_audit_path("codex_home", self.config.codex_home.as_path()),
-            sqlite_home_hash: hash_audit_path("sqlite_home", self.config.sqlite_home.as_path()),
+            codex_home_hash: Some(hash_audit_path(
+                "codex_home",
+                self.config.codex_home.as_path(),
+            )),
+            sqlite_home_hash: Some(hash_audit_path(
+                "sqlite_home",
+                self.config.sqlite_home.as_path(),
+            )),
         }
     }
 
