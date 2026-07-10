@@ -130,8 +130,14 @@ User-visible behavior:
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
 - Namespaced Android-like, browser-like, and desktop-like tools remain normal dynamic tools.
+- App-server `dynamicTools` accepts deferred bare native tools for
+  `tool_search`, while still rejecting deferred bare ordinary dynamic tools.
+  A capability-bearing native tool requests a full loaded-thread reload so the
+  provider contract cannot silently remain stale.
 - The current compatibility contract still serializes dynamic functions in the
-  flat `DynamicToolSpec` shape with an optional namespace. A future tagged
+  flat `DynamicToolSpec` shape with an optional namespace; omitted
+  `deferLoading` defaults to `false` and omitted `persistOnResume` defaults to
+  `true`. A future tagged
   function/namespace migration must preserve app-server input, persisted thread
   state, resume filtering, and native promotion before this carry is removed.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
@@ -288,6 +294,11 @@ User-visible behavior:
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
 - MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; retries and session recovery stay pinned to the resolved concrete store instead of silently switching authority.
 - RMCP receives request-only credentials during normal operation. Refresh material is exposed only inside the serialized refresh transaction, and every RMCP-derived durable save or delete reacquires the per-server refresh lock and reconciles the current pinned store before mutating it.
+- Request-only staging strips `refresh_token` and derived `expires_in`; durable
+  reconciliation restores omitted durable refresh material, scopes, and expiry
+  fields. A matching `expires_at` makes countdown-only `expires_in` drift
+  non-conflicting, and a rotated refresh token remains in memory before an
+  attempted durable write.
 
 ### MCP OAuth: device-code login for headless servers
 

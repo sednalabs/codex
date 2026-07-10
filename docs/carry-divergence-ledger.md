@@ -301,6 +301,10 @@ docs-only refresh commit that records this snapshot.
 - The historical `spawn_approval` argument was unused by both spawn handlers;
   the upstream removal is retained rather than carried as a phantom contract.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
+- V2 requires `task_name`; when no effective reasoning effort is known it
+  serializes `null` rather than manufacturing a `medium` value. Wait completion
+  derives pending target ids from refreshed status snapshots, not the original
+  requested-id list.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
@@ -433,6 +437,10 @@ docs-only refresh commit that records this snapshot.
 - Namespaced Android-like, browser-like, or desktop-like tools remain ordinary dynamic tools
   so app-specific providers can keep their own tool surfaces without taking
   over the native Codex contract.
+- App-server `dynamicTools` accepts a deferred bare native tool so it can be
+  discovered through `tool_search`; the same bare deferred shape remains
+  invalid for ordinary dynamic tools. A capability-bearing native tool forces
+  a loaded-thread resume reload because its provider contract may have changed.
 - This sync intentionally retains the flat `DynamicToolSpec` compatibility
   shape (`namespace` plus function metadata) because app-server requests,
   persisted SQLite rows, provider registries, and resume filtering still share
@@ -576,6 +584,11 @@ docs-only refresh commit that records this snapshot.
   installed only inside the serialized refresh transaction, and RMCP-derived
   persistence reacquires that same per-server lock, rereads the pinned store,
   and adopts newer durable credentials rather than overwriting or deleting them.
+- Request-only staging strips `refresh_token` and derived `expires_in`; durable
+  reconciliation restores omitted refresh material, scopes, and expiry fields.
+  A matching `expires_at` makes a countdown-only `expires_in` difference
+  non-conflicting, and a newly rotated refresh token is retained in memory
+  before the durable write is attempted.
 - Refresh-only credential staging deliberately omits granted scopes when
   handing credentials to RMCP so refresh requests do not broaden explicit
   persisted scopes with authorization-server-advertised `offline_access`; Codex
