@@ -1217,7 +1217,7 @@ fn refresh_lock_path(store_key: &str) -> Result<PathBuf> {
     let digest = hasher.finalize();
     Ok(find_codex_home()?
         .join(REFRESH_LOCK_DIR)
-        .join(format!("{digest:x}.lock"))
+        .join(format!("{}.lock", sha256_lower_hex(digest)))
         .to_path_buf())
 }
 
@@ -1232,7 +1232,7 @@ fn compute_secret_name(server_name: &str, server_url: &str) -> Result<SecretName
     let mut hasher = Sha256::new();
     hasher.update(key.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:X}");
+    let hex = sha256_lower_hex(digest).to_ascii_uppercase();
     SecretName::new(&format!("{MCP_OAUTH_SECRET_PREFIX}_{}", &hex[..32]))
 }
 
@@ -1370,9 +1370,17 @@ fn sha_256_prefix(value: &Value) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(serialized.as_bytes());
     let digest = hasher.finalize();
-    let hex = format!("{digest:x}");
+    let hex = sha256_lower_hex(digest);
     let truncated = &hex[..16];
     Ok(truncated.to_string())
+}
+
+fn sha256_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1835,6 +1843,16 @@ mod tests {
             Some(&original),
             Some(&reread)
         ));
+    }
+
+    #[test]
+    fn sha256_hex_encoding_is_stable_for_oauth_store_keys() {
+        let digest = Sha256::digest(b"abc");
+
+        assert_eq!(
+            super::sha256_lower_hex(digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
