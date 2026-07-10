@@ -540,7 +540,9 @@ docs-only refresh commit that records this snapshot.
 - Primary files:
   - `codex-rs/core/src/mcp_tool_exposure.rs`
   - `codex-rs/core/src/mcp_tool_exposure_test.rs`
+  - `.github/scripts/test_ci_planners.py`
   - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
   - `justfile`
   - `docs/downstream-tool-surface-matrix.md`
 
