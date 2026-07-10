@@ -212,7 +212,10 @@ mod thread_processor_behavior_tests {
         )];
 
         let err = validate_dynamic_tools(&tools).expect_err("ordinary deferred tool is invalid");
-        assert!(err.contains("must include a namespace"), "unexpected error: {err}");
+        assert!(
+            err.contains("must include a namespace"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

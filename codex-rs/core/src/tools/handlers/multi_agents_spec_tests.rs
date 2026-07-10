@@ -277,11 +277,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     let output_schema = output_schema.expect("spawn_agent output schema");
     assert_eq!(
         output_schema["required"],
-        json!([
-            "task_name",
-            "effective_model",
-            "effective_reasoning_effort"
-        ])
+        json!(["task_name", "effective_model", "effective_reasoning_effort"])
     );
     let output_properties = output_schema["properties"]
         .as_object()

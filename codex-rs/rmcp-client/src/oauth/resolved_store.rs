@@ -131,11 +131,11 @@ pub(crate) fn resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + '
                     store: ResolvedOAuthCredentialStore::Keyring(keyring_backend_kind),
                 })),
                 Ok(None) => Ok(load_auto_fallback_tokens(server_name, url)?.map(|tokens| {
-                        ResolvedOAuthTokens {
-                            tokens,
-                            store: ResolvedOAuthCredentialStore::File,
-                        }
-                    })),
+                    ResolvedOAuthTokens {
+                        tokens,
+                        store: ResolvedOAuthCredentialStore::File,
+                    }
+                })),
                 // Auto may fall back when the keyring backend is unavailable, but a Secrets
                 // aggregate-lock failure means authority may be changing. Consulting File in
                 // that state could replay credentials hidden behind a newer Secrets entry.
@@ -172,10 +172,7 @@ pub(crate) fn resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + '
     }
 }
 
-fn load_auto_fallback_tokens(
-    server_name: &str,
-    url: &str,
-) -> Result<Option<StoredOAuthTokens>> {
+fn load_auto_fallback_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     match load_oauth_tokens_from_file(server_name, url) {
         Ok(tokens) => Ok(tokens),
         Err(error) if error.downcast_ref::<OAuthStoreLockFailure>().is_some() => Err(error),

@@ -571,9 +571,8 @@ impl OAuthPersistor {
             Some(mut credentials) => {
                 if let Some(previous) = previous.as_ref() {
                     if credentials.refresh_token().is_none() {
-                        credentials.set_refresh_token(
-                            previous.token_response.0.refresh_token().cloned(),
-                        );
+                        credentials
+                            .set_refresh_token(previous.token_response.0.refresh_token().cloned());
                     }
                     if credentials.scopes().is_none() {
                         credentials.set_scopes(previous.token_response.0.scopes().cloned());
@@ -589,9 +588,7 @@ impl OAuthPersistor {
                     .map(|previous| previous.token_response == new_token_response)
                     .unwrap_or(false);
                 let expires_at = if same_token {
-                    previous
-                        .as_ref()
-                        .and_then(|previous| previous.expires_at)
+                    previous.as_ref().and_then(|previous| previous.expires_at)
                 } else {
                     compute_expires_at_millis(&credentials)
                 };
@@ -699,11 +696,9 @@ impl OAuthPersistor {
     }
 
     fn save_resolved_credentials(&self, tokens: &StoredOAuthTokens) -> Result<()> {
-        self.inner.credential_store.save(
-            &DefaultKeyringStore,
-            &self.inner.server_name,
-            tokens,
-        )
+        self.inner
+            .credential_store
+            .save(&DefaultKeyringStore, &self.inner.server_name, tokens)
     }
 
     async fn refresh_transaction(
@@ -2076,11 +2071,7 @@ mod tests {
         persistor.persist_if_needed().await?;
 
         let stored = ResolvedOAuthCredentialStore::File
-            .load(
-                &DefaultKeyringStore,
-                &tokens.server_name,
-                &tokens.url,
-            )?
+            .load(&DefaultKeyringStore, &tokens.server_name, &tokens.url)?
             .expect("durable file credentials should remain present");
         assert_tokens_match_without_expiry(&stored, &tokens);
         Ok(())
@@ -2116,11 +2107,7 @@ mod tests {
 
         time::sleep(Duration::from_millis(50)).await;
         let stored = ResolvedOAuthCredentialStore::File
-            .load(
-                &DefaultKeyringStore,
-                &tokens.server_name,
-                &tokens.url,
-            )?
+            .load(&DefaultKeyringStore, &tokens.server_name, &tokens.url)?
             .expect("durable credentials should remain present while persistence waits");
         assert_eq!(
             stored.token_response.0.access_token().secret(),
@@ -2130,11 +2117,7 @@ mod tests {
         drop(lock);
         persist.await??;
         let stored = ResolvedOAuthCredentialStore::File
-            .load(
-                &DefaultKeyringStore,
-                &tokens.server_name,
-                &tokens.url,
-            )?
+            .load(&DefaultKeyringStore, &tokens.server_name, &tokens.url)?
             .expect("durable credentials should be updated after the lock is released");
         assert_eq!(
             stored.token_response.0.access_token().secret(),
@@ -2185,11 +2168,7 @@ mod tests {
         delete_persistor.persist_if_needed().await?;
 
         let stored = ResolvedOAuthCredentialStore::File
-            .load(
-                &DefaultKeyringStore,
-                &tokens.server_name,
-                &tokens.url,
-            )?
+            .load(&DefaultKeyringStore, &tokens.server_name, &tokens.url)?
             .expect("newer durable credentials must not be overwritten or deleted");
         assert_eq!(
             stored.token_response.0.access_token().secret(),

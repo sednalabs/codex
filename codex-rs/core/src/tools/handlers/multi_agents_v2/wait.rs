@@ -266,8 +266,7 @@ impl Handler {
             ));
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
-        let pending_thread_ids =
-            pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
+        let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
         let result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
             pending_thread_ids,
@@ -408,11 +407,7 @@ fn pending_wait_thread_ids(
 ) -> Vec<ThreadId> {
     receiver_thread_ids
         .iter()
-        .filter(|receiver_thread_id| {
-            !statuses_by_id
-                .get(receiver_thread_id)
-                .is_some_and(is_final)
-        })
+        .filter(|receiver_thread_id| !statuses_by_id.get(receiver_thread_id).is_some_and(is_final))
         .copied()
         .collect()
 }
@@ -443,15 +438,12 @@ async fn emit_wait_completion(
     receiver_agents: Vec<CollabAgentRef>,
     agents_states: HashMap<ThreadId, AgentStatus>,
 ) {
-    let status = if agents_states
-        .values()
-        .any(|agent_status| {
-            matches!(
-                agent_status,
-                AgentStatus::Errored(_) | AgentStatus::NotFound
-            )
-        })
-    {
+    let status = if agents_states.values().any(|agent_status| {
+        matches!(
+            agent_status,
+            AgentStatus::Errored(_) | AgentStatus::NotFound
+        )
+    }) {
         CollabAgentToolCallStatus::Failed
     } else {
         CollabAgentToolCallStatus::Completed
@@ -632,11 +624,8 @@ mod tests {
             Some(&AgentStatus::Completed(Some("just finished".to_string())))
         );
         assert!(
-            pending_wait_thread_ids(
-                &[completed_id, refreshed_completed_id],
-                &statuses_by_id
-            )
-            .is_empty()
+            pending_wait_thread_ids(&[completed_id, refreshed_completed_id], &statuses_by_id)
+                .is_empty()
         );
     }
 
