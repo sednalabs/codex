@@ -924,7 +924,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 duration_ms: command
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
-                terminal_wait: None,
+                terminal_wait: command.terminal_wait.map(Into::into),
             },
             CoreTurnItem::DynamicToolCall(call) => ThreadItem::DynamicToolCall {
                 id: call.id,

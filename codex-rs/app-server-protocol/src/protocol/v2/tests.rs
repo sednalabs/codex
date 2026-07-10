@@ -39,6 +39,8 @@ use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
+use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
@@ -2654,6 +2656,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }],
         source: CoreExecCommandSource::Agent,
         interaction_input: None,
+        terminal_wait: Some(CoreTerminalWaitInfo {
+            primitive: CoreTerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+            max_wait_ms: Some(10_000),
+            heartbeat_interval_ms: Some(1_000),
+        }),
         status: CoreCommandExecutionStatus::Completed,
         stdout: Some("done\n".to_string()),
         stderr: Some(String::new()),
@@ -2678,7 +2685,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             aggregated_output: Some("done\n".to_string()),
             exit_code: Some(0),
             duration_ms: Some(5),
-            terminal_wait: None,
+            terminal_wait: Some(TerminalWaitInfo {
+                primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+                max_wait_ms: Some(10_000),
+                heartbeat_interval_ms: Some(1_000),
+            }),
         }
     );
 
