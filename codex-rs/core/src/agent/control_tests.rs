@@ -349,6 +349,7 @@ async fn on_event_updates_status_from_task_started() {
 async fn on_event_updates_status_from_task_complete() {
     let status = agent_status_from_event(&EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
+        started_at: None,
         last_agent_message: Some("done".to_string()),
         compaction_events_in_turn: 0,
         final_model: None,
@@ -376,6 +377,7 @@ async fn on_event_updates_status_from_error() {
 async fn on_event_updates_status_from_turn_aborted() {
     let status = agent_status_from_event(&EventMsg::TurnAborted(TurnAbortedEvent {
         turn_id: Some("turn-1".to_string()),
+        started_at: None,
         reason: TurnAbortReason::Interrupted,
     }));
 
@@ -2026,6 +2028,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
             tester_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: tester_turn.sub_id.clone(),
+                started_at: None,
                 last_agent_message: Some("done".to_string()),
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2116,6 +2119,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
             tester_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: tester_turn.sub_id.clone(),
+                started_at: None,
                 last_agent_message: Some("done".to_string()),
                 compaction_events_in_turn: 0,
                 final_model: None,

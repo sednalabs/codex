@@ -1762,6 +1762,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -1823,6 +1824,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -1928,6 +1930,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -1982,6 +1985,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2037,6 +2041,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2104,6 +2109,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2176,6 +2182,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2257,6 +2264,7 @@ mod tests {
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-image".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -2372,6 +2380,7 @@ mod tests {
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-1".into()),
+                started_at: None,
                 reason: TurnAbortReason::Replaced,
             }),
             EventMsg::UserMessage(UserMessageEvent {
@@ -2609,6 +2618,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3184,6 +3194,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3230,6 +3241,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3290,6 +3302,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3336,6 +3349,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3527,6 +3541,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3552,6 +3567,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3567,6 +3583,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3608,6 +3625,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3633,6 +3651,7 @@ mod tests {
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-a".into()),
+                started_at: None,
                 reason: TurnAbortReason::Replaced,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
@@ -3674,6 +3693,7 @@ mod tests {
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -3939,6 +3959,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -4007,6 +4028,7 @@ mod tests {
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -4065,6 +4087,7 @@ mod tests {
             RolloutItem::ResponseItem(hook_prompt),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -4149,6 +4172,7 @@ mod tests {
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -4317,6 +4341,7 @@ mod tests {
         let complete_changes = builder.handle_rollout_item_with_changes(&RolloutItem::EventMsg(
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,
@@ -4400,6 +4425,7 @@ mod tests {
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
+                started_at: None,
                 last_agent_message: None,
                 compaction_events_in_turn: 0,
                 final_model: None,

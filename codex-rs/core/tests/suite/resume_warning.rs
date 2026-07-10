@@ -77,6 +77,7 @@ fn resume_history(
                 compaction_events_in_turn: 0,
                 final_model: None,
                 model_snapshot: None,
+                started_at: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,

@@ -1964,6 +1964,10 @@ pub struct ContextCompactedEvent;
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub started_at: Option<i64>,
     #[serde(default)]
     pub compaction_events_in_turn: u32,
     /// Final model used by the terminal successful sampling request, after routing or fallback.
@@ -4200,6 +4204,18 @@ pub struct Chunk {
 pub struct TurnAbortedEvent {
     pub turn_id: Option<String>,
     pub reason: TurnAbortReason,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub started_at: Option<i64>,
+    /// Unix timestamp (in seconds) when the turn was aborted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and abort in milliseconds, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
