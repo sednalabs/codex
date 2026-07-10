@@ -1903,7 +1903,8 @@
       "allowed_paths": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -1919,7 +1920,8 @@
       "required_any_paths": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs",
         "codex-rs/tui/src/chatwidget/tests/review_mode.rs"

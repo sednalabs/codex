@@ -740,9 +740,9 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_custom_prompt_review_prompt_core_path_stays_targeted(self) -> None:
+    def test_custom_prompt_review_prompt_crate_path_stays_targeted(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
-            ["codex-rs/core/src/review_prompts.rs"],
+            ["codex-rs/prompts/src/review_request.rs"],
             self.routes,
         )
         self.assertEqual(
@@ -4420,7 +4420,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             "--head-sha",
             "1" * 40,
             "--primary-files-json",
-            json.dumps(["codex-rs/core/src/review_prompts.rs"]),
+            json.dumps(["codex-rs/prompts/src/review_request.rs"]),
             "--primary-line-count",
             "401",
         )
@@ -4641,10 +4641,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
 
-    def test_review_prompts_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
+    def test_review_request_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
-            head_files={"codex-rs/core/src/review_prompts.rs": "fn review_prompt() {}\n"},
+            head_files={"codex-rs/prompts/src/review_request.rs": "fn review_prompt() {}\n"},
         )
 
         self.assertEqual(outputs["validation_mode"], "light_initial")
