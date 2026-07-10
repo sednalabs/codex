@@ -768,11 +768,13 @@ impl Session {
                 duration_ms,
             })
         } else {
+            let error = turn_context.terminal_error.lock().await.clone();
             self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_context.sub_id.clone(),
                 last_agent_message,
+                error,
                 compaction_events_in_turn: {
                     let turn_state = {
                         self.active_turn

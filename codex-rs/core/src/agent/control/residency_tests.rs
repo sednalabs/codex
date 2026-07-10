@@ -163,6 +163,7 @@ async fn mark_thread_completed(thread: &CodexThread) {
                 last_agent_message: Some("done".to_string()),
                 final_model: None,
                 model_snapshot: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
