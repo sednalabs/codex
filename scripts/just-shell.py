@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+from typing import NoReturn
 
 
 ARGS_TOKEN = "{args}"
@@ -30,13 +31,12 @@ def main() -> int:
     recipe_name = sys.argv[2] if len(sys.argv) > 2 else ""
     recipe_args = sys.argv[3:]
 
-    if os.name == "nt":
-        return run_powershell(command, recipe_name, recipe_args)
-    else:
-        return run_sh(command, recipe_name, recipe_args)
+    if os.name != "nt":
+        run_sh(command, recipe_name, recipe_args)
+    return run_powershell(command, recipe_name, recipe_args)
 
 
-def run_sh(command: str, recipe_name: str, recipe_args: list[str]) -> int:
+def run_sh(command: str, recipe_name: str, recipe_args: list[str]) -> NoReturn:
     command = command.replace(ARGS_TOKEN, SH_ARGS)
     command = command.replace(STDERR_NULL_TOKEN, SH_STDERR_NULL)
     os.execvp("sh", ["sh", "-cu", command, recipe_name, *recipe_args])
