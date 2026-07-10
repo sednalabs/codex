@@ -31,17 +31,19 @@ use super::token_needs_refresh;
 
 const REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum RefreshReason {
     Expiry,
-    Unauthorized,
+    Unauthorized {
+        rejected_access_token: Option<String>,
+    },
 }
 
 impl RefreshReason {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Expiry => "expiry",
-            Self::Unauthorized => "unauthorized",
+            Self::Unauthorized { .. } => "unauthorized",
         }
     }
 }
@@ -75,9 +77,14 @@ impl OAuthPersistor {
         .await
     }
 
-    pub(crate) async fn refresh_after_unauthorized(&self) -> Result<()> {
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        rejected_access_token: Option<&str>,
+    ) -> Result<()> {
         self.spawn_refresh_transaction(
-            RefreshReason::Unauthorized,
+            RefreshReason::Unauthorized {
+                rejected_access_token: rejected_access_token.map(str::to_owned),
+            },
             &DefaultKeyringStore,
             REFRESH_REQUEST_TIMEOUT,
         )
@@ -92,6 +99,7 @@ impl OAuthPersistor {
     ) -> Result<()> {
         let persistor = self.clone();
         let keyring_store = keyring_store.clone();
+        let reason_label = reason.as_str();
         // Once the provider can consume a rotating token, caller cancellation must not cancel
         // persistence. The owned task continues with independently bounded lock and request waits.
         let transaction_task = tokio::spawn(async move {
@@ -106,7 +114,7 @@ impl OAuthPersistor {
             if let Err(error) = &result {
                 warn!(
                     server_name = %persistor.inner.server_name,
-                    refresh_reason = reason.as_str(),
+                    refresh_reason = reason_label,
                     error = %error,
                     "MCP OAuth refresh transaction failed"
                 );
@@ -143,13 +151,6 @@ impl OAuthPersistor {
         refresh_request_timeout: Duration,
         keyring_store: &K,
     ) -> Result<()> {
-        let local_access_token = {
-            let last_credentials = self.inner.last_credentials.lock().await;
-            last_credentials
-                .as_ref()
-                .map(|tokens| tokens.token_response.0.access_token().secret().to_string())
-        };
-
         debug!("waiting for the MCP OAuth credential transaction lock");
         let _lock =
             RefreshCredentialLock::acquire_for_server(&self.inner.server_name, &self.inner.url)
@@ -180,11 +181,11 @@ impl OAuthPersistor {
         // access token changed; the same token must be refreshed even if its expiry is in the future.
         let latest_access_token = latest.token_response.0.access_token().secret();
         let should_adopt = !token_needs_refresh(latest.expires_at)
-            && match reason {
+            && match &reason {
                 RefreshReason::Expiry => true,
-                RefreshReason::Unauthorized => {
-                    local_access_token.as_deref() != Some(latest_access_token)
-                }
+                RefreshReason::Unauthorized {
+                    rejected_access_token,
+                } => rejected_access_token.as_deref() != Some(latest_access_token),
             };
         if should_adopt {
             debug!("adopting newer MCP OAuth credentials without contacting the provider");

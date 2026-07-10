@@ -148,6 +148,108 @@ async fn concurrent_refreshes_call_provider_once_and_carry_omitted_fields() -> R
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshing() -> Result<()> {
+    let (_env, server, mut latest) = test_context().await?;
+    latest.expires_at = None;
+    latest.token_response.0.set_expires_in(None);
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&latest)?;
+    let manager = authorization_manager_for(&latest).await?;
+    let persistor = OAuthPersistor::new(
+        latest.server_name.clone(),
+        latest.url.clone(),
+        Arc::clone(&manager),
+        ResolvedOAuthCredentialStore::File,
+        Some(latest.clone()),
+    );
+
+    persistor
+        .refresh_after_unauthorized(Some("superseded-access-token"))
+        .await?;
+
+    let stored = load_oauth_tokens_from_file(&latest.server_name, &latest.url)?
+        .expect("newer durable credentials should remain present");
+    assert_tokens_match_without_expiry(&stored, &latest);
+    let guard = manager.lock().await;
+    let (_client_id, request_credentials) = guard.get_credentials().await?;
+    assert_eq!(
+        request_credentials
+            .as_ref()
+            .map(|credentials| credentials.access_token().secret().as_str()),
+        Some(latest.token_response.0.access_token().secret().as_str())
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn current_unauthorized_response_forces_refresh_and_keeps_request_credentials_minimal()
+    -> Result<()> {
+    let (_env, server, mut initial) = test_context().await?;
+    initial.expires_at = None;
+    initial.token_response.0.set_expires_in(None);
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("refresh_token=refresh-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "unauthorized-refresh-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let manager = authorization_manager_for(&initial).await?;
+    let persistor = OAuthPersistor::new(
+        initial.server_name.clone(),
+        initial.url.clone(),
+        Arc::clone(&manager),
+        ResolvedOAuthCredentialStore::File,
+        Some(initial.clone()),
+    );
+    let rejected_access_token = initial.token_response.0.access_token().secret().to_string();
+
+    persistor
+        .refresh_after_unauthorized(Some(&rejected_access_token))
+        .await?;
+
+    let stored = load_oauth_tokens_from_file(&initial.server_name, &initial.url)?
+        .expect("refreshed durable credentials should be stored");
+    assert_eq!(
+        stored.token_response.0.access_token().secret(),
+        "unauthorized-refresh-access-token"
+    );
+    assert_eq!(
+        stored
+            .token_response
+            .0
+            .refresh_token()
+            .map(|token| token.secret().as_str()),
+        initial
+            .token_response
+            .0
+            .refresh_token()
+            .map(|token| token.secret().as_str())
+    );
+    let guard = manager.lock().await;
+    let (_client_id, request_credentials) = guard.get_credentials().await?;
+    let request_credentials = request_credentials.expect("request credentials should be installed");
+    assert_eq!(
+        request_credentials.access_token().secret(),
+        "unauthorized-refresh-access-token"
+    );
+    assert!(request_credentials.refresh_token().is_none());
+    assert!(request_credentials.expires_in().is_none());
+    server.verify().await;
+    Ok(())
+}
+
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "AuthorizationManager async access must be serialized through its Tokio mutex"
