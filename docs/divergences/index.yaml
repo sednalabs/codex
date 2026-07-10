@@ -1101,6 +1101,56 @@
       "extraction_target": "shared native computer-use provider registry"
     },
     {
+      "id": "dynamic-tool-flat-compatibility",
+      "title": "Flat dynamic-tool compatibility across app-server persistence",
+      "status": "live",
+      "category": "app-server-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "app-server dynamicTools requests",
+        "thread dynamic-tool persistence and resume",
+        "provider capability metadata"
+      ],
+      "files": [
+        "codex-rs/protocol/src/dynamic_tools.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/core/src/session/",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/state/migrations/0004_thread_dynamic_tools.sql",
+        "codex-rs/state/migrations/0019_thread_dynamic_tools_defer_loading.sql",
+        "codex-rs/state/migrations/0027_thread_dynamic_tools_persist_on_resume.sql",
+        "codex-rs/state/migrations/0028_thread_dynamic_tools_capability_json.sql",
+        "codex-rs/state/migrations/0029_thread_dynamic_tools_namespace.sql"
+      ],
+      "behavior": "Downstream retains one flat function record with optional namespace, persistOnResume, and capability metadata across app-server input, session state, SQLite rows, resume filtering, and provider registries. Upstream's tagged function/namespace representation remains accepted only through lossless legacy ingestion until every persisted and runtime boundary can migrate together.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-protocol-test; codex.app-server-v2-contract-targeted",
+      "tests": [
+        "dynamic_tool_spec_deserializes_defer_loading",
+        "dynamic_tool_spec_legacy_expose_to_context_inverts_to_defer_loading",
+        "dynamic_tool_spec_deserializes_persist_on_resume",
+        "dynamic_tool_spec_deserializes_capability_metadata",
+        "environment_scoped_dynamic_tools_do_not_restore_without_revalidation",
+        "thread_start_injects_dynamic_tools_into_model_requests"
+      ],
+      "owner": "downstream",
+      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tool-schema-persistence-compatibility",
+      "hotspot_files": [
+        "codex-rs/protocol/src/dynamic_tools.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/threads.rs"
+      ],
+      "extraction_target": "tagged dynamic-tool migration adapter"
+    },
+    {
       "id": "codex-tui-session-surfaces",
       "title": "TUI session-state, queue, and usage surfaces",
       "status": "live",
