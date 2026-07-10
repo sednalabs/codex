@@ -67,9 +67,6 @@ combine-as-imports = true
 exclude-newer = "7 days"
 exclude-newer-package = { openai-codex-cli-bin = "2026-06-03T19:00:00Z" }
 index-strategy = "first-index"
-required-environments = [
-  "sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
 
 [tool.uv.pip]
 exclude-newer = "7 days"
