@@ -2070,6 +2070,7 @@ mod tests {
             }],
             source: ExecCommandSource::Agent,
             interaction_input: None,
+            terminal_wait: None,
             status: CoreCommandExecutionStatus::Completed,
             stdout: Some("hello world\n".to_string()),
             stderr: Some(String::new()),

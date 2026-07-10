@@ -5438,6 +5438,11 @@ mod tests {
     #[test]
     fn command_execution_item_lifecycle_emits_legacy_exec_events() {
         let cwd = PathUri::from_abs_path(&test_path_buf("/tmp").abs());
+        let terminal_wait = TerminalWaitInfo {
+            primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+            max_wait_ms: Some(123),
+            heartbeat_interval_ms: Some(45),
+        };
         let started = ItemStartedEvent {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
@@ -5452,6 +5457,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: Some(terminal_wait.clone()),
                 status: CommandExecutionStatus::InProgress,
                 stdout: None,
                 stderr: None,
@@ -5475,6 +5481,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: Some(terminal_wait.clone()),
                 status: CommandExecutionStatus::Completed,
                 stdout: Some("done\n".into()),
                 stderr: Some(String::new()),
@@ -5491,8 +5498,11 @@ mod tests {
                 call_id,
                 turn_id,
                 started_at_ms: 10,
+                terminal_wait: Some(event_terminal_wait),
                 ..
-            })] if call_id == "exec-1" && turn_id == "turn-1"
+            })] if call_id == "exec-1"
+                && turn_id == "turn-1"
+                && event_terminal_wait == &terminal_wait
         ));
         assert!(matches!(
             completed
@@ -5503,8 +5513,12 @@ mod tests {
                 turn_id,
                 completed_at_ms: 20,
                 aggregated_output,
+                terminal_wait: Some(event_terminal_wait),
                 ..
-            })] if call_id == "exec-1" && turn_id == "turn-1" && aggregated_output == "done\n"
+            })] if call_id == "exec-1"
+                && turn_id == "turn-1"
+                && aggregated_output == "done\n"
+                && event_terminal_wait == &terminal_wait
         ));
     }
 

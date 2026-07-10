@@ -1084,7 +1084,6 @@ async fn run_auto_compact(
             initial_context_injection,
             reason,
             phase,
-            cancellation_token,
         )
         .await?;
     } else {
