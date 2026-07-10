@@ -252,20 +252,29 @@ def stage_python_runtime_package(
         pyproject_text = _rewrite_runtime_platform_tag(pyproject_text, platform_tag)
     pyproject_path.write_text(pyproject_text)
 
-    _extract_codex_package_archive(package_archive, staged_runtime_package_root(staging_dir))
+    _extract_codex_package_archive(
+        package_archive, staged_runtime_package_root(staging_dir)
+    )
     return staging_dir
 
 
-def _extract_codex_package_archive(package_archive: Path, runtime_package_root: Path) -> None:
+def _extract_codex_package_archive(
+    package_archive: Path, runtime_package_root: Path
+) -> None:
     if not package_archive.name.endswith(".tar.gz"):
-        raise RuntimeError(f"Expected a .tar.gz Codex package archive: {package_archive}")
+        raise RuntimeError(
+            f"Expected a .tar.gz Codex package archive: {package_archive}"
+        )
 
     runtime_package_root.mkdir(parents=True, exist_ok=True)
     extraction_root = runtime_package_root.resolve()
     with tarfile.open(package_archive, "r:gz") as archive:
+        validated_members: list[tuple[tarfile.TarInfo, Path]] = []
         for member in archive.getmembers():
             relative_path = PurePosixPath(member.name)
-            path_parts = tuple(part for part in relative_path.parts if part not in ("", "."))
+            path_parts = tuple(
+                part for part in relative_path.parts if part not in ("", ".")
+            )
             if (
                 relative_path.is_absolute()
                 or not path_parts
@@ -273,7 +282,9 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
                 or "\\" in member.name
                 or ":" in path_parts[0]
             ):
-                raise RuntimeError(f"Unsafe path in Codex package archive: {member.name!r}")
+                raise RuntimeError(
+                    f"Unsafe path in Codex package archive: {member.name!r}"
+                )
 
             destination = extraction_root.joinpath(*path_parts).resolve()
             try:
@@ -283,15 +294,17 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
                     f"Unsafe path in Codex package archive: {member.name!r}"
                 ) from exc
 
-            if member.isdir():
-                destination.mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
+            if not member.isdir() and not member.isfile():
                 raise RuntimeError(
                     "Unsupported link or special entry in Codex package archive: "
                     f"{member.name!r}"
                 )
+            validated_members.append((member, destination))
 
+        for member, destination in validated_members:
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             source = archive.extractfile(member)
             if source is None:
@@ -320,7 +333,9 @@ def _validate_codex_package_layout(package_dir: Path, package_archive: Path) -> 
         missing_entries.append(str(Path("bin") / runtime_code_mode_host_name()))
     if missing_entries:
         missing = ", ".join(missing_entries)
-        raise RuntimeError(f"Missing Codex package layout entries in {package_archive}: {missing}")
+        raise RuntimeError(
+            f"Missing Codex package layout entries in {package_archive}: {missing}"
+        )
 
 
 def _flatten_string_enum_one_of(definition: dict[str, Any]) -> bool:

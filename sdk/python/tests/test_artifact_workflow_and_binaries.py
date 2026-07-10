@@ -755,21 +755,28 @@ def test_stage_runtime_release_rejects_incomplete_package_layout(tmp_path: Path)
 def test_stage_runtime_release_rejects_archive_path_traversal(tmp_path: Path) -> None:
     script = _load_update_script_module()
     package_archive = tmp_path / "codex-package.tar.gz"
+    staging_dir = tmp_path / "runtime-stage"
     escaped_path = tmp_path / "escaped.txt"
+    safe_payload = b"must not be written before validation completes\n"
     payload = b"outside extraction root\n"
     with tarfile.open(package_archive, "w:gz") as archive:
+        safe_member = tarfile.TarInfo("bin/safe.txt")
+        safe_member.size = len(safe_payload)
+        archive.addfile(safe_member, io.BytesIO(safe_payload))
         member = tarfile.TarInfo("../escaped.txt")
         member.size = len(payload)
         archive.addfile(member, io.BytesIO(payload))
 
     with pytest.raises(RuntimeError, match="Unsafe path in Codex package archive"):
         script.stage_python_runtime_package(
-            tmp_path / "runtime-stage",
+            staging_dir,
             "1.2.3",
             package_archive,
         )
 
     assert not escaped_path.exists()
+    package_root = script.staged_runtime_package_root(staging_dir)
+    assert not (package_root / "bin" / "safe.txt").exists()
 
 
 def test_stage_runtime_release_rejects_archive_links(tmp_path: Path) -> None:

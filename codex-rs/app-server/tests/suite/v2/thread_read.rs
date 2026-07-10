@@ -2,8 +2,8 @@ use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_rollout_with_text_elements;
 use app_test_support::create_mock_responses_server_repeating_assistant;
-use app_test_support::default_rollout_cwd;
 use app_test_support::rollout_path;
+use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use codex_app_server::in_process;
 use codex_app_server::in_process::InProcessStartArgs;
@@ -129,11 +129,7 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.model_provider, "mock_provider");
     assert!(!thread.ephemeral, "stored rollouts should not be ephemeral");
     assert!(thread.path.as_ref().expect("thread path").is_absolute());
-    assert_eq!(
-        thread.cwd,
-        codex_utils_absolute_path::AbsolutePathBuf::try_from(default_rollout_cwd()?)
-            .expect("rollout cwd should be absolute")
-    );
+    assert_eq!(thread.cwd, test_absolute_path("/"));
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);

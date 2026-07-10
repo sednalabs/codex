@@ -123,6 +123,7 @@ mod thread_processor_behavior_tests {
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
+    use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::config_types::Settings;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
@@ -227,7 +228,7 @@ mod thread_processor_behavior_tests {
             /*defer_loading*/ false,
         );
         tool.persist_on_resume = false;
-        tool.capability = Some(codex_app_server_protocol::DynamicToolCapability {
+        tool.capability = Some(DynamicToolCapability {
             family: Some("computer_use".to_string()),
             capability_scope: Some("session".to_string()),
             mutation_class: None,

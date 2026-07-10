@@ -1344,6 +1344,8 @@
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
         "scripts/stage_npm_packages.py",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
         "scripts/list-bazel-clippy-targets.sh",
         "defs.bzl",
         "patches/",
@@ -1372,7 +1374,10 @@
         "bash -n scripts/install/install.sh",
         "verify_bazel_clippy_lints.py",
         "verify_cargo_workspace_manifests.py",
-        "py_compile of stage_npm_packages.py and policy verifier scripts"
+        "py_compile of stage_npm_packages.py and policy verifier scripts",
+        "codex.sdk-python-targeted",
+        "test_stage_runtime_release_rejects_archive_path_traversal",
+        "test_stage_runtime_release_rejects_archive_links"
       ],
       "owner": "downstream",
       "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction.",

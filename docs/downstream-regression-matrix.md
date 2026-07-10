@@ -149,9 +149,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     `codex-android-computer-use` only as named temporary migration debt while
     its MCP transport is moved behind `codex-http-client`; unnamed new direct
     reqwest owners still fail cargo-deny.
-  - Python SDK runtime-package staging rejects archive traversal, link, and
-    special entries before extracting ordinary package files beneath the
-    staging root; the regression fixture proves a `../` member cannot escape.
+  - Python SDK runtime-package staging validates every archive member before
+    extracting ordinary package files beneath the staging root; the regression
+    fixture proves a safe member preceding a `../` member is not written and
+    the traversal member cannot escape.
   - `v8-canary.yml` staging, macOS Bazel clippy, and macOS Bazel
     release-build verification keep hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the heavy

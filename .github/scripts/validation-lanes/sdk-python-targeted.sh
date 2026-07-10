@@ -21,5 +21,6 @@ docker run --rm \
     /tmp/uv/bin/uv run --group dev pytest \
       tests/test_public_api_signatures.py \
       tests/test_public_api_runtime_behavior.py \
-      tests/test_client_rpc_methods.py
+      tests/test_client_rpc_methods.py \
+      tests/test_artifact_workflow_and_binaries.py
   '
