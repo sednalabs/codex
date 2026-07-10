@@ -2089,6 +2089,44 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
         self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
 
+    def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
+        )
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual(
+            (jobs["archive"].get("env") or {}).get("INPUT_TARGET"),
+            "${{ inputs.target }}",
+        )
+        self.assertEqual(
+            (jobs["archive"].get("env") or {}).get("INPUT_PROFILE"),
+            "${{ inputs.profile }}",
+        )
+        self.assertEqual(
+            (jobs["shard"].get("env") or {}).get("INPUT_TEST_THREADS"),
+            "${{ inputs.test_threads }}",
+        )
+
+        unsafe_expressions = (
+            "${{ inputs.target }}",
+            "${{ inputs.profile }}",
+            "${{ inputs.test_threads }}",
+        )
+        for job_name, job in jobs.items():
+            for step in (job or {}).get("steps") or []:
+                run_script = step.get("run") or ""
+                step_name = step.get("name") or step.get("id")
+                for expression in unsafe_expressions:
+                    message = (
+                        f"{job_name}/{step_name} interpolates {expression} into shell source"
+                    )
+                    self.assertNotIn(
+                        expression,
+                        run_script,
+                        message,
+                    )
+
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             justfile = Path(tmpdir) / "justfile"
