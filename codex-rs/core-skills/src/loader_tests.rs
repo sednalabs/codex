@@ -181,29 +181,6 @@ fn config_file(path: PathBuf) -> AbsolutePathBuf {
     path.abs()
 }
 
-fn project_layer_for_dot_codex(dot_codex: PathBuf) -> ConfigLayerEntry {
-    ConfigLayerEntry::new(
-        ConfigLayerSource::Project {
-            dot_codex_folder: dot_codex.abs(),
-        },
-        TomlValue::Table(toml::map::Map::new()),
-    )
-}
-
-fn cwd_project_layer(cwd: &Path) -> Option<ConfigLayerEntry> {
-    let cwd_dir = if cwd.is_dir() {
-        cwd.to_path_buf()
-    } else {
-        cwd.parent()
-            .expect("file cwd should have a parent directory")
-            .to_path_buf()
-    };
-    let dot_codex = cwd_dir.join(REPO_ROOT_CONFIG_DIR_NAME);
-    dot_codex
-        .is_dir()
-        .then(|| project_layer_for_dot_codex(dot_codex))
-}
-
 fn project_layers_for_cwd(cwd: &Path) -> Vec<ConfigLayerEntry> {
     let cwd_dir = if cwd.is_dir() {
         cwd.to_path_buf()
@@ -237,31 +214,19 @@ fn project_layers_for_cwd(cwd: &Path) -> Vec<ConfigLayerEntry> {
         .into_iter()
         .filter_map(|dir| {
             let dot_codex = dir.join(REPO_ROOT_CONFIG_DIR_NAME);
-            dot_codex
-                .is_dir()
-                .then(|| project_layer_for_dot_codex(dot_codex))
+            dot_codex.is_dir().then(|| {
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::Project {
+                        dot_codex_folder: dot_codex.abs(),
+                    },
+                    TomlValue::Table(toml::map::Map::new()),
+                )
+            })
         })
         .collect()
 }
 
 async fn make_config_for_cwd(codex_home: &TempDir, cwd: PathBuf) -> TestConfig {
-    let project_layers = project_layers_for_cwd(&cwd);
-    make_config_for_cwd_with_project_layers(codex_home, cwd, project_layers).await
-}
-
-async fn make_config_for_cwd_without_parent_project_layers(
-    codex_home: &TempDir,
-    cwd: PathBuf,
-) -> TestConfig {
-    let project_layers = cwd_project_layer(&cwd).into_iter().collect();
-    make_config_for_cwd_with_project_layers(codex_home, cwd, project_layers).await
-}
-
-async fn make_config_for_cwd_with_project_layers(
-    codex_home: &TempDir,
-    cwd: PathBuf,
-    project_layers: Vec<ConfigLayerEntry>,
-) -> TestConfig {
     let user_config_path = codex_home.path().join(CONFIG_TOML_FILE);
     let system_config_path = codex_home.path().join("etc/codex/config.toml");
     fs::create_dir_all(
@@ -286,7 +251,7 @@ async fn make_config_for_cwd_with_project_layers(
             TomlValue::Table(toml::map::Map::new()),
         ),
     ];
-    layers.extend(project_layers);
+    layers.extend(project_layers_for_cwd(&cwd));
 
     let cwd_abs = cwd.abs();
     TestConfig {
@@ -2643,7 +2608,7 @@ async fn non_git_repo_skills_search_does_not_walk_parents() {
         "from outer",
     );
 
-    let cfg = make_config_for_cwd_without_parent_project_layers(&codex_home, nested_dir).await;
+    let cfg = make_config_for_cwd(&codex_home, nested_dir).await;
 
     let outcome = load_skills_for_test(&cfg).await;
     assert!(
@@ -2651,14 +2616,7 @@ async fn non_git_repo_skills_search_does_not_walk_parents() {
         "unexpected errors: {:?}",
         outcome.errors
     );
-    assert!(
-        !outcome
-            .skills
-            .iter()
-            .any(|skill| skill.name == "outer-skill"),
-        "non-git cwd should not load parent repo skills: {:?}",
-        outcome.skills
-    );
+    assert_eq!(outcome.skills.len(), 0);
 }
 
 #[tokio::test]
@@ -2708,14 +2666,10 @@ async fn skill_roots_include_admin_with_lowest_priority() {
     .into_iter()
     .map(|root| root.scope)
     .collect();
-    let non_repo_scopes = scopes
-        .into_iter()
-        .filter(|scope| *scope != SkillScope::Repo)
-        .collect::<Vec<_>>();
     let mut expected = vec![SkillScope::User, SkillScope::System];
     if home_dir().is_some() {
         expected.insert(1, SkillScope::User);
     }
     expected.push(SkillScope::Admin);
-    assert_eq!(non_repo_scopes, expected);
+    assert_eq!(scopes, expected);
 }

@@ -11,7 +11,7 @@ const MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS: usize = 16 * 1024;
 const MAX_SCHEMA_RENDER_DEPTH: usize = 16;
 const TRUNCATED_TOOL_DESCRIPTION_NOTICE: &str =
     "\n\n(Type declaration truncated because the schema is too large.)";
-const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
+const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
 const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
 const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/compose tool calls
@@ -1316,7 +1316,7 @@ bar"
             /*code_mode_only*/ false,
         );
 
-        assert!(description.contains("Some nested MCP/app tools may be omitted"));
+        assert!(description.contains("Some deferred nested tools may be omitted"));
         assert!(description.contains("filter `ALL_TOOLS` by `name` and `description`"));
         assert!(!description.contains("do not print the full `ALL_TOOLS` array"));
     }
