@@ -761,6 +761,7 @@ impl RmcpClient {
         }
     }
 
+    /// OAuth uses independent lock/request bounds and completes before the operation timeout starts.
     async fn refresh_oauth_if_needed(&self) -> Result<()> {
         if let Some(runtime) = self.oauth_persistor().await {
             runtime.refresh_if_needed().await?;
@@ -939,26 +940,10 @@ impl RmcpClient {
             PendingTransport::StreamableHttpWithOAuth {
                 transport,
                 oauth_persistor,
-            } => {
-                match remaining_initialize_timeout(timeout, deadline)? {
-                    Some(remaining) => {
-                        if let Err(error) = oauth_persistor
-                            .refresh_if_needed_with_timeout(remaining)
-                            .await
-                        {
-                            if remaining_initialize_timeout(timeout, deadline).is_err() {
-                                return Err(initialize_timeout_error(timeout, remaining));
-                            }
-                            return Err(error);
-                        }
-                    }
-                    None => oauth_persistor.refresh_if_needed().await?,
-                }
-                (
-                    service::serve_client(client_service, transport).boxed(),
-                    Some(oauth_persistor),
-                )
-            }
+            } => (
+                service::serve_client(client_service, transport).boxed(),
+                Some(oauth_persistor),
+            ),
         };
 
         let handshake_timeout = remaining_initialize_timeout(timeout, deadline)?;
