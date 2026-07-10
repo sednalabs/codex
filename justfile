@@ -300,7 +300,7 @@ blocking-waits-targeted: blocking-waits-core-targeted blocking-waits-unified-exe
 # Focused custom-prompt discovery and review-flow slice.
 custom-prompts-targeted:
     cargo test -p codex-core custom_prompts::tests:: --lib -- --test-threads=1
-    cargo test -p codex-core review_prompts::tests:: --lib -- --test-threads=1
+    cargo test -p codex-prompts resolve_review_request_custom_target_ --lib -- --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::review_popup_custom_prompt_action_sends_event --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_submit_sends_review_op --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::review_mode::custom_prompt_enter_empty_does_not_send --lib -- --exact --test-threads=1
@@ -487,6 +487,9 @@ core-ledger-smoke:
 # one bounded runtime shard.
 core-runtime-surface-smoke:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
+    cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
+    cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
+    cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:

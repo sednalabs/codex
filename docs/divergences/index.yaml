@@ -369,7 +369,8 @@
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/core/src/session/mod.rs"
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/rollout-trace/src/protocol_event_tests.rs"
       ],
       "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
@@ -390,6 +391,7 @@
         "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
+        "exec_command_trace_payloads_use_inferred_native_cwd",
         "command_execution_item_lifecycle_emits_legacy_exec_events",
         "core_turn_item_into_thread_item_converts_supported_variants",
         "completion_rule_distinguishes_any_from_all",
@@ -548,6 +550,10 @@
         "persist_if_needed_preserves_durable_fields_from_request_only_credentials",
         "durable_reconciliation_ignores_derived_expiry_drift",
         "concurrent_refreshes_call_provider_once_and_carry_omitted_fields",
+        "stale_unauthorized_response_adopts_newer_access_token_without_refreshing",
+        "current_unauthorized_response_forces_refresh_and_keeps_request_credentials_minimal",
+        "oauth_refresh_extends_operation_deadline_without_resetting_budget",
+        "oauth_refresh_exclusions_accumulate_on_the_outer_initialize_deadline",
         "caller_cancellation_does_not_cancel_refresh_persistence",
         "oauth_authorization_required_refreshes_oauth",
         "streamable_http_auth_required_refreshes_oauth",
@@ -582,8 +588,11 @@
       "files": [
         "codex-rs/cli/src/mcp_cmd.rs",
         "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/http-client/src/custom_ca.rs",
+        "codex-rs/http-client/src/lib.rs",
         "codex-rs/rmcp-client/src/auth_status.rs",
         "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_login.rs",
         "codex-rs/rmcp-client/src/lib.rs",
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
@@ -603,6 +612,9 @@
         "device_login_dynamic_registration_omits_refresh_when_not_supported",
         "device_login_configured_client_id_skips_dynamic_registration",
         "device_login_polls_until_authorized",
+        "device_login_retries_without_pkce_when_rejected",
+        "start_authorization_uses_configured_client_id",
+        "reqwest_client_builder_installs_rustls_provider_without_custom_ca",
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
@@ -782,7 +794,11 @@
       "files": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
+        ".github/validation-lanes.json",
+        ".github/scripts/test_ci_planners.py",
+        "justfile",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -790,7 +806,7 @@
         "codex-rs/tui/src/app_event.rs",
         "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs"
       ],
-      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across core and TUI surfaces.",
+      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across prompts and TUI surfaces. Custom review instructions are normalized once before prompt and default-hint derivation, while an explicit user-facing hint remains unchanged.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -799,7 +815,10 @@
       "guardrail_lane": "codex.custom-prompts-targeted",
       "tests": [
         "custom_prompts::tests::*",
-        "review_prompts::tests::*",
+        "resolve_review_request_custom_target_trims_prompt_and_hint",
+        "resolve_review_request_custom_target_preserves_explicit_hint_while_trimming_instructions",
+        "test_custom_prompt_review_prompt_crate_path_stays_targeted",
+        "test_review_request_pr_routes_to_custom_prompt_targeted_validation",
         "review_popup_custom_prompt_action_sends_event",
         "custom_prompt_submit_sends_review_op",
         "custom_prompt_enter_empty_does_not_send",
@@ -810,6 +829,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "prompt-catalog-adapter",
       "hotspot_files": [
+        "codex-rs/prompts/src/review_request.rs",
         "codex-rs/tui/src/app.rs"
       ],
       "extraction_target": "custom prompt and review-flow contributor"
@@ -817,35 +837,85 @@
     {
       "id": "code-mode-declaration-formatting",
       "title": "Code-mode declaration formatting",
-      "status": "upstream-equivalent",
+      "status": "live",
       "category": "core-protocol",
       "surface": [
         "code-mode declaration",
-        "tool metadata formatting"
+        "tool metadata formatting",
+        "fully-qualified callable routing"
       ],
       "files": [
-        "codex-rs/core/src/tools/code_mode_description.rs",
-        "codex-rs/core/src/tools/router.rs"
+        "codex-rs/code-mode-host/tests/stdio.rs",
+        "codex-rs/code-mode-protocol/src/description.rs",
+        "codex-rs/code-mode-protocol/src/host/payload.rs",
+        "codex-rs/code-mode/src/runtime/globals.rs",
+        "codex-rs/tools/src/code_mode.rs"
       ],
-      "behavior": "Code-mode declarations keep their downstream formatting and metadata shape, and custom tool calls preserve namespace metadata before routing.",
+      "behavior": "Code mode emits bounded, idempotent TypeScript declarations, exposes short-name and module metadata through ALL_TOOLS, and routes fully-qualified tool names without adding downstream metadata to the V1 wire payload.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-compile-smoke",
+      "guardrail_lane": "codex.code-mode-declaration-targeted",
       "tests": [
-        "code mode declaration formatting",
-        "build_custom_tool_call_uses_namespace_for_registry_name"
+        "render_json_schema_to_typescript_caps_deep_schema_recursion",
+        "augment_tool_definition_is_idempotent",
+        "augment_tool_definition_truncates_oversized_descriptions",
+        "code_mode_only_description_does_not_double_augment_tool_descriptions",
+        "code_mode_exports_all_tools_metadata_for_builtin_tools",
+        "code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools"
       ],
       "owner": "downstream",
-      "notes": "Keeps code-mode declarations namespaced and legible.",
+      "notes": "Keeps code-mode declarations bounded and legible while preserving the downstream metadata and routing contract outside the stable V1 wire shape.",
       "upstreamability_tier": "upstream-pr",
-      "boundary_type": "upstream-equivalent-history",
+      "boundary_type": "code-mode-tool-metadata",
       "hotspot_files": [
-
+        "codex-rs/code-mode-protocol/src/description.rs",
+        "codex-rs/code-mode/src/runtime/globals.rs",
+        "codex-rs/tools/src/code_mode.rs"
       ],
-      "extraction_target": "historical upstream-equivalent code-mode formatting"
+      "extraction_target": "upstreamable bounded declaration and callable metadata contract"
+    },
+    {
+      "id": "preferred-user-skill-name-precedence",
+      "title": "Preferred user skill name precedence",
+      "status": "live",
+      "category": "config",
+      "surface_type": "operator-facing",
+      "surface": [
+        "skills.prefer_user_skill_names",
+        "user-versus-repository skill selection"
+      ],
+      "files": [
+        "codex-rs/config/src/skills_config.rs",
+        "codex-rs/core-skills/src/service.rs",
+        "codex-rs/core-skills/src/service_tests.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/config.schema.json",
+        "justfile"
+      ],
+      "behavior": "Operators can name skills whose user or session-layer copy takes precedence over a repository copy. The policy is derived from the effective config stack, participates in the skill snapshot cache key, and disables only matching repository skills when an enabled user copy is present.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "b911f6acb3da0f269b27fed1f42302163e64b8df",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "preferred_user_skill_names_from_stack_collects_user_and_session_layers",
+        "finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured",
+        "parses_prefer_user_skill_names"
+      ],
+      "owner": "downstream",
+      "notes": "Ports the downstream precedence policy onto the upstream SkillsService and HostSkillsSnapshot architecture without retaining the removed SkillsManager API.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "skill-selection-policy",
+      "hotspot_files": [
+        "codex-rs/core-skills/src/service.rs",
+        "codex-rs/core/config.schema.json"
+      ],
+      "extraction_target": "upstreamable user skill precedence policy"
     },
     {
       "id": "agent-orchestration-skills",
@@ -866,9 +936,7 @@
         ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
-        ".codex/skills/",
-        "codex-rs/core-skills/src/manager.rs",
-        "codex-rs/core-skills/src/manager_tests.rs"
+        ".codex/skills/"
       ],
       "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
       "upstream_equivalent": false,
@@ -901,21 +969,25 @@
       "surface": [
         "validation lanes",
         "Sedna sync and heavy test workflows",
-        "GitHub scripts and lane metadata"
+        "GitHub scripts and lane metadata",
+        "reusable workflow input-to-shell boundary"
       ],
       "files": [
         ".github/actions/",
         ".github/codeql/",
+        ".github/dependabot.yaml",
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
         "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
+        "scripts/test-remote-env.sh",
         "scripts/start-codex-exec.sh",
-        "scripts/dispatch_sedna_release"
+        "scripts/dispatch_sedna_release",
+        "tools/argument-comment-lint/list-bazel-targets.sh"
       ],
-      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -925,6 +997,7 @@
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
+        "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
@@ -1018,7 +1091,7 @@
         "codex-rs/app-server-protocol/src/protocol/common.rs",
         "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
-        "codex-rs/android-computer-use/src/lib.rs",
+        "codex-rs/android-computer-use/",
         "codex-rs/tui/src/android_computer_use_provider.rs",
         "codex-rs/browser-computer-use/src/lib.rs",
         "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
@@ -1048,7 +1121,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.app-server-computer-use-targeted",
+      "guardrail_lane": "codex.app-server-computer-use-targeted; codex.native-computer-use-tool-registry-targeted; codex.build-policy-sanity",
       "tests": [
         "computer_use_call_round_trip_sends_client_response_to_model",
         "thread_resume_injects_native_android_tools_into_model_requests",
@@ -1060,6 +1133,8 @@
         "action_kind_accepts_current_and_compatibility_fields",
         "action_failure_summary_lists_completed_actions_without_payload_echo",
         "configured_android_tools_load_from_explicit_codex_home",
+        "verify_cargo_workspace_manifests.py",
+        "Bazel //codex-rs/android-computer-use/... build",
         "android_config_loads_provider_defaults_from_config_file",
         "launch_app_args_uses_configured_default_package_and_activity",
         "input_args_applies_default_serial_without_clobbering_explicit_serial",
@@ -1410,6 +1485,7 @@
         "scripts/install_sedna_release_asset",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
+        "scripts/install/test_install_sh.py",
         "scripts/stage_npm_packages.py",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
@@ -1428,7 +1504,11 @@
         "tools/argument-comment-lint/Cargo.lock",
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "package.json",
-        "scripts/codex-resume-recent.sh"
+        "scripts/codex-resume-recent.sh",
+        "codex-rs/http-client/src/outbound_proxy.rs",
+        "codex-rs/network-proxy/src/certs.rs",
+        "codex-rs/secrets/src/lib.rs",
+        "sdk/typescript/tests/runStreamed.test.ts"
       ],
       "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, and containment-checked Python SDK runtime archive staging.",
       "upstream_equivalent": false,
@@ -1439,12 +1519,17 @@
       "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted",
       "tests": [
         "bash -n scripts/install/install.sh",
+        "test_custom_repository_and_tag_prefix_drive_latest_urls",
         "verify_bazel_clippy_lints.py",
         "verify_cargo_workspace_manifests.py",
         "py_compile of stage_npm_packages.py and policy verifier scripts",
         "codex.sdk-python-targeted",
         "test_stage_runtime_release_rejects_archive_path_traversal",
-        "test_stage_runtime_release_rejects_archive_links"
+        "test_stage_runtime_release_rejects_archive_links",
+        "system_proxy_cache_key_preserves_url_specific_pac_decisions",
+        "managed_ca_certificate_path_uses_matching_content_hash",
+        "environment_id_fallback_has_cwd_prefix",
+        "returns thread events"
       ],
       "owner": "downstream",
       "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction.",
@@ -1456,6 +1541,53 @@
         "justfile"
       ],
       "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "sedna-release-update-routing",
+      "title": "Sedna release update routing",
+      "status": "live",
+      "category": "release",
+      "surface_type": "operator-facing",
+      "surface": [
+        "app-server update notifications",
+        "TUI update prompts and version selection",
+        "Sedna release asset installer"
+      ],
+      "files": [
+        ".github/scripts/resolve_sedna_release_version.py",
+        ".github/workflows/sedna-release.yml",
+        ".github/workflows/sedna-release-install.yml",
+        "codex-rs/app-server-daemon/src/update_loop.rs",
+        "codex-rs/tui/src/update_action.rs",
+        "codex-rs/tui/src/update_prompt.rs",
+        "codex-rs/tui/src/update_versions.rs",
+        "codex-rs/tui/src/version.rs",
+        "scripts/install_sedna_release_asset",
+        "scripts/resolve_sedna_release_version"
+      ],
+      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.build-policy-sanity; codex.workflow-ci-sanity",
+      "tests": [
+        "resolve_sedna_release_version.py tests",
+        "scripts/resolve_sedna_release_version --help",
+        "update prompt and version tests",
+        "sedna-release workflow policy checks"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "release-update-routing",
+      "hotspot_files": [
+        "codex-rs/app-server-daemon/src/update_loop.rs",
+        "codex-rs/tui/src/update_versions.rs",
+        ".github/workflows/sedna-release.yml"
+      ],
+      "extraction_target": "downstream release-channel adapter"
     },
     {
       "id": "side-chat-persistence-and-usage-ledger",
@@ -1473,6 +1605,7 @@
         "codex-rs/tui/src/app_event.rs",
         "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
+        "codex-rs/app-server-test-client/src/lib.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
