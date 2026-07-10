@@ -1420,6 +1420,42 @@
         "scripts/codex-resume-recent.sh"
       ],
       "extraction_target": "side-thread persistence and history filtering contract"
+    },
+    {
+      "id": "python-code-quality-corrections",
+      "title": "Python Code Quality corrections",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "Windows sandbox timeout smoke",
+        "cross-platform just shell launcher",
+        "issue-digest helper"
+      ],
+      "files": [
+        "codex-rs/windows-sandbox-rs/sandbox_smoketests.py",
+        "scripts/just-shell.py",
+        ".codex/skills/codex-issue-digest/scripts/collect_issue_digest.py"
+      ],
+      "behavior": "Python helper control flow is explicit: the timeout smoke exceeds the harness deadline, records its expected TimeoutExpired, and lets unexpected failures surface; the Unix just launcher is non-returning after execvp; and the issue digest does not retain an unused derived local.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub Code Quality main evaluation; codex.downstream-divergence-audit",
+      "tests": [
+        "GitHub Code Quality findings C277, C287, and C288 close after main evaluation",
+        "codex.downstream-divergence-audit"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve these three upstreamable maintenance corrections during syncs until upstream provides equivalent control flow; then drop this carry entry with the redundant patch.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+
+      ],
+      "extraction_target": "upstreamable Python static-analysis corrections"
     }
   ]
 }
