@@ -14,8 +14,7 @@ import tempfile
 import types
 import typing
 from dataclasses import dataclass
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Sequence, get_args, get_origin
 
 SDK_DISTRIBUTION_NAME = "openai-codex"
