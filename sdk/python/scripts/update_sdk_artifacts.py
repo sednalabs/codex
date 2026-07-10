@@ -15,6 +15,7 @@ import types
 import typing
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Sequence, get_args, get_origin
 
 SDK_DISTRIBUTION_NAME = "openai-codex"
@@ -261,11 +262,46 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
         raise RuntimeError(f"Expected a .tar.gz Codex package archive: {package_archive}")
 
     runtime_package_root.mkdir(parents=True, exist_ok=True)
+    extraction_root = runtime_package_root.resolve()
     with tarfile.open(package_archive, "r:gz") as archive:
-        try:
-            archive.extractall(runtime_package_root, filter="data")
-        except TypeError:
-            archive.extractall(runtime_package_root)
+        for member in archive.getmembers():
+            relative_path = PurePosixPath(member.name)
+            path_parts = tuple(part for part in relative_path.parts if part not in ("", "."))
+            if (
+                relative_path.is_absolute()
+                or not path_parts
+                or ".." in path_parts
+                or "\\" in member.name
+                or ":" in path_parts[0]
+            ):
+                raise RuntimeError(f"Unsafe path in Codex package archive: {member.name!r}")
+
+            destination = extraction_root.joinpath(*path_parts).resolve()
+            try:
+                destination.relative_to(extraction_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Unsafe path in Codex package archive: {member.name!r}"
+                ) from exc
+
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise RuntimeError(
+                    "Unsupported link or special entry in Codex package archive: "
+                    f"{member.name!r}"
+                )
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise RuntimeError(
+                    f"Unable to read Codex package archive entry: {member.name!r}"
+                )
+            with source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            destination.chmod(member.mode & 0o777)
 
     _validate_codex_package_layout(runtime_package_root, package_archive)
 

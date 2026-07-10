@@ -83,6 +83,9 @@ docs-only refresh commit that records this snapshot.
   reqwest owners remain denied. Hosted macOS V8 staging, Bazel
   clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
+  Python SDK runtime-package staging rejects archive traversal, links, and
+  special entries before writing ordinary package files beneath the staging
+  root, without an unfiltered compatibility fallback on older Python runtimes.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
   linting ordinary Rust call sites; V8 proof-of-concept buildability remains

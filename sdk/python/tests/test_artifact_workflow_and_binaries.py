@@ -752,6 +752,43 @@ def test_stage_runtime_release_rejects_incomplete_package_layout(tmp_path: Path)
         script.stage_python_runtime_package(tmp_path / "runtime-stage", "1.2.3", package_archive)
 
 
+def test_stage_runtime_release_rejects_archive_path_traversal(tmp_path: Path) -> None:
+    script = _load_update_script_module()
+    package_archive = tmp_path / "codex-package.tar.gz"
+    escaped_path = tmp_path / "escaped.txt"
+    payload = b"outside extraction root\n"
+    with tarfile.open(package_archive, "w:gz") as archive:
+        member = tarfile.TarInfo("../escaped.txt")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(RuntimeError, match="Unsafe path in Codex package archive"):
+        script.stage_python_runtime_package(
+            tmp_path / "runtime-stage",
+            "1.2.3",
+            package_archive,
+        )
+
+    assert not escaped_path.exists()
+
+
+def test_stage_runtime_release_rejects_archive_links(tmp_path: Path) -> None:
+    script = _load_update_script_module()
+    package_archive = tmp_path / "codex-package.tar.gz"
+    with tarfile.open(package_archive, "w:gz") as archive:
+        member = tarfile.TarInfo("bin/codex")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "../../outside"
+        archive.addfile(member)
+
+    with pytest.raises(RuntimeError, match="Unsupported link or special entry"):
+        script.stage_python_runtime_package(
+            tmp_path / "runtime-stage",
+            "1.2.3",
+            package_archive,
+        )
+
+
 def test_runtime_package_layout_is_included_by_wheel_config(
     tmp_path: Path,
 ) -> None:
