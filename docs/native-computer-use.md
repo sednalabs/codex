@@ -116,6 +116,26 @@ eyes-and-hands loop; performance artifacts are an opt-in evidence lane.
 
 ### Browser
 
+#### Surface identity and upstream relationship
+
+The browser names span different runtime layers and are not interchangeable
+aliases:
+
+- Upstream product Browser Use (`@Browser`) is an app-supplied in-app browser
+  surface. The official `@Chrome` integration is a separate app/extension
+  surface for a signed-in Chrome profile.
+- The stock upstream CLI/app-server can carry generic browser-like dynamic
+  tools when an external host supplies them, but it does not discover and
+  advertise the downstream local browser provider contract itself.
+- Downstream bare `browser_observe` and `browser_step` are Codex-native because
+  Codex owns their canonical schemas, transcript events, native image output,
+  provider dispatch, and start/resume/fork propagation. A runtime provider may
+  still use Playwright underneath that native contract.
+- `backend: "chrome"` selects a configured Chrome-class provider. It does not
+  by itself select upstream `@Chrome`, the official extension, or the user's
+  regular signed-in Chrome profile. Likewise, `backend: "iab"` requires a
+  provider that explicitly implements the app-integrated backend.
+
 - `browser_observe`: captures the current browser viewport as model-visible
   image output, optionally paired with compact page metadata.
 - `browser_step`: performs one or more bounded browser actions, then returns a

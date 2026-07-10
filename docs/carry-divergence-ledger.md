@@ -401,6 +401,24 @@ docs-only refresh commit that records this snapshot.
   `android_install_build_from_run`, `browser_observe`, `browser_step`,
   `desktop_observe`, and `desktop_step` dynamic tools into first-party native
   computer-use function tools with Codex-owned schemas.
+- Evaluate browser equivalence at the stock CLI/runtime boundary, not from the
+  existence of an upstream app feature or feature flag. Upstream product
+  Browser Use (`@Browser`) and the official signed-in Chrome integration
+  (`@Chrome`) are app-supplied surfaces. Upstream generic dynamic-tool plumbing
+  can carry browser-like tools when an external host supplies them, but that is
+  not equivalent to downstream CLI/TUI provider discovery and advertisement.
+- Downstream `browser_observe` and `browser_step` are the stable bare native
+  contract. "Native" means Codex owns their schemas, transcript events, image
+  output, provider dispatch, and lifecycle; the configured runtime may still
+  use Playwright. Likewise, `backend: "chrome"` selects a configured provider
+  backend and does not itself select upstream `@Chrome`, the official
+  extension, or a user's regular signed-in profile.
+- Do not drop this browser carry merely because upstream ships Browser Use,
+  Chrome integration, `browser_use` feature controls, or generic host-injected
+  dynamic tools. Treat upstream as equivalent only when the stock CLI owns an
+  equivalent bare-tool schema, provider discovery and advertisement, native
+  image/transcript semantics, and start/resume/fork propagation. Port these
+  guarantees over upstream dynamic-tool representation changes during sync.
 - Namespaced Android-like or browser-like tools remain ordinary dynamic tools
   so app-specific providers can keep their own tool surfaces without taking
   over the native Codex contract.
