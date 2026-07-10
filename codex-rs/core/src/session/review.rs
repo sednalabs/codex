@@ -31,7 +31,7 @@ pub(super) async fn spawn_review_thread(
         .models_manager
         .list_models(
             RefreshStrategy::OnlineIfUncached,
-            config.http_client_factory(),
+            base_config.http_client_factory(),
         )
         .await;
     let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
