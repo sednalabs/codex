@@ -534,9 +534,9 @@ docs-only refresh commit that records this snapshot.
   visible in the namespace description. Direct-only and app-only environments
   remain unchanged, so the app route is still a working fallback.
 - A difference in descriptions, input or output schemas, safety annotations,
-  task execution, icons, or parallel-call behavior keeps both routes visible,
-  labels both namespaces, and emits a structured warning. Routing names and
-  connector metadata are provenance, not callable-contract fields.
+  or task execution keeps both routes visible, labels both namespaces, and
+  emits a structured warning. Routing names, connector metadata, icons, and
+  server scheduling policy are provenance rather than callable-contract fields.
 - Primary files:
   - `codex-rs/core/src/mcp_tool_exposure.rs`
   - `codex-rs/core/src/mcp_tool_exposure_test.rs`
