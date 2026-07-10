@@ -594,11 +594,13 @@ def main() -> int:
 
     # 40. WS: timeout cleanup still denies outside write
     slow_ps = WS_ROOT / "sleep.ps1"
-    slow_ps.write_text("Start-Sleep 15", encoding="utf-8")
+    slow_ps.write_text(f"Start-Sleep {TIMEOUT_SEC + 5}", encoding="utf-8")
+    timeout_observed = False
     try:
         run_sbx("workspace-write", ["powershell", "-File", "sleep.ps1"], WS_ROOT)
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        timeout_observed = True
+    add("WS: sandbox command timeout observed", timeout_observed)
     outside_after_timeout = OUTSIDE / "timeout_leak.txt"
     remove_if_exists(outside_after_timeout)
     rc, out, err = run_sbx("workspace-write", ["cmd", "/c", f"echo leak > {outside_after_timeout}"], WS_ROOT)

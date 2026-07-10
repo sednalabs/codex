@@ -124,6 +124,27 @@ docs-only refresh commit that records this snapshot.
   - `docs/contributing.md`
   - `docs/downstream.md`
 
+### Python Code Quality Corrections
+
+- Downstream carries three upstreamable Python maintenance corrections so
+  GitHub Code Quality can verify the corresponding findings are closed on
+  `main`.
+- The Windows timeout security smoke exceeds the harness deadline, records its
+  expected `subprocess.TimeoutExpired`, and allows unexpected failures to
+  surface before checking that outside writes remain denied.
+- The Unix `just` shell launcher declares its `os.execvp` path as non-returning,
+  and the issue-digest collector no longer retains an unused derived local.
+- The same maintenance change removes an unused list from the downstream
+  divergence audit; that script remains covered by the existing branch-policy
+  carry rather than this upstream-fix record.
+- Preserve these corrections during upstream syncs until equivalent control
+  flow lands upstream. Once it does, drop the redundant patch and this carry
+  record.
+- Primary files:
+  - `codex-rs/windows-sandbox-rs/sandbox_smoketests.py`
+  - `scripts/just-shell.py`
+  - `.codex/skills/codex-issue-digest/scripts/collect_issue_digest.py`
+
 ### First-Party Usage Ledger Ownership
 
 - Downstream keeps usage-ledger ownership in this repo.
