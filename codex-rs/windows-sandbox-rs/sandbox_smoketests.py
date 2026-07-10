@@ -69,6 +69,7 @@ def run_sbx(
     cwd: Path,
     env_extra: Optional[dict] = None,
     additional_root: Optional[Path] = None,
+    timeout_sec: int = TIMEOUT_SEC,
 ) -> Tuple[int, str, str]:
     env = os.environ.copy()
     env.update(ENV_BASE)
@@ -94,7 +95,7 @@ def run_sbx(
     print(cmd_argv)
     cp = subprocess.run(argv, cwd=str(cwd), env=env,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        timeout=TIMEOUT_SEC, text=True)
+                        timeout=timeout_sec, text=True)
     return cp.returncode, cp.stdout, cp.stderr
 
 def have(cmd: str) -> bool:
@@ -594,10 +595,15 @@ def main() -> int:
 
     # 40. WS: timeout cleanup still denies outside write
     slow_ps = WS_ROOT / "sleep.ps1"
-    slow_ps.write_text(f"Start-Sleep {TIMEOUT_SEC + 5}", encoding="utf-8")
+    slow_ps.write_text("Start-Sleep 15", encoding="utf-8")
     timeout_observed = False
     try:
-        run_sbx("workspace-write", ["powershell", "-File", "sleep.ps1"], WS_ROOT)
+        run_sbx(
+            "workspace-write",
+            ["powershell", "-File", "sleep.ps1"],
+            WS_ROOT,
+            timeout_sec=1,
+        )
     except subprocess.TimeoutExpired:
         timeout_observed = True
     add("WS: sandbox command timeout observed", timeout_observed)

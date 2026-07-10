@@ -34,7 +34,6 @@ def main() -> int:
     if os.name == "nt":
         return run_powershell(command, recipe_name, recipe_args)
     run_sh(command, recipe_name, recipe_args)
-    raise RuntimeError("run_sh returned unexpectedly")
 
 
 def run_sh(command: str, recipe_name: str, recipe_args: list[str]) -> NoReturn:
