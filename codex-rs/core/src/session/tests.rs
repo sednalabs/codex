@@ -4957,15 +4957,16 @@ async fn new_default_turn_uses_config_aware_skills_for_role_overrides() {
         .default_environment()
         .map(|environment| environment.get_filesystem())
         .unwrap_or_else(|| std::sync::Arc::clone(&codex_exec_server::LOCAL_FS));
-    let parent_outcome = session
+    let parent_snapshot = session
         .services
         .skills_service
-        .skills_for_cwd(
+        .snapshot_for_cwd(
             &crate::skills_load_input_from_config(&parent_config, Vec::new()),
             /*force_reload*/ true,
             Some(Arc::clone(&skill_fs)),
         )
         .await;
+    let parent_outcome = parent_snapshot.outcome();
     let parent_skill = parent_outcome
         .skills
         .iter()
@@ -5584,20 +5585,23 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         turn_environments: Arc::clone(&thread_environments),
     };
 
+    let plugins_input = per_turn_config.plugins_config_input();
     let plugin_outcome = services
         .plugins_manager
-        .plugins_for_config(&per_turn_config.plugins_config_input())
+        .plugins_for_config(&plugins_input)
         .await;
     let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+    let plugin_skill_snapshots = services
+        .plugins_manager
+        .plugin_skill_snapshots_for_config(&plugins_input);
     let skills_input =
-        crate::skills_load_input_from_config(&per_turn_config, effective_skill_roots);
+        crate::skills_load_input_from_config(&per_turn_config, effective_skill_roots)
+            .with_plugin_skill_snapshots(plugin_skill_snapshots);
     let skill_fs = environment.get_filesystem();
-    let skills_outcome = Arc::new(
-        services
-            .skills_service
-            .skills_for_config(&skills_input, Some(Arc::clone(&skill_fs)))
-            .await,
-    );
+    let skills_snapshot = services
+        .skills_service
+        .snapshot_for_config(&skills_input, Some(Arc::clone(&skill_fs)))
+        .await;
     let turn_environments = turn_environments_for_tests(&environment, session_configuration.cwd());
     let turn_context = Session::make_turn_context(
         thread_id,
@@ -5617,7 +5621,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
-        codex_core_skills::HostSkillsSnapshot::new(skills_outcome),
+        skills_snapshot,
     );
     let session = Session {
         thread_id,
@@ -7762,20 +7766,23 @@ where
         turn_environments: Arc::clone(&thread_environments),
     };
 
+    let plugins_input = per_turn_config.plugins_config_input();
     let plugin_outcome = services
         .plugins_manager
-        .plugins_for_config(&per_turn_config.plugins_config_input())
+        .plugins_for_config(&plugins_input)
         .await;
     let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+    let plugin_skill_snapshots = services
+        .plugins_manager
+        .plugin_skill_snapshots_for_config(&plugins_input);
     let skills_input =
-        crate::skills_load_input_from_config(&per_turn_config, effective_skill_roots);
+        crate::skills_load_input_from_config(&per_turn_config, effective_skill_roots)
+            .with_plugin_skill_snapshots(plugin_skill_snapshots);
     let skill_fs = environment.get_filesystem();
-    let skills_outcome = Arc::new(
-        services
-            .skills_service
-            .skills_for_config(&skills_input, Some(Arc::clone(&skill_fs)))
-            .await,
-    );
+    let skills_snapshot = services
+        .skills_service
+        .snapshot_for_config(&skills_input, Some(Arc::clone(&skill_fs)))
+        .await;
     let turn_environments = turn_environments_for_tests(&environment, session_configuration.cwd());
     let turn_context = Arc::new(Session::make_turn_context(
         thread_id,
@@ -7795,7 +7802,7 @@ where
         turn_environments,
         session_configuration.cwd().clone(),
         "turn_id".to_string(),
-        codex_core_skills::HostSkillsSnapshot::new(skills_outcome),
+        skills_snapshot,
     ));
     let session = Arc::new(Session {
         thread_id,
