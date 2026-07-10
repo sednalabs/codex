@@ -1001,17 +1001,17 @@ impl AccountRequestProcessor {
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
 
-        let (response, detailed_rate_limit_reset_credits) = tokio::join!(
-            client.get_rate_limits_with_reset_credits(),
-            Self::detailed_rate_limit_reset_credits(&client),
-        );
-        let response = response
+        let response = client
+            .get_rate_limits_with_reset_credits()
+            .await
             .map_err(|err| internal_error(format!("failed to fetch codex rate limits: {err}")))?;
         if response.rate_limits.is_empty() {
             return Err(internal_error(
                 "failed to fetch codex rate limits: no snapshots returned",
             ));
         }
+        let detailed_rate_limit_reset_credits =
+            Self::detailed_rate_limit_reset_credits(&client).await;
 
         let rate_limits_by_limit_id: HashMap<_, _> = response
             .rate_limits
