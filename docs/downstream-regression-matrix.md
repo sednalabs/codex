@@ -145,6 +145,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     cargo-deny/cargo-audit exceptions for the remaining trusted transitive
     `plist`/`syntect` and `wayland-scanner`/`arboard` paths stay synchronized
     until those upstream crates can use `quick-xml >=0.41.0`.
+  - The direct-reqwest ownership ratchet permits
+    `codex-android-computer-use` only as named temporary migration debt while
+    its MCP transport is moved behind `codex-http-client`; unnamed new direct
+    reqwest owners still fail cargo-deny.
   - `v8-canary.yml` staging, macOS Bazel clippy, and macOS Bazel
     release-build verification keep hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the heavy

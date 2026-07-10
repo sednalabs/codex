@@ -77,7 +77,10 @@ docs-only refresh commit that records this snapshot.
   dependency is on the fixed line, and the remaining trusted transitive
   `plist`/`syntect` and `wayland-scanner`/`arboard` paths keep synchronized
   RustSec exceptions in `deny.toml` and `.cargo/audit.toml` until those
-  upstream crates can use `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel
+  upstream crates can use `quick-xml >=0.41.0`. The reqwest ownership ratchet
+  names `codex-android-computer-use` as temporary downstream migration debt
+  until its MCP transport moves behind `codex-http-client`; other new direct
+  reqwest owners remain denied. Hosted macOS V8 staging, Bazel
   clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
