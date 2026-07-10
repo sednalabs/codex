@@ -189,7 +189,7 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
 
 #[tokio::test(flavor = "current_thread")]
 async fn current_unauthorized_response_forces_refresh_and_keeps_request_credentials_minimal()
-    -> Result<()> {
+-> Result<()> {
     let (_env, server, mut initial) = test_context().await?;
     initial.expires_at = None;
     initial.token_response.0.set_expires_in(None);
