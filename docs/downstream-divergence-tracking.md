@@ -86,7 +86,7 @@ tests:
   - exec_command_reports_chunk_and_exit_metadata
   - write_stdin_returns_exit_metadata_and_clears_session
   - completion_rule_distinguishes_any_from_all
-  - command_execution_completion_precedes_turn_completion_and_preserves_process_id
+  - command_execution_notifications_include_process_id
   - shell_command_approval_emits_task_complete_before_tool_response
 owner: downstream
 notes: |
