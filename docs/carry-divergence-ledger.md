@@ -173,7 +173,7 @@ docs-only refresh commit that records this snapshot.
   billing-turn reporting semantics before the canonical source of truth can
   move out of this repository.
 - Primary files:
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
@@ -204,7 +204,6 @@ docs-only refresh commit that records this snapshot.
   live effective model first so sub-agent status does not regress to the
   parent/session model.
 - Primary files:
-  - `codex-rs/core/src/codex.rs`
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/tasks/mod.rs`
@@ -454,7 +453,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/protocol/src/items.rs`
   - `codex-rs/protocol/src/legacy_events.rs`
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/mod.rs`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
@@ -559,7 +558,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
-  - `codex-rs/app-server-protocol/src/protocol/v2.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/browser-computer-use/src/lib.rs`
@@ -568,11 +567,11 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/computer_use_provider.rs`
   - `codex-rs/tui/src/desktop_computer_use_provider.rs`
   - `codex-rs/exec/src/lib.rs`
-  - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_requests.rs`
   - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
-  - `codex-rs/tui/src/history_cell.rs`
+  - `codex-rs/tui/src/history_cell/computer_use.rs`
   - `codex-rs/rollout/src/policy.rs`
   - `codex-rs/rollout-trace/src/protocol_event.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
@@ -590,7 +589,8 @@ docs-only refresh commit that records this snapshot.
   stale defaults.
 - Primary files:
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/guardian/review_session.rs`
+  - `codex-rs/core/src/context_manager/history.rs`
   - `docs/downstream.md`
 
 ### MCP Server Safety Policy Extensions
