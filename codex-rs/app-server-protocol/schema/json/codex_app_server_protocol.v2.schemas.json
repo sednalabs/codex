@@ -837,6 +837,7 @@
       "enum": [
         "auto",
         "prompt",
+        "writes",
         "approve"
       ],
       "type": "string"
@@ -1057,6 +1058,11 @@
         {
           "const": "chatgptAuthTokens",
           "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only\nstored in memory. Token refresh must be handled by the external host app.",
+          "type": "string"
+        },
+        {
+          "const": "headers",
+          "description": "Backend auth supplied as request headers.",
           "type": "string"
         },
         {
@@ -7176,6 +7182,41 @@
       ],
       "type": "string"
     },
+    "ImageGenerationItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "revisedPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "savedPath": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "result"
+      ],
+      "type": "object"
+    },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
       "properties": {
@@ -7567,6 +7608,17 @@
         },
         {
           "properties": {
+            "appBrand": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LoginAppBrand"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "codexStreamlinedLogin": {
               "type": "boolean"
             },
@@ -7574,6 +7626,9 @@
               "const": "chatgpt",
               "title": "Chatgptv2::LoginAccountParamsType",
               "type": "string"
+            },
+            "useHostedLoginSuccessPage": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -7626,6 +7681,29 @@
             "chatgptAccountId"
           ],
           "title": "ChatgptAuthTokensv2::LoginAccountParams",
+          "type": "object"
+        },
+        {
+          "description": "[UNSTABLE] Managed Amazon Bedrock login is experimental.",
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockv2::LoginAccountParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "apiKey",
+            "region"
+          ],
+          "title": "AmazonBedrockv2::LoginAccountParams",
           "type": "object"
         }
       ],
@@ -7712,9 +7790,30 @@
           ],
           "title": "ChatgptAuthTokensv2::LoginAccountResponse",
           "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockv2::LoginAccountResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AmazonBedrockv2::LoginAccountResponse",
+          "type": "object"
         }
       ],
       "title": "LoginAccountResponse"
+    },
+    "LoginAppBrand": {
+      "enum": [
+        "codex",
+        "chatgpt"
+      ],
+      "type": "string"
     },
     "LogoutAccountResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15522,10 +15621,6 @@
               "$ref": "#/definitions/CollabAgentToolCallStatus",
               "description": "Current status of the collab tool call."
             },
-            "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
-              "type": "boolean"
-            },
             "tool": {
               "$ref": "#/definitions/CollabAgentTool",
               "description": "Name of the collab tool that was invoked."
@@ -15543,7 +15638,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -15580,23 +15674,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/definitions/WebSearchItem",
           "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/WebSearchAction"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "id": {
-              "type": "string"
-            },
-            "query": {
-              "type": "string"
-            },
             "type": {
               "const": "webSearch",
               "title": "WebSearchThreadItemType",
@@ -15604,9 +15683,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "query"
+            "type"
           ],
           "title": "WebSearchThreadItem",
           "type": "object"
@@ -15658,32 +15735,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/definitions/ImageGenerationItem",
           "properties": {
-            "id": {
-              "type": "string"
-            },
-            "result": {
-              "type": "string"
-            },
-            "revisedPrompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "savedPath": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
             "type": {
               "const": "imageGeneration",
               "title": "ImageGenerationThreadItemType",
@@ -15691,10 +15744,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "status",
-            "result"
+            "type"
           ],
           "title": "ImageGenerationThreadItem",
           "type": "object"
@@ -17980,6 +18030,31 @@
         "high"
       ],
       "type": "string"
+    },
+    "WebSearchItem": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "query"
+      ],
+      "type": "object"
     },
     "WebSearchLocation": {
       "additionalProperties": false,

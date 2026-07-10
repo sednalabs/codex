@@ -1532,7 +1532,7 @@
             "appBrand": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/LoginAppBrand"
+                  "$ref": "#/$defs/LoginAppBrand"
                 },
                 {
                   "type": "null"
@@ -1614,17 +1614,15 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "amazonBedrock"
-              ],
+              "const": "amazonBedrock",
               "title": "AmazonBedrockLoginAccountParamsType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "apiKey",
-            "region",
-            "type"
+            "region"
           ],
           "title": "AmazonBedrockLoginAccountParams",
           "type": "object"
