@@ -265,13 +265,9 @@ impl OAuthPersistor {
         let refreshed = match refresh_result {
             Ok(refreshed) => refreshed,
             Err(error) => {
-                install_tokens_in_manager_guard(
-                    &mut guard,
-                    &latest,
-                    CredentialExposure::Request,
-                )
-                .await
-                .context("failed to restore request-only OAuth credentials")?;
+                install_tokens_in_manager_guard(&mut guard, &latest, CredentialExposure::Request)
+                    .await
+                    .context("failed to restore request-only OAuth credentials")?;
                 return Err(error);
             }
         };

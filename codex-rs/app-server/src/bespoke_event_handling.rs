@@ -2470,9 +2470,7 @@ mod tests {
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
                 user_authorization: Some(GuardianUserAuthorization::Low),
                 rationale: Some("too risky".to_string()),
-                decision_source: Some(
-                    GuardianAssessmentDecisionSource::Agent,
-                ),
+                decision_source: Some(GuardianAssessmentDecisionSource::Agent),
                 action: action.clone(),
             },
         );
@@ -2524,9 +2522,7 @@ mod tests {
                 risk_level: None,
                 user_authorization: None,
                 rationale: None,
-                decision_source: Some(
-                    GuardianAssessmentDecisionSource::Agent,
-                ),
+                decision_source: Some(GuardianAssessmentDecisionSource::Agent),
                 action: action.clone(),
             },
         );

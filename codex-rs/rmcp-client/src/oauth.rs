@@ -60,11 +60,11 @@ use std::time::UNIX_EPOCH;
 use tracing::warn;
 
 use self::refresh_lock::RefreshCredentialLock;
-use self::refresh_transaction::install_tokens_in_manager;
 #[cfg(test)]
 use self::refresh_transaction::CredentialExposure;
 #[cfg(test)]
 use self::refresh_transaction::RefreshReason;
+use self::refresh_transaction::install_tokens_in_manager;
 #[cfg(test)]
 use self::refresh_transaction::request_oauth_token_response;
 #[cfg(test)]
@@ -1671,11 +1671,9 @@ mod tests {
         let _env = TempCodexHome::new();
         let tokens = sample_tokens();
         let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
-        let lock = super::RefreshCredentialLock::acquire_for_server(
-            &tokens.server_name,
-            &tokens.url,
-        )
-        .await?;
+        let lock =
+            super::RefreshCredentialLock::acquire_for_server(&tokens.server_name, &tokens.url)
+                .await?;
 
         let tokens_for_save = tokens.clone();
         let save = tokio::spawn(async move {
@@ -1746,11 +1744,9 @@ mod tests {
             .set_access_token(AccessToken::new("persisted-access-token".to_string()));
         super::install_tokens_in_manager(&manager, &updated).await?;
 
-        let lock = super::RefreshCredentialLock::acquire_for_server(
-            &tokens.server_name,
-            &tokens.url,
-        )
-        .await?;
+        let lock =
+            super::RefreshCredentialLock::acquire_for_server(&tokens.server_name, &tokens.url)
+                .await?;
         let persist = tokio::spawn(async move { persistor.persist_if_needed().await });
 
         time::sleep(Duration::from_millis(50)).await;
