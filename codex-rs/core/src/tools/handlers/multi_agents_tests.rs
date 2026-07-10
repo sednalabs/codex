@@ -496,7 +496,7 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_overrides() {
+async fn multi_agent_v2_spawn_full_fork_rejects_child_model_overrides() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -521,12 +521,13 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
                 "message": "inspect this repo",
                 "task_name": "fork_context_v2",
                 "model": "gpt-5-child-override",
-                "reasoning_effort": "low"
+                "reasoning_effort": "low",
+                "fork_turns": "all"
             })),
         ))
         .await
         .err()
-        .expect("default full fork should reject child model overrides");
+        .expect("full fork should reject child model overrides");
 
     assert_eq!(
         err,
@@ -534,6 +535,67 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_model_and_reasoning_overrides_default_to_independent_child() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    let turn = TurnContext {
+        config: Arc::new(config),
+        ..turn
+    }
+    .with_model("gpt-5.5".to_string(), &session.services.models_manager)
+    .await;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "use the lower-cost model",
+                "task_name": "lower_cost_child",
+                "model": "gpt-5.4-mini",
+                "reasoning_effort": "low"
+            })),
+        ))
+        .await
+        .expect("model and reasoning overrides should start an independent child");
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result["requested_model"], "gpt-5.4-mini");
+    assert_eq!(result["requested_reasoning_effort"], "low");
+    assert_eq!(result["effective_model"], "gpt-5.4-mini");
+    assert_eq!(result["requested_model_honored"], true);
+    assert_eq!(result["effective_reasoning_effort"], "low");
+
+    let child_thread_id = parse_agent_id(
+        result["agent_id"]
+            .as_str()
+            .expect("visible metadata should include the child id"),
+    );
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned child thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(snapshot.model, "gpt-5.4-mini");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
 }
 
 #[tokio::test]

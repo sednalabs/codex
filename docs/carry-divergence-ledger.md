@@ -288,6 +288,10 @@ docs-only refresh commit that records this snapshot.
   depth, thoroughness, research, investigation, or detailed codebase analysis
   do not by themselves authorize spawning.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
+- In v2, omitted `fork_turns` keeps full history only for inherited child
+  configuration. A role, model, or reasoning override instead defaults to an
+  independent child; explicit `fork_turns=all` continues to reject an override
+  rather than silently mixing a changed configuration with full parent history.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
 - `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
