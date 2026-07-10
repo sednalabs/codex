@@ -1369,7 +1369,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity",
+      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted",
       "tests": [
         "bash -n scripts/install/install.sh",
         "verify_bazel_clippy_lints.py",

@@ -123,8 +123,8 @@ mod thread_processor_behavior_tests {
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
-    use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::config_types::Settings;
+    use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
