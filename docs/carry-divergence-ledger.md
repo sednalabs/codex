@@ -97,6 +97,9 @@ docs-only refresh commit that records this snapshot.
   tests and host-local integration. Compact/resume rollback fixtures keep their
   event wait above nextest's 30-second slow threshold so hosted remote replay
   load does not masquerade as a product hang.
+- The Bazel crate macro accepts and forwards optional unit-test arguments so
+  upstream's serialized exec-server unit-test declaration remains analyzable
+  until equivalent macro support lands upstream.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -115,6 +118,7 @@ docs-only refresh commit that records this snapshot.
   - `.github/workflows/bazel.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
+  - `defs.bzl`
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/config/permissions.rs`
   - `codex-rs/core/src/config/permissions_tests.rs`

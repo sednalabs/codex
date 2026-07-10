@@ -1344,6 +1344,7 @@
         "scripts/install/install.ps1",
         "scripts/stage_npm_packages.py",
         "scripts/list-bazel-clippy-targets.sh",
+        "defs.bzl",
         "patches/",
         "sdk/typescript/src/events.ts",
         "sdk/typescript/tests/exec.test.ts",
@@ -1359,7 +1360,7 @@
         "package.json",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1373,7 +1374,7 @@
         "py_compile of stage_npm_packages.py and policy verifier scripts"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
