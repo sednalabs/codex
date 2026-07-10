@@ -84,7 +84,6 @@ mod streamable_http_retry;
 
 use self::streamable_http_retry::HandshakeError;
 use self::streamable_http_retry::STREAMABLE_HTTP_RETRY_DELAYS_MS;
-use self::streamable_http_retry::initialize_timeout_error;
 use self::streamable_http_retry::remaining_initialize_timeout;
 use self::streamable_http_retry::sleep_with_retry_deadline;
 
