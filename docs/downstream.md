@@ -114,8 +114,13 @@ User-visible behavior:
 - Code mode keeps the read-only `get_context_remaining` budget helper
   available while direct-model-only tools that require interactive user input
   stay hidden from nested execution.
-- `TurnCompleteEvent` includes `compaction_events_in_turn`.
-- Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
+- `TurnCompleteEvent` preserves upstream's optional structured terminal `error`
+  payload while adding downstream `compaction_events_in_turn`, `final_model`,
+  and `model_snapshot` metadata.
+- Guardrails for the carry-only turn-complete metadata live in
+  `codex.app-server-protocol-test` (`preserves_compaction_only_turn`), the core
+  `continue_after_stream_error` regression, and broader `TurnCompleteEvent`
+  shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
 - Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.

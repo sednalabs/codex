@@ -2303,6 +2303,7 @@ mod tests {
             compaction_events_in_turn: 0,
             final_model: Some("provider-final".to_string()),
             model_snapshot: Some("provider-snapshot".to_string()),
+            error: None,
             completed_at: Some(TEST_TURN_COMPLETED_AT),
             duration_ms: Some(TEST_TURN_DURATION_MS),
             time_to_first_token_ms: None,
@@ -2314,6 +2315,8 @@ mod tests {
             turn_id: Some(turn_id.to_string()),
             started_at: None,
             reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 

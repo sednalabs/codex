@@ -426,7 +426,10 @@ docs-only refresh commit that records this snapshot.
   calls so joins happen on state transitions rather than transcript churn.
 - This blocking MCP tool pattern was carried downstream before task support was
   fully operational.
-- `TurnCompleteEvent` carries `compaction_events_in_turn`.
+- `TurnCompleteEvent` retains upstream's optional structured terminal `error`
+  payload alongside downstream `compaction_events_in_turn`, `final_model`, and
+  `model_snapshot` metadata. Future conflict resolution must keep this additive
+  union rather than choosing either field set.
 - Token-count events also carry provider and model context in downstream flow.
 - Sub-agent delegate forwarding should continue to surface `TokenCount` events
   back to the parent session; preserve this behavior even when re-homing the
