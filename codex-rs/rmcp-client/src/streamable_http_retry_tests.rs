@@ -10,6 +10,17 @@ use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use super::*;
 
 #[test]
+fn oauth_refresh_exclusions_accumulate_on_the_outer_initialize_deadline() {
+    let initial_deadline = Instant::now() + Duration::from_secs(30);
+    let mut deadline = Some(initial_deadline);
+
+    extend_initialize_deadline(&mut deadline, Duration::from_secs(20));
+    extend_initialize_deadline(&mut deadline, Duration::from_secs(1));
+
+    assert_eq!(deadline, Some(initial_deadline + Duration::from_secs(21)));
+}
+
+#[test]
 fn retryable_initialize_error_includes_initialized_notification_context() {
     let contexts = [
         "send initialize request",

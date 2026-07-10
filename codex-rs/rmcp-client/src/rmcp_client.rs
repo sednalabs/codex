@@ -257,6 +257,12 @@ fn remaining_operation_timeout(
     }
 }
 
+fn extend_operation_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
+    if let Some(deadline) = deadline.as_mut() {
+        *deadline += excluded_time;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Elicitation {
     Mcp(CreateElicitationRequestParams),
@@ -987,6 +993,12 @@ impl RmcpClient {
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
         let service = self.service().await?;
+        let mut deadline = timeout.map(|duration| Instant::now() + duration);
+        let oauth_persistor = self.oauth_persistor().await;
+        let rejected_access_token = match oauth_persistor.as_ref() {
+            Some(oauth_persistor) => oauth_persistor.access_token_snapshot().await,
+            None => None,
+        };
         let mut result = Self::run_service_operation_with_transient_retries(
             Arc::clone(&service),
             label,
@@ -999,13 +1011,19 @@ impl RmcpClient {
         if result
             .as_ref()
             .is_err_and(Self::is_unauthorized_operation_error)
-            && let Some(oauth_persistor) = self.oauth_persistor().await
+            && let Some(oauth_persistor) = oauth_persistor
         {
-            oauth_persistor.refresh_after_unauthorized().await?;
+            let refresh_started_at = Instant::now();
+            let refresh_result = oauth_persistor
+                .refresh_after_unauthorized(rejected_access_token.as_deref())
+                .await;
+            extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
+            refresh_result?;
+            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
             result = Self::run_service_operation_with_transient_retries(
                 Arc::clone(&service),
                 label,
-                timeout,
+                remaining,
                 self.elicitation_pause_state.clone(),
                 &operation,
             )
@@ -1015,10 +1033,11 @@ impl RmcpClient {
         if result.as_ref().is_err_and(Self::is_session_expired_404) {
             self.reinitialize_after_session_expiry(&service).await?;
             let recovered_service = self.service().await?;
+            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
             result = Self::run_service_operation_with_transient_retries(
                 recovered_service,
                 label,
-                timeout,
+                remaining,
                 self.elicitation_pause_state.clone(),
                 &operation,
             )
@@ -1296,6 +1315,16 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "timed out awaiting tools/list after 30s");
+    }
+
+    #[test]
+    fn oauth_refresh_extends_operation_deadline_without_resetting_budget() {
+        let initial_deadline = Instant::now() + Duration::from_secs(30);
+        let mut deadline = Some(initial_deadline);
+
+        extend_operation_deadline(&mut deadline, Duration::from_secs(20));
+
+        assert_eq!(deadline, Some(initial_deadline + Duration::from_secs(20)));
     }
 
     fn transport_send_error(
