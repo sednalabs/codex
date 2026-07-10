@@ -525,6 +525,25 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/codex.rs`
   - `docs/downstream.md`
 
+### Direct And App-Backed MCP Tool Catalog Reconciliation
+
+- When a direct MCP server and an app connector expose the same logical
+  callable, Codex compares the complete model-visible contract before reducing
+  the catalog to one route.
+- Exact matches prefer the direct MCP route and make that routing decision
+  visible in the namespace description. Direct-only and app-only environments
+  remain unchanged, so the app route is still a working fallback.
+- A difference in descriptions, input or output schemas, safety annotations,
+  task execution, icons, or parallel-call behavior keeps both routes visible,
+  labels both namespaces, and emits a structured warning. Routing names and
+  connector metadata are provenance, not callable-contract fields.
+- Primary files:
+  - `codex-rs/core/src/mcp_tool_exposure.rs`
+  - `codex-rs/core/src/mcp_tool_exposure_test.rs`
+  - `.github/validation-lanes.json`
+  - `justfile`
+  - `docs/downstream-tool-surface-matrix.md`
+
 ### MCP Server Safety Policy Extensions
 
 - Downstream retains per-server safety controls:
