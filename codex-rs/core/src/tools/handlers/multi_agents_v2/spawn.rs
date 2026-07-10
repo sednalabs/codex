@@ -222,20 +222,12 @@ impl SpawnAgentArgs {
             ));
         }
 
-        let default_fork_turns = if self.agent_type.is_some()
-            || self.model.is_some()
-            || self.reasoning_effort.is_some()
-        {
-            "none"
-        } else {
-            "all"
-        };
         let fork_turns = self
             .fork_turns
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or(default_fork_turns);
+            .unwrap_or("all");
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);
