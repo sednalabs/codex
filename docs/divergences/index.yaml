@@ -1496,6 +1496,48 @@
       "extraction_target": "thread provenance and history-mode coexistence contract"
     },
     {
+      "id": "mcp-direct-app-tool-reconciliation",
+      "title": "Direct and app-backed MCP tool catalog reconciliation",
+      "status": "live",
+      "category": "tool-catalog",
+      "surface": [
+        "model-visible MCP tool inventory",
+        "deferred MCP tool search"
+      ],
+      "files": [
+        "codex-rs/core/src/mcp_tool_exposure.rs",
+        "codex-rs/core/src/mcp_tool_exposure_test.rs",
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "justfile",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-tool-surface-matrix.md"
+      ],
+      "behavior": "When a direct MCP server and an app connector expose the same logical callable with the same complete model-visible contract, Codex keeps the direct route and labels its provenance. Contract drift keeps both routes visible, labels the distinction, and emits a warning.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-tool-exposure-targeted",
+      "tests": [
+        "preserves_direct_only_tool_inventory",
+        "preserves_app_only_tool_inventory_as_fallback",
+        "prefers_one_provenance_visible_direct_tool_for_equivalent_routes",
+        "retains_and_labels_both_routes_when_callable_schemas_drift"
+      ],
+      "owner": "downstream",
+      "notes": "The equivalence check includes descriptions, input and output schemas, safety annotations, and task execution. Routing names, connector metadata, icons, and server scheduling policy remain provenance rather than callable-contract fields.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-tool-catalog-policy",
+      "hotspot_files": [
+        "codex-rs/core/src/mcp_tool_exposure.rs"
+      ],
+      "extraction_target": "generic MCP direct-versus-app route reconciliation"
+    },
+    {
       "id": "python-code-quality-corrections",
       "title": "Python Code Quality corrections",
       "status": "live",
