@@ -31,9 +31,9 @@ def main() -> int:
     recipe_name = sys.argv[2] if len(sys.argv) > 2 else ""
     recipe_args = sys.argv[3:]
 
-    if os.name == "nt":
-        return run_powershell(command, recipe_name, recipe_args)
-    run_sh(command, recipe_name, recipe_args)
+    if os.name != "nt":
+        run_sh(command, recipe_name, recipe_args)
+    return run_powershell(command, recipe_name, recipe_args)
 
 
 def run_sh(command: str, recipe_name: str, recipe_args: list[str]) -> NoReturn:
