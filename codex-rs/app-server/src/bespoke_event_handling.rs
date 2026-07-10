@@ -2159,6 +2159,9 @@ mod tests {
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_login::CodexAuth;
     use codex_protocol::AgentPath;
+    use codex_protocol::approvals::GuardianAssessmentDecisionSource;
+    use codex_protocol::approvals::GuardianCommandSource;
+    use codex_protocol::approvals::GuardianUserAuthorization;
     use codex_protocol::items::DynamicToolCallItem;
     use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
     use codex_protocol::items::SubAgentActivityItem;
@@ -2331,12 +2334,12 @@ mod tests {
             GuardianAssessmentStatus::InProgress => (None, None, None),
             GuardianAssessmentStatus::Approved => (
                 Some(codex_protocol::protocol::GuardianRiskLevel::Low),
-                Some(codex_protocol::protocol::GuardianUserAuthorization::High),
+                Some(GuardianUserAuthorization::High),
                 Some("looks safe".to_string()),
             ),
             GuardianAssessmentStatus::Denied => (
                 Some(codex_protocol::protocol::GuardianRiskLevel::High),
-                Some(codex_protocol::protocol::GuardianUserAuthorization::Low),
+                Some(GuardianUserAuthorization::Low),
                 Some("too risky".to_string()),
             ),
             GuardianAssessmentStatus::TimedOut => {
@@ -2358,7 +2361,7 @@ mod tests {
             decision_source: if matches!(status, GuardianAssessmentStatus::InProgress) {
                 None
             } else {
-                Some(codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent)
+                Some(GuardianAssessmentDecisionSource::Agent)
             },
             action: serde_json::from_value(json!({
                 "type": "command",
@@ -2404,7 +2407,7 @@ mod tests {
     fn guardian_assessment_started_uses_event_turn_id_fallback() {
         let conversation_id = ThreadId::new();
         let action = codex_protocol::protocol::GuardianAssessmentAction::Command {
-            source: codex_protocol::protocol::GuardianCommandSource::Shell,
+            source: GuardianCommandSource::Shell,
             command: "rm -rf /tmp/example.sqlite".to_string(),
             cwd: test_path_buf("/tmp").abs(),
         };
@@ -2450,7 +2453,7 @@ mod tests {
     fn guardian_assessment_completed_emits_review_payload() {
         let conversation_id = ThreadId::new();
         let action = codex_protocol::protocol::GuardianAssessmentAction::Command {
-            source: codex_protocol::protocol::GuardianCommandSource::Shell,
+            source: GuardianCommandSource::Shell,
             command: "rm -rf /tmp/example.sqlite".to_string(),
             cwd: test_path_buf("/tmp").abs(),
         };
@@ -2465,10 +2468,10 @@ mod tests {
                 completed_at_ms: Some(1_042),
                 status: codex_protocol::protocol::GuardianAssessmentStatus::Denied,
                 risk_level: Some(codex_protocol::protocol::GuardianRiskLevel::High),
-                user_authorization: Some(codex_protocol::protocol::GuardianUserAuthorization::Low),
+                user_authorization: Some(GuardianUserAuthorization::Low),
                 rationale: Some("too risky".to_string()),
                 decision_source: Some(
-                    codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
+                    GuardianAssessmentDecisionSource::Agent,
                 ),
                 action: action.clone(),
             },
@@ -2522,7 +2525,7 @@ mod tests {
                 user_authorization: None,
                 rationale: None,
                 decision_source: Some(
-                    codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
+                    GuardianAssessmentDecisionSource::Agent,
                 ),
                 action: action.clone(),
             },
