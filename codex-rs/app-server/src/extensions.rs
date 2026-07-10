@@ -570,6 +570,7 @@ mod tests {
             apps: vec![],
             app_templates: vec![],
             mcp_servers: vec![],
+            scheduled_tasks: None,
         };
         let mut install_response = PluginInstallResponse {
             auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,

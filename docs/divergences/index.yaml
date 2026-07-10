@@ -395,7 +395,7 @@
         "command_execution_item_lifecycle_emits_legacy_exec_events",
         "core_turn_item_into_thread_item_converts_supported_variants",
         "completion_rule_distinguishes_any_from_all",
-        "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
+        "command_execution_notifications_include_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
         "exec_command_tool_matches_expected_spec",
         "write_stdin_tool_matches_expected_spec",

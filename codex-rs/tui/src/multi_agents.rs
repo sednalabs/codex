@@ -1307,11 +1307,7 @@ mod tests {
             agent_state(CollabAgentStatus::Completed, Some("39916800")),
         );
         let waiting = waiting_begin(&receiver_thread_ids, &mut agent_metadata);
-        let finished = waiting_end(
-            &receiver_thread_ids,
-            &statuses,
-            &mut agent_metadata,
-        );
+        let finished = waiting_end(&receiver_thread_ids, &statuses, &mut agent_metadata);
 
         let snapshot = [waiting, finished]
             .iter()
