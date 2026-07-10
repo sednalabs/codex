@@ -11062,6 +11062,10 @@ async fn multi_agent_v2_rejects_invalid_tool_namespace() -> std::io::Result<()> 
             "features.multi_agent_v2.tool_namespace must match ^[a-zA-Z0-9_-]+$",
         ),
         (
+            "collaboration",
+            "features.multi_agent_v2.tool_namespace uses a reserved namespace: collaboration",
+        ),
+        (
             "functions",
             "features.multi_agent_v2.tool_namespace uses a reserved namespace: functions",
         ),
