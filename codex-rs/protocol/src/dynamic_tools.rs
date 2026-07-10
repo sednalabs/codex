@@ -16,10 +16,8 @@ pub struct DynamicToolSpec {
     pub description: String,
     pub input_schema: JsonValue,
     #[serde(default)]
-    #[ts(optional)]
     pub defer_loading: bool,
     #[serde(default = "default_dynamic_tool_persist_on_resume")]
-    #[ts(optional)]
     pub persist_on_resume: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
