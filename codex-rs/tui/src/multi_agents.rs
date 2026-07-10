@@ -1310,7 +1310,6 @@ mod tests {
         let finished = waiting_end(
             &receiver_thread_ids,
             &statuses,
-            /*timed_out*/ false,
             &mut agent_metadata,
         );
 
