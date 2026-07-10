@@ -2382,6 +2382,8 @@ mod tests {
                 turn_id: Some("turn-1".into()),
                 started_at: None,
                 reason: TurnAbortReason::Replaced,
+                completed_at: None,
+                duration_ms: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3653,6 +3655,8 @@ mod tests {
                 turn_id: Some("turn-a".into()),
                 started_at: None,
                 reason: TurnAbortReason::Replaced,
+                completed_at: None,
+                duration_ms: None,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
