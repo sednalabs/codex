@@ -15942,13 +15942,11 @@
               },
               "intervalHours": {
                 "format": "uint32",
-                "minimum": 0.0,
+                "minimum": 0,
                 "type": "integer"
               },
               "type": {
-                "enum": [
-                  "hourly"
-                ],
+                "const": "hourly",
                 "title": "HourlyScheduledTaskScheduleType",
                 "type": "string"
               }
@@ -15966,9 +15964,7 @@
                 "type": "string"
               },
               "type": {
-                "enum": [
-                  "daily"
-                ],
+                "const": "daily",
                 "title": "DailyScheduledTaskScheduleType",
                 "type": "string"
               }
@@ -15986,9 +15982,7 @@
                 "type": "string"
               },
               "type": {
-                "enum": [
-                  "weekdays"
-                ],
+                "const": "weekdays",
                 "title": "WeekdaysScheduledTaskScheduleType",
                 "type": "string"
               }
@@ -16012,9 +16006,7 @@
                 "type": "string"
               },
               "type": {
-                "enum": [
-                  "weekly"
-                ],
+                "const": "weekly",
                 "title": "WeeklyScheduledTaskScheduleType",
                 "type": "string"
               }
