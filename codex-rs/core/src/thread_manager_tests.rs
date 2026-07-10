@@ -1458,6 +1458,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
                 turn_id: None,
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted fork history"),
@@ -1479,6 +1481,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
                 turn_id: None,
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted empty history"),
@@ -1507,6 +1511,8 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
                 turn_id: None,
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected disabled interrupted fork history"),
@@ -1527,6 +1533,8 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
                 turn_id: None,
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             },
         ))])
         .expect("serialize expected disabled interrupted empty fork history"),
@@ -1543,6 +1551,8 @@ fn interrupted_snapshot_is_not_mid_turn() {
             turn_id: Some("turn-1".to_string()),
             started_at: None,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         })),
     ]);
 
@@ -1712,6 +1722,8 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
             turn_id: expected_turn_id,
             started_at: None,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     ))
     .expect("serialize interrupted abort event");
@@ -1831,6 +1843,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
                 turn_id: Some(turn_id),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                ..
             })) if turn_id == "turn-explicit"
         )
     }));

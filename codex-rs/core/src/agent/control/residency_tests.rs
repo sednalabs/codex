@@ -184,6 +184,8 @@ async fn mark_thread_interrupted(thread: &CodexThread) {
                 turn_id: Some(turn.sub_id.clone()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             }),
         )
         .await;

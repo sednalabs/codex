@@ -5895,7 +5895,9 @@ mod tests {
         }))?;
 
         match event {
-            EventMsg::TurnAborted(TurnAbortedEvent { turn_id, reason }) => {
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id, reason, ..
+            }) => {
                 assert_eq!(turn_id, None);
                 assert_eq!(reason, TurnAbortReason::Interrupted);
             }

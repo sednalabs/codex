@@ -1202,6 +1202,8 @@ mod tests {
                 turn_id: Some(turn_id.to_string()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             }),
         }
     }
