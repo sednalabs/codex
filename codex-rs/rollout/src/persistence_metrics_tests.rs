@@ -322,6 +322,7 @@ fn review_mode_persistence_depends_on_history_mode() {
             turn_id: Some("turn".to_string()),
             item_id: Some("exited-review".to_string()),
             review_output: None,
+            review_token_usage: None,
         })),
     ];
     let items = completed_items

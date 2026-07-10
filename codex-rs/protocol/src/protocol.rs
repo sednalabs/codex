@@ -5618,6 +5618,7 @@ mod tests {
                 turn_id: Some(turn_id),
                 item_id: Some(item_id),
                 review_output: Some(review_output),
+                ..
             })]
                 if turn_id == "turn-1"
                     && item_id == "exited-review"

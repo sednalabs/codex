@@ -1758,6 +1758,7 @@ mod tests {
                 turn_id: Some("turn-1".into()),
                 item_id: Some("exited-review".into()),
                 review_output: None,
+                review_token_usage: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".into(),

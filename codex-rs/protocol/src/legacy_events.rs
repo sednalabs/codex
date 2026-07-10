@@ -126,6 +126,8 @@ impl ExitedReviewModeItem {
             turn_id: Some(turn_id),
             item_id: Some(self.id.clone()),
             review_output: self.review_output.clone(),
+            // The persisted item predates review token accounting.
+            review_token_usage: None,
         })
     }
 }
@@ -165,6 +167,7 @@ impl CommandExecutionItem {
             parsed_cmd: self.parsed_cmd.clone(),
             source: self.source,
             interaction_input: self.interaction_input.clone(),
+            terminal_wait: None,
         })
     }
 
@@ -189,6 +192,7 @@ impl CommandExecutionItem {
             parsed_cmd: self.parsed_cmd.clone(),
             source: self.source,
             interaction_input: self.interaction_input.clone(),
+            terminal_wait: None,
             stdout: self.stdout.clone().unwrap_or_default(),
             stderr: self.stderr.clone().unwrap_or_default(),
             aggregated_output: self.aggregated_output.clone().unwrap_or_default(),
