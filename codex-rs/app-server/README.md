@@ -1561,7 +1561,7 @@ Each entry in `dynamicTools` is either a top-level function or a namespace conta
 - `name` must match `^[a-zA-Z0-9_-]+$` and be between 1 and 128 characters.
 - Namespace names must match `^[a-zA-Z0-9_-]+$` and be between 1 and 64 characters.
 - Namespace descriptions must be at most 1,024 characters.
-- Namespace names must not collide with reserved Responses runtime namespaces such as `functions`, `multi_tool_use`, `file_search`, `web`, `browser`, `image_gen`, `computer`, `container`, `terminal`, `python`, `python_user_visible`, `api_tool`, `tool_search`, or `submodel_delegator`.
+- Namespace names must not collide with reserved Responses runtime namespaces such as `functions`, `multi_tool_use`, `file_search`, `web`, `browser`, `image_gen`, `computer`, `container`, `terminal`, `python`, `python_user_visible`, `api_tool`, `tool_search`, `submodel_delegator`, `collaboration`, or `agents`.
 
 Each function may set `deferLoading`. When omitted, it defaults to `false`. Deferred functions must belong to a namespace. Set it to `true` to keep the function registered and callable by runtime features such as `code_mode`, while excluding it from the model-facing tool list sent on ordinary turns. When `tool_search` is available, deferred dynamic tools are searchable and can be exposed by a matching search result.
 
