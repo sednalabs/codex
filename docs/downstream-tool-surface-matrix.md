@@ -11,6 +11,7 @@ Last reviewed: pending the current integration sync.
 
 | Surface | `upstream/main` | `main` | Live divergence? | Guardrails |
 | --- | --- | --- | --- | --- |
+| Equivalent direct and app-backed MCP callables | Both model-visible routes remain in the catalog | Prefers the direct route and adds provenance only when connector identity, logical callable identity, descriptions, schemas, safety annotations, and task execution match; route metadata such as icons and server scheduling policy does not create a false drift signal; app-only remains a fallback, while callable-contract drift keeps both labeled routes visible and emits a warning. | yes | `codex.mcp-tool-exposure-targeted` |
 | `exec_command` | PTY execution and standard process fields | Adds `wait_until_terminal`, `max_wait_ms`, and `heartbeat_interval_ms` through the runtime capability provider. | yes | `codex.blocking-waits-unified-exec-targeted`; `codex.blocking-waits-core-targeted` |
 | `write_stdin` | Standard interactive-session fields | Adds the same bounded terminal-wait contract for empty input. | yes | `codex.blocking-waits-unified-exec-targeted` |
 | Bare Android, browser, and desktop tools | Ordinary client-supplied dynamic tools | Promoted to canonical `ComputerUse` handlers with Codex-owned schemas, adapter dispatch, and mutating classification. | yes | `codex.native-computer-use-tool-registry-targeted`; `codex.app-server-computer-use-targeted` |
