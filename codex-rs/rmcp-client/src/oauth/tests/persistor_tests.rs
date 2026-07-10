@@ -153,11 +153,6 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
     let (_env, server, mut latest) = test_context().await?;
     latest.expires_at = None;
     latest.token_response.0.set_expires_in(None);
-    Mock::given(method("POST"))
-        .and(path("/oauth/token"))
-        .expect(0)
-        .mount(&server)
-        .await;
     save_oauth_tokens_to_file(&latest)?;
     let manager = authorization_manager_for(&latest).await?;
     let persistor = OAuthPersistor::new(
@@ -183,7 +178,13 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
             .map(|credentials| credentials.access_token().secret().as_str()),
         Some(latest.token_response.0.access_token().secret().as_str())
     );
-    server.verify().await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request recording should be enabled")
+            .is_empty()
+    );
     Ok(())
 }
 
