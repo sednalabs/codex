@@ -2569,7 +2569,11 @@ mod tests {
             .expect("build config");
 
         let start_params = thread_start_params_from_config(&config);
-        let resume_params = thread_resume_params_from_config(&config, "thread-id".to_string());
+        let resume_params = thread_resume_params_from_config(
+            &config,
+            "thread-id".to_string(),
+            /*approvals_reviewer_override*/ None,
+        );
 
         let native_tools = vec![
             "browser_observe".to_string(),

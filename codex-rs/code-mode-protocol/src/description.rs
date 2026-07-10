@@ -964,9 +964,9 @@ mod tests {
 
         let description = build_exec_tool_description(
             &[tool],
+            &[],
             &BTreeMap::new(),
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
 
         assert_eq!(description.matches("exec tool declaration:").count(), 1);
@@ -1270,6 +1270,8 @@ bar"
         let deferred_tool = ToolDefinition {
             name: "mcp__sample__alpha".to_string(),
             tool_name: ToolName::namespaced("mcp__sample__", "alpha"),
+            all_tools_name: None,
+            all_tools_module: None,
             description: "Deferred tool".to_string(),
             kind: CodeModeToolKind::Function,
             input_schema: Some(json!({
@@ -1303,6 +1305,8 @@ bar"
             &[ToolDefinition {
                 name: "deferred_tool".to_string(),
                 tool_name: ToolName::plain("deferred_tool"),
+                all_tools_name: None,
+                all_tools_module: None,
                 description: "Deferred tool".to_string(),
                 kind: CodeModeToolKind::Function,
                 input_schema: None,
