@@ -189,10 +189,7 @@ async fn prefers_one_provenance_visible_direct_tool_for_equivalent_routes() {
                 std::slice::from_ref(&expected_tool),
             );
         } else {
-            assert_tool_infos_eq(
-                &exposure.direct_tools,
-                std::slice::from_ref(&expected_tool),
-            );
+            assert_tool_infos_eq(&exposure.direct_tools, std::slice::from_ref(&expected_tool));
             assert!(exposure.deferred_tools.is_none());
         }
     }
