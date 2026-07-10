@@ -116,6 +116,9 @@ fn append_namespace_note(tool: &mut McpToolInfo, note: &str) {
         .as_deref()
         .map(str::trim)
         .filter(|description| !description.is_empty());
+    if current.is_some_and(|description| description.contains(note)) {
+        return;
+    }
     tool.namespace_description = Some(match current {
         Some(description) if matches!(description.chars().last(), Some('.' | '!' | '?')) => {
             format!("{description} {note}")

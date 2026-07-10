@@ -173,7 +173,7 @@ async fn prefers_one_provenance_visible_direct_tool_for_equivalent_routes() {
 
     for search_tool_enabled in [false, true] {
         let exposure = build_mcp_tool_exposure(
-            &[direct_tool.clone(), app_tool.clone()],
+            &[direct_tool.clone(), app_tool.clone(), app_tool.clone()],
             Some(connectors.as_slice()),
             &config,
             search_tool_enabled,
