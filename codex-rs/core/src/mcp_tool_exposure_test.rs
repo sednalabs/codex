@@ -5,6 +5,7 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 use codex_tools::ToolName;
 use pretty_assertions::assert_eq;
+use rmcp::model::Icon;
 use rmcp::model::JsonObject;
 use rmcp::model::Meta;
 use rmcp::model::Tool;
@@ -93,6 +94,142 @@ fn with_visibility(mut tool: ToolInfo, visibility: &[&str]) -> ToolInfo {
             .clone(),
     ));
     tool
+}
+
+fn equivalent_ops_tool_pair() -> (ToolInfo, ToolInfo) {
+    let mut direct_tool = make_mcp_tool(
+        "ops",
+        "work_items_read",
+        "mcp__ops",
+        "work_items_read",
+        /*connector_id*/ None,
+        /*connector_name*/ None,
+    );
+    direct_tool.supports_parallel_tool_calls = true;
+    direct_tool.namespace_description = Some("Direct Ops tools".to_string());
+
+    let mut app_tool = make_mcp_tool(
+        CODEX_APPS_MCP_SERVER_NAME,
+        "ops_work_items_read",
+        "mcp__codex_apps__ops",
+        "_work_items_read",
+        Some("ops"),
+        Some("Ops"),
+    );
+    app_tool.namespace_description = Some("App-backed Ops tools".to_string());
+    app_tool.tool.description = direct_tool.tool.description.clone();
+    app_tool.tool.icons = Some(vec![Icon::new("https://example.test/ops.png")]);
+
+    (direct_tool, app_tool)
+}
+
+fn assert_tool_infos_eq(actual: &[ToolInfo], expected: &[ToolInfo]) {
+    assert_eq!(
+        serde_json::to_value(actual).expect("serialize actual tool inventory"),
+        serde_json::to_value(expected).expect("serialize expected tool inventory")
+    );
+}
+
+#[tokio::test]
+async fn preserves_direct_only_tool_inventory() {
+    let config = test_config().await;
+    let (direct_tool, _) = equivalent_ops_tool_pair();
+
+    let exposure = build_mcp_tool_exposure(
+        std::slice::from_ref(&direct_tool),
+        /*connectors*/ None,
+        &config,
+        /*search_tool_enabled*/ false,
+    );
+
+    assert_tool_infos_eq(&exposure.direct_tools, &[direct_tool]);
+    assert!(exposure.deferred_tools.is_none());
+}
+
+#[tokio::test]
+async fn preserves_app_only_tool_inventory_as_fallback() {
+    let config = test_config().await;
+    let (_, app_tool) = equivalent_ops_tool_pair();
+    let connectors = vec![make_connector("ops", "Ops")];
+
+    let exposure = build_mcp_tool_exposure(
+        std::slice::from_ref(&app_tool),
+        Some(connectors.as_slice()),
+        &config,
+        /*search_tool_enabled*/ false,
+    );
+
+    assert_tool_infos_eq(&exposure.direct_tools, &[app_tool]);
+    assert!(exposure.deferred_tools.is_none());
+}
+
+#[tokio::test]
+async fn prefers_one_provenance_visible_direct_tool_for_equivalent_routes() {
+    let config = test_config().await;
+    let connectors = vec![make_connector("ops", "Ops")];
+    let (direct_tool, app_tool) = equivalent_ops_tool_pair();
+    let mut expected_tool = direct_tool.clone();
+    append_namespace_note(&mut expected_tool, PREFERRED_DIRECT_ROUTE_NOTE);
+
+    for search_tool_enabled in [false, true] {
+        let exposure = build_mcp_tool_exposure(
+            &[direct_tool.clone(), app_tool.clone(), app_tool.clone()],
+            Some(connectors.as_slice()),
+            &config,
+            search_tool_enabled,
+        );
+
+        if search_tool_enabled {
+            assert!(exposure.direct_tools.is_empty());
+            assert_tool_infos_eq(
+                exposure
+                    .deferred_tools
+                    .as_deref()
+                    .expect("preferred route should remain searchable"),
+                std::slice::from_ref(&expected_tool),
+            );
+        } else {
+            assert_tool_infos_eq(&exposure.direct_tools, std::slice::from_ref(&expected_tool));
+            assert!(exposure.deferred_tools.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn retains_and_labels_both_routes_when_callable_schemas_drift() {
+    let config = test_config().await;
+    let connectors = vec![make_connector("ops", "Ops")];
+    let (mut direct_tool, mut app_tool) = equivalent_ops_tool_pair();
+    app_tool.tool.input_schema = Arc::new(
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "integer" }
+            }
+        })
+        .as_object()
+        .expect("input schema object")
+        .clone(),
+    );
+    let source_tools = vec![direct_tool.clone(), app_tool.clone()];
+    append_namespace_note(&mut direct_tool, DIRECT_ROUTE_DRIFT_NOTE);
+    append_namespace_note(&mut app_tool, APP_ROUTE_DRIFT_NOTE);
+
+    let exposure = build_mcp_tool_exposure(
+        &source_tools,
+        Some(connectors.as_slice()),
+        &config,
+        /*search_tool_enabled*/ true,
+    );
+
+    assert!(exposure.direct_tools.is_empty());
+    assert_tool_infos_eq(
+        exposure
+            .deferred_tools
+            .as_deref()
+            .expect("drifted routes should both remain searchable"),
+        &[direct_tool, app_tool],
+    );
 }
 
 #[tokio::test]

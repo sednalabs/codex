@@ -831,6 +831,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.mcp-tool-exposure-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "mcp-tool-exposure-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.mcp-safety-targeted",
       "groups": [
         "core"
