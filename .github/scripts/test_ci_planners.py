@@ -1820,6 +1820,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             (workflow_call_inputs.get("rust_batching") or {}).get("default"), "auto"
         )
+        for workflow_name in ("validation-lab.yml", "sedna-heavy-tests.yml"):
+            workflow_text = (
+                REPO_ROOT / ".github/workflows" / workflow_name
+            ).read_text()
+            self.assertIn("          - 'off'\n", workflow_text)
+            self.assertNotIn("          - off\n", workflow_text)
 
         metadata_job = ((payload.get("jobs") or {}).get("metadata") or {})
         self.assertEqual(
