@@ -597,7 +597,15 @@
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
-      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths."
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "headless-oauth-login",
+      "hotspot_files": [
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "justfile"
+      ],
+      "extraction_target": "upstreamable MCP OAuth device login flow"
     },
     {
       "id": "startup-plugin-sync-bounded-wait",
@@ -1428,7 +1436,7 @@
       ],
       "owner": "downstream",
       "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
-      "upstreamability_tier": "downstream-product",
+      "upstreamability_tier": "downstream-adapter",
       "boundary_type": "interactive-history-and-ledger",
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
@@ -1476,7 +1484,7 @@
       ],
       "owner": "downstream",
       "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode itself remains upstream-owned.",
-      "upstreamability_tier": "compatibility-carry",
+      "upstreamability_tier": "neutral-seam",
       "boundary_type": "thread-metadata-compatibility",
       "hotspot_files": [
         "codex-rs/protocol/",
