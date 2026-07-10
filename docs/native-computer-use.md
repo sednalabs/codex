@@ -591,7 +591,7 @@ of an explicit `browser_observe` or `browser_step` URL. Provider-managed
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
 - `codex-rs/app-server-protocol/src/protocol/common.rs`
-- `codex-rs/app-server-protocol/src/protocol/v2.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
 - `codex-rs/android-computer-use/src/lib.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
@@ -601,11 +601,11 @@ of an explicit `browser_observe` or `browser_step` URL. Provider-managed
 - `codex-rs/tui/src/computer_use_provider.rs`
 - `codex-rs/tui/src/desktop_computer_use_provider.rs`
 - `codex-rs/exec/src/lib.rs`
-- `codex-rs/tui/src/app/app_server_adapter.rs`
+- `codex-rs/tui/src/app/app_server_requests.rs`
 - `codex-rs/tui/src/app/app_server_events.rs`
 - `codex-rs/tui/src/chatwidget.rs`
 - `codex-rs/tui/src/chatwidget/interrupts.rs`
-- `codex-rs/tui/src/history_cell.rs`
+- `codex-rs/tui/src/history_cell/computer_use.rs`
 - `codex-rs/rollout/src/policy.rs`
 - `codex-rs/rollout-trace/src/protocol_event.rs`
 - `codex-rs/app-server/tests/suite/v2/computer_use.rs`

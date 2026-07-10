@@ -48,7 +48,7 @@
         "ledger runtime"
       ],
       "files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
@@ -71,7 +71,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/state/src/runtime.rs"
       ],
       "extraction_target": "extension-owned usage ledger storage namespace"
@@ -87,7 +87,7 @@
         "provider model identity display evidence"
       ],
       "files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/state/service.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
@@ -120,7 +120,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/turn.rs",
         "codex-rs/state/src/migrations.rs",
         "codex-rs/state/src/runtime.rs"
       ],
@@ -235,9 +235,10 @@
       },
       "guardrail_lane": "codex.core-subagent-surface-targeted",
       "tests": [
-        "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
+        "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
+        "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
-        "multi_agent_v2_list_agents_flags_active_descendants",
+        "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
         "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
@@ -368,7 +369,7 @@
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/core/src/codex.rs"
+        "codex-rs/core/src/session/mod.rs"
       ],
       "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
@@ -418,7 +419,6 @@
         "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/compact.rs",
         "codex-rs/core/src/compact_remote.rs",
-        "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
@@ -444,7 +444,8 @@
       ],
       "files": [
         "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/core/src/codex.rs"
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/context_manager/history.rs"
       ],
       "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults.",
       "upstream_equivalent": false,
@@ -461,7 +462,8 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-accounting-adapter",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/context_manager/history.rs",
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "review/history accounting contributor"
@@ -663,7 +665,6 @@
       },
       "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
       "tests": [
-        "sync_session_tree_token_usage_updates_combined_status_line_items",
         "live_app_server_context_compaction_start_updates_status_header",
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
@@ -998,7 +999,7 @@
         "codex-rs/app-server/src/computer_use.rs",
         "codex-rs/app-server/src/bespoke_event_handling.rs",
         "codex-rs/app-server-protocol/src/protocol/common.rs",
-        "codex-rs/app-server-protocol/src/protocol/v2.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
         "codex-rs/android-computer-use/src/lib.rs",
         "codex-rs/tui/src/android_computer_use_provider.rs",
@@ -1008,11 +1009,11 @@
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/exec/src/lib.rs",
-        "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/app_server_requests.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
-        "codex-rs/tui/src/history_cell.rs",
+        "codex-rs/tui/src/history_cell/computer_use.rs",
         "codex-rs/rollout/src/policy.rs",
         "codex-rs/rollout-trace/src/protocol_event.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
@@ -1236,7 +1237,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-capability-adapter",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/mod.rs",
         "codex-rs/core/src/config/permissions.rs",
         "codex-rs/linux-sandbox/src/linux_run_main.rs",
         "codex-rs/protocol/src/protocol.rs"
@@ -1414,9 +1415,7 @@
       "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test; codex.tui-agent-picker-targeted",
       "tests": [
         "state_runtime_records_direct_fork_snapshot_from_provider_rows",
-        "fork_stopped_thread_from_rollout_preserves_side_thread_source",
-        "thread_fork_side_source_persists_and_uses_side_filter",
-        "thread_list_hides_side_threads_until_side_filter_requested",
+        "thread_fork_side_source_persists_and_hides_from_default_list",
         "side_fork_config_is_persistent_and_appends_developer_guardrails",
         "slash_quit_in_side_conversation_requests_side_exit",
         "slash_exit_in_side_conversation_requests_side_exit",
@@ -1464,10 +1463,11 @@
       },
       "guardrail_lane": "codex.app-server-protocol-test; core-ledger-smoke",
       "tests": [
-        "thread_list_hides_side_threads_until_side_filter_requested",
+        "thread_fork_side_source_persists_and_hides_from_default_list",
         "observed_metadata_rebuilds_history_mode_from_canonical_session_meta",
         "live_thread_memory_mode_update_before_rollout_materializes_keeps_history_mode",
-        "generated thread protocol schema fixtures"
+        "typescript_schema_fixtures_match_generated",
+        "json_schema_fixtures_match_generated"
       ],
       "owner": "downstream",
       "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode itself remains upstream-owned.",
