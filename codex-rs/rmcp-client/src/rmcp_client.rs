@@ -354,7 +354,7 @@ where
     CurrentGeneration: Fn() -> usize,
 {
     let mut tools = Vec::new();
-    let mut cursor = None;
+    let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
     let mut seen_tool_names = HashSet::new();
 
