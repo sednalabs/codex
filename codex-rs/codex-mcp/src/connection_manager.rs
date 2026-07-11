@@ -34,7 +34,6 @@ use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
 use crate::server::McpServerMetadata;
 use crate::tools::ToolInfo;
-use crate::tools::filter_tools;
 use crate::tools::normalize_tools_for_model_with_prefix;
 use crate::tools::tool_with_model_visible_input_schema;
 use anyhow::Context;
@@ -540,11 +539,9 @@ impl McpConnectionManager {
 
         let list_start = Instant::now();
         let fetch_start = Instant::now();
-        let fetch_ticket = managed_client
-            .codex_apps_tools_cache_context
-            .as_ref()
-            .map(|cache_context| cache_context.begin_fetch(CodexAppsToolsFetchSource::HardRefresh));
-        let tools = list_tools_for_client_uncached(
+        let fetch_ticket =
+            managed_client.begin_tool_catalogue_fetch(CodexAppsToolsFetchSource::HardRefresh);
+        let catalogue = list_tools_for_client_uncached(
             CODEX_APPS_MCP_SERVER_NAME,
             /*is_codex_apps_mcp_server*/ true,
             &managed_client.client,
@@ -561,22 +558,13 @@ impl McpConnectionManager {
             &[],
         );
 
-        let tools =
-            match (
-                managed_client.codex_apps_tools_cache_context.as_ref(),
-                fetch_ticket,
-            ) {
-                (Some(cache_context), Some(fetch_ticket)) => cache_context
-                    .publish_if_newest_accepted(fetch_ticket, &managed_client.server_info, tools),
-                (None, None) => tools,
-                _ => unreachable!("Codex Apps fetch ticket requires cache context"),
-            };
+        let tools = managed_client.publish_tool_catalogue(catalogue, fetch_ticket);
         emit_duration(
             MCP_TOOLS_LIST_DURATION_METRIC,
             list_start.elapsed(),
             &[("cache", "miss")],
         );
-        let tools = filter_tools(tools, &managed_client.tool_filter)
+        let tools = tools
             .into_iter()
             .map(|mut tool| {
                 tool.tool = tool_with_model_visible_input_schema(&tool.tool);

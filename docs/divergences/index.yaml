@@ -1464,6 +1464,36 @@
       "extraction_target": "generic MCP direct-versus-app route reconciliation"
     },
     {
+      "id": "complete-mcp-tool-catalogue",
+      "title": "Complete MCP tool catalogue collection and refresh",
+      "status": "live",
+      "category": "tool-catalog",
+      "surface": ["paginated tools/list", "notifications/tools/list_changed"],
+      "files": [
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs"
+      ],
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "core-test-progressive",
+      "tests": [
+        "streamable_http_discovers_and_calls_later_page_tool",
+        "list_changed_replaces_one_complete_paginated_snapshot_with_another",
+        "complete_tool_walk_rejects_cursor_cycles"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve until upstream issue #26094 is closed by behavior equivalent to this bounded complete-snapshot contract; closed PR #27290 covered only the basic page walk.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-tool-catalog-contract",
+      "hotspot_files": [
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs"
+      ],
+      "extraction_target": "upstream MCP complete-catalogue collection and refresh"
+    },
+    {
       "id": "python-code-quality-corrections",
       "title": "Python Code Quality corrections",
       "status": "live",

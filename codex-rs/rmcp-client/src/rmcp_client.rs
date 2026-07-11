@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::future::Future;
 use std::io;
@@ -77,6 +78,10 @@ use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
+
+const MAX_TOOLS_LIST_PAGES: usize = 64;
+const MAX_TOOLS_LIST_ITEMS: usize = 10_000;
+const MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS: usize = 3;
 
 #[path = "streamable_http_retry.rs"]
 mod streamable_http_retry;
@@ -328,6 +333,85 @@ pub struct ListToolsWithConnectorIdResult {
     pub tools: Vec<ToolWithConnectorId>,
 }
 
+pub struct CompleteToolsWithConnectorIdResult {
+    pub generation: usize,
+    pub tools: Vec<ToolWithConnectorId>,
+}
+
+enum ToolCatalogueWalk {
+    Complete(Vec<ToolWithConnectorId>),
+    Changed,
+}
+
+async fn collect_tool_pages<Fetch, FetchFuture, CurrentGeneration>(
+    generation: usize,
+    current_generation: CurrentGeneration,
+    mut fetch_page: Fetch,
+) -> Result<ToolCatalogueWalk>
+where
+    Fetch: FnMut(Option<PaginatedRequestParams>) -> FetchFuture,
+    FetchFuture: Future<Output = Result<ListToolsWithConnectorIdResult>>,
+    CurrentGeneration: Fn() -> usize,
+{
+    let mut tools = Vec::new();
+    let mut cursor = None;
+    let mut seen_cursors = HashSet::new();
+    let mut seen_tool_names = HashSet::new();
+
+    for _ in 0..MAX_TOOLS_LIST_PAGES {
+        let params = cursor.as_ref().map(|cursor| {
+            PaginatedRequestParams::default().with_cursor(Some(cursor.clone()))
+        });
+        let page = fetch_page(params).await?;
+        let observed_items = tools.len().saturating_add(page.tools.len());
+        if observed_items > MAX_TOOLS_LIST_ITEMS {
+            if current_generation() != generation {
+                return Ok(ToolCatalogueWalk::Changed);
+            }
+            return Err(anyhow!(
+                "tools/list returned {observed_items} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}"
+            ));
+        }
+        for tool in &page.tools {
+            let name = tool.tool.name.as_ref();
+            if !seen_tool_names.insert(name.to_string()) {
+                if current_generation() != generation {
+                    return Ok(ToolCatalogueWalk::Changed);
+                }
+                return Err(anyhow!(
+                    "tools/list returned duplicate tool name {name:?}"
+                ));
+            }
+        }
+        tools.extend(page.tools);
+
+        let Some(next_cursor) = page.next_cursor else {
+            return if current_generation() == generation {
+                Ok(ToolCatalogueWalk::Complete(tools))
+            } else {
+                Ok(ToolCatalogueWalk::Changed)
+            };
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            if current_generation() != generation {
+                return Ok(ToolCatalogueWalk::Changed);
+            }
+            return Err(anyhow!(
+                "tools/list returned repeated cursor {next_cursor:?}"
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    if current_generation() != generation {
+        Ok(ToolCatalogueWalk::Changed)
+    } else {
+        Err(anyhow!(
+            "tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages"
+        ))
+    }
+}
+
 /// MCP client implemented on top of the official `rmcp` SDK.
 /// https://github.com/modelcontextprotocol/rust-sdk
 pub struct RmcpClient {
@@ -337,6 +421,7 @@ pub struct RmcpClient {
     initialize_context: Mutex<Option<InitializeContext>>,
     session_recovery_lock: Semaphore,
     elicitation_pause_state: ElicitationPauseState,
+    tool_list_generation: Arc<AtomicUsize>,
 }
 
 impl RmcpClient {
@@ -357,6 +442,7 @@ impl RmcpClient {
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -391,6 +477,7 @@ impl RmcpClient {
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -427,6 +514,7 @@ impl RmcpClient {
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
+            tool_list_generation: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -443,6 +531,7 @@ impl RmcpClient {
             params.clone(),
             send_elicitation,
             self.elicitation_pause_state.clone(),
+            Arc::clone(&self.tool_list_generation),
         );
         let pending_transport = {
             let mut guard = self.state.lock().await;
@@ -542,6 +631,52 @@ impl RmcpClient {
             next_cursor: result.next_cursor,
             tools,
         })
+    }
+
+    /// Lists one complete, internally consistent tool catalogue while preserving connector metadata.
+    ///
+    /// A non-null cursor is always followed as an opaque value, including the
+    /// empty string. The walk is bounded, rejects repeated cursors and duplicate
+    /// tool names, and restarts when `notifications/tools/list_changed` arrives
+    /// before the terminal page is collected.
+    ///
+    /// # Errors
+    /// Returns an error when a page fetch fails, pagination cycles or exceeds
+    /// its limits, tool names repeat, or the server changes its catalogue during
+    /// every bounded snapshot attempt.
+    pub async fn list_all_tools_with_connector_ids(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<CompleteToolsWithConnectorIdResult> {
+        let deadline = timeout.map(|duration| Instant::now() + duration);
+
+        for _ in 0..MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS {
+            let generation = self.tool_list_generation();
+            let walk = collect_tool_pages(
+                generation,
+                || self.tool_list_generation(),
+                |params| async move {
+                    let page_timeout =
+                        remaining_operation_timeout("tools/list", timeout, deadline)?;
+                    self.list_tools_with_connector_ids(params, page_timeout)
+                        .await
+                },
+            )
+            .await?;
+            if let ToolCatalogueWalk::Complete(tools) = walk {
+                return Ok(CompleteToolsWithConnectorIdResult { generation, tools });
+            }
+        }
+
+        Err(anyhow!(
+            "tools/list changed during {MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS} consecutive catalogue walks"
+        ))
+    }
+
+    /// Returns the notification generation for the server's tool catalogue.
+    #[must_use]
+    pub fn tool_list_generation(&self) -> usize {
+        self.tool_list_generation.load(Ordering::Acquire)
     }
 
     fn meta_string(meta: Option<&rmcp::model::Meta>, key: &str) -> Option<String> {
@@ -1240,14 +1375,126 @@ async fn create_oauth_transport_and_runtime(
 #[cfg(test)]
 mod tests {
     use std::any::TypeId;
+    use std::borrow::Cow;
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
+    use rmcp::model::JsonObject;
     use rmcp::transport::DynamicTransportError;
     use rmcp::transport::streamable_http_client::AuthRequiredError;
     use tokio::time;
 
     use super::*;
+
+    fn listed_tool(name: &str) -> ToolWithConnectorId {
+        ToolWithConnectorId {
+            tool: Tool::new(
+                Cow::Owned(name.to_string()),
+                Cow::Borrowed("test tool"),
+                Arc::new(JsonObject::new()),
+            ),
+            connector_id: None,
+            connector_name: None,
+            connector_description: None,
+        }
+    }
+
+    fn tool_page(names: &[&str], next_cursor: Option<&str>) -> ListToolsWithConnectorIdResult {
+        ListToolsWithConnectorIdResult {
+            next_cursor: next_cursor.map(str::to_string),
+            tools: names.iter().map(|name| listed_tool(name)).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_tool_walk_rejects_cursor_cycles() {
+        let mut pages = VecDeque::from([
+            tool_page(&["first"], Some("a")),
+            tool_page(&["second"], Some("b")),
+            tool_page(&["third"], Some("a")),
+        ]);
+
+        let error = collect_tool_pages(0, || 0, move |_params| {
+            std::future::ready(
+                pages
+                    .pop_front()
+                    .ok_or_else(|| anyhow!("missing fixture page")),
+            )
+        })
+        .await
+        .err()
+        .expect("cursor cycle should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "tools/list returned repeated cursor \"a\""
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_tool_walk_rejects_non_terminating_page_chain() {
+        let page_index = Rc::new(Cell::new(0));
+        let fetched_page_index = Rc::clone(&page_index);
+
+        let error = collect_tool_pages(0, || 0, move |_params| {
+            let index = fetched_page_index.get();
+            fetched_page_index.set(index + 1);
+            std::future::ready(Ok(ListToolsWithConnectorIdResult {
+                next_cursor: Some(format!("cursor-{index}")),
+                tools: vec![listed_tool(&format!("tool-{index}"))],
+            }))
+        })
+        .await
+        .err()
+        .expect("non-terminating page chain should fail");
+
+        assert_eq!(
+            error.to_string(),
+            format!("tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages")
+        );
+        assert_eq!(page_index.get(), MAX_TOOLS_LIST_PAGES);
+    }
+
+    #[tokio::test]
+    async fn tool_walk_discards_snapshot_changed_mid_collection() {
+        let generation = Arc::new(AtomicUsize::new(0));
+        let current_generation = Arc::clone(&generation);
+        let changed_generation = Arc::clone(&generation);
+        let calls = Rc::new(Cell::new(0));
+        let fetch_calls = Rc::clone(&calls);
+        let mut pages = VecDeque::from([
+            tool_page(&["old"], Some("next")),
+            tool_page(&["stale"], None),
+        ]);
+
+        let walk = collect_tool_pages(
+            0,
+            move || current_generation.load(Ordering::Acquire),
+            move |_params| {
+                let call = fetch_calls.get();
+                fetch_calls.set(call + 1);
+                if call == 1 {
+                    changed_generation.store(1, Ordering::Release);
+                }
+                std::future::ready(
+                    pages
+                        .pop_front()
+                        .ok_or_else(|| anyhow!("missing fixture page")),
+                )
+            },
+        )
+        .await
+        .expect("changed catalogue walk should be discarded without protocol error");
+
+        assert!(matches!(walk, ToolCatalogueWalk::Changed));
+        assert_eq!(calls.get(), 2);
+    }
 
     #[tokio::test]
     async fn active_time_timeout_pauses_while_elicitation_is_pending() {

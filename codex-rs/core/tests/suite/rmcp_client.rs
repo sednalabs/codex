@@ -2112,6 +2112,12 @@ enum StreamableHttpTestServerProcess {
     Remote(RemoteStreamableHttpServer),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolPagination {
+    Disabled,
+    Enabled,
+}
+
 /// Remote Streamable HTTP server process and copied files to remove on drop.
 struct RemoteStreamableHttpServer {
     container_name: String,
@@ -2219,7 +2225,12 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     // it is a host process.
     let expected_env_value = "propagated-env-http";
     let Some(http_server) =
-        start_streamable_http_test_server(expected_env_value, /*auth*/ None).await?
+        start_streamable_http_test_server(
+            expected_env_value,
+            /*auth*/ None,
+            ToolPagination::Disabled,
+        )
+        .await?
     else {
         return Ok(());
     };
@@ -2319,6 +2330,105 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What this tests: Codex drains every `tools/list` page, exposes the complete
+/// catalogue to the model, and can call a tool that was absent from page one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let call_id = "call-page-two";
+    let server_name = "rmcp_http_paginated";
+    let namespace = format!("mcp__{server_name}");
+    let tool_request_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-page-two"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "second_page_tool",
+                "{}",
+            ),
+            responses::ev_completed("resp-page-two"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-page-two", "page two tool completed"),
+            responses::ev_completed("resp-page-two-complete"),
+        ]),
+    )
+    .await;
+
+    let Some(http_server) = start_streamable_http_test_server(
+        "paginated-tools",
+        /*auth*/ None,
+        ToolPagination::Enabled,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let server_url = http_server.url().to_string();
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                McpServerTransportConfig::StreamableHttp {
+                    url: server_url,
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    fixture
+        .codex
+        .submit(read_only_user_turn(&fixture, "call the page two MCP tool"))
+        .await?;
+
+    let end_event = wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::McpToolCallEnd(_))
+    })
+    .await;
+    let EventMsg::McpToolCallEnd(end) = end_event else {
+        unreachable!("event guard guarantees McpToolCallEnd");
+    };
+    assert_eq!(end.invocation.server, server_name);
+    assert_eq!(end.invocation.tool, "second_page_tool");
+    let result = end.result.as_ref().expect("page two tool should succeed");
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(result.structured_content, Some(json!({ "page": 2 })));
+
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let request = tool_request_mock.single_request();
+    assert!(request.tool_by_name(&namespace, "echo").is_some());
+    assert!(
+        request
+            .tool_by_name(&namespace, "second_page_tool")
+            .is_some()
+    );
+
+    server.verify().await;
+    http_server.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_configured_auth_precedes_chatgpt_auth() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
@@ -2331,6 +2441,7 @@ async fn streamable_http_configured_auth_precedes_chatgpt_auth() -> anyhow::Resu
             expected_refresh_token: None,
             refreshed_access_token: None,
         }),
+        ToolPagination::Disabled,
     )
     .await?
     else {
@@ -2572,6 +2683,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
             expected_refresh_token: Some(refresh_token),
             refreshed_access_token: Some(expected_token),
         }),
+        ToolPagination::Disabled,
     )
     .await?
     else {
@@ -2717,6 +2829,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
 async fn start_streamable_http_test_server(
     expected_env_value: &str,
     auth: Option<StreamableHttpAuth<'_>>,
+    tool_pagination: ToolPagination,
 ) -> anyhow::Result<Option<StreamableHttpTestServer>> {
     let rmcp_http_server_bin = match cargo_bin("test_streamable_http_server") {
         Ok(path) => path,
@@ -2733,6 +2846,7 @@ async fn start_streamable_http_test_server(
                 &rmcp_http_server_bin,
                 expected_env_value,
                 auth,
+                tool_pagination,
             )
             .await?,
         ));
@@ -2758,6 +2872,9 @@ async fn start_streamable_http_test_server(
             command.env("MCP_REFRESH_ACCESS_TOKEN", refreshed_access_token);
         }
     }
+    if tool_pagination == ToolPagination::Enabled {
+        command.env("MCP_PAGINATE_TOOLS", "1");
+    }
     let mut child = command.spawn()?;
 
     wait_for_local_streamable_http_server(&mut child, &server_url, Duration::from_secs(5)).await?;
@@ -2773,6 +2890,7 @@ async fn start_remote_streamable_http_test_server(
     rmcp_http_server_bin: &Path,
     expected_env_value: &str,
     auth: Option<StreamableHttpAuth<'_>>,
+    tool_pagination: ToolPagination,
 ) -> anyhow::Result<StreamableHttpTestServer> {
     let remote_path = copy_binary_to_remote_env(
         container_name,
@@ -2809,6 +2927,9 @@ async fn start_remote_streamable_http_test_server(
                 sh_single_quote(refreshed_access_token)
             ));
         }
+    }
+    if tool_pagination == ToolPagination::Enabled {
+        env_assignments.push("MCP_PAGINATE_TOOLS=1".to_string());
     }
 
     let script = format!(
