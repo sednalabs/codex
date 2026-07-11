@@ -1425,7 +1425,7 @@ mod tests {
         ]);
 
         let error = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             || 0,
             move |_params| {
                 std::future::ready(
@@ -1449,11 +1449,11 @@ mod tests {
     async fn complete_tool_walk_rejects_duplicate_tool_names() {
         let mut pages = VecDeque::from([
             tool_page(&["same"], Some("next")),
-            tool_page(&["same"], None),
+            tool_page(&["same"], /*next_cursor*/ None),
         ]);
 
         let error = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             || 0,
             move |_params| {
                 std::future::ready(
@@ -1483,7 +1483,7 @@ mod tests {
         });
 
         let error = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             || 0,
             move |_params| {
                 std::future::ready(
@@ -1511,7 +1511,7 @@ mod tests {
         let fetched_page_index = Rc::clone(&page_index);
 
         let error = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             || 0,
             move |_params| {
                 let index = fetched_page_index.get();
@@ -1542,11 +1542,11 @@ mod tests {
         let fetch_calls = Rc::clone(&calls);
         let mut pages = VecDeque::from([
             tool_page(&["old"], Some("next")),
-            tool_page(&["stale"], None),
+            tool_page(&["stale"], /*next_cursor*/ None),
         ]);
 
         let walk = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             move || current_generation.load(Ordering::Acquire),
             move |_params| {
                 let call = fetch_calls.get();
@@ -1575,7 +1575,7 @@ mod tests {
         let changed_generation = Arc::clone(&generation);
 
         let walk = collect_tool_pages(
-            0,
+            /*generation*/ 0,
             move || current_generation.load(Ordering::Acquire),
             move |_params| {
                 changed_generation.store(1, Ordering::Release);
