@@ -2329,36 +2329,47 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What this tests: Codex drains every `tools/list` page, exposes the complete
-/// catalogue to the model, and can call a tool that was absent from page one.
+/// What this tests: Codex drains every `tools/list` page, indexes the complete
+/// catalogue for deferred search, and calls a tool that was absent from page one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let call_id = "call-page-two";
+    let search_call_id = "search-page-two";
     let server_name = "rmcp_http_paginated";
     let namespace = format!("mcp__{server_name}");
-    let tool_request_mock = mount_sse_once(
+    let response_mock = responses::mount_sse_sequence(
         &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-page-two"),
-            responses::ev_function_call_with_namespace(
-                call_id,
-                &namespace,
-                "second_page_tool",
-                "{}",
-            ),
-            responses::ev_completed("resp-page-two"),
-        ]),
-    )
-    .await;
-    mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_assistant_message("msg-page-two", "page two tool completed"),
-            responses::ev_completed("resp-page-two-complete"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-page-two-search"),
+                responses::ev_tool_search_call(
+                    search_call_id,
+                    &json!({
+                        "query": "second_page_tool page two proof",
+                        "limit": 8,
+                    }),
+                ),
+                responses::ev_completed("resp-page-two-search"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-page-two-call"),
+                responses::ev_function_call_with_namespace(
+                    call_id,
+                    &namespace,
+                    "second_page_tool",
+                    "{}",
+                ),
+                responses::ev_completed("resp-page-two-call"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-page-two-complete"),
+                responses::ev_assistant_message("msg-page-two", "page two tool completed"),
+                responses::ev_completed("resp-page-two-complete"),
+            ]),
+        ],
     )
     .await;
 
@@ -2415,11 +2426,42 @@ async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let request = tool_request_mock.single_request();
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
     assert!(
-        request
-            .tool_by_name(&namespace, "second_page_tool")
-            .is_some()
+        requests[0]
+            .body_json()
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|tool| {
+                tool.get("type").and_then(Value::as_str) == Some("tool_search")
+            })),
+        "the initial request should advertise deferred tool search"
+    );
+    let search_output = requests[1].tool_search_output(search_call_id);
+    assert_eq!(
+        search_output.get("status").and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        search_output.get("execution").and_then(Value::as_str),
+        Some("client")
+    );
+    let searchable_tools = json!({
+        "tools": search_output
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    });
+    assert!(
+        responses::namespace_child_tool(
+            &searchable_tools,
+            &namespace,
+            "second_page_tool",
+        )
+        .is_some(),
+        "tool_search should return the tool collected from page two"
     );
 
     server.verify().await;
