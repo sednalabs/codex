@@ -67,9 +67,7 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
         _thread_manager: &Arc<ThreadManager>,
         _config: &Arc<Config>,
         _auth_manager: Arc<AuthManager>,
-        _on_effective_plugins_changed: Option<
-            Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>,
-        >,
+        _on_effective_plugins_changed: Option<Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>>,
     ) {
     }
 
@@ -351,9 +349,7 @@ impl AppServerHooks for SednaAppServerHooks {
         thread_manager: &Arc<ThreadManager>,
         config: &Arc<Config>,
         auth_manager: Arc<AuthManager>,
-        on_effective_plugins_changed: Option<
-            Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>,
-        >,
+        on_effective_plugins_changed: Option<Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>>,
     ) {
         thread_manager
             .plugins_manager()
