@@ -824,6 +824,210 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
         self.run_git(repo, "commit", "-m", message)
         return self.run_git(repo, "rev-parse", "HEAD")
 
+    def valid_registry_entry(self, **overrides: object) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "id": "guarded-carry",
+            "status": "live",
+            "files": ["carry.py"],
+            "upstreamability_tier": "upstream-pr",
+            "boundary_type": "runtime-contract",
+            "hotspot_files": [],
+            "extraction_target": "upstream carry",
+            "owner": "downstream",
+            "guardrail_lane": "hosted-test",
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_required_markers_verify_exact_downstream_commit_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_text(
+                "def bounded_complete_snapshot():\n    return True\n",
+                encoding="utf-8",
+            )
+            downstream_sha = self.commit_all(repo, "guarded carry")
+            (repo / "carry.py").write_text(
+                "def working_tree_only():\n    return False\n",
+                encoding="utf-8",
+            )
+            registry = {
+                "divergences": [
+                    self.valid_registry_entry(
+                        required_markers={
+                            "carry.py": ["bounded_complete_snapshot", "return True"]
+                        }
+                    )
+                ]
+            }
+
+            DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+            checks = DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                repo,
+                downstream_sha,
+                registry,
+                {"guarded-carry"},
+            )
+
+            self.assertEqual(
+                checks,
+                [
+                    {
+                        "entry_id": "guarded-carry",
+                        "path": "carry.py",
+                        "markers": ["bounded_complete_snapshot", "return True"],
+                    }
+                ],
+            )
+
+    def test_required_markers_reject_missing_file_and_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_text("present = True\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "guarded carry")
+
+            cases = {
+                "missing marker": (
+                    {"carry.py": ["bounded_complete_snapshot"]},
+                    "carry.py is missing required markers: 'bounded_complete_snapshot'",
+                ),
+                "missing file": (
+                    {"missing.py": ["bounded_complete_snapshot"]},
+                    "required marker file is missing: missing.py",
+                ),
+            }
+            for label, (required_markers, message) in cases.items():
+                with self.subTest(label=label):
+                    registry = {
+                        "divergences": [
+                            self.valid_registry_entry(
+                                files=["*.py"],
+                                required_markers=required_markers,
+                            )
+                        ]
+                    }
+                    DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+                    with self.assertRaisesRegex(ValueError, message):
+                        DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                            repo,
+                            downstream_sha,
+                            registry,
+                            {"guarded-carry"},
+                        )
+
+    def test_required_markers_report_failures_without_enforcement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_text("present = True\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "guarded carry")
+            registry = {
+                "divergences": [
+                    self.valid_registry_entry(
+                        required_markers={
+                            "carry.py": ["missing_marker"],
+                        }
+                    )
+                ]
+            }
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                checks = DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                    repo,
+                    downstream_sha,
+                    registry,
+                    {"guarded-carry"},
+                    enforce=False,
+                )
+
+            self.assertEqual(checks, [])
+            self.assertEqual(
+                stderr.getvalue(),
+                "warning: guarded-carry: carry.py is missing required markers: "
+                "'missing_marker'\n",
+            )
+
+    def test_required_markers_report_invalid_contract_without_enforcement(self) -> None:
+        registry = {
+            "divergences": [
+                self.valid_registry_entry(
+                    required_markers={
+                        "carry.py": "not-a-list",
+                    }
+                )
+            ]
+        }
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            checks = DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                Path("."),
+                "unused",
+                registry,
+                {"guarded-carry"},
+                enforce=False,
+            )
+
+        self.assertEqual(checks, [])
+        self.assertEqual(
+            stderr.getvalue(),
+            "warning: guarded-carry: required_markers['carry.py'] must be a "
+            "non-empty list\n",
+        )
+
+    def test_required_markers_reject_unsafe_or_uncovered_paths(self) -> None:
+        cases = {
+            "parent traversal": (
+                {"../carry.py": ["marker"]},
+                "path must be a safe repo-relative POSIX path",
+            ),
+            "absolute": (
+                {"/carry.py": ["marker"]},
+                "path must be a safe repo-relative POSIX path",
+            ),
+            "uncovered": (
+                {"other.py": ["marker"]},
+                "path is not covered by files: other.py",
+            ),
+        }
+        for label, (required_markers, message) in cases.items():
+            with self.subTest(label=label):
+                registry = {
+                    "divergences": [
+                        self.valid_registry_entry(required_markers=required_markers)
+                    ]
+                }
+                with self.assertRaisesRegex(ValueError, message):
+                    DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+
+    def test_required_markers_reject_empty_marker_contracts(self) -> None:
+        cases = {
+            "empty object": ({}, "must be a non-empty object"),
+            "empty marker list": ({"carry.py": []}, "must be a non-empty list"),
+            "empty marker": (
+                {"carry.py": [""]},
+                "entries must be non-empty strings",
+            ),
+        }
+        for label, (required_markers, message) in cases.items():
+            with self.subTest(label=label):
+                registry = {
+                    "divergences": [
+                        self.valid_registry_entry(required_markers=required_markers)
+                    ]
+                }
+                with self.assertRaisesRegex(ValueError, message):
+                    DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+
     def test_registry_gate_uses_downstream_carry_not_upstream_ahead_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
