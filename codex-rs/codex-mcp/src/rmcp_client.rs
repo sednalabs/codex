@@ -116,7 +116,8 @@ pub(crate) struct ManagedClient {
 
 #[derive(Clone)]
 pub(crate) struct ToolCatalogueSnapshot {
-    pub(crate) generation: usize,
+    /// Highest tool-list notification generation already attempted.
+    pub(crate) observed_generation: usize,
     pub(crate) tools: Vec<ToolInfo>,
 }
 
@@ -155,13 +156,13 @@ impl ManagedClient {
 
     async fn refresh_tools_if_changed(&self) {
         let notified_generation = self.client.tool_list_generation();
-        if self.tool_catalogue.load().generation == notified_generation {
+        if self.tool_catalogue.load().observed_generation == notified_generation {
             return;
         }
 
         let _refresh_guard = self.tool_refresh_lock.lock().await;
         let notified_generation = self.client.tool_list_generation();
-        if self.tool_catalogue.load().generation == notified_generation {
+        if self.tool_catalogue.load().observed_generation == notified_generation {
             return;
         }
 
@@ -185,6 +186,14 @@ impl ManagedClient {
                     error = %error,
                     "failed to refresh MCP tool catalogue after list_changed; retaining last complete snapshot"
                 );
+                self.tool_catalogue.rcu(|current| {
+                    Arc::new(ToolCatalogueSnapshot {
+                        observed_generation: current
+                            .observed_generation
+                            .max(notified_generation),
+                        tools: current.tools.clone(),
+                    })
+                });
             }
         }
     }
@@ -219,11 +228,17 @@ impl ManagedClient {
             _ => unreachable!("Codex Apps fetch ticket requires cache context"),
         }
         let tools = filter_tools(tools, &self.tool_filter);
-        self.tool_catalogue.store(Arc::new(ToolCatalogueSnapshot {
-            generation,
-            tools: tools.clone(),
-        }));
-        tools
+        self.tool_catalogue.rcu(|current| {
+            if current.observed_generation > generation {
+                Arc::clone(current)
+            } else {
+                Arc::new(ToolCatalogueSnapshot {
+                    observed_generation: generation,
+                    tools: tools.clone(),
+                })
+            }
+        });
+        self.tool_catalogue.load().tools.clone()
     }
 }
 
@@ -951,7 +966,7 @@ async fn start_server_task(
         client: Arc::clone(&client),
         server_info,
         tool_catalogue: Arc::new(ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            generation: catalogue.generation,
+            observed_generation: catalogue.generation,
             tools,
         })),
         tool_refresh_lock: Arc::new(AsyncMutex::new(())),

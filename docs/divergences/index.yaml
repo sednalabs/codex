@@ -1480,7 +1480,7 @@
       "guardrail_lane": "core-test-progressive",
       "tests": [
         "streamable_http_discovers_and_calls_later_page_tool",
-        "list_changed_replaces_one_complete_paginated_snapshot_with_another",
+        "list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot",
         "complete_tool_walk_rejects_cursor_cycles"
       ],
       "owner": "downstream",

@@ -27,6 +27,7 @@ use super::*;
 #[derive(Clone)]
 struct ChangingPaginatedServer {
     generation: Arc<AtomicUsize>,
+    list_calls: Arc<AtomicUsize>,
     change: Arc<Notify>,
 }
 
@@ -34,6 +35,7 @@ impl ChangingPaginatedServer {
     fn new() -> Self {
         Self {
             generation: Arc::new(AtomicUsize::new(0)),
+            list_calls: Arc::new(AtomicUsize::new(0)),
             change: Arc::new(Notify::new()),
         }
     }
@@ -62,8 +64,12 @@ impl ServerHandler for ChangingPaginatedServer {
         request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        self.list_calls.fetch_add(1, Ordering::AcqRel);
         let generation = self.generation.load(Ordering::Acquire);
         async move {
+            if generation == 1 {
+                return Err(McpError::internal_error("transient list failure", None));
+            }
             let page = request.as_ref().and_then(|params| params.cursor.as_deref());
             let prefix = if generation == 0 { "old" } else { "new" };
             match page {
@@ -94,11 +100,13 @@ impl ServerHandler for ChangingPaginatedServer {
         let peer = context.peer.clone();
         async move {
             tokio::spawn(async move {
-                change.notified().await;
-                generation.store(1, Ordering::Release);
-                peer.notify_tool_list_changed()
-                    .await
-                    .expect("send tools/list_changed");
+                for next_generation in 1..=2 {
+                    change.notified().await;
+                    generation.store(next_generation, Ordering::Release);
+                    peer.notify_tool_list_changed()
+                        .await
+                        .expect("send tools/list_changed");
+                }
             });
         }
     }
@@ -124,9 +132,10 @@ impl InProcessTransportFactory for ChangingServerFactory {
 }
 
 #[tokio::test]
-async fn list_changed_replaces_one_complete_paginated_snapshot_with_another() {
+async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot() {
     let server = ChangingPaginatedServer::new();
     let change = Arc::clone(&server.change);
+    let list_calls = Arc::clone(&server.list_calls);
     let client = Arc::new(
         RmcpClient::new_in_process_client(Arc::new(ChangingServerFactory(server)))
             .await
@@ -156,7 +165,7 @@ async fn list_changed_replaces_one_complete_paginated_snapshot_with_another() {
         client: Arc::clone(&client),
         server_info,
         tool_catalogue: Arc::new(ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            generation: initial.generation,
+            observed_generation: initial.generation,
             tools: initial.tools,
         })),
         tool_refresh_lock: Arc::new(AsyncMutex::new(())),
@@ -172,6 +181,7 @@ async fn list_changed_replaces_one_complete_paginated_snapshot_with_another() {
         tool_names(managed.listed_tools().await),
         ["old_first", "old_later"]
     );
+    assert_eq!(list_calls.load(Ordering::Acquire), 2);
 
     change.notify_one();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -184,8 +194,29 @@ async fn list_changed_replaces_one_complete_paginated_snapshot_with_another() {
 
     assert_eq!(
         tool_names(managed.listed_tools().await),
+        ["old_first", "old_later"]
+    );
+    let calls_after_failed_refresh = list_calls.load(Ordering::Acquire);
+    assert_eq!(calls_after_failed_refresh, 3);
+    assert_eq!(
+        tool_names(managed.listed_tools().await),
+        ["old_first", "old_later"]
+    );
+    assert_eq!(list_calls.load(Ordering::Acquire), calls_after_failed_refresh);
+
+    change.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while client.tool_list_generation() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("receive next tools/list_changed");
+    assert_eq!(
+        tool_names(managed.listed_tools().await),
         ["new_first", "new_later"]
     );
+    assert_eq!(list_calls.load(Ordering::Acquire), 5);
     client.shutdown().await;
 }
 

@@ -117,7 +117,7 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
         ),
         server_info: create_test_server_info("Ready"),
         tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            generation: 0,
+            observed_generation: 0,
             tools,
         })),
         tool_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
