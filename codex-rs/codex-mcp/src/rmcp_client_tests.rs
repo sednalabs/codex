@@ -97,7 +97,7 @@ impl ServerHandler for ChangingPaginatedServer {
     ) -> impl std::future::Future<Output = ()> + Send + '_ {
         let generation = Arc::clone(&self.generation);
         let change = Arc::clone(&self.change);
-        let peer = context.peer.clone();
+        let peer = context.peer;
         async move {
             tokio::spawn(async move {
                 for next_generation in 1..=2 {

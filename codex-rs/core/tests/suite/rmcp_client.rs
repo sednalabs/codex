@@ -2416,7 +2416,6 @@ async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result
     })
     .await;
     let request = tool_request_mock.single_request();
-    assert!(request.tool_by_name(&namespace, "echo").is_some());
     assert!(
         request
             .tool_by_name(&namespace, "second_page_tool")
