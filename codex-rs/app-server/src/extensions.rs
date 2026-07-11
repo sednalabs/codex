@@ -19,6 +19,7 @@ use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core_plugins::EffectivePluginsChange;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
@@ -66,7 +67,9 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
         _thread_manager: &Arc<ThreadManager>,
         _config: &Arc<Config>,
         _auth_manager: Arc<AuthManager>,
-        _on_effective_plugins_changed: Option<Arc<dyn Fn() + Send + Sync>>,
+        _on_effective_plugins_changed: Option<
+            Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>,
+        >,
     ) {
     }
 
@@ -348,7 +351,9 @@ impl AppServerHooks for SednaAppServerHooks {
         thread_manager: &Arc<ThreadManager>,
         config: &Arc<Config>,
         auth_manager: Arc<AuthManager>,
-        on_effective_plugins_changed: Option<Arc<dyn Fn() + Send + Sync>>,
+        on_effective_plugins_changed: Option<
+            Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>,
+        >,
     ) {
         thread_manager
             .plugins_manager()
