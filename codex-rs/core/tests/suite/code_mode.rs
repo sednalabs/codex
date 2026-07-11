@@ -661,12 +661,16 @@ async fn code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools() -
                 "exec",
                 r#"
 const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
+  ({ name, module }) =>
+    name === "calendar_timezone_option_99" &&
+    module === "tools/mcp/codex_apps.js"
 );
 if (!tool) {
   text(JSON.stringify({ found: false }));
 } else {
-  const result = await tools[tool.name]({ timezone: "UTC" });
+  const result = await tools.mcp__codex_apps__calendar_timezone_option_99({
+    timezone: "UTC",
+  });
   text(JSON.stringify({
     found: true,
     isError: Boolean(result.isError),
@@ -781,23 +785,30 @@ async fn app_only_tools_are_not_visible_or_runnable_by_code_mode_model() -> Resu
         AppsTestServer::mount_with_app_only_tool(&server, AppsTestToolLoading::Searchable).await?;
     let code = format!(
         r#"
-const visibleTool = ALL_TOOLS.find(({{ name }}) => name === {visible_tool_name:?});
-const tool = ALL_TOOLS.find(({{ name }}) => name === {tool_name:?});
+const visibleTool = ALL_TOOLS.find(
+  ({{ name, module }}) =>
+    name === {visible_tool_name:?} && module === {tool_module:?}
+);
+const tool = ALL_TOOLS.find(
+  ({{ name, module }}) => name === {tool_name:?} && module === {tool_module:?}
+);
 let error = null;
 try {{
-  await tools[{tool_name:?}]({{}});
+  await tools[{callable_tool_name:?}]({{}});
 }} catch (caught) {{
   error = String(caught);
 }}
 text(JSON.stringify({{
   visibleListed: visibleTool !== undefined,
   listed: tool !== undefined,
-  callable: typeof tools[{tool_name:?}] === "function",
+  callable: typeof tools[{callable_tool_name:?}] === "function",
   error,
 }}));
 "#,
-        visible_tool_name = "mcp__codex_apps__calendar_timezone_option_99",
-        tool_name = DIRECT_CALENDAR_APP_ONLY_TOOL,
+        visible_tool_name = "calendar_timezone_option_99",
+        tool_name = "calendar__app_only_action",
+        tool_module = "tools/mcp/codex_apps.js",
+        callable_tool_name = DIRECT_CALENDAR_APP_ONLY_TOOL,
     );
 
     responses::mount_sse_once(
