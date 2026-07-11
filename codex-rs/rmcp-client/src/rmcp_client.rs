@@ -362,7 +362,13 @@ where
         let params = cursor
             .as_ref()
             .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor.clone())));
-        let page = fetch_page(params).await?;
+        let page = match fetch_page(params).await {
+            Ok(page) => page,
+            Err(_) if current_generation() != generation => {
+                return Ok(ToolCatalogueWalk::Changed);
+            }
+            Err(error) => return Err(error),
+        };
         let observed_items = tools.len().saturating_add(page.tools.len());
         if observed_items > MAX_TOOLS_LIST_ITEMS {
             if current_generation() != generation {
@@ -1440,6 +1446,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_tool_walk_rejects_duplicate_tool_names() {
+        let mut pages = VecDeque::from([
+            tool_page(&["same"], Some("next")),
+            tool_page(&["same"], None),
+        ]);
+
+        let error = collect_tool_pages(
+            0,
+            || 0,
+            move |_params| {
+                std::future::ready(
+                    pages
+                        .pop_front()
+                        .ok_or_else(|| anyhow!("missing fixture page")),
+                )
+            },
+        )
+        .await
+        .err()
+        .expect("duplicate tool names should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "tools/list returned duplicate tool name \"same\""
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_tool_walk_rejects_oversized_catalogues() {
+        let mut page = Some(ListToolsWithConnectorIdResult {
+            next_cursor: None,
+            tools: (0..=MAX_TOOLS_LIST_ITEMS)
+                .map(|index| listed_tool(&format!("tool-{index}")))
+                .collect(),
+        });
+
+        let error = collect_tool_pages(
+            0,
+            || 0,
+            move |_params| {
+                std::future::ready(
+                    page.take()
+                        .ok_or_else(|| anyhow!("missing oversized fixture page")),
+                )
+            },
+        )
+        .await
+        .err()
+        .expect("oversized tool catalogues should fail");
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "tools/list returned {} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}",
+                MAX_TOOLS_LIST_ITEMS + 1
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn complete_tool_walk_rejects_non_terminating_page_chain() {
         let page_index = Rc::new(Cell::new(0));
         let fetched_page_index = Rc::clone(&page_index);
@@ -1500,6 +1566,26 @@ mod tests {
 
         assert!(matches!(walk, ToolCatalogueWalk::Changed));
         assert_eq!(calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn tool_walk_discards_fetch_error_after_snapshot_change() {
+        let generation = Arc::new(AtomicUsize::new(0));
+        let current_generation = Arc::clone(&generation);
+        let changed_generation = Arc::clone(&generation);
+
+        let walk = collect_tool_pages(
+            0,
+            move || current_generation.load(Ordering::Acquire),
+            move |_params| {
+                changed_generation.store(1, Ordering::Release);
+                std::future::ready(Err(anyhow!("cursor invalidated by catalogue change")))
+            },
+        )
+        .await
+        .expect("an error from an invalidated snapshot should request a retry");
+
+        assert!(matches!(walk, ToolCatalogueWalk::Changed));
     }
 
     #[tokio::test]
