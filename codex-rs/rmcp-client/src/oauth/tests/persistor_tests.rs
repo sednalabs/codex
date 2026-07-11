@@ -166,6 +166,11 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
         ResolvedOAuthCredentialStore::File,
         Some(latest.clone()),
     );
+    let request_count_before_refresh = server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled")
+        .len();
 
     persistor
         .refresh_after_unauthorized(Some("superseded-access-token"))
@@ -182,12 +187,14 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
             .map(|credentials| credentials.access_token().secret().as_str()),
         Some(latest.token_response.0.access_token().secret().as_str())
     );
-    assert!(
+    drop(guard);
+    assert_eq!(
         server
             .received_requests()
             .await
             .expect("request recording should be enabled")
-            .is_empty()
+            .len(),
+        request_count_before_refresh
     );
     Ok(())
 }

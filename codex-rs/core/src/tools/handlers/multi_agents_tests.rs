@@ -3179,7 +3179,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
 }
 
 #[tokio::test]
@@ -3196,7 +3196,7 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
     );
 }
 
