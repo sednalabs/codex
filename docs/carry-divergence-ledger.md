@@ -869,8 +869,8 @@ docs-only refresh commit that records this snapshot.
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
-  - `39` carry-only merge commits are sync history, not independent downstream
-    behaviors.
+  - carry-only merge commits are sync history, not independent downstream
+    behaviors; do not treat their count as a behavior inventory.
 - Merge-repair and promotion-fix history:
   - examples include `Fix main core regressions after upstream sync`,
     `Fix main promotion follow-ups`, and
