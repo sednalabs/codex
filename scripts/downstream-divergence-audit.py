@@ -875,7 +875,9 @@ def verify_required_markers(
                 errors.append(f"{entry_id}: required marker file is missing: {path}")
                 continue
 
-            missing_markers = [marker for marker in markers if marker not in result.stdout]
+            missing_markers = [
+                marker for marker in markers if marker not in result.stdout
+            ]
             if missing_markers:
                 errors.append(
                     f"{entry_id}: {path} is missing required markers: "
@@ -892,7 +894,9 @@ def verify_required_markers(
             )
 
     if errors and enforce:
-        raise ValueError("required marker verification failed:\n- " + "\n- ".join(errors))
+        raise ValueError(
+            "required marker verification failed:\n- " + "\n- ".join(errors)
+        )
     for error in errors:
         print(f"warning: {error}", file=sys.stderr)
     return checks
