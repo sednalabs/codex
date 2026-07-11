@@ -283,25 +283,26 @@ jobs:
           fi
           preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
 
-          selection_meta="$(python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --fanout-tier "${LAB_FANOUT_TIER}" --lanes "${LAB_LANES}" --rust-batching "${LAB_RUST_BATCHING}" --rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}")"
+          selection_meta_path="${RUNNER_TEMP}/validation-selection-meta.json"
+          python3 .github/scripts/resolve_validation_plan.py lab --profile "${LAB_PROFILE}" --lane-set "${LAB_LANE_SET}" --fanout-tier "${LAB_FANOUT_TIER}" --lanes "${LAB_LANES}" --rust-batching "${LAB_RUST_BATCHING}" --rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}" --artifact-build "${LAB_ARTIFACT_BUILD}" --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" "${catalog_args[@]}" > "${selection_meta_path}"
 
           # Helper function for robustly parsing the validation plan metadata.
           # We include explicit error reporting for missing fields or malformed JSON
           # to diagnose environment-specific CI failures.
           parse_meta() {
             local field="$1"
-            python3 - "$field" <<'PY'
+            env -i PATH="${PATH}" SELECTION_META_PATH="${selection_meta_path}" python3 - "$field" <<'PY'
           import json
           import os
           import sys
+          from pathlib import Path
 
           field = sys.argv[1]
-          meta_raw = os.environ["SELECTION_META"]
 
           try:
-              meta = json.loads(meta_raw)
+              meta = json.loads(Path(os.environ["SELECTION_META_PATH"]).read_text(encoding="utf-8"))
           except json.JSONDecodeError as exc:
-              sys.stderr.write(f"ERROR: Failed to parse SELECTION_META as JSON: {exc}\n")
+              sys.stderr.write(f"ERROR: Failed to parse selection metadata JSON: {exc}\n")
               raise SystemExit(1)
 
           if field not in meta:
@@ -316,58 +317,59 @@ jobs:
           PY
           }
 
-          profile_intent="$(SELECTION_META="${selection_meta}" parse_meta "profile_intent")"
-          profile_notes="$(SELECTION_META="${selection_meta}" parse_meta "profile_notes")"
-          lane_summary="$(SELECTION_META="${selection_meta}" parse_meta "lane_summary")"
-          run_selected_lanes="$(SELECTION_META="${selection_meta}" parse_meta "run_selected_lanes")"
-          run_smoke_gate="$(SELECTION_META="${selection_meta}" parse_meta "run_smoke_gate")"
-          smoke_gate_kind="$(SELECTION_META="${selection_meta}" parse_meta "smoke_gate_kind")"
-          smoke_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_matrix")"
-          smoke_workflow_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_matrix")"
-          smoke_node_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_matrix")"
-          smoke_rust_minimal_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_matrix")"
-          smoke_rust_integration_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_matrix")"
-          smoke_release_matrix="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_matrix")"
-          smoke_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_workflow_lane_count")"
-          smoke_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_node_lane_count")"
-          smoke_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_minimal_lane_count")"
-          smoke_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_rust_integration_lane_count")"
-          smoke_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "smoke_release_lane_count")"
-          selected_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_matrix")"
-          planned_matrix="$(SELECTION_META="${selection_meta}" parse_meta "planned_matrix")"
-          selected_lane_ids="$(SELECTION_META="${selection_meta}" parse_meta "selected_lane_ids")"
-          run_artifact="$(SELECTION_META="${selection_meta}" parse_meta "run_artifact")"
-          matrix_fail_fast="$(SELECTION_META="${selection_meta}" parse_meta "matrix_fail_fast")"
-          matrix_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "matrix_max_parallel")"
-          fanout_tier="$(SELECTION_META="${selection_meta}" parse_meta "fanout_tier")"
-          planned_job_count="$(SELECTION_META="${selection_meta}" parse_meta "planned_job_count")"
-          rust_batching_mode="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_mode")"
-          rust_batching_reason="$(SELECTION_META="${selection_meta}" parse_meta "rust_batching_reason")"
-          selected_setup_classes="$(SELECTION_META="${selection_meta}" parse_meta "selected_setup_classes")"
-          selected_workflow_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_matrix")"
-          selected_node_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_matrix")"
-          selected_rust_minimal_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_matrix")"
-          selected_rust_integration_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_matrix")"
-          selected_release_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_matrix")"
-          selected_rust_minimal_batch_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_matrix")"
-          selected_rust_integration_batch_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_matrix")"
-          selected_workflow_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_workflow_lane_count")"
-          selected_node_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_node_lane_count")"
-          selected_rust_minimal_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_lane_count")"
-          selected_rust_integration_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_lane_count")"
-          selected_release_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_release_lane_count")"
-          selected_rust_minimal_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_minimal_batch_count")"
-          selected_rust_integration_batch_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_batch_count")"
-          selected_nextest_archive_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_nextest_archive_matrix")"
-          selected_nextest_archive_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_nextest_archive_count")"
-          selected_rust_integration_archive_matrix="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_archive_matrix")"
-          selected_rust_integration_archive_lane_count="$(SELECTION_META="${selection_meta}" parse_meta "selected_rust_integration_archive_lane_count")"
-          workflow_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "workflow_max_parallel")"
-          node_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "node_max_parallel")"
-          rust_minimal_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_minimal_max_parallel")"
-          rust_integration_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "rust_integration_max_parallel")"
-          release_max_parallel="$(SELECTION_META="${selection_meta}" parse_meta "release_max_parallel")"
-          planner_fingerprint="$(SELECTION_META="${selection_meta}" python3 .github/scripts/validation_plan_fingerprint.py \
+          profile_intent="$(parse_meta "profile_intent")"
+          profile_notes="$(parse_meta "profile_notes")"
+          lane_summary="$(parse_meta "lane_summary")"
+          run_selected_lanes="$(parse_meta "run_selected_lanes")"
+          run_smoke_gate="$(parse_meta "run_smoke_gate")"
+          smoke_gate_kind="$(parse_meta "smoke_gate_kind")"
+          smoke_matrix="$(parse_meta "smoke_matrix")"
+          smoke_workflow_matrix="$(parse_meta "smoke_workflow_matrix")"
+          smoke_node_matrix="$(parse_meta "smoke_node_matrix")"
+          smoke_rust_minimal_matrix="$(parse_meta "smoke_rust_minimal_matrix")"
+          smoke_rust_integration_matrix="$(parse_meta "smoke_rust_integration_matrix")"
+          smoke_release_matrix="$(parse_meta "smoke_release_matrix")"
+          smoke_workflow_lane_count="$(parse_meta "smoke_workflow_lane_count")"
+          smoke_node_lane_count="$(parse_meta "smoke_node_lane_count")"
+          smoke_rust_minimal_lane_count="$(parse_meta "smoke_rust_minimal_lane_count")"
+          smoke_rust_integration_lane_count="$(parse_meta "smoke_rust_integration_lane_count")"
+          smoke_release_lane_count="$(parse_meta "smoke_release_lane_count")"
+          selected_matrix="$(parse_meta "selected_matrix")"
+          planned_matrix="$(parse_meta "planned_matrix")"
+          selected_lane_ids="$(parse_meta "selected_lane_ids")"
+          run_artifact="$(parse_meta "run_artifact")"
+          matrix_fail_fast="$(parse_meta "matrix_fail_fast")"
+          matrix_max_parallel="$(parse_meta "matrix_max_parallel")"
+          fanout_tier="$(parse_meta "fanout_tier")"
+          planned_job_count="$(parse_meta "planned_job_count")"
+          rust_batching_mode="$(parse_meta "rust_batching_mode")"
+          rust_batching_reason="$(parse_meta "rust_batching_reason")"
+          selected_setup_classes="$(parse_meta "selected_setup_classes")"
+          selected_workflow_matrix="$(parse_meta "selected_workflow_matrix")"
+          selected_node_matrix="$(parse_meta "selected_node_matrix")"
+          selected_rust_minimal_matrix="$(parse_meta "selected_rust_minimal_matrix")"
+          selected_rust_integration_matrix="$(parse_meta "selected_rust_integration_matrix")"
+          selected_release_matrix="$(parse_meta "selected_release_matrix")"
+          selected_rust_minimal_batch_matrix="$(parse_meta "selected_rust_minimal_batch_matrix")"
+          selected_rust_integration_batch_matrix="$(parse_meta "selected_rust_integration_batch_matrix")"
+          selected_workflow_lane_count="$(parse_meta "selected_workflow_lane_count")"
+          selected_node_lane_count="$(parse_meta "selected_node_lane_count")"
+          selected_rust_minimal_lane_count="$(parse_meta "selected_rust_minimal_lane_count")"
+          selected_rust_integration_lane_count="$(parse_meta "selected_rust_integration_lane_count")"
+          selected_release_lane_count="$(parse_meta "selected_release_lane_count")"
+          selected_rust_minimal_batch_count="$(parse_meta "selected_rust_minimal_batch_count")"
+          selected_rust_integration_batch_count="$(parse_meta "selected_rust_integration_batch_count")"
+          selected_nextest_archive_matrix="$(parse_meta "selected_nextest_archive_matrix")"
+          selected_nextest_archive_count="$(parse_meta "selected_nextest_archive_count")"
+          selected_rust_integration_archive_matrix="$(parse_meta "selected_rust_integration_archive_matrix")"
+          selected_rust_integration_archive_lane_count="$(parse_meta "selected_rust_integration_archive_lane_count")"
+          workflow_max_parallel="$(parse_meta "workflow_max_parallel")"
+          node_max_parallel="$(parse_meta "node_max_parallel")"
+          rust_minimal_max_parallel="$(parse_meta "rust_minimal_max_parallel")"
+          rust_integration_max_parallel="$(parse_meta "rust_integration_max_parallel")"
+          release_max_parallel="$(parse_meta "release_max_parallel")"
+          planner_fingerprint="$(python3 .github/scripts/validation_plan_fingerprint.py \
+            --selection-meta-path "${selection_meta_path}" \
             --workflow validation-lab.yml \
             --workflow-ref "${LAB_WORKFLOW_REF}" \
             --workflow-sha "${LAB_WORKFLOW_SHA}" \

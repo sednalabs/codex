@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 FINGERPRINT_SCHEMA_VERSION = 1
@@ -112,6 +113,7 @@ def fingerprint_payload(payload: dict[str, Any]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selection-meta-env", default="SELECTION_META")
+    parser.add_argument("--selection-meta-path")
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--workflow-sha", required=True)
@@ -129,9 +131,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    selection_meta_raw = os.environ.get(args.selection_meta_env)
-    if selection_meta_raw is None:
-        raise SystemExit(f"missing selection metadata env: {args.selection_meta_env}")
+    if args.selection_meta_path:
+        selection_meta_raw = Path(args.selection_meta_path).read_text(encoding="utf-8")
+    else:
+        selection_meta_raw = os.environ.get(args.selection_meta_env)
+        if selection_meta_raw is None:
+            raise SystemExit(f"missing selection metadata env: {args.selection_meta_env}")
     selection_meta = json.loads(selection_meta_raw)
     payload = plan_fingerprint_payload(
         selection_meta=selection_meta,

@@ -1017,6 +1017,50 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("missing selection metadata env: SELECTION_META", proc.stderr)
 
+    def test_validation_lab_plan_fingerprint_reads_selection_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            selection_path = Path(temp_dir) / "selection.json"
+            selection_path.write_text(
+                json.dumps(
+                    {
+                        "selected_lane_ids": ["codex.workflow-ci-sanity"],
+                        "planned_matrix": {"include": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env.pop("SELECTION_META", None)
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
+                    "--selection-meta-path",
+                    str(selection_path),
+                    "--workflow",
+                    "validation-lab.yml",
+                    "--workflow-ref",
+                    "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
+                    "--workflow-sha",
+                    "feedface",
+                    "--target-head-sha",
+                    "abc123",
+                    "--profile",
+                    "targeted",
+                    "--lane-set",
+                    "docs",
+                    "--fanout-tier",
+                    "enterprise",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertRegex(proc.stdout.strip(), r"^[0-9a-f]{16}$")
+
     def recommend_lab_for_files(self, files: list[str]) -> dict:
         return run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",

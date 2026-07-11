@@ -63,6 +63,10 @@ docs-only refresh commit that records this snapshot.
   retry once on narrow Cargo registry transport failures such as crates.io
   HTTP/2 or EOF download flakes, and argument-comment lint retries once on the
   same narrow Cargo metadata/fetch failure class before reporting a lint blocker.
+  Large validation-lab plans keep their resolved metadata in a runner-temp
+  JSON file for per-field parsing and fingerprinting instead of exporting the
+  complete plan through the process environment, so `full`, `broad`, and
+  Frontier Max dispatches do not exceed the host exec environment limit.
   Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
