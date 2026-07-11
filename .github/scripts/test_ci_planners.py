@@ -922,6 +922,69 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                             {"guarded-carry"},
                         )
 
+    def test_required_markers_report_failures_without_enforcement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_text("present = True\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "guarded carry")
+            registry = {
+                "divergences": [
+                    self.valid_registry_entry(
+                        required_markers={
+                            "carry.py": ["missing_marker"],
+                        }
+                    )
+                ]
+            }
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                checks = DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                    repo,
+                    downstream_sha,
+                    registry,
+                    {"guarded-carry"},
+                    enforce=False,
+                )
+
+            self.assertEqual(checks, [])
+            self.assertEqual(
+                stderr.getvalue(),
+                "warning: guarded-carry: carry.py is missing required markers: "
+                "'missing_marker'\n",
+            )
+
+    def test_required_markers_report_invalid_contract_without_enforcement(self) -> None:
+        registry = {
+            "divergences": [
+                self.valid_registry_entry(
+                    required_markers={
+                        "carry.py": "not-a-list",
+                    }
+                )
+            ]
+        }
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            checks = DOWNSTREAM_DIVERGENCE_AUDIT.verify_required_markers(
+                Path("."),
+                "unused",
+                registry,
+                {"guarded-carry"},
+                enforce=False,
+            )
+
+        self.assertEqual(checks, [])
+        self.assertEqual(
+            stderr.getvalue(),
+            "warning: guarded-carry: required_markers['carry.py'] must be a "
+            "non-empty list\n",
+        )
+
     def test_required_markers_reject_unsafe_or_uncovered_paths(self) -> None:
         cases = {
             "parent traversal": (

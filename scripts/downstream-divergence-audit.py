@@ -155,14 +155,13 @@ def main() -> int:
     ]
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
-    required_marker_checks: list[dict[str, Any]] = []
-    if args.enforce_registry:
-        required_marker_checks = verify_required_markers(
-            repo,
-            snapshot_1["downstream"].sha,
-            registry,
-            set(registry_state["live_entry_ids"]),
-        )
+    required_marker_checks = verify_required_markers(
+        repo,
+        snapshot_1["downstream"].sha,
+        registry,
+        set(registry_state["live_entry_ids"]),
+        enforce=args.enforce_registry,
+    )
     registry_state["required_marker_checks"] = required_marker_checks
     annotated_all_items = annotate_diff_items(
         diff_items,
@@ -839,6 +838,8 @@ def verify_required_markers(
     downstream_sha: str,
     registry: dict[str, Any],
     live_entry_ids: set[str],
+    *,
+    enforce: bool = True,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -848,7 +849,19 @@ def verify_required_markers(
         if entry_id not in live_entry_ids:
             continue
         required_markers = entry.get("required_markers")
-        if not isinstance(required_markers, dict):
+        if required_markers is None:
+            continue
+
+        contract_errors: list[str] = []
+        files = entry.get("files")
+        validate_required_markers(
+            entry_id,
+            files if isinstance(files, list) else [],
+            required_markers,
+            contract_errors,
+        )
+        if contract_errors:
+            errors.extend(contract_errors)
             continue
 
         for path, markers in required_markers.items():
@@ -878,8 +891,10 @@ def verify_required_markers(
                 }
             )
 
-    if errors:
+    if errors and enforce:
         raise ValueError("required marker verification failed:\n- " + "\n- ".join(errors))
+    for error in errors:
+        print(f"warning: {error}", file=sys.stderr)
     return checks
 
 
