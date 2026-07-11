@@ -84,7 +84,7 @@ impl ServerHandler for ChangingPaginatedServer {
                     meta: None,
                 }),
                 Some(cursor) => Err(McpError::invalid_params(
-                    format!("unexpected cursor {:?}", cursor),
+                    ["unexpected cursor ", cursor].concat(),
                     None,
                 )),
             }
@@ -168,7 +168,7 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
             observed_generation: initial.generation,
             tools: initial.tools,
         })),
-        tool_refresh_lock: Arc::new(AsyncMutex::new(())),
+        tool_refresh_lock: Arc::new(Semaphore::new(1)),
         server_name: "changing".to_string(),
         is_codex_apps_mcp_server: false,
         tool_filter: ToolFilter::default(),

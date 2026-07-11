@@ -70,7 +70,7 @@ use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Tool as RmcpTool;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Semaphore;
 use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -104,7 +104,7 @@ pub(crate) struct ManagedClient {
     pub(crate) client: Arc<RmcpClient>,
     pub(crate) server_info: McpServerInfo,
     pub(crate) tool_catalogue: Arc<ArcSwap<ToolCatalogueSnapshot>>,
-    pub(crate) tool_refresh_lock: Arc<AsyncMutex<()>>,
+    pub(crate) tool_refresh_lock: Arc<Semaphore>,
     pub(crate) server_name: String,
     pub(crate) is_codex_apps_mcp_server: bool,
     pub(crate) tool_filter: ToolFilter,
@@ -163,7 +163,13 @@ impl ManagedClient {
             return;
         }
 
-        let _refresh_guard = self.tool_refresh_lock.lock().await;
+        let Ok(_refresh_guard) = self.tool_refresh_lock.acquire().await else {
+            warn!(
+                server_name = %self.server_name,
+                "MCP tool catalogue refresh semaphore closed"
+            );
+            return;
+        };
         let notified_generation = self.client.tool_list_generation();
         if self.tool_catalogue.load().observed_generation == notified_generation {
             return;
@@ -970,7 +976,7 @@ async fn start_server_task(
             observed_generation: catalogue.generation,
             tools,
         })),
-        tool_refresh_lock: Arc::new(AsyncMutex::new(())),
+        tool_refresh_lock: Arc::new(Semaphore::new(1)),
         server_name,
         is_codex_apps_mcp_server,
         tool_timeout: Some(tool_timeout),

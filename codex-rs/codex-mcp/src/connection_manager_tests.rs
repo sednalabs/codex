@@ -120,7 +120,7 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
             observed_generation: 0,
             tools,
         })),
-        tool_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
         server_name: "test".to_string(),
         is_codex_apps_mcp_server: false,
         tool_filter: ToolFilter::default(),
