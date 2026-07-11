@@ -9,7 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 EXIT_OK = 0
@@ -155,6 +155,14 @@ def main() -> int:
     ]
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
+    required_marker_checks = verify_required_markers(
+        repo,
+        snapshot_1["downstream"].sha,
+        registry,
+        set(registry_state["live_entry_ids"]),
+        enforce=args.enforce_registry,
+    )
+    registry_state["required_marker_checks"] = required_marker_checks
     annotated_all_items = annotate_diff_items(
         diff_items,
         registry_state["path_registry_ids"],
@@ -608,6 +616,13 @@ def validate_registry(registry: dict[str, Any]) -> None:
             errors.append(f"{entry_id}: files must be a non-empty list")
             files = []
 
+        validate_required_markers(
+            entry_id,
+            files,
+            entry.get("required_markers"),
+            errors,
+        )
+
         hotspot_files = entry.get("hotspot_files")
         if "hotspot_files" in entry and not isinstance(hotspot_files, list):
             errors.append(f"{entry_id}: hotspot_files must be a list")
@@ -633,6 +648,57 @@ def validate_registry(registry: dict[str, Any]) -> None:
 
 def non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def validate_required_markers(
+    entry_id: str,
+    files: list[Any],
+    required_markers: Any,
+    errors: list[str],
+) -> None:
+    if required_markers is None:
+        return
+    if not isinstance(required_markers, dict) or not required_markers:
+        errors.append(f"{entry_id}: required_markers must be a non-empty object")
+        return
+
+    for path, markers in required_markers.items():
+        if not safe_repo_relative_posix_path(path):
+            errors.append(
+                f"{entry_id}: required_markers path must be a safe repo-relative "
+                f"POSIX path: {path!r}"
+            )
+        elif not any(matches_spec(spec, path) for spec in files):
+            errors.append(
+                f"{entry_id}: required_markers path is not covered by files: {path}"
+            )
+
+        if not isinstance(markers, list) or not markers:
+            errors.append(
+                f"{entry_id}: required_markers[{path!r}] must be a non-empty list"
+            )
+            continue
+        for marker in markers:
+            if not non_empty_string(marker):
+                errors.append(
+                    f"{entry_id}: required_markers[{path!r}] entries must be "
+                    "non-empty strings"
+                )
+                break
+
+
+def safe_repo_relative_posix_path(path: Any) -> bool:
+    if not non_empty_string(path) or "\\" in path:
+        return False
+    if any(ord(char) < 32 for char in path):
+        return False
+    candidate = PurePosixPath(path)
+    return (
+        bool(candidate.parts)
+        and not candidate.is_absolute()
+        and path == candidate.as_posix()
+        and all(part not in {".", ".."} for part in candidate.parts)
+    )
 
 
 def matched_hotspots(files: list[Any]) -> list[str]:
@@ -765,6 +831,75 @@ def reconcile_registry(
             for path, boundary_types in path_registry_boundary_types.items()
         },
     }
+
+
+def verify_required_markers(
+    repo: Path,
+    downstream_sha: str,
+    registry: dict[str, Any],
+    live_entry_ids: set[str],
+    *,
+    enforce: bool = True,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for entry in registry.get("divergences", []):
+        entry_id = str(entry.get("id", ""))
+        if entry_id not in live_entry_ids:
+            continue
+        required_markers = entry.get("required_markers")
+        if required_markers is None:
+            continue
+
+        contract_errors: list[str] = []
+        files = entry.get("files")
+        validate_required_markers(
+            entry_id,
+            files if isinstance(files, list) else [],
+            required_markers,
+            contract_errors,
+        )
+        if contract_errors:
+            errors.extend(contract_errors)
+            continue
+
+        for path, markers in required_markers.items():
+            result = run_git(
+                repo,
+                ["show", f"{downstream_sha}:{path}"],
+                capture_stdout=True,
+                allow_failure=True,
+            )
+            if result.returncode != 0:
+                errors.append(f"{entry_id}: required marker file is missing: {path}")
+                continue
+
+            missing_markers = [
+                marker for marker in markers if marker not in result.stdout
+            ]
+            if missing_markers:
+                errors.append(
+                    f"{entry_id}: {path} is missing required markers: "
+                    + ", ".join(repr(marker) for marker in missing_markers)
+                )
+                continue
+
+            checks.append(
+                {
+                    "entry_id": entry_id,
+                    "path": path,
+                    "markers": markers,
+                }
+            )
+
+    if errors and enforce:
+        raise ValueError(
+            "required marker verification failed:\n- " + "\n- ".join(errors)
+        )
+    for error in errors:
+        print(f"warning: {error}", file=sys.stderr)
+    return checks
 
 
 def matches_spec(spec: Any, path: str) -> bool:
