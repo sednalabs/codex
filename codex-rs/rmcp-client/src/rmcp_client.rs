@@ -359,9 +359,9 @@ where
     let mut seen_tool_names = HashSet::new();
 
     for _ in 0..MAX_TOOLS_LIST_PAGES {
-        let params = cursor.as_ref().map(|cursor| {
-            PaginatedRequestParams::default().with_cursor(Some(cursor.clone()))
-        });
+        let params = cursor
+            .as_ref()
+            .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor.clone())));
         let page = fetch_page(params).await?;
         let observed_items = tools.len().saturating_add(page.tools.len());
         if observed_items > MAX_TOOLS_LIST_ITEMS {
@@ -378,9 +378,7 @@ where
                 if current_generation() != generation {
                     return Ok(ToolCatalogueWalk::Changed);
                 }
-                return Err(anyhow!(
-                    "tools/list returned duplicate tool name {name:?}"
-                ));
+                return Err(anyhow!("tools/list returned duplicate tool name {name:?}"));
             }
         }
         tools.extend(page.tools);
@@ -1420,13 +1418,17 @@ mod tests {
             tool_page(&["third"], Some("a")),
         ]);
 
-        let error = collect_tool_pages(0, || 0, move |_params| {
-            std::future::ready(
-                pages
-                    .pop_front()
-                    .ok_or_else(|| anyhow!("missing fixture page")),
-            )
-        })
+        let error = collect_tool_pages(
+            0,
+            || 0,
+            move |_params| {
+                std::future::ready(
+                    pages
+                        .pop_front()
+                        .ok_or_else(|| anyhow!("missing fixture page")),
+                )
+            },
+        )
         .await
         .err()
         .expect("cursor cycle should fail");
@@ -1442,14 +1444,18 @@ mod tests {
         let page_index = Rc::new(Cell::new(0));
         let fetched_page_index = Rc::clone(&page_index);
 
-        let error = collect_tool_pages(0, || 0, move |_params| {
-            let index = fetched_page_index.get();
-            fetched_page_index.set(index + 1);
-            std::future::ready(Ok(ListToolsWithConnectorIdResult {
-                next_cursor: Some(format!("cursor-{index}")),
-                tools: vec![listed_tool(&format!("tool-{index}"))],
-            }))
-        })
+        let error = collect_tool_pages(
+            0,
+            || 0,
+            move |_params| {
+                let index = fetched_page_index.get();
+                fetched_page_index.set(index + 1);
+                std::future::ready(Ok(ListToolsWithConnectorIdResult {
+                    next_cursor: Some(format!("cursor-{index}")),
+                    tools: vec![listed_tool(&format!("tool-{index}"))],
+                }))
+            },
+        )
         .await
         .err()
         .expect("non-terminating page chain should fail");

@@ -219,11 +219,10 @@ impl ManagedClient {
             _ => unreachable!("Codex Apps fetch ticket requires cache context"),
         }
         let tools = filter_tools(tools, &self.tool_filter);
-        self.tool_catalogue
-            .store(Arc::new(ToolCatalogueSnapshot {
-                generation,
-                tools: tools.clone(),
-            }));
+        self.tool_catalogue.store(Arc::new(ToolCatalogueSnapshot {
+            generation,
+            tools: tools.clone(),
+        }));
         tools
     }
 }
@@ -660,9 +659,7 @@ pub(crate) async fn list_tools_for_client_uncached(
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<ListedToolCatalogue> {
-    let catalogue = client
-        .list_all_tools_with_connector_ids(timeout)
-        .await?;
+    let catalogue = client.list_all_tools_with_connector_ids(timeout).await?;
     let tools = catalogue
         .tools
         .into_iter()
@@ -936,11 +933,7 @@ async fn start_server_task(
     let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
     let tools = match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
         (Some(cache_context), Some(fetch_ticket)) => {
-            cache_context.publish_if_newest_accepted(
-                fetch_ticket,
-                &server_info,
-                catalogue.tools,
-            )
+            cache_context.publish_if_newest_accepted(fetch_ticket, &server_info, catalogue.tools)
         }
         (None, None) => catalogue.tools,
         _ => unreachable!("Codex Apps fetch ticket requires cache context"),

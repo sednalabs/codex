@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use codex_rmcp_client::InProcessTransportFactory;
-use codex_rmcp_client::SendElicitation;
 use codex_rmcp_client::RmcpClient;
+use codex_rmcp_client::SendElicitation;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
 use rmcp::ErrorData as McpError;

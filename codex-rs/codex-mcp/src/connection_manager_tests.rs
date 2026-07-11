@@ -116,12 +116,10 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
                 .expect("create in-process RMCP client"),
         ),
         server_info: create_test_server_info("Ready"),
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(
-            ToolCatalogueSnapshot {
-                generation: 0,
-                tools,
-            },
-        )),
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            generation: 0,
+            tools,
+        })),
         tool_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         server_name: "test".to_string(),
         is_codex_apps_mcp_server: false,

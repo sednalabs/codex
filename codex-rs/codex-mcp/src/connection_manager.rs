@@ -564,12 +564,10 @@ impl McpConnectionManager {
             list_start.elapsed(),
             &[("cache", "miss")],
         );
-        let tools = tools
-            .into_iter()
-            .map(|mut tool| {
-                tool.tool = tool_with_model_visible_input_schema(&tool.tool);
-                self.with_server_metadata(tool)
-            });
+        let tools = tools.into_iter().map(|mut tool| {
+            tool.tool = tool_with_model_visible_input_schema(&tool.tool);
+            self.with_server_metadata(tool)
+        });
         Ok(normalize_tools_for_model_with_prefix(
             tools,
             self.prefix_mcp_tool_names,

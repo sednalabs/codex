@@ -2224,13 +2224,12 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     // placement. In full CI this may be the remote environment container; locally
     // it is a host process.
     let expected_env_value = "propagated-env-http";
-    let Some(http_server) =
-        start_streamable_http_test_server(
-            expected_env_value,
-            /*auth*/ None,
-            ToolPagination::Disabled,
-        )
-        .await?
+    let Some(http_server) = start_streamable_http_test_server(
+        expected_env_value,
+        /*auth*/ None,
+        ToolPagination::Disabled,
+    )
+    .await?
     else {
         return Ok(());
     };
