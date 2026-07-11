@@ -166,7 +166,7 @@ User-visible behavior:
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
 - The active TUI session renders live native computer-use items with compact
   adapter-specific labels such as `Used browser`, `Used computer`, and `Used
-  Android emulator`; these transient app-server projections are not persisted
+Android emulator`; these transient app-server projections are not persisted
   into thread snapshots or replayed after resume. Exec JSON/human output
   projects the same calls as compact computer-use events without embedding
   screenshot bytes in transcript text.

@@ -90,7 +90,7 @@ on:
         type: choice
         options:
           - auto
-          - 'off'
+          - "off"
           - force
         default: auto
   pull_request:

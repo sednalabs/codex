@@ -366,14 +366,15 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                 "mock",
                 "compact",
             )?;
-            let mut app_server = TestAppServer::new_with_env(
-                codex_home.path(),
-                &[(
+            let mut app_server = TestAppServer::builder()
+                .with_codex_home(codex_home.path())
+                .without_auto_env()
+                .with_env_overrides(&[(
                     CODEX_EXEC_SERVER_URL_ENV_VAR,
                     Some(exec_server_url.as_str()),
-                )],
-            )
-            .await?;
+                )])
+                .build()
+                .await?;
             timeout(APP_SERVER_READ_TIMEOUT, app_server.initialize()).await??;
 
             let request_id = app_server

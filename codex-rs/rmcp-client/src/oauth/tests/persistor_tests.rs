@@ -148,6 +148,10 @@ async fn concurrent_refreshes_call_provider_once_and_carry_omitted_fields() -> R
     Ok(())
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "AuthorizationManager async access must be serialized through its Tokio mutex"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshing() -> Result<()> {
     let (_env, server, mut latest) = test_context().await?;
@@ -188,6 +192,10 @@ async fn stale_unauthorized_response_adopts_newer_access_token_without_refreshin
     Ok(())
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "AuthorizationManager async access must be serialized through its Tokio mutex"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn current_unauthorized_response_forces_refresh_and_keeps_request_credentials_minimal()
 -> Result<()> {

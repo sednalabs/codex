@@ -1775,6 +1775,10 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager async access must be serialized through its Tokio mutex"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn persist_if_needed_preserves_newer_durable_credentials() -> Result<()> {
         let _env = TempCodexHome::new();
@@ -1836,6 +1840,10 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager initialization must be serialized through its Tokio mutex"
+    )]
     async fn authorization_manager_for(
         tokens: &StoredOAuthTokens,
     ) -> Result<Arc<Mutex<AuthorizationManager>>> {
