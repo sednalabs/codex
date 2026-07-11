@@ -1,5 +1,6 @@
 use super::canonicalize;
 use super::config_schema_json;
+use super::normalize_legacy_option_schema;
 use super::write_config_schema;
 
 use pretty_assertions::assert_eq;
@@ -71,5 +72,56 @@ fn config_schema_hides_unsupported_inline_mcp_bearer_token() {
             properties.contains_key("bearer_token_env_var"),
         ),
         (false, true),
+    );
+}
+
+#[test]
+fn nullable_union_keywords_are_canonical_across_build_systems() {
+    let mut schema = serde_json::json!({
+        "optional": {
+            "oneOf": [
+                {"type": "string"},
+                {"type": "null"}
+            ]
+        },
+        "legacy_default": {
+            "default": null,
+            "oneOf": [
+                {"$ref": "#/definitions/Example"},
+                {"type": "null"}
+            ]
+        },
+        "exclusive_non_nullable": {
+            "oneOf": [
+                {"type": "string"},
+                {"type": "integer"}
+            ]
+        }
+    });
+
+    normalize_legacy_option_schema(&mut schema);
+
+    assert_eq!(
+        schema,
+        serde_json::json!({
+            "optional": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                ]
+            },
+            "legacy_default": {
+                "default": null,
+                "allOf": [
+                    {"$ref": "#/definitions/Example"}
+                ]
+            },
+            "exclusive_non_nullable": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "integer"}
+                ]
+            }
+        })
     );
 }
