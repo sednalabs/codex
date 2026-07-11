@@ -65,14 +65,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-11`):
 
 - downstream branch `main` code tree:
-  `e8b18202c8c26f8b9db6a5a073dc3068544679c0`
+  `12b69ba6aba237f260a07b6bbfa48f2eb3bd31db`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `dffe1f02a3c4849478c4f412a69d25af2e6b9359`
+  `203d530cc611c642cb0aa687585d6c3575caa925`
 - `upstream/main`:
-  `dffe1f02a3c4849478c4f412a69d25af2e6b9359`
+  `203d530cc611c642cb0aa687585d6c3575caa925`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1621` downstream ahead
+  `0` upstream ahead, `1623` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
