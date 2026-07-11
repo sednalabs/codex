@@ -429,7 +429,10 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
     let enabled = probe(|_| {}).await;
     enabled.assert_visible_contains(&["request_user_input"]);
     enabled.assert_registered_contains(&["request_user_input"]);
-    assert_eq!(enabled.exposure("request_user_input"), ToolExposure::Direct);
+    assert_eq!(
+        enabled.exposure("request_user_input"),
+        ToolExposure::DirectModelOnly
+    );
 
     let disabled = probe(|turn| {
         update_config(turn, |config| {
@@ -442,7 +445,7 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
 }
 
 #[tokio::test]
-async fn request_user_input_stays_hidden_in_code_mode_only() {
+async fn request_user_input_stays_direct_model_only_in_code_mode_only() {
     let plan = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
     })
@@ -451,10 +454,13 @@ async fn request_user_input_stays_hidden_in_code_mode_only() {
     plan.assert_visible_contains(&[
         codex_code_mode::PUBLIC_TOOL_NAME,
         codex_code_mode::WAIT_TOOL_NAME,
+        "request_user_input",
     ]);
-    plan.assert_visible_lacks(&["request_user_input"]);
+    assert_eq!(
+        plan.exposure("request_user_input"),
+        ToolExposure::DirectModelOnly
+    );
     plan.assert_registered_contains(&["request_user_input"]);
-    assert_eq!(plan.exposure("request_user_input"), ToolExposure::Direct);
 
     let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
         panic!("expected code mode exec tool");
@@ -1468,6 +1474,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         vec![
             "exec",
             "wait",
+            "request_user_input",
             "agents",
             // Hosted Responses tool.
             "web_search",
@@ -1586,6 +1593,8 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             // Code-mode entrypoints.
             codex_code_mode::PUBLIC_TOOL_NAME,
             codex_code_mode::WAIT_TOOL_NAME,
+            // Interactive input stays available only to the direct model.
+            "request_user_input",
             // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
             // Hosted Responses tools.
