@@ -852,7 +852,7 @@
         "codex-rs/code-mode/src/runtime/globals.rs",
         "codex-rs/tools/src/code_mode.rs"
       ],
-      "behavior": "Code mode emits bounded, idempotent TypeScript declarations, exposes short-name and module metadata through ALL_TOOLS, and routes fully-qualified tool names without adding downstream metadata to the V1 wire payload.",
+      "behavior": "Code mode emits bounded, idempotent TypeScript declarations, exposes short-name and module metadata through ALL_TOOLS, reconstructs that metadata from canonical MCP names after a V1 wire round trip, and routes fully-qualified tool names without adding downstream metadata to the V1 wire payload.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -864,11 +864,12 @@
         "augment_tool_definition_is_idempotent",
         "augment_tool_definition_truncates_oversized_descriptions",
         "code_mode_only_description_does_not_double_augment_tool_descriptions",
+        "enabled_tool_metadata_recovers_mcp_catalog_fields_from_canonical_name",
         "code_mode_exports_all_tools_metadata_for_builtin_tools",
         "code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools"
       ],
       "owner": "downstream",
-      "notes": "Keeps code-mode declarations bounded and legible while preserving the downstream metadata and routing contract outside the stable V1 wire shape.",
+      "notes": "Keeps code-mode declarations bounded and legible while preserving the downstream metadata and routing contract outside the stable V1 wire shape. Runtime metadata falls back to the canonical mcp__server__tool name after V1 transport rather than widening the wire payload.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "code-mode-tool-metadata",
       "hotspot_files": [

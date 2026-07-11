@@ -362,14 +362,39 @@ pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition
 }
 
 pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata {
+    let (inferred_all_tools_name, inferred_all_tools_module) =
+        infer_mcp_all_tools_metadata(&definition.name);
     EnabledToolMetadata {
         tool_name: definition.tool_name.clone(),
         global_name: normalize_code_mode_identifier(&definition.name),
-        all_tools_name: definition.all_tools_name.clone(),
-        all_tools_module: definition.all_tools_module.clone(),
+        all_tools_name: definition
+            .all_tools_name
+            .clone()
+            .or(inferred_all_tools_name),
+        all_tools_module: definition
+            .all_tools_module
+            .clone()
+            .or(inferred_all_tools_module),
         description: definition.description.clone(),
         kind: definition.kind,
     }
+}
+
+fn infer_mcp_all_tools_metadata(name: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return (None, None);
+    };
+    let Some((server, tool)) = rest.split_once("__") else {
+        return (None, None);
+    };
+    if server.is_empty() || tool.is_empty() {
+        return (None, None);
+    }
+
+    (
+        Some(tool.to_string()),
+        Some(format!("tools/mcp/{server}.js")),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -771,6 +796,7 @@ mod tests {
     use super::ToolNamespaceDescription;
     use super::augment_tool_definition;
     use super::build_exec_tool_description;
+    use super::enabled_tool_metadata;
     use super::normalize_code_mode_identifier;
     use super::parse_exec_source;
     use super::render_json_schema_to_typescript;
@@ -832,6 +858,26 @@ mod tests {
         assert_eq!(
             "hidden_dynamic_tool",
             normalize_code_mode_identifier("hidden-dynamic-tool")
+        );
+    }
+
+    #[test]
+    fn enabled_tool_metadata_recovers_mcp_catalog_fields_from_canonical_name() {
+        let metadata = enabled_tool_metadata(&ToolDefinition {
+            name: "mcp__sample__lookup".to_string(),
+            tool_name: ToolName::namespaced("mcp__sample", "lookup"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Look up a sample".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: None,
+            output_schema: None,
+        });
+
+        assert_eq!(metadata.all_tools_name.as_deref(), Some("lookup"));
+        assert_eq!(
+            metadata.all_tools_module.as_deref(),
+            Some("tools/mcp/sample.js")
         );
     }
 

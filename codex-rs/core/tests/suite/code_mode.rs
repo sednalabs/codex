@@ -333,7 +333,13 @@ text(result);
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn("Search the web from code mode").await?;
+    test.submit_turn_with_policy(
+        "Search the web from code mode",
+        codex_protocol::protocol::SandboxPolicy::ReadOnly {
+            network_access: false,
+        },
+    )
+    .await?;
 
     let search_request = server
         .received_requests()
