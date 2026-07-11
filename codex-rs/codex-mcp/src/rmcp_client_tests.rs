@@ -145,7 +145,10 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         Box::new(|_, _| Box::pin(async { Err(anyhow!("unexpected elicitation")) }));
     let initialize_result = client
         .initialize(
-            mcp_initialize_request_params(ElicitationCapability::default(), false),
+            mcp_initialize_request_params(
+                ElicitationCapability::default(),
+                /*supports_openai_form_elicitation*/ false,
+            ),
             Some(Duration::from_secs(5)),
             send_elicitation,
         )
@@ -153,7 +156,7 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         .expect("initialize changing server");
     let initial = list_tools_for_client_uncached(
         "changing",
-        false,
+        /*is_codex_apps_mcp_server*/ false,
         &client,
         Some(Duration::from_secs(5)),
         initialize_result.instructions.as_deref(),
