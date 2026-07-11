@@ -244,7 +244,7 @@ impl ServerHandler for TestToolServer {
                         meta: None,
                     }),
                     Some(cursor) => Err(McpError::invalid_params(
-                        format!("unknown tool cursor: {cursor}"),
+                        format!("unknown tool cursor: {}", cursor),
                         None,
                     )),
                 };

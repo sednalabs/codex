@@ -84,7 +84,7 @@ impl ServerHandler for ChangingPaginatedServer {
                     meta: None,
                 }),
                 Some(cursor) => Err(McpError::invalid_params(
-                    format!("unexpected cursor {cursor:?}"),
+                    format!("unexpected cursor {:?}", cursor),
                     None,
                 )),
             }
