@@ -737,8 +737,8 @@
             }
           },
           "required": [
-            "intervalHours",
-            "type"
+            "type",
+            "intervalHours"
           ],
           "title": "HourlyScheduledTaskSchedule",
           "type": "object"
@@ -755,8 +755,8 @@
             }
           },
           "required": [
-            "time",
-            "type"
+            "type",
+            "time"
           ],
           "title": "DailyScheduledTaskSchedule",
           "type": "object"
@@ -773,8 +773,8 @@
             }
           },
           "required": [
-            "time",
-            "type"
+            "type",
+            "time"
           ],
           "title": "WeekdaysScheduledTaskSchedule",
           "type": "object"
@@ -797,9 +797,9 @@
             }
           },
           "required": [
+            "type",
             "days",
-            "time",
-            "type"
+            "time"
           ],
           "title": "WeeklyScheduledTaskSchedule",
           "type": "object"
