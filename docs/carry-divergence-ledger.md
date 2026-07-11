@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-11`
-- downstream branch `main` code tree: `f313a5674f357ca6fc5d9bc678061f4384b94029`
+- downstream branch `main` code tree: `e8b18202c8c26f8b9db6a5a073dc3068544679c0`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `dffe1f02a3c4849478c4f412a69d25af2e6b9359`
 - `upstream/main`: `dffe1f02a3c4849478c4f412a69d25af2e6b9359`
-- downstream branch vs `upstream/main`: `1618` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1621` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1421` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1424` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -26,6 +26,9 @@ docs-only refresh commit that records this snapshot.
   (historically `carry/main`, now `main`) still differs from `upstream/main`.
 - Count generated schemas, snapshots, and inline test-module moves as
   derivative churn, not as standalone divergence items.
+- Keep canonical config schema generation in `codex-config`; `codex-core`
+  delegates to that implementation so Cargo and Bazel cannot normalize the
+  same fixture through different code paths.
 - Track exact-subject upstream matches separately as historical carry history.
 - Treat the exact-subject upstream match list as a lower bound for "already
   upstreamed" history, not a complete semantic-duplicate detector.
