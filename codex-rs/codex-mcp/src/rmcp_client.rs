@@ -127,31 +127,34 @@ pub(crate) struct ListedToolCatalogue {
 }
 
 impl ManagedClient {
-    async fn listed_tools(&self) -> Vec<ToolInfo> {
-        self.refresh_tools_if_changed().await;
-        let total_start = Instant::now();
-        if let Some(tools) = self
-            .codex_apps_tools_cache_context
-            .as_ref()
-            .and_then(CodexAppsToolsCacheContext::current_tools)
-        {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "hit")],
-            );
-            return filter_tools(tools, &self.tool_filter);
-        }
+    fn listed_tools(&self) -> BoxFuture<'_, Vec<ToolInfo>> {
+        async move {
+            self.refresh_tools_if_changed().await;
+            let total_start = Instant::now();
+            if let Some(tools) = self
+                .codex_apps_tools_cache_context
+                .as_ref()
+                .and_then(CodexAppsToolsCacheContext::current_tools)
+            {
+                emit_duration(
+                    MCP_TOOLS_LIST_DURATION_METRIC,
+                    total_start.elapsed(),
+                    &[("cache", "hit")],
+                );
+                return filter_tools(tools, &self.tool_filter);
+            }
 
-        if self.codex_apps_tools_cache_context.is_some() {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "miss")],
-            );
-        }
+            if self.codex_apps_tools_cache_context.is_some() {
+                emit_duration(
+                    MCP_TOOLS_LIST_DURATION_METRIC,
+                    total_start.elapsed(),
+                    &[("cache", "miss")],
+                );
+            }
 
-        self.tool_catalogue.load().tools.clone()
+            self.tool_catalogue.load().tools.clone()
+        }
+        .boxed()
     }
 
     async fn refresh_tools_if_changed(&self) {
@@ -1017,7 +1020,7 @@ fn mcp_server_info_from_implementation(server_info: Implementation) -> McpServer
 
 #[cfg(test)]
 #[path = "rmcp_client_tests.rs"]
-mod tests;
+mod catalogue_tests;
 
 struct StartServerTaskParams {
     is_codex_apps_mcp_server: bool,
