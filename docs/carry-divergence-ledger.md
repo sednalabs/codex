@@ -624,6 +624,27 @@ docs-only refresh commit that records this snapshot.
   - `justfile`
   - `docs/downstream-tool-surface-matrix.md`
 
+### Complete MCP Tool Catalogue Collection And Refresh
+
+- MCP pagination and host-side deferred loading are separate contracts. Codex
+  drains every non-null opaque `tools/list` cursor, including the empty string,
+  before publishing a catalogue for ordinary exposure or deferred tool search.
+- Collection fails closed on cursor cycles, duplicate tool names, more than 64
+  pages, or more than 10,000 tools. A partial walk is never published.
+- Tool-list change notifications advance a generation. Codex discards and
+  retries a walk that crosses generations, atomically swaps only a complete
+  replacement, and retains the last complete snapshot when refresh fails.
+- The Streamable HTTP regression performs deferred `tool_search` for a tool
+  supplied only on page two, invokes that tool, and verifies its output.
+- Preserve this carry until upstream issue #26094 is resolved by behavior that
+  covers the complete bounded snapshot and refresh contract, not only a basic
+  happy-path page walk.
+- Primary files:
+  - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/codex-mcp/src/rmcp_client.rs`
+  - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
+  - `codex-rs/core/tests/suite/rmcp_client.rs`
+
 ### MCP Server Safety Policy Extensions
 
 - Downstream retains per-server safety controls:

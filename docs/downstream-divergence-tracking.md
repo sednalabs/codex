@@ -107,6 +107,7 @@ Keep the schema small:
 - `surface`
 - `surface_type`
 - `files`
+- `required_markers`
 - `introduced_in`
 - `upstream_equivalent`
 - `guardrail_lane`
@@ -115,6 +116,12 @@ Keep the schema small:
 - `notes`
 
 Paths can point at directories (terminate with `/` to capture every child) or use glob-friendly tokens (`*`, `?`, `[]`). The audit matches these specs against the live diff so you can cover a directory such as `.github/workflows/` without listing each workflow individually.
+
+The optional `required_markers` object maps exact repo-relative POSIX paths to
+non-empty text markers. In strict mode, the audit reads those paths from the
+resolved downstream commit and fails if a file or marker is missing. Use this
+for high-value behavior and regression seams that could otherwise disappear
+while a broad `files` match keeps the carry entry looking live.
 
 The optional `surface_type` string (for example `agent-facing`, `operator-facing`, or `both`) signals how a divergence presents itself. The downstream audit renders that value in the registry reconciliation table and the code-path surface column to show whether a change touches agent-facing or operator-facing surfaces.
 

@@ -312,6 +312,17 @@ cut-over `codex-tui` app tests. Keep the preset green with the parser test and
 the exact `codex-tui` render/app checks rather than carrying compile coverage
 for a removed crate path.
 
+### Complete MCP Tool Catalogue Collection And Refresh
+
+- Guardrails: `core-test-progressive` and GitHub `blocking-ci`.
+- Primary end-to-end check:
+  `streamable_http_discovers_and_calls_later_page_tool`.
+- Refresh checks:
+  `list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot`
+  and the generation-change retry cases.
+- Boundary checks cover the empty cursor, cursor cycles, duplicate tool names,
+  page and item caps, mid-walk change, and fetch failure after a change.
+
 ## Validation notes
 
 - Prefer the focused `codex.core-*targeted` lanes for seam-local work before

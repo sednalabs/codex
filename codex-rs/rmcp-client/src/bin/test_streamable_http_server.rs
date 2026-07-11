@@ -226,11 +226,30 @@ impl ServerHandler for TestToolServer {
 
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
         async move {
+            if std::env::var_os("MCP_PAGINATE_TOOLS").is_some() {
+                return match request.as_ref().and_then(|params| params.cursor.as_deref()) {
+                    None => Ok(ListToolsResult {
+                        tools: tools.iter().take(1).cloned().collect(),
+                        next_cursor: Some(String::new()),
+                        meta: None,
+                    }),
+                    Some("") => Ok(ListToolsResult {
+                        tools: tools.iter().skip(1).cloned().collect(),
+                        next_cursor: None,
+                        meta: None,
+                    }),
+                    Some(cursor) => Err(McpError::invalid_params(
+                        ["unknown tool cursor: ", cursor].concat(),
+                        None,
+                    )),
+                };
+            }
+
             Ok(ListToolsResult {
                 tools: (*tools).clone(),
                 next_cursor: None,
@@ -318,6 +337,11 @@ impl ServerHandler for TestToolServer {
                 result.structured_content = Some(structured_content);
                 Ok(result)
             }
+            "second_page_tool" => {
+                let mut result = CallToolResult::success(Vec::new());
+                result.structured_content = Some(json!({ "page": 2 }));
+                Ok(result)
+            }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
@@ -328,7 +352,7 @@ impl ServerHandler for TestToolServer {
 
 impl TestToolServer {
     fn new() -> Self {
-        let tools = vec![Self::echo_tool()];
+        let tools = vec![Self::echo_tool(), Self::second_page_tool()];
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
         Self {
@@ -373,6 +397,16 @@ impl TestToolServer {
         }))
         .expect("echo tool output schema should deserialize");
         tool.output_schema = Some(Arc::new(output_schema));
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
+    }
+
+    fn second_page_tool() -> Tool {
+        let mut tool = Tool::new(
+            Cow::Borrowed("second_page_tool"),
+            Cow::Borrowed("Return proof that a tool discovered after a cursor is callable."),
+            Arc::new(JsonObject::new()),
+        );
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
         tool
     }

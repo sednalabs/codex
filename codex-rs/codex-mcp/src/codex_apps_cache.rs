@@ -164,6 +164,7 @@ impl CodexAppsToolsCache {
 pub(crate) enum CodexAppsToolsFetchSource {
     Startup,
     HardRefresh,
+    ListChanged,
 }
 
 impl CodexAppsToolsFetchSource {
@@ -171,6 +172,7 @@ impl CodexAppsToolsFetchSource {
         match self {
             Self::Startup => "startup",
             Self::HardRefresh => "hard_refresh",
+            Self::ListChanged => "list_changed",
         }
     }
 }
