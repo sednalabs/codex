@@ -222,6 +222,7 @@ User-visible behavior:
 
 - Code-mode declarations use the imported form `import { tools } from "..."; declare function ...`.
 - Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
+- The stable protocol-v1 host payload remains unchanged; after a host round trip, code mode reconstructs MCP short-name/module catalog metadata from the canonical `mcp__server__tool` name.
 - Namespaced custom tool calls preserve their namespace through `ToolRouter`, so MCP/app custom tools route by their registry name instead of a flattened plain name.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
