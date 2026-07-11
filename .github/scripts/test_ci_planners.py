@@ -1824,7 +1824,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             workflow_text = (
                 REPO_ROOT / ".github/workflows" / workflow_name
             ).read_text()
-            self.assertIn("          - 'off'\n", workflow_text)
+            self.assertIn('          - "off"\n', workflow_text)
             self.assertNotIn("          - off\n", workflow_text)
 
         metadata_job = ((payload.get("jobs") or {}).get("metadata") or {})
