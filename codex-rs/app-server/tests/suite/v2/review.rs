@@ -224,8 +224,8 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
         let completed: ItemCompletedNotification =
             serde_json::from_value(review_notif.params.expect("params must be present"))?;
         match completed.item {
-            ThreadItem::ExitedReviewMode { id, review } => {
-                assert_eq!(id, turn_id);
+            ThreadItem::ExitedReviewMode { review, .. } => {
+                assert_eq!(completed.turn_id, turn_id);
                 review_body = Some(review);
                 break;
             }
