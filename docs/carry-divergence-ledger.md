@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-11`
-- downstream branch `main` code tree: `f71e966d7a0953285842f206a66601d138a2a192`
+- downstream branch `main` code tree: `abf42828293a15ca81935d247f6bf1fcd4cee563`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `5c19155cbd93bfa099016e7487259f61669823ff`
 - `upstream/main`: `5c19155cbd93bfa099016e7487259f61669823ff`
-- downstream branch vs `upstream/main`: `1636` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1639` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1436` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1439` unique, `0` patch-equivalent
 
 ## Audit Rules
 
