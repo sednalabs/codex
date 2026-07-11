@@ -1478,6 +1478,14 @@
         "docs/downstream-regression-matrix.md",
         "docs/downstream-tool-surface-matrix.md"
       ],
+      "required_markers": {
+        "codex-rs/rmcp-client/src/rmcp_client.rs": [
+          "async fn collect_tool_pages<"
+        ],
+        "codex-rs/core/tests/suite/rmcp_client.rs": [
+          "streamable_http_discovers_and_calls_later_page_tool"
+        ]
+      },
       "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
