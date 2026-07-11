@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use rmcp::RoleClient;
 use rmcp::model::ClientInfo;
@@ -49,6 +50,7 @@ impl ElicitationClientService {
         client_info: ClientInfo,
         send_elicitation: SendElicitation,
         pause_state: ElicitationPauseState,
+        tool_list_generation: Arc<AtomicUsize>,
     ) -> Self {
         let supports_openai_form = client_info
             .capabilities
@@ -60,6 +62,7 @@ impl ElicitationClientService {
             handler: LoggingClientHandler::new(
                 client_info,
                 clone_send_elicitation(Arc::clone(&send_elicitation)),
+                tool_list_generation,
             ),
             supports_openai_form,
             send_elicitation,

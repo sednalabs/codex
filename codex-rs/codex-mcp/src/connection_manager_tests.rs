@@ -12,6 +12,7 @@ use crate::rmcp_client::CodexAppsStartupReconnect;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::ManagedClientFuture;
 use crate::rmcp_client::StartupOutcomeError;
+use crate::rmcp_client::ToolCatalogueSnapshot;
 use crate::server::EffectiveMcpServer;
 use crate::server::McpServerMetadata;
 use crate::server::McpServerOrigin;
@@ -115,7 +116,13 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
                 .expect("create in-process RMCP client"),
         ),
         server_info: create_test_server_info("Ready"),
-        tools,
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            observed_generation: 0,
+            tools,
+        })),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
+        server_name: "test".to_string(),
+        is_codex_apps_mcp_server: false,
         tool_filter: ToolFilter::default(),
         tool_timeout: None,
         server_instructions: None,
