@@ -164,7 +164,7 @@ pub fn config_schema() -> Schema {
         .into_root_schema_for::<ConfigToml>()
 }
 
-fn canonicalize(value: &Value) -> Value {
+pub fn canonicalize(value: &Value) -> Value {
     canonicalize_with_key(/*key*/ None, value)
 }
 
@@ -239,5 +239,50 @@ fn normalize_legacy_option_schema(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_legacy_option_schema;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn nullable_any_of_is_canonicalized_without_changing_other_unions() {
+        let mut schema = json!({
+            "optional": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                ]
+            },
+            "non_nullable": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"}
+                ]
+            }
+        });
+
+        normalize_legacy_option_schema(&mut schema);
+
+        assert_eq!(
+            schema,
+            json!({
+                "optional": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "null"}
+                    ]
+                },
+                "non_nullable": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "integer"}
+                    ]
+                }
+            })
+        );
     }
 }
