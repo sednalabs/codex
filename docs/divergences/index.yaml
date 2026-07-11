@@ -1472,7 +1472,11 @@
       "files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
-        "codex-rs/core/tests/suite/rmcp_client.rs"
+        "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream-tool-surface-matrix.md"
       ],
       "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure.",
       "upstream_equivalent": false,
