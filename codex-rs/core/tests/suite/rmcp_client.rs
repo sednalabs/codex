@@ -2433,9 +2433,9 @@ async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result
             .body_json()
             .get("tools")
             .and_then(Value::as_array)
-            .is_some_and(|tools| tools.iter().any(|tool| {
-                tool.get("type").and_then(Value::as_str) == Some("tool_search")
-            })),
+            .is_some_and(|tools| tools
+                .iter()
+                .any(|tool| { tool.get("type").and_then(Value::as_str) == Some("tool_search") })),
         "the initial request should advertise deferred tool search"
     );
     let search_output = requests[1].tool_search_output(search_call_id);
@@ -2455,12 +2455,8 @@ async fn streamable_http_discovers_and_calls_later_page_tool() -> anyhow::Result
             .unwrap_or_default(),
     });
     assert!(
-        responses::namespace_child_tool(
-            &searchable_tools,
-            &namespace,
-            "second_page_tool",
-        )
-        .is_some(),
+        responses::namespace_child_tool(&searchable_tools, &namespace, "second_page_tool",)
+            .is_some(),
         "tool_search should return the tool collected from page two"
     );
 
