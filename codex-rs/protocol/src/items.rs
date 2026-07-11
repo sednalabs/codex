@@ -753,7 +753,7 @@ mod tests {
         })
         .expect("subagent notification payload");
         let item = ResponseItem::Message {
-            id: Some("msg-1".to_string()),
+            id: Some(ResponseItemId::from_server("msg-1".to_string())),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
@@ -779,7 +779,7 @@ mod tests {
         })
         .expect("subagent notification payload");
         let item = ResponseItem::Message {
-            id: Some("msg-1".to_string()),
+            id: Some(ResponseItemId::from_server("msg-1".to_string())),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: format!("<subagent_notification>{payload}</subagent_notification>"),
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn parse_subagent_notification_response_item_rejects_non_notification_messages() {
         let item = ResponseItem::Message {
-            id: Some("msg-1".to_string()),
+            id: Some(ResponseItemId::from_server("msg-1".to_string())),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: "hello world".to_string(),
