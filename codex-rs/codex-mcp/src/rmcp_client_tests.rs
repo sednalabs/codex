@@ -202,7 +202,10 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         tool_names(managed.listed_tools().await),
         ["old_first", "old_later"]
     );
-    assert_eq!(list_calls.load(Ordering::Acquire), calls_after_failed_refresh);
+    assert_eq!(
+        list_calls.load(Ordering::Acquire),
+        calls_after_failed_refresh
+    );
 
     change.notify_one();
     tokio::time::timeout(Duration::from_secs(5), async {

@@ -188,9 +188,7 @@ impl ManagedClient {
                 );
                 self.tool_catalogue.rcu(|current| {
                     Arc::new(ToolCatalogueSnapshot {
-                        observed_generation: current
-                            .observed_generation
-                            .max(notified_generation),
+                        observed_generation: current.observed_generation.max(notified_generation),
                         tools: current.tools.clone(),
                     })
                 });
