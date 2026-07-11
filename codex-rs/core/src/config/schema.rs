@@ -124,6 +124,16 @@ fn normalize_legacy_option_schema(value: &mut Value) {
                 normalize_legacy_option_schema(child);
             }
 
+            let nullable_one_of = map
+                .get("oneOf")
+                .and_then(Value::as_array)
+                .is_some_and(|variants| variants.iter().any(is_null_schema_value));
+            if nullable_one_of
+                && let Some(one_of) = map.remove("oneOf")
+            {
+                map.insert("anyOf".to_string(), one_of);
+            }
+
             let default_is_null = map.get("default").is_some_and(Value::is_null);
             if !default_is_null {
                 return;
