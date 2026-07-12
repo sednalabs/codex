@@ -419,7 +419,6 @@ fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;
