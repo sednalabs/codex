@@ -261,6 +261,28 @@ class TempGitRepo:
 
 
 class CodeqlDiffRangeTests(unittest.TestCase):
+    def test_collect_uses_direct_tree_diff_for_shallow_pr_checkout(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="+++ b/changed.py\n@@ -0,0 +1 @@\n+changed\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            PREPARE_CODEQL_DIFF_RANGES.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            ranges = PREPARE_CODEQL_DIFF_RANGES.collect_diff_ranges("base", "head")
+
+        self.assertEqual(
+            ranges,
+            [{"path": "changed.py", "startLine": 1, "endLine": 1}],
+        )
+        command = run.call_args.args[0]
+        self.assertIn("base..head", command)
+        self.assertNotIn("base...head", command)
+
     def test_parses_added_and_modified_ranges_and_merges_adjacent_hunks(self) -> None:
         diff = """\
 diff --git a/alpha.py b/alpha.py

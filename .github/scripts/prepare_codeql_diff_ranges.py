@@ -76,7 +76,7 @@ def collect_diff_ranges(base: str, head: str) -> list[dict[str, int | str]]:
             "--no-color",
             "--no-ext-diff",
             "--find-renames",
-            f"{base}...{head}",
+            f"{base}..{head}",
             "--",
         ],
         check=True,
