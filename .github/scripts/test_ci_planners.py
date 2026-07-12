@@ -623,6 +623,19 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_workflow_ci_route_accepts_plan_fingerprint_helper_alone(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [".github/scripts/validation_plan_fingerprint.py"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
     def test_workflow_ci_route_accepts_downstream_audit_plumbing(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
@@ -1221,49 +1234,91 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("missing selection metadata env: SELECTION_META", proc.stderr)
 
-    def test_validation_lab_plan_fingerprint_reads_selection_file(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            selection_path = Path(temp_dir) / "selection.json"
-            selection_path.write_text(
-                json.dumps(
-                    {
-                        "selected_lane_ids": ["codex.workflow-ci-sanity"],
-                        "planned_matrix": {"include": []},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            env = dict(os.environ)
-            env.pop("SELECTION_META", None)
-            proc = subprocess.run(
-                [
-                    "python3",
-                    str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
-                    "--selection-meta-path",
-                    str(selection_path),
-                    "--workflow",
-                    "validation-lab.yml",
-                    "--workflow-ref",
-                    "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
-                    "--workflow-sha",
-                    "feedface",
-                    "--target-head-sha",
-                    "abc123",
-                    "--profile",
-                    "targeted",
-                    "--lane-set",
-                    "docs",
-                    "--fanout-tier",
-                    "enterprise",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-            )
+    def test_validation_lab_plan_fingerprint_reads_selection_stdin(self) -> None:
+        selection = {
+            "selected_lane_ids": ["codex.workflow-ci-sanity"],
+            "planned_matrix": {"include": []},
+        }
+        env = dict(os.environ)
+        env.pop("SELECTION_META", None)
+        proc = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
+                "--selection-meta-stdin",
+                "--workflow",
+                "validation-lab.yml",
+                "--workflow-ref",
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
+                "--workflow-sha",
+                "feedface",
+                "--target-head-sha",
+                "abc123",
+                "--profile",
+                "targeted",
+                "--lane-set",
+                "docs",
+                "--fanout-tier",
+                "enterprise",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            input=json.dumps(selection),
+        )
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertRegex(proc.stdout.strip(), r"^[0-9a-f]{16}$")
+        expected_payload = VALIDATION_PLAN_FINGERPRINT.plan_fingerprint_payload(
+            selection_meta=selection,
+            workflow="validation-lab.yml",
+            workflow_ref=(
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main"
+            ),
+            workflow_sha="feedface",
+            target_head_sha="abc123",
+            profile="targeted",
+            lane_set="docs",
+            fanout_tier="enterprise",
+            lanes="",
+            rust_batching="auto",
+            artifact_build=False,
+            include_explicit_lanes=False,
+        )
+        self.assertEqual(
+            proc.stdout.strip(),
+            VALIDATION_PLAN_FINGERPRINT.fingerprint_payload(expected_payload),
+        )
+
+    def test_validation_lab_plan_fingerprint_reports_missing_selection_stdin(self) -> None:
+        proc = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
+                "--selection-meta-stdin",
+                "--workflow",
+                "validation-lab.yml",
+                "--workflow-ref",
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
+                "--workflow-sha",
+                "feedface",
+                "--target-head-sha",
+                "abc123",
+                "--profile",
+                "targeted",
+                "--lane-set",
+                "docs",
+                "--fanout-tier",
+                "enterprise",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            input="",
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("missing selection metadata on stdin", proc.stderr)
 
     def recommend_lab_for_files(self, files: list[str]) -> dict:
         return run_script(
@@ -2128,6 +2183,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(compute_env.get("LAB_WORKFLOW_REF"), "${{ github.workflow_ref }}")
         self.assertEqual(compute_env.get("LAB_WORKFLOW_SHA"), "${{ github.sha }}")
         self.assertIn("validation_plan_fingerprint.py", compute_run)
+        self.assertIn("--selection-meta-stdin", compute_run)
+        self.assertIn('< "${selection_meta_path}"', compute_run)
+        self.assertNotIn("--selection-meta-path", compute_run)
         self.assertIn("planner_fingerprint=${planner_fingerprint}", compute_run)
 
         dedupe_step = next(
