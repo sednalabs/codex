@@ -426,6 +426,10 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
 /// append-only history from the rollout file and keep earlier compacted
 /// history visible.
 async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Result<()> {
+    skip_if_remote!(
+        Ok(()),
+        "fixture executes locally and duplicates host coverage in remote replay"
+    );
     if network_disabled() {
         println!("Skipping test because network is disabled in this sandbox");
         return Ok(());
