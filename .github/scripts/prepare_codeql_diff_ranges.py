@@ -6,12 +6,11 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import re
 import subprocess
-import tempfile
+import sys
 from collections import defaultdict
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -86,34 +85,19 @@ def collect_diff_ranges(base: str, head: str) -> list[dict[str, int | str]]:
     return parse_diff_ranges(proc.stdout)
 
 
-def write_ranges(path: Path, ranges: list[dict[str, int | str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as handle:
-        json.dump(ranges, handle, indent=2)
-        handle.write("\n")
-        temporary_path = Path(handle.name)
-    os.replace(temporary_path, path)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
-    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
     ranges = collect_diff_ranges(args.base, args.head)
     if not ranges:
         raise SystemExit("refusing to write an empty CodeQL PR diff-range file")
-    write_ranges(args.output, ranges)
+    json.dump(ranges, sys.stdout, indent=2)
+    sys.stdout.write("\n")
     file_count = len({entry["path"] for entry in ranges})
-    print(f"wrote {len(ranges)} ranges across {file_count} files to {args.output}")
+    print(f"wrote {len(ranges)} ranges across {file_count} files", file=sys.stderr)
 
 
 if __name__ == "__main__":

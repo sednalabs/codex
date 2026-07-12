@@ -3121,7 +3121,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         diff_ranges_run = diff_ranges_step.get("run") or ""
         self.assertIn("prepare_codeql_diff_ranges.py", diff_ranges_run)
-        self.assertIn('${RUNNER_TEMP}/pr-diff-range.json', diff_ranges_run)
+        self.assertIn('> "${RUNNER_TEMP}/pr-diff-range.json"', diff_ranges_run)
+        self.assertNotIn("--output", diff_ranges_run)
         self.assertLess(steps.index(init_step), steps.index(diff_ranges_step))
         analyze_step = next(step for step in steps if step.get("name") == "Perform CodeQL Analysis")
         self.assertLess(steps.index(diff_ranges_step), steps.index(analyze_step))
