@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-12`
-- downstream branch `main` code tree: `d2075153cfb3fa6ed66d2c558761b37ab58fdf21`
+- downstream branch `main` code tree: `772c74cacf80f52417a92ba099dd781c3e01e9b4`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
 - `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- downstream branch vs `upstream/main`: `1653` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1655` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1449` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1451` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -62,6 +62,8 @@ docs-only refresh commit that records this snapshot.
   fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
   large-output summary remains host-only until exec-server replay preserves
   bounded head, tail, and omission metadata before core subscribes. The
+  full-suite skill-loader fixture explicitly suppresses parent project layers
+  so ambient hosted-runner repository markers cannot alter its non-Git case. The
   rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
