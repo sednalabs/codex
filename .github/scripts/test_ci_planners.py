@@ -3464,6 +3464,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("cargo nextest archive", archive_run)
         self.assertIn("--archive-file", archive_run)
+        self.assertNotIn("--all-features", archive_run)
         self.assertNotIn("cargo nextest run", archive_run)
         self.assertNotIn("tests", [step.get("name") for step in archive_steps])
 

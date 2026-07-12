@@ -71,7 +71,8 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let barrier_dir = TempDir::new_in(test.cwd.path())?;
+    let local_cwd = TempDir::new()?;
+    let barrier_dir = TempDir::new_in(local_cwd.path())?;
     let first_marker = barrier_dir.path().join("first");
     let second_marker = barrier_dir.path().join("second");
     let network_command = |marker: &PathBuf, peer_marker: &PathBuf, host: &str| {
@@ -144,7 +145,7 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
     submit_managed_network_turn(
         &test,
         "run both network requests",
-        vec![local(test.config.cwd.clone())],
+        vec![local(local_cwd.path().abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -188,6 +189,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
+    let local_cwd = TempDir::new()?;
     let command = "python3 -c \"import urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler()); print('OK:' + opener.open('http://1.1.1.1', timeout=10).read().decode(errors='replace'))\"".to_string();
     let responses = mount_sse_sequence(
         &server,
@@ -218,7 +220,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
     submit_managed_network_turn(
         &test,
         "run one network request",
-        vec![local(test.config.cwd.clone())],
+        vec![local(local_cwd.path().abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )

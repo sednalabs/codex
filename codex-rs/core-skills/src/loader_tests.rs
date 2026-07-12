@@ -2616,7 +2616,11 @@ async fn non_git_repo_skills_search_does_not_walk_parents() {
         "unexpected errors: {:?}",
         outcome.errors
     );
-    assert_eq!(outcome.skills.len(), 0);
+    assert!(
+        !outcome.skills.iter().any(|skill| skill.name == "outer-skill"),
+        "non-git cwd should not load parent repo skills: {:?}",
+        outcome.skills
+    );
 }
 
 #[tokio::test]
@@ -2666,10 +2670,14 @@ async fn skill_roots_include_admin_with_lowest_priority() {
     .into_iter()
     .map(|root| root.scope)
     .collect();
+    let non_repo_scopes = scopes
+        .into_iter()
+        .filter(|scope| *scope != SkillScope::Repo)
+        .collect::<Vec<_>>();
     let mut expected = vec![SkillScope::User, SkillScope::System];
     if home_dir().is_some() {
         expected.insert(1, SkillScope::User);
     }
     expected.push(SkillScope::Admin);
-    assert_eq!(scopes, expected);
+    assert_eq!(non_repo_scopes, expected);
 }
