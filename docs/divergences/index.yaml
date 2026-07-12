@@ -989,7 +989,7 @@
         "scripts/dispatch_sedna_release",
         "tools/argument-comment-lint/list-bazel-targets.sh"
       ],
-      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source.",
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1000,6 +1000,10 @@
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
         "non_git_repo_skills_search_does_not_walk_parents",
+        "test_validation_lab_plan_fingerprint_reads_selection_stdin",
+        "test_validation_lab_plan_fingerprint_reports_missing_selection_stdin",
+        "test_validation_lab_exposes_exact_plan_dedupe_metadata",
+        "test_workflow_ci_route_accepts_plan_fingerprint_helper_alone",
         "test_rust_ci_full_nextest_archive_is_reused_by_test_families",
         "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "check_workflow_policy.py public/operator boundary checks"
