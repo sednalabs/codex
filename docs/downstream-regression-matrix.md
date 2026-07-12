@@ -135,7 +135,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     archive safety floor. Remote replay excludes host-only compact/resume and
     permission-hook fixtures, while Guardian local-proxy fixtures use a
     host-native cwd. The large-output summary remains host-only until remote
-    exec replay preserves bounded head/tail output before core subscribes. The
+    exec replay preserves bounded head/tail output before core subscribes.
+    Skill-loader fixtures suppress ambient parent project layers for their
+    non-Git case so hosted-runner repository state cannot change the assertion. The
     workflow summary parser
     understands nextest
     retry-status lines so structured harvest artifacts show persistent retry

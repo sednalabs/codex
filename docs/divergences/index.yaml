@@ -999,6 +999,7 @@
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
+        "non_git_repo_skills_search_does_not_walk_parents",
         "test_rust_ci_full_nextest_archive_is_reused_by_test_families",
         "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "check_workflow_policy.py public/operator boundary checks"
