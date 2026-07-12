@@ -82,6 +82,12 @@ docs-only refresh commit that records this snapshot.
   callers; workflow wiring must preserve stdin until those callers are migrated.
   This keeps `full`, `broad`, and Frontier Max dispatches below host exec limits
   without widening the helper's path authority.
+  CodeQL's compare-API diff discovery stops when a pull request reaches 300
+  changed files. For large upstream-sync pull requests, downstream restores the
+  same diff-informed query restriction after CodeQL initialization by deriving
+  the complete added/modified line ranges from the runner's checked-out Git
+  history. This avoids treating unchanged base alerts as new without suppressing
+  queries, dismissing the base backlog, or weakening normal pull-request scans.
   Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
@@ -140,10 +146,12 @@ docs-only refresh commit that records this snapshot.
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
   - `.github/scripts/run_validation_lane_batch.py`
+  - `.github/scripts/prepare_codeql_diff_ranges.py`
   - `.github/scripts/rusty_v8_bazel.py`
   - `.github/scripts/test_ci_planners.py`
   - `.github/workflows/blocking-ci.yml`
   - `.github/workflows/bazel.yml`
+  - `.github/workflows/codeql.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
   - `defs.bzl`
