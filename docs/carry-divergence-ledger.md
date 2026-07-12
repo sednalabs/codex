@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-12`
-- downstream branch `main` code tree: `0d2a80c2a9c785381e4fa75ca78884c39c607cdc`
+- downstream branch `main` code tree: `d2075153cfb3fa6ed66d2c558761b37ab58fdf21`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
 - `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- downstream branch vs `upstream/main`: `1651` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1653` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1447` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1449` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -54,9 +54,15 @@ docs-only refresh commit that records this snapshot.
   Codex binary in an isolated temporary Cargo target directory and removes
   those host-side build artifacts before replaying the shared nextest archive,
   so remote-env setup does not consume the extraction headroom needed by the
-  227-binary archive. The `remote_tests` replay job keeps a 45-minute hosted budget
-  so long archive download and remote-environment setup time does not masquerade
-  as a product failure. The rust-ci-full summary parser records final nextest
+  227-binary archive. The archive uses default Cargo features, matching upstream
+  and the non-sandbox V8 release artifact; explicit sandbox coverage remains in
+  `v8-canary`. The `remote_tests` replay job keeps a 45-minute hosted budget so
+  long archive download and remote-environment setup time does not masquerade
+  as a product failure. Remote replay skips host-only compact/resume and hook
+  fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
+  large-output summary remains host-only until exec-server replay preserves
+  bounded head, tail, and omission metadata before core subscribes. The
+  rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before

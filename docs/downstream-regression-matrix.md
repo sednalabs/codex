@@ -122,7 +122,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     follow-up lane selection does not silently drift.
   - `rust-ci-full.yml` nextest archive jobs reclaim common Linux runner disk
     headroom, skip archive-job sccache, build the `ci-test` archive payload
-    with debug info disabled and symbols stripped, and stay archive-only so
+    with default Cargo features, debug info disabled, and symbols stripped,
+    and stay archive-only so
     hosted test execution happens in the archive-consuming test jobs. The archive-consuming
     jobs install `bubblewrap` and reclaim hosted disk before archive extraction,
     `remote_tests` builds its Docker remote-env Codex binary in an isolated
@@ -131,9 +132,11 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     the `remote_tests` replay job uses a 45-minute hosted budget for long
     archive download plus remote-environment setup, and the archive builders
     fail early if the hosted runner is still below the
-    archive safety floor. Compact/resume rollback fixtures keep their event
-    wait above nextest's 30-second slow threshold so hosted remote replay load
-    does not masquerade as a product hang. The workflow summary parser
+    archive safety floor. Remote replay excludes host-only compact/resume and
+    permission-hook fixtures, while Guardian local-proxy fixtures use a
+    host-native cwd. The large-output summary remains host-only until remote
+    exec replay preserves bounded head/tail output before core subscribes. The
+    workflow summary parser
     understands nextest
     retry-status lines so structured harvest artifacts show persistent retry
     failures instead of reporting a false zero-failure summary.
