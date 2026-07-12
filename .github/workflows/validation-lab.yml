@@ -369,7 +369,7 @@ jobs:
           rust_integration_max_parallel="$(parse_meta "rust_integration_max_parallel")"
           release_max_parallel="$(parse_meta "release_max_parallel")"
           planner_fingerprint="$(python3 .github/scripts/validation_plan_fingerprint.py \
-            --selection-meta-path "${selection_meta_path}" \
+            --selection-meta-stdin \
             --workflow validation-lab.yml \
             --workflow-ref "${LAB_WORKFLOW_REF}" \
             --workflow-sha "${LAB_WORKFLOW_SHA}" \
@@ -380,7 +380,8 @@ jobs:
             --lanes "${LAB_LANES}" \
             --rust-batching "${LAB_RUST_BATCHING}" \
             --artifact-build "${LAB_ARTIFACT_BUILD}" \
-            --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}")"
+            --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" \
+            < "${selection_meta_path}")"
 
           {
             echo "host_ref=${host_ref}"
