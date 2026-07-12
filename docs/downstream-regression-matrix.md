@@ -203,9 +203,12 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     non-PR seam validation.
   - Its workflow summary now records the selected profile intent, short profile
     notes, and a compact lane-selection summary for easier babysitting.
-  - Resolved plan metadata is parsed and fingerprinted through a runner-temp
-    JSON file, keeping large full/broad/frontier matrices below the process
-    argument and environment size limit.
+  - Resolved plan metadata remains in a runner-temp JSON file for field parsing,
+    while the live workflow feeds that file to the fingerprint helper through
+    explicit stdin. The helper's environment source remains a legacy direct-call
+    compatibility path, not workflow wiring. This keeps large
+    full/broad/frontier matrices below process argument and environment limits
+    without granting the helper a caller-selected path.
   - It consumes the same explicit script-backed lane catalog as
     `sedna-heavy-tests.yml`, so lane setup requirements are declared rather than
     inferred from inline commands.

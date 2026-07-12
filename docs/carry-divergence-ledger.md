@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-12`
-- downstream branch `main` code tree: `8ad2d045a555fa8454cf4a657caa39dc3ddbc772`
+- downstream branch `main` code tree: `33794ebfdd21dfebeb0d3a1a190d04a54361bf28`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
 - `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- downstream branch vs `upstream/main`: `1657` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1659` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1453` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1455` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -75,9 +75,13 @@ docs-only refresh commit that records this snapshot.
   HTTP/2 or EOF download flakes, and argument-comment lint retries once on the
   same narrow Cargo metadata/fetch failure class before reporting a lint blocker.
   Large validation-lab plans keep their resolved metadata in a runner-temp
-  JSON file for per-field parsing and fingerprinting instead of exporting the
-  complete plan through the process environment, so `full`, `broad`, and
-  Frontier Max dispatches do not exceed the host exec environment limit.
+  JSON file for per-field parsing. The live workflow feeds that file to the
+  fingerprint helper through stdin instead of granting the helper a
+  caller-selected path or placing the complete plan in argv or the process
+  environment. The helper retains environment input only for legacy direct
+  callers; workflow wiring must preserve stdin until those callers are migrated.
+  This keeps `full`, `broad`, and Frontier Max dispatches below host exec limits
+  without widening the helper's path authority.
   Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
