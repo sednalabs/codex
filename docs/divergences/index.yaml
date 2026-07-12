@@ -1781,6 +1781,44 @@
       "extraction_target": "upstream MCP complete-catalogue collection and refresh"
     },
     {
+      "id": "large-pr-codeql-diff-ranges",
+      "title": "Complete CodeQL diff ranges for large pull requests",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "CodeQL pull-request analysis",
+        "large upstream-sync security gate"
+      ],
+      "files": [
+        ".github/scripts/prepare_codeql_diff_ranges.py",
+        ".github/scripts/test_ci_planners.py",
+        ".github/workflows/codeql.yml",
+        ".github/validation-lanes.json",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "When a pull request changes at least 300 files and the compare API cannot provide complete diff ranges, the hosted CodeQL workflow derives every added or modified line range from the checked-out Git history and supplies CodeQL's diff-informed restriction file after initialization. Full configured queries still run, while unchanged default-branch alerts are not misclassified as new solely because the API truncated the diff.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.workflow-ci-sanity; GitHub CodeQL aggregate",
+      "tests": [
+        "CodeqlDiffRangeTests",
+        "test_codeql_advanced_workflow_is_authoritative_hardened_setup"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve while github/codeql-action disables API-derived diff-informed analysis at 300 changed files. Drop when the action or GitHub comparison service supports complete large-PR ranges without downstream wiring.",
+      "upstreamability_tier": "external-gap",
+      "boundary_type": "hosted-security-validation",
+      "hotspot_files": [
+        ".github/workflows/codeql.yml"
+      ],
+      "extraction_target": "upstream CodeQL action support for complete large-PR diff ranges"
+    },
+    {
       "id": "python-code-quality-corrections",
       "title": "Python Code Quality corrections",
       "status": "live",

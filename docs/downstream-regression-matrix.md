@@ -104,6 +104,14 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 ## GitHub trigger policy
 
+- `codeql.yml` keeps the full static language matrix and security-and-quality
+  query suites. On pull requests with at least 300 changed files, the hosted
+  job fetches the exact base commit and writes CodeQL's complete
+  `pr-diff-range.json` from local Git history after initialization, restoring
+  diff-informed alert restriction when GitHub's compare API is truncated.
+  `codex.workflow-ci-sanity` covers the parser and workflow ordering; the
+  hosted CodeQL aggregate is the behavioral proof that unchanged base alerts
+  are not misclassified as new.
 - `blocking-ci.yml` is the default PR and merge-queue fail-fast workflow.
   - It runs on `pull_request`, `merge_group`, and pushes to `main` and
     `upstream-main`, then calls the reusable leaf workflows that upstream keeps

@@ -59,6 +59,9 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 VALIDATION_PLAN_FINGERPRINT = load_module(
     "validation_plan_fingerprint_module", SCRIPTS_DIR / "validation_plan_fingerprint.py"
 )
+PREPARE_CODEQL_DIFF_RANGES = load_module(
+    "prepare_codeql_diff_ranges_module", SCRIPTS_DIR / "prepare_codeql_diff_ranges.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -255,6 +258,64 @@ class TempGitRepo:
             text=True,
         )
         return proc.stdout.strip()
+
+
+class CodeqlDiffRangeTests(unittest.TestCase):
+    def test_parses_added_and_modified_ranges_and_merges_adjacent_hunks(self) -> None:
+        diff = """\
+diff --git a/alpha.py b/alpha.py
+--- a/alpha.py
++++ b/alpha.py
+@@ -1 +1,2 @@
++one
++two
+@@ -4 +5 @@
++five
+diff --git a/old.py b/new.py
+similarity index 80%
+rename from old.py
+rename to new.py
+--- a/old.py
++++ b/new.py
+@@ -8,0 +9,3 @@
++nine
++ten
++eleven
+"""
+
+        self.assertEqual(
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(diff),
+            [
+                {"path": "alpha.py", "startLine": 1, "endLine": 2},
+                {"path": "alpha.py", "startLine": 5, "endLine": 5},
+                {"path": "new.py", "startLine": 9, "endLine": 11},
+            ],
+        )
+
+    def test_skips_deletions_and_decodes_quoted_git_paths(self) -> None:
+        diff = """\
+diff --git a/deleted.py b/deleted.py
+--- a/deleted.py
++++ /dev/null
+@@ -1 +0,0 @@
+-deleted
+diff --git \"a/dir name.py\" \"b/dir name.py\"
+--- \"a/dir name.py\"
++++ \"b/dir name.py\"
+@@ -3,0 +4 @@
++added
+"""
+
+        self.assertEqual(
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(diff),
+            [{"path": "dir name.py", "startLine": 4, "endLine": 4}],
+        )
+
+    def test_rejects_non_repository_new_path(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unexpected Git new-path header"):
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(
+                "+++ /tmp/outside.py\n@@ -0,0 +1 @@\n+bad\n"
+            )
 
 
 class SyncUpstreamMirrorTests(unittest.TestCase):
@@ -3021,6 +3082,27 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "dependency-caching": "${{ github.event_name == 'pull_request' && 'restore' || 'full' }}",
             },
         )
+
+        diff_ranges_step = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Restore complete CodeQL diff ranges for large pull requests"
+        )
+        self.assertEqual(
+            diff_ranges_step.get("if"),
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.changed_files >= 300 }}",
+        )
+        self.assertEqual(
+            (diff_ranges_step.get("env") or {}).get("BASE_SHA"),
+            "${{ github.event.pull_request.base.sha }}",
+        )
+        diff_ranges_run = diff_ranges_step.get("run") or ""
+        self.assertIn("prepare_codeql_diff_ranges.py", diff_ranges_run)
+        self.assertIn('${RUNNER_TEMP}/pr-diff-range.json', diff_ranges_run)
+        self.assertLess(steps.index(init_step), steps.index(diff_ranges_step))
+        analyze_step = next(step for step in steps if step.get("name") == "Perform CodeQL Analysis")
+        self.assertLess(steps.index(diff_ranges_step), steps.index(analyze_step))
 
         save_rust_cache_step = next(
             step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
