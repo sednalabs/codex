@@ -32,6 +32,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
+use core_test_support::skip_if_remote;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event_with_timeout;
@@ -519,6 +520,10 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
 /// diffs should trim those context updates so the next request includes them
 /// only once.
 async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
+    skip_if_remote!(
+        Ok(()),
+        "fixture executes locally and duplicates host coverage in remote replay"
+    );
     if network_disabled() {
         println!("Skipping test because network is disabled in this sandbox");
         return Ok(());

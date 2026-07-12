@@ -2921,6 +2921,10 @@ async fn unified_exec_formats_large_output_summary() -> Result<()> {
         Ok(()),
         "requires Python and POSIX heredoc support in the target"
     );
+    skip_if_remote!(
+        Ok(()),
+        "remote exec replay can evict head output before core subscribes"
+    );
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 

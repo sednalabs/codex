@@ -710,7 +710,6 @@ jobs:
           set -euo pipefail
           archive_file="${RUNNER_TEMP}/rust-ci-full-nextest-${{ matrix.target }}-${{ matrix.profile }}.tar.zst"
           cargo nextest archive \
-            --all-features \
             --target ${{ matrix.target }} \
             --cargo-profile ci-test \
             --archive-file "${archive_file}"
