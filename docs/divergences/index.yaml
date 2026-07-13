@@ -1811,7 +1811,7 @@
       ],
       "owner": "downstream",
       "notes": "Preserve while github/codeql-action disables API-derived diff-informed analysis at 300 changed files. Drop when the action or GitHub comparison service supports complete large-PR ranges without downstream wiring.",
-      "upstreamability_tier": "external-gap",
+      "upstreamability_tier": "upstream-pr",
       "boundary_type": "hosted-security-validation",
       "hotspot_files": [
         ".github/workflows/codeql.yml"
