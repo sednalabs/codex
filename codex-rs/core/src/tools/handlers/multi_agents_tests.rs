@@ -2219,6 +2219,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         .get_thread(agent_id)
         .await
         .expect("worker thread should exist");
+    let worker_config = thread.config_snapshot().await;
     let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
 
     let first_turn = thread.codex.session.new_default_turn().await;
@@ -2242,7 +2243,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    FollowupTaskHandlerV2
+    let followup_output = FollowupTaskHandlerV2
         .handle(invocation(
             session,
             turn,
@@ -2254,6 +2255,17 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         ))
         .await
         .expect("followup_task should succeed");
+    let followup_receipt: serde_json::Value =
+        serde_json::from_str(&followup_output.log_preview()).expect("structured followup receipt");
+    assert_eq!(
+        followup_receipt,
+        json!({
+            "task_name": "/root/worker",
+            "effective_model": worker_config.model,
+            "effective_model_provider_id": worker_config.model_provider_id,
+            "effective_reasoning_effort": worker_config.reasoning_effort,
+        })
+    );
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == agent_id

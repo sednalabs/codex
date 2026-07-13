@@ -4,6 +4,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -21,6 +22,42 @@ struct SpawnAgentThreadInheritance {
 enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
+}
+
+/// Restore the agent's original effective model selection before reopening an evicted V2
+/// runtime. The caller's config is still the source of current runtime policy such as
+/// permissions and cwd, but it must not silently replace the child model or price tier.
+fn restore_persisted_agent_model_selection(
+    config: &mut Config,
+    history: &[RolloutItem],
+    thread_id: ThreadId,
+) -> CodexResult<()> {
+    let persisted = history.iter().find_map(|item| match item {
+        RolloutItem::EventMsg(event) => match &event.msg {
+            EventMsg::SessionConfigured(configured) => Some(configured),
+            _ => None,
+        },
+        _ => None,
+    });
+    let Some(persisted) = persisted else {
+        return Err(CodexErr::UnsupportedOperation(format!(
+            "cannot safely reload agent {thread_id}: persisted model identity is unavailable"
+        )));
+    };
+
+    let provider_id = persisted.model_provider_id.as_str();
+    let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
+        CodexErr::UnsupportedOperation(format!(
+            "cannot safely reload agent {thread_id}: persisted model provider `{provider_id}` is not configured"
+        ))
+    })?;
+
+    config.model = Some(persisted.model.clone());
+    config.model_provider_id = persisted.model_provider_id.clone();
+    config.model_provider = provider;
+    config.model_reasoning_effort = persisted.reasoning_effort.clone();
+    config.service_tier = persisted.service_tier.clone();
+    Ok(())
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -152,7 +189,7 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
@@ -177,6 +214,7 @@ impl AgentControl {
             .history
             .ok_or(CodexErr::ThreadNotFound(thread_id))?
             .items;
+        restore_persisted_agent_model_selection(&mut config, &history, thread_id)?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
