@@ -214,7 +214,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
-        output_schema: None,
+        output_schema: Some(followup_task_output_schema()),
     })
 }
 
@@ -515,6 +515,37 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
         "type": "object",
         "properties": properties,
         "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn followup_task_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task_name": {
+                "type": "string",
+                "description": "Canonical task name of the agent receiving the follow-up."
+            },
+            "effective_model": {
+                "type": "string",
+                "description": "Effective model retained by the agent for the follow-up turn."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider retained by the agent for the follow-up turn."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+            }
+        },
+        "required": [
+            "task_name",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort"
+        ],
         "additionalProperties": false
     })
 }

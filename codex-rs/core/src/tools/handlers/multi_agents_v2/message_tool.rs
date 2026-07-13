@@ -8,8 +8,10 @@ use super::*;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageDeliveryMode {
@@ -49,6 +51,14 @@ pub(crate) struct SendMessageArgs {
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FollowupTaskResult {
+    task_name: String,
+    effective_model: String,
+    effective_model_provider_id: String,
+    effective_reasoning_effort: Option<ReasoningEffort>,
 }
 
 pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
@@ -155,6 +165,16 @@ async fn handle_message_submission(
         .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let receiver_config = session
+        .services
+        .agent_control
+        .get_agent_config_snapshot(receiver_thread_id)
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(format!(
+                "agent with id {receiver_thread_id} has no runtime config snapshot"
+            ))
+        })?;
     let author = turn
         .session_source
         .get_agent_path()
@@ -185,7 +205,19 @@ async fn handle_message_submission(
     )
     .await;
 
-    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+    let output = match mode {
+        MessageDeliveryMode::QueueOnly => String::new(),
+        MessageDeliveryMode::TriggerTurn => tool_output_json_text(
+            &FollowupTaskResult {
+                task_name: receiver_agent_path.to_string(),
+                effective_model: receiver_config.model,
+                effective_model_provider_id: receiver_config.model_provider_id,
+                effective_reasoning_effort: receiver_config.reasoning_effort,
+            },
+            "followup_task",
+        ),
+    };
+    Ok(FunctionToolOutput::from_text(output, Some(true)))
 }
 
 pub(crate) async fn handle_message_items_tool(

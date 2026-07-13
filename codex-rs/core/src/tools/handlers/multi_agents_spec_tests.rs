@@ -352,7 +352,7 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
 }
 
 #[test]
-fn followup_task_tool_requires_message_and_has_no_output_schema() {
+fn followup_task_tool_requires_message_and_describes_model_receipt() {
     let ToolSpec::Function(ResponsesApiTool {
         name,
         description,
@@ -389,7 +389,38 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         parameters.required.as_ref(),
         Some(&vec!["target".to_string(), "message".to_string()])
     );
-    assert_eq!(output_schema, None);
+    let output_schema = output_schema.expect("followup_task should describe its receipt");
+    assert_eq!(
+        output_schema,
+        json!({
+            "type": "object",
+            "properties": {
+                "task_name": {
+                    "type": "string",
+                    "description": "Canonical task name of the agent receiving the follow-up."
+                },
+                "effective_model": {
+                    "type": "string",
+                    "description": "Effective model retained by the agent for the follow-up turn."
+                },
+                "effective_model_provider_id": {
+                    "type": "string",
+                    "description": "Effective model provider retained by the agent for the follow-up turn."
+                },
+                "effective_reasoning_effort": {
+                    "type": ["string", "null"],
+                    "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+                }
+            },
+            "required": [
+                "task_name",
+                "effective_model",
+                "effective_model_provider_id",
+                "effective_reasoning_effort"
+            ],
+            "additionalProperties": false
+        })
+    );
 }
 
 #[test]
