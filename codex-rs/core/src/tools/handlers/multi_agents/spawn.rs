@@ -1,15 +1,13 @@
 use super::*;
-use crate::agent::control::SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
-use crate::agent::control::SubAgentInventoryInfo;
 use crate::agent::control::render_user_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::agent::role::apply_role_to_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
-use crate::turn_timing::now_unix_timestamp_ms;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -72,17 +70,20 @@ async fn handle_spawn_agent(
         ));
     }
     session
-        .send_event(
+        .emit_turn_item_started(
             &turn,
-            CollabAgentSpawnBeginEvent {
-                call_id: call_id.clone(),
-                started_at_ms: now_unix_timestamp_ms(),
+            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id.clone(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: session.thread_id,
-                prompt: prompt.clone(),
-                model: args.model.clone().unwrap_or_default(),
-                reasoning_effort: args.reasoning_effort.clone().unwrap_or_default(),
-            }
-            .into(),
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some(prompt.clone()),
+                model: Some(args.model.clone().unwrap_or_default()),
+                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                agents_states: Default::default(),
+            }),
         )
         .await;
     let mut config =
@@ -97,15 +98,17 @@ async fn handle_spawn_agent(
             args.reasoning_effort.clone(),
         )?;
     } else {
-        apply_spawn_agent_model_selection(
+        apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            role_name,
             args.model.as_deref(),
             args.reasoning_effort.clone(),
         )
         .await?;
+        apply_role_to_config(&mut config, role_name)
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
     }
     apply_spawn_agent_service_tier(
         &session,
@@ -174,24 +177,35 @@ async fn handle_spawn_agent(
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or_else(|| args.reasoning_effort.clone().unwrap_or_default());
+        .unwrap_or(args.reasoning_effort.unwrap_or_default());
     let nickname = new_agent_nickname.clone();
+    let receiver_thread_ids = new_thread_id.into_iter().collect();
+    let receiver_agents = new_thread_id
+        .map(|thread_id| CollabAgentRef {
+            thread_id,
+            agent_nickname: new_agent_nickname,
+            agent_role: new_agent_role,
+        })
+        .into_iter()
+        .collect();
+    let agents_states = new_thread_id
+        .map(|thread_id| [(thread_id, status.clone())].into_iter().collect())
+        .unwrap_or_default();
     session
-        .send_event(
+        .emit_turn_item_completed(
             &turn,
-            CollabAgentSpawnEndEvent {
-                call_id,
-                completed_at_ms: now_unix_timestamp_ms(),
+            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id,
+                tool: CollabAgentTool::SpawnAgent,
+                status: collab_tool_call_status(&status, new_thread_id),
                 sender_thread_id: session.thread_id,
-                new_thread_id,
-                new_agent_nickname,
-                new_agent_role: new_agent_role.clone(),
-                prompt,
-                model: effective_model.clone(),
-                reasoning_effort: effective_reasoning_effort.clone(),
-                status: status.clone(),
-            }
-            .into(),
+                receiver_thread_ids,
+                receiver_agents,
+                prompt: Some(prompt),
+                model: Some(effective_model),
+                reasoning_effort: Some(effective_reasoning_effort),
+                agents_states,
+            }),
         )
         .await;
     let new_thread_id = result?.thread_id;
@@ -205,24 +219,6 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
-        role: new_agent_role,
-        status,
-        requested_model: args.model.clone(),
-        requested_reasoning_effort: args.reasoning_effort.clone(),
-        effective_model: Some(effective_model.clone()),
-        requested_model_honored: args
-            .model
-            .as_ref()
-            .map(|requested_model| requested_model == &effective_model),
-        effective_reasoning_effort: Some(effective_reasoning_effort),
-        effective_model_provider_id: agent_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.model_provider_id.clone())
-            .unwrap_or_else(|| turn.config.model_provider_id.clone()),
-        identity_source: agent_snapshot
-            .as_ref()
-            .map(|_| SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string())
-            .unwrap_or_else(|| "spawn_result_metadata".to_string()),
     })
 }
 
@@ -236,13 +232,10 @@ impl CoreToolRuntime for Handler {
 struct SpawnAgentArgs {
     message: Option<String>,
     items: Option<Vec<UserInput>>,
-    task_name: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
-    #[serde(default)]
-    spawn_approval: SpawnAgentApproval,
     #[serde(default)]
     fork_context: bool,
 }
@@ -251,15 +244,6 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
-    role: Option<String>,
-    status: AgentStatus,
-    requested_model: Option<String>,
-    requested_reasoning_effort: Option<ReasoningEffort>,
-    effective_model: Option<String>,
-    requested_model_honored: Option<bool>,
-    effective_reasoning_effort: Option<ReasoningEffort>,
-    effective_model_provider_id: String,
-    identity_source: String,
 }
 
 impl ToolOutput for SpawnAgentResult {

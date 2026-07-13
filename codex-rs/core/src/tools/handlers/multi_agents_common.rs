@@ -1,6 +1,4 @@
-use crate::agent::AgentStatus;
 use crate::agent::role::apply_role_to_spawn_config;
-use crate::agent::status::is_final;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -10,8 +8,6 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
-use crate::turn_timing::now_unix_timestamp_ms;
-use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -20,39 +16,16 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::protocol::CollabAgentRef;
-use codex_protocol::protocol::CollabAgentStatusEntry;
-use codex_protocol::protocol::CollabWaitingCompletionReason;
-use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::request_user_input::RequestUserInputArgs;
-use codex_protocol::request_user_input::RequestUserInputQuestion;
-use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::UserInput;
-use codex_tools::request_user_input_available_modes;
-use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
-
-use super::request_user_input_spec::request_user_input_unavailable_message;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
-const SPAWN_AGENT_APPROVAL_QUESTION_ID: &str = "spawn_agent_approval";
-const SPAWN_AGENT_APPROVAL_ACCEPT_OPTION: &str = "Approve";
-const SPAWN_AGENT_APPROVAL_DECLINE_OPTION: &str = "Decline";
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SpawnAgentApproval {
-    #[default]
-    Auto,
-    AskUser,
-}
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
@@ -93,104 +66,6 @@ where
     serde_json::to_value(value).unwrap_or_else(|err| {
         JsonValue::String(format!("failed to serialize {tool_name} result: {err}"))
     })
-}
-
-pub(crate) fn build_wait_agent_statuses(
-    statuses: &HashMap<ThreadId, AgentStatus>,
-    receiver_agents: &[CollabAgentRef],
-) -> Vec<CollabAgentStatusEntry> {
-    if statuses.is_empty() {
-        return Vec::new();
-    }
-
-    let mut entries = Vec::with_capacity(statuses.len());
-    let mut seen = HashMap::with_capacity(receiver_agents.len());
-    for receiver_agent in receiver_agents {
-        seen.insert(receiver_agent.thread_id, ());
-        if let Some(status) = statuses.get(&receiver_agent.thread_id) {
-            entries.push(CollabAgentStatusEntry {
-                thread_id: receiver_agent.thread_id,
-                agent_nickname: receiver_agent.agent_nickname.clone(),
-                agent_role: receiver_agent.agent_role.clone(),
-                status: status.clone(),
-            });
-        }
-    }
-
-    let mut extras = statuses
-        .iter()
-        .filter(|(thread_id, _)| !seen.contains_key(thread_id))
-        .map(|(thread_id, status)| CollabAgentStatusEntry {
-            thread_id: *thread_id,
-            agent_nickname: None,
-            agent_role: None,
-            status: status.clone(),
-        })
-        .collect::<Vec<_>>();
-    extras.sort_by_key(|entry| entry.thread_id.to_string());
-    entries.extend(extras);
-    entries
-}
-
-pub(crate) async fn collect_wait_statuses(
-    session: &Session,
-    receiver_thread_ids: &[ThreadId],
-) -> HashMap<ThreadId, AgentStatus> {
-    let mut statuses = HashMap::with_capacity(receiver_thread_ids.len());
-    for receiver_thread_id in receiver_thread_ids {
-        statuses.insert(
-            *receiver_thread_id,
-            session
-                .services
-                .agent_control
-                .get_status(*receiver_thread_id)
-                .await,
-        );
-    }
-    statuses
-}
-
-pub(crate) fn pending_wait_thread_ids(
-    receiver_thread_ids: &[ThreadId],
-    statuses: &HashMap<ThreadId, AgentStatus>,
-) -> Vec<ThreadId> {
-    receiver_thread_ids
-        .iter()
-        .filter(|thread_id| !is_final(statuses.get(thread_id).unwrap_or(&AgentStatus::NotFound)))
-        .copied()
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_wait_end_event(
-    session: &Session,
-    turn: &TurnContext,
-    call_id: String,
-    receiver_thread_ids: Vec<ThreadId>,
-    receiver_agents: &[CollabAgentRef],
-    pending_thread_ids: Vec<ThreadId>,
-    completion_reason: CollabWaitingCompletionReason,
-    timed_out: bool,
-    statuses: HashMap<ThreadId, AgentStatus>,
-) {
-    let agent_statuses = build_wait_agent_statuses(&statuses, receiver_agents);
-    session
-        .send_event(
-            turn,
-            CollabWaitingEndEvent {
-                sender_thread_id: session.thread_id,
-                call_id,
-                receiver_thread_ids,
-                pending_thread_ids,
-                completion_reason,
-                timed_out,
-                agent_statuses,
-                statuses,
-                completed_at_ms: now_unix_timestamp_ms(),
-            }
-            .into(),
-        )
-        .await;
 }
 
 pub(crate) fn collab_spawn_error(err: CodexErr) -> FunctionCallError {
@@ -277,105 +152,6 @@ pub(crate) fn parse_collab_input(
     }
 }
 
-pub(crate) async fn require_spawn_agent_approval_if_requested(
-    session: &Session,
-    turn: &TurnContext,
-    spawn_approval: SpawnAgentApproval,
-    call_id: &str,
-    role_name: Option<&str>,
-    requested_model: Option<&str>,
-    prompt_preview: &str,
-) -> Result<(), FunctionCallError> {
-    if !matches!(spawn_approval, SpawnAgentApproval::AskUser) {
-        return Ok(());
-    }
-
-    let mode = session.collaboration_mode().await.mode;
-    let available_modes = request_user_input_available_modes(&turn.config.features);
-    if let Some(message) = request_user_input_unavailable_message(mode, &available_modes) {
-        return Err(FunctionCallError::RespondToModel(message));
-    }
-
-    let question = RequestUserInputQuestion {
-        id: SPAWN_AGENT_APPROVAL_QUESTION_ID.to_string(),
-        header: "Confirm subagent spawn".to_string(),
-        question: build_spawn_agent_approval_question_text(
-            role_name,
-            requested_model,
-            prompt_preview,
-        ),
-        is_other: false,
-        is_secret: false,
-        options: Some(vec![
-            RequestUserInputQuestionOption {
-                label: SPAWN_AGENT_APPROVAL_ACCEPT_OPTION.to_string(),
-                description: "Spawn the subagent and continue.".to_string(),
-            },
-            RequestUserInputQuestionOption {
-                label: SPAWN_AGENT_APPROVAL_DECLINE_OPTION.to_string(),
-                description: "Block this spawn and keep work in the current thread.".to_string(),
-            },
-        ]),
-    };
-    let args = RequestUserInputArgs {
-        questions: vec![question],
-        auto_resolution_ms: None,
-    };
-    let approval_call_id = format!("spawn-agent-approval-{call_id}");
-    let response = session
-        .request_user_input(turn, approval_call_id, args)
-        .await
-        .ok_or_else(|| {
-            FunctionCallError::RespondToModel(
-                "spawn_agent cancelled because no user approval response was received".to_string(),
-            )
-        })?;
-
-    let approved = response
-        .answers
-        .get(SPAWN_AGENT_APPROVAL_QUESTION_ID)
-        .is_some_and(|answer| {
-            answer
-                .answers
-                .iter()
-                .any(|selection| selection == SPAWN_AGENT_APPROVAL_ACCEPT_OPTION)
-        });
-    if approved {
-        Ok(())
-    } else {
-        Err(FunctionCallError::RespondToModel(
-            "spawn_agent blocked because the user declined this spawn".to_string(),
-        ))
-    }
-}
-
-pub(crate) fn build_spawn_agent_approval_question_text(
-    role_name: Option<&str>,
-    requested_model: Option<&str>,
-    prompt_preview: &str,
-) -> String {
-    let prompt_preview = prompt_preview.trim();
-    let prompt_suffix = if prompt_preview.is_empty() {
-        String::new()
-    } else {
-        format!(" Task preview: `{prompt_preview}`.")
-    };
-    let role_suffix = role_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| format!(" Requested role: `{value}`."))
-        .unwrap_or_default();
-    let model_suffix = requested_model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| format!(" Requested model: `{value}`."))
-        .unwrap_or_default();
-
-    format!(
-        "The agent requested spawning a subagent. Approve this spawn now?{prompt_suffix}{role_suffix}{model_suffix}"
-    )
-}
-
 /// Builds the base config snapshot for a newly spawned sub-agent.
 ///
 /// The returned config starts from the parent's effective config and then refreshes the
@@ -456,22 +232,7 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
-pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {
-    if child_depth >= config.agent_max_depth && !config.features.enabled(Feature::MultiAgentV2) {
-        let _ = config.features.disable(Feature::SpawnCsv);
-        let _ = config.features.disable(Feature::Collab);
-    }
-}
-
 /// Applies the complete spawn-agent model policy to a child config.
-///
-/// The selection order is intentionally centralized so legacy and MultiAgentV2
-/// spawns stay in lock-step:
-///
-/// 1. inherit the parent config built for this turn
-/// 2. apply explicit model / reasoning arguments
-/// 3. apply the role layer and reapply caller-owned model carry for settings the role does not own
-/// 4. normalize reasoning against the final model metadata
 pub(crate) async fn apply_spawn_agent_model_selection(
     session: &Session,
     turn: &TurnContext,
@@ -504,6 +265,54 @@ pub(crate) async fn apply_spawn_agent_model_selection(
     .await
 }
 
+async fn normalize_spawn_agent_reasoning_effort(
+    session: &Session,
+    config: &mut Config,
+    pre_role_reasoning_effort: Option<ReasoningEffort>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    let Some(model) = config.model.clone() else {
+        return Ok(());
+    };
+
+    let model_info = session
+        .services
+        .models_manager
+        .get_model_info(&model, &config.to_models_manager_config())
+        .await;
+
+    match config.model_reasoning_effort.as_ref() {
+        Some(reasoning_effort) => {
+            let role_changed_reasoning_effort =
+                config.model_reasoning_effort != pre_role_reasoning_effort;
+            if model_info.supported_reasoning_levels.is_empty() {
+                if requested_reasoning_effort.is_none() && !role_changed_reasoning_effort {
+                    config.model_reasoning_effort = model_info.default_reasoning_level;
+                }
+                return Ok(());
+            }
+
+            if !model_info
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| &preset.effort == reasoning_effort)
+            {
+                if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
+                    validate_spawn_agent_reasoning_effort(
+                        &model,
+                        &model_info.supported_reasoning_levels,
+                        reasoning_effort,
+                    )?;
+                }
+                config.model_reasoning_effort = model_info.default_reasoning_level;
+            }
+        }
+        None => config.model_reasoning_effort = model_info.default_reasoning_level,
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
     turn: &TurnContext,
@@ -519,7 +328,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         let available_models = session
             .services
             .models_manager
-            .list_models(RefreshStrategy::Offline)
+            .list_models(RefreshStrategy::Offline, config.http_client_factory())
             .await;
         let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
         let selected_model_info = session
@@ -550,58 +359,6 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
             &reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
-    }
-
-    Ok(())
-}
-
-async fn normalize_spawn_agent_reasoning_effort(
-    session: &Session,
-    config: &mut Config,
-    pre_role_reasoning_effort: Option<ReasoningEffort>,
-    requested_reasoning_effort: Option<ReasoningEffort>,
-) -> Result<(), FunctionCallError> {
-    let Some(model) = config.model.clone() else {
-        return Ok(());
-    };
-
-    let model_info = session
-        .services
-        .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
-        .await;
-
-    match config.model_reasoning_effort.as_ref() {
-        Some(reasoning_effort) => {
-            let role_changed_reasoning_effort =
-                config.model_reasoning_effort != pre_role_reasoning_effort;
-            if model_info.supported_reasoning_levels.is_empty() {
-                if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
-                    return Ok(());
-                }
-                config.model_reasoning_effort = model_info.default_reasoning_level;
-                return Ok(());
-            }
-
-            if !model_info
-                .supported_reasoning_levels
-                .iter()
-                .any(|preset| &preset.effort == reasoning_effort)
-            {
-                if requested_reasoning_effort.is_some() || role_changed_reasoning_effort {
-                    validate_spawn_agent_reasoning_effort(
-                        &model,
-                        &model_info.supported_reasoning_levels,
-                        reasoning_effort,
-                    )?;
-                }
-
-                config.model_reasoning_effort = model_info.default_reasoning_level;
-            }
-        }
-        None => {
-            config.model_reasoning_effort = model_info.default_reasoning_level;
-        }
     }
 
     Ok(())
@@ -706,52 +463,4 @@ pub(crate) fn validate_spawn_agent_reasoning_effort(
     Err(FunctionCallError::RespondToModel(format!(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     )))
-}
-
-/// Returns whether the requested model was honored by the spawned agent.
-///
-/// `Some(true)` means both values are present and equal, `Some(false)` means
-/// both are present but differ, and `None` means one or both values are
-/// unavailable.
-pub(crate) fn requested_model_honored(
-    requested_model: Option<&str>,
-    effective_model: Option<&str>,
-) -> Option<bool> {
-    match (requested_model, effective_model) {
-        (Some(requested), Some(effective)) => Some(requested == effective),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::requested_model_honored;
-
-    #[test]
-    fn requested_model_honored_reports_match() {
-        assert_eq!(
-            requested_model_honored(Some("gpt-5.1-codex-mini"), Some("gpt-5.1-codex-mini")),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn requested_model_honored_reports_mismatch() {
-        assert_eq!(
-            requested_model_honored(Some("gpt-5.1-codex-mini"), Some("gpt-5.3-codex")),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn requested_model_honored_reports_unknown_when_missing_values() {
-        assert_eq!(
-            requested_model_honored(/*requested_model*/ None, Some("gpt-5.3-codex"),),
-            None
-        );
-        assert_eq!(
-            requested_model_honored(Some("gpt-5.1-codex-mini"), /*effective_model*/ None,),
-            None
-        );
-    }
 }

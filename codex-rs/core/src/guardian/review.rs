@@ -254,9 +254,14 @@ async fn record_guardian_denial(session: &Arc<Session>, turn: &Arc<TurnContext>,
     let session = Arc::clone(session);
     let turn_id = turn_id.to_string();
     let _abort_task = runtime_handle.spawn(async move {
-        session
+        let aborted = session
             .abort_turn_if_active(&turn_id, TurnAbortReason::Interrupted)
             .await;
+        if aborted {
+            // Guardian aborts bypass normal task completion, so emit its idle lifecycle here.
+            // User interrupts deliberately do not take this path.
+            session.emit_thread_idle_lifecycle_if_idle().await;
+        }
     });
 }
 
@@ -687,7 +692,10 @@ pub(super) async fn guardian_review_session_config(
     let available_models = session
         .services
         .models_manager
-        .list_models(codex_models_manager::manager::RefreshStrategy::Offline)
+        .list_models(
+            codex_models_manager::manager::RefreshStrategy::Offline,
+            turn.config.http_client_factory(),
+        )
         .await;
     let default_review_model_id = turn.provider.approval_review_preferred_model();
     let preferred_reasoning_effort = |supports_low: bool, fallback| {

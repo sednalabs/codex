@@ -86,6 +86,8 @@ pub use runtime::sqlite_error_detail_is_lock;
 pub use runtime::sqlite_integrity_check;
 pub use runtime::state_db_filename;
 pub use runtime::state_db_path;
+pub use runtime::thread_history_db_filename;
+pub use runtime::thread_history_db_path;
 pub use runtime::usage::UsageLogger;
 pub use runtime::usage::UsageThreadRecord;
 pub use runtime::usage_db_filename;
@@ -107,6 +109,7 @@ pub const USAGE_DB_FILENAME: &str = "usage";
 pub const USAGE_DB_VERSION: u32 = 1;
 pub const GOALS_DB_FILENAME: &str = "goals_1.sqlite";
 pub const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
+pub const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
 
 /// Errors encountered during DB operations. Tags: [stage]
 pub const DB_ERROR_METRIC: &str = "codex.db.error";

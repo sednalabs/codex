@@ -1042,7 +1042,9 @@ WHERE thread_id = ?
                 id: turn_id.to_string(),
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: turn_id.to_string(),
+                    started_at: None,
                     last_agent_message: None,
+                    error: None,
                     compaction_events_in_turn: 0,
                     final_model: Some("provider-final-model".to_string()),
                     model_snapshot: Some("provider-model-snapshot".to_string()),
@@ -1183,7 +1185,9 @@ WHERE thread_id = ?
                 id: turn_id.to_string(),
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: turn_id.to_string(),
+                    started_at: None,
                     last_agent_message: None,
+                    error: None,
                     compaction_events_in_turn: 0,
                     final_model: None,
                     model_snapshot: None,

@@ -726,14 +726,10 @@ async fn run_review_on_session(
             &params.spawn_config.to_models_manager_config(),
         )
         .await;
-    let guardian_reasoning_effort = if model_info.supports_reasoning_summaries {
-        params
-            .reasoning_effort
-            .clone()
-            .or_else(|| model_info.default_reasoning_level.clone())
-    } else {
-        None
-    };
+    let guardian_reasoning_effort = params
+        .reasoning_effort
+        .clone()
+        .or_else(|| model_info.default_reasoning_level.clone());
     let mut analytics_result =
         GuardianReviewAnalyticsResult::from_session(GuardianReviewSessionAnalyticsParams {
             guardian_thread_id: review_session.codex.session.thread_id.to_string(),
@@ -1008,6 +1004,7 @@ pub(crate) fn build_guardian_review_session_config(
     guardian_config.model_provider.request_max_retries = Some(1);
     guardian_config.model_provider.stream_max_retries = Some(1);
     guardian_config.include_skill_instructions = false;
+    guardian_config.include_permissions_instructions = false;
     guardian_config.memories.use_memories = false;
     guardian_config.memories.dedicated_tools = false;
     guardian_config.base_instructions = Some(
@@ -1052,6 +1049,8 @@ pub(crate) fn build_guardian_review_session_config(
         Feature::SpawnCsv,
         Feature::Collab,
         Feature::MultiAgentV2,
+        Feature::CodeMode,
+        Feature::CodeModeOnly,
         Feature::CodexHooks,
         Feature::Apps,
         Feature::Plugins,
@@ -1184,10 +1183,12 @@ mod tests {
             id: turn_id.to_string(),
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: last_agent_message.map(str::to_string),
                 compaction_events_in_turn: 0,
                 final_model: None,
                 model_snapshot: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms,
@@ -1200,7 +1201,10 @@ mod tests {
             id: turn_id.to_string(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id.to_string()),
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             }),
         }
     }

@@ -11,7 +11,7 @@ const MAX_CODE_MODE_TOOL_DESCRIPTION_CHARS: usize = 16 * 1024;
 const MAX_SCHEMA_RENDER_DEPTH: usize = 16;
 const TRUNCATED_TOOL_DESCRIPTION_NOTICE: &str =
     "\n\n(Type declaration truncated because the schema is too large.)";
-const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some nested MCP/app tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
+const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`."#;
 const EXEC_TOOL_DECLARATION_LABEL: &str = "exec tool declaration:";
 const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/compose tool calls
@@ -257,25 +257,32 @@ pub fn is_code_mode_nested_tool(tool_name: &str) -> bool {
 
 pub fn build_exec_tool_description(
     enabled_tools: &[ToolDefinition],
+    deferred_tools: &[ToolDefinition],
     namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
     code_mode_only: bool,
-    deferred_tools_available: bool,
 ) -> String {
     let mut sections = Vec::new();
     sections.push(EXEC_DESCRIPTION_TEMPLATE.to_string());
-    if deferred_tools_available {
+    if !deferred_tools.is_empty() {
         sections.push(DEFERRED_NESTED_TOOLS_GUIDANCE.to_string());
     }
     if !code_mode_only {
         return sections.join("\n\n");
     }
 
+    let has_mcp_tools = enabled_tools
+        .iter()
+        .chain(deferred_tools)
+        .any(|tool| mcp_structured_content_schema(tool.output_schema.as_ref()).is_some());
+    if has_mcp_tools {
+        sections.push(format!(
+            "Shared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
+        ));
+    }
+
     if !enabled_tools.is_empty() {
         let mut current_namespace: Option<&str> = None;
         let mut nested_tool_sections = Vec::with_capacity(enabled_tools.len());
-        let has_mcp_tools = enabled_tools
-            .iter()
-            .any(|tool| mcp_structured_content_schema(tool.output_schema.as_ref()).is_some());
 
         for tool in enabled_tools {
             let name = tool.name.as_str();
@@ -312,11 +319,6 @@ pub fn build_exec_tool_description(
             }
         }
 
-        if has_mcp_tools {
-            sections.push(format!(
-                "Shared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
-            ));
-        }
         let nested_tool_reference = nested_tool_sections.join("\n\n");
         sections.push(nested_tool_reference);
     }
@@ -360,14 +362,39 @@ pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition
 }
 
 pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata {
+    let (inferred_all_tools_name, inferred_all_tools_module) =
+        infer_mcp_all_tools_metadata(&definition.name);
     EnabledToolMetadata {
         tool_name: definition.tool_name.clone(),
         global_name: normalize_code_mode_identifier(&definition.name),
-        all_tools_name: definition.all_tools_name.clone(),
-        all_tools_module: definition.all_tools_module.clone(),
+        all_tools_name: definition
+            .all_tools_name
+            .clone()
+            .or(inferred_all_tools_name),
+        all_tools_module: definition
+            .all_tools_module
+            .clone()
+            .or(inferred_all_tools_module),
         description: definition.description.clone(),
         kind: definition.kind,
     }
+}
+
+fn infer_mcp_all_tools_metadata(name: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return (None, None);
+    };
+    let Some((server, tool)) = rest.split_once("__") else {
+        return (None, None);
+    };
+    if server.is_empty() || tool.is_empty() {
+        return (None, None);
+    }
+
+    (
+        Some(tool.to_string()),
+        Some(format!("tools/mcp/{server}.js")),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -769,6 +796,7 @@ mod tests {
     use super::ToolNamespaceDescription;
     use super::augment_tool_definition;
     use super::build_exec_tool_description;
+    use super::enabled_tool_metadata;
     use super::normalize_code_mode_identifier;
     use super::parse_exec_source;
     use super::render_json_schema_to_typescript;
@@ -830,6 +858,26 @@ mod tests {
         assert_eq!(
             "hidden_dynamic_tool",
             normalize_code_mode_identifier("hidden-dynamic-tool")
+        );
+    }
+
+    #[test]
+    fn enabled_tool_metadata_recovers_mcp_catalog_fields_from_canonical_name() {
+        let metadata = enabled_tool_metadata(&ToolDefinition {
+            name: "mcp__sample__lookup".to_string(),
+            tool_name: ToolName::namespaced("mcp__sample", "lookup"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Look up a sample".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: None,
+            output_schema: None,
+        });
+
+        assert_eq!(metadata.all_tools_name.as_deref(), Some("lookup"));
+        assert_eq!(
+            metadata.all_tools_module.as_deref(),
+            Some("tools/mcp/sample.js")
         );
     }
 
@@ -962,9 +1010,9 @@ mod tests {
 
         let description = build_exec_tool_description(
             &[tool],
+            &[],
             &BTreeMap::new(),
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
 
         assert_eq!(description.matches("exec tool declaration:").count(), 1);
@@ -1033,9 +1081,9 @@ mod tests {
                 input_schema: None,
                 output_schema: None,
             }],
+            &[],
             &BTreeMap::new(),
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
         assert!(description.contains(
             "### `foo`
@@ -1046,12 +1094,8 @@ bar"
 
     #[test]
     fn exec_description_mentions_timeout_helpers() {
-        let description = build_exec_tool_description(
-            &[],
-            &BTreeMap::new(),
-            /*code_mode_only*/ false,
-            /*deferred_tools_available*/ false,
-        );
+        let description =
+            build_exec_tool_description(&[], &[], &BTreeMap::new(), /*code_mode_only*/ false);
         assert!(description.contains("`setTimeout(callback: () => void, delayMs?: number)`"));
         assert!(description.contains("`clearTimeout(timeoutId?: number)`"));
     }
@@ -1104,9 +1148,9 @@ bar"
                     }))),
                 },
             ],
+            &[],
             &namespace_descriptions,
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
         assert_eq!(description.matches("## mcp__sample").count(), 1);
         assert!(description.contains("## mcp__sample\nShared namespace guidance."));
@@ -1146,9 +1190,9 @@ bar"
                     "additionalProperties": false
                 }))),
             }],
+            &[],
             &namespace_descriptions,
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
 
         assert!(!description.contains("## mcp__sample"));
@@ -1253,9 +1297,9 @@ bar"
                     output_schema: second_tool.output_schema,
                 },
             ],
+            &[],
             &BTreeMap::new(),
             /*code_mode_only*/ true,
-            /*deferred_tools_available*/ false,
         );
 
         assert_eq!(
@@ -1268,15 +1312,57 @@ bar"
     }
 
     #[test]
+    fn code_mode_only_description_renders_shared_mcp_types_for_deferred_tools() {
+        let deferred_tool = ToolDefinition {
+            name: "mcp__sample__alpha".to_string(),
+            tool_name: ToolName::namespaced("mcp__sample__", "alpha"),
+            all_tools_name: None,
+            all_tools_module: None,
+            description: "Deferred tool".to_string(),
+            kind: CodeModeToolKind::Function,
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            output_schema: Some(mcp_call_tool_result_schema(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }))),
+        };
+
+        let description = build_exec_tool_description(
+            &[],
+            &[deferred_tool],
+            &BTreeMap::new(),
+            /*code_mode_only*/ true,
+        );
+
+        assert!(description.contains("Some deferred nested tools may be omitted"));
+        assert!(description.contains("Shared MCP Types:"));
+        assert!(!description.contains("### `mcp__sample__alpha`"));
+    }
+
+    #[test]
     fn exec_description_mentions_deferred_nested_tools_when_available() {
         let description = build_exec_tool_description(
             &[],
+            &[ToolDefinition {
+                name: "deferred_tool".to_string(),
+                tool_name: ToolName::plain("deferred_tool"),
+                all_tools_name: None,
+                all_tools_module: None,
+                description: "Deferred tool".to_string(),
+                kind: CodeModeToolKind::Function,
+                input_schema: None,
+                output_schema: None,
+            }],
             &BTreeMap::new(),
             /*code_mode_only*/ false,
-            /*deferred_tools_available*/ true,
         );
 
-        assert!(description.contains("Some nested MCP/app tools may be omitted"));
+        assert!(description.contains("Some deferred nested tools may be omitted"));
         assert!(description.contains("filter `ALL_TOOLS` by `name` and `description`"));
         assert!(!description.contains("do not print the full `ALL_TOOLS` array"));
     }

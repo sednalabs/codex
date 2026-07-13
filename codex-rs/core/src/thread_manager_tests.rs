@@ -10,6 +10,7 @@ use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use codex_extension_api::empty_extension_registry;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_protocol::ResponseItemId;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::models::ContentItem;
@@ -170,7 +171,7 @@ fn truncates_before_requested_user_message() {
         user_msg("u2"),
         assistant_msg("a3"),
         ResponseItem::Reasoning {
-            id: Some("r1".to_string()),
+            id: Some(ResponseItemId::with_suffix("rs", "1")),
             summary: vec![ReasoningItemReasoningSummary::SummaryText {
                 text: "s".to_string(),
             }],
@@ -200,6 +201,7 @@ fn truncates_before_requested_user_message() {
         &SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -225,6 +227,7 @@ fn truncates_before_requested_user_message() {
         &SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -249,6 +252,7 @@ fn out_of_range_truncation_drops_only_unfinished_suffix_mid_turn() {
         &SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -275,6 +279,7 @@ fn out_of_range_truncation_keeps_completed_tail_after_rollback() {
         SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -312,6 +317,7 @@ fn legacy_user_event_only_tail_is_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: Some(1),
         },
     );
@@ -358,6 +364,7 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: Some("turn-2".to_string()),
+            active_turn_started_at: None,
             active_turn_start_index: Some(2),
         },
     );
@@ -399,6 +406,7 @@ async fn ignores_session_prefix_messages_when_truncating() {
         &SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -612,6 +620,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 let mut server = codex_mcp::codex_apps_mcp_server_config(
                     "https://selected.invalid",
                     /*apps_mcp_product_sku*/ None,
+                    /*originator*/ None,
                 );
                 let CapabilityRootLocation::Environment { environment_id, .. } =
                     &selected_root.location;
@@ -633,6 +642,10 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
+    config
+        .features
+        .enable(Feature::Apps)
+        .expect("test config should allow apps");
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
     let lifecycle_observed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -679,7 +692,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
-            metrics_service_name: None,
+            metrics_service_name: Some("codex_work_desktop".to_string()),
             parent_trace: None,
             environments: Vec::new(),
             thread_extension_init: selected_root_init("selected-a", "env-a"),
@@ -705,6 +718,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
         .await
         .expect("start second thread");
     let first_session = &first_thread.thread.codex.session;
+    let first_originator = first_session.originator().await;
     let first_resolved = first_session
         .services
         .mcp_manager
@@ -712,10 +726,12 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &config,
             &first_session.services.mcp_thread_init,
             &first_session.services.thread_extension_data,
+            &first_originator,
             /*available_environment_ids*/ &[],
         )
         .await;
     let second_session = &second_thread.thread.codex.session;
+    let second_originator = second_session.originator().await;
     let second_resolved = second_session
         .services
         .mcp_manager
@@ -723,6 +739,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &config,
             &second_session.services.mcp_thread_init,
             &second_session.services.thread_extension_data,
+            &second_originator,
             /*available_environment_ids*/ &[],
         )
         .await;
@@ -764,6 +781,21 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
     assert_eq!(
         selected_servers(&second_resolved.config),
         std::collections::BTreeMap::from([("selected-b".to_string(), "env-b".to_string())])
+    );
+    let codex_apps_server = codex_mcp::configured_mcp_servers(&first_resolved.config)
+        .remove(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+        .expect("Codex Apps server should be configured");
+    let codex_apps_headers = match codex_apps_server.transport {
+        codex_config::McpServerTransportConfig::StreamableHttp { http_headers, .. } => http_headers,
+        codex_config::McpServerTransportConfig::Stdio { .. } => {
+            panic!("Codex Apps server should use streamable HTTP")
+        }
+    };
+    assert_eq!(
+        codex_apps_headers
+            .expect("Codex Apps headers should be configured")
+            .get("originator"),
+        Some(&"codex_work_desktop".to_string())
     );
 }
 
@@ -1395,7 +1427,12 @@ async fn new_uses_active_provider_for_model_refresh() {
         /*external_time_provider*/ None,
     );
 
-    let _ = manager.list_models(RefreshStrategy::Online).await;
+    let _ = manager
+        .list_models(
+            RefreshStrategy::Online,
+            crate::test_support::default_http_client_factory(),
+        )
+        .await;
     assert_eq!(models_mock.requests().len(), 1);
 }
 
@@ -1409,6 +1446,7 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             append_interrupted_boundary(
                 committed_history,
                 /*turn_id*/ None,
+                /*started_at*/ None,
                 InterruptedTurnHistoryMarker::ContextualUser,
             )
             .get_rollout_items()
@@ -1419,7 +1457,10 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::ResponseItem(contextual_user_interrupted_marker()),
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted fork history"),
@@ -1429,6 +1470,7 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             append_interrupted_boundary(
                 InitialHistory::New,
                 /*turn_id*/ None,
+                /*started_at*/ None,
                 InterruptedTurnHistoryMarker::ContextualUser,
             )
             .get_rollout_items()
@@ -1438,7 +1480,10 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::ResponseItem(contextual_user_interrupted_marker()),
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted empty history"),
@@ -1455,6 +1500,7 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             append_interrupted_boundary(
                 committed_history,
                 /*turn_id*/ None,
+                /*started_at*/ None,
                 InterruptedTurnHistoryMarker::Disabled,
             )
             .get_rollout_items()
@@ -1464,7 +1510,10 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             RolloutItem::ResponseItem(user_msg("hello")),
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected disabled interrupted fork history"),
@@ -1474,6 +1523,7 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
             append_interrupted_boundary(
                 InitialHistory::New,
                 /*turn_id*/ None,
+                /*started_at*/ None,
                 InterruptedTurnHistoryMarker::Disabled,
             )
             .get_rollout_items()
@@ -1482,7 +1532,10 @@ fn disabled_interrupted_fork_snapshot_appends_only_interrupt_event() {
         serde_json::to_value(vec![RolloutItem::EventMsg(EventMsg::TurnAborted(
             TurnAbortedEvent {
                 turn_id: None,
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             },
         ))])
         .expect("serialize expected disabled interrupted empty fork history"),
@@ -1497,7 +1550,10 @@ fn interrupted_snapshot_is_not_mid_turn() {
         RolloutItem::ResponseItem(contextual_user_interrupted_marker()),
         RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
+            started_at: None,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         })),
     ]);
 
@@ -1506,6 +1562,7 @@ fn interrupted_snapshot_is_not_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -1552,6 +1609,7 @@ fn completed_legacy_event_history_is_not_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: false,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: None,
         },
     );
@@ -1576,6 +1634,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: None,
+            active_turn_started_at: None,
             active_turn_start_index: Some(1),
         },
     );
@@ -1662,7 +1721,10 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
     let interrupted_abort_json = serde_json::to_value(RolloutItem::EventMsg(
         EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: expected_turn_id,
+            started_at: None,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     ))
     .expect("serialize interrupted abort event");
@@ -1747,6 +1809,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         SnapshotTurnState {
             ends_mid_turn: true,
             active_turn_id: Some("turn-explicit".to_string()),
+            active_turn_started_at: None,
             active_turn_start_index: Some(1),
         },
     );
@@ -1779,7 +1842,9 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             item,
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id),
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                ..
             })) if turn_id == "turn-explicit"
         )
     }));

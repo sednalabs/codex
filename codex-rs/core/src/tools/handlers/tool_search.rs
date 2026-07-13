@@ -675,6 +675,7 @@ mod tests {
                 }))),
             )
             .with_annotations(annotations),
+            openai_file_input_optional_fields: Default::default(),
             connector_id: None,
             connector_name: Some("Cloudflare".to_string()),
             plugin_display_names: Vec::new(),
@@ -698,6 +699,7 @@ mod tests {
                     "additionalProperties": false,
                 }))),
             ),
+            openai_file_input_optional_fields: Default::default(),
             connector_id: None,
             connector_name: None,
             plugin_display_names: Vec::new(),

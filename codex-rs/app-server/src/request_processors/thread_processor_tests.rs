@@ -124,6 +124,7 @@ mod thread_processor_behavior_tests {
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
+    use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
@@ -188,6 +189,53 @@ mod thread_processor_behavior_tests {
             /*defer_loading*/ false,
         )];
         validate_dynamic_tools(&tools).expect("valid schema");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool() {
+        let tools = vec![dynamic_tool(
+            /*namespace*/ None,
+            "android_observe",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ true,
+        )];
+
+        validate_dynamic_tools(&tools).expect("deferred native computer-use tool is valid");
+    }
+
+    #[test]
+    fn validate_dynamic_tools_rejects_deferred_bare_ordinary_tool() {
+        let tools = vec![dynamic_tool(
+            /*namespace*/ None,
+            "ordinary_tool",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ true,
+        )];
+
+        let err = validate_dynamic_tools(&tools).expect_err("ordinary deferred tool is invalid");
+        assert!(
+            err.contains("must include a namespace"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn capability_bearing_native_dynamic_tool_requires_thread_reload() {
+        let mut tool = dynamic_tool(
+            /*namespace*/ None,
+            "browser_observe",
+            json!({"type": "object", "properties": {}}),
+            /*defer_loading*/ false,
+        );
+        tool.persist_on_resume = false;
+        tool.capability = Some(DynamicToolCapability {
+            family: Some("computer_use".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: None,
+            lease_mode: None,
+        });
+
+        assert!(dynamic_tools_require_thread_reload(Some(&[tool])));
     }
 
     #[test]
@@ -1002,6 +1050,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp: timestamp.clone(),
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta.clone(),
                 git: None,
@@ -1069,6 +1118,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp,
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta,
                 git: None,
@@ -1111,6 +1161,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp,
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta,
                 git: None,

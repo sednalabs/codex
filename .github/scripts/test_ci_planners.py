@@ -59,6 +59,9 @@ SKIP_DUPLICATE_WORKFLOW_RUN = load_module(
 VALIDATION_PLAN_FINGERPRINT = load_module(
     "validation_plan_fingerprint_module", SCRIPTS_DIR / "validation_plan_fingerprint.py"
 )
+PREPARE_CODEQL_DIFF_RANGES = load_module(
+    "prepare_codeql_diff_ranges_module", SCRIPTS_DIR / "prepare_codeql_diff_ranges.py"
+)
 SYNC_UPSTREAM_MIRROR = load_module(
     "sync_upstream_mirror_module", SCRIPTS_DIR / "sync_upstream_mirror.py"
 )
@@ -255,6 +258,86 @@ class TempGitRepo:
             text=True,
         )
         return proc.stdout.strip()
+
+
+class CodeqlDiffRangeTests(unittest.TestCase):
+    def test_collect_uses_direct_tree_diff_for_shallow_pr_checkout(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="+++ b/changed.py\n@@ -0,0 +1 @@\n+changed\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            PREPARE_CODEQL_DIFF_RANGES.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            ranges = PREPARE_CODEQL_DIFF_RANGES.collect_diff_ranges("base", "head")
+
+        self.assertEqual(
+            ranges,
+            [{"path": "changed.py", "startLine": 1, "endLine": 1}],
+        )
+        command = run.call_args.args[0]
+        self.assertIn("base..head", command)
+        self.assertNotIn("base...head", command)
+
+    def test_parses_added_and_modified_ranges_and_merges_adjacent_hunks(self) -> None:
+        diff = """\
+diff --git a/alpha.py b/alpha.py
+--- a/alpha.py
++++ b/alpha.py
+@@ -1 +1,2 @@
++one
++two
+@@ -4 +5 @@
++five
+diff --git a/old.py b/new.py
+similarity index 80%
+rename from old.py
+rename to new.py
+--- a/old.py
++++ b/new.py
+@@ -8,0 +9,3 @@
++nine
++ten
++eleven
+"""
+
+        self.assertEqual(
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(diff),
+            [
+                {"path": "alpha.py", "startLine": 1, "endLine": 2},
+                {"path": "alpha.py", "startLine": 5, "endLine": 5},
+                {"path": "new.py", "startLine": 9, "endLine": 11},
+            ],
+        )
+
+    def test_skips_deletions_and_decodes_quoted_git_paths(self) -> None:
+        diff = """\
+diff --git a/deleted.py b/deleted.py
+--- a/deleted.py
++++ /dev/null
+@@ -1 +0,0 @@
+-deleted
+diff --git \"a/dir name.py\" \"b/dir name.py\"
+--- \"a/dir name.py\"
++++ \"b/dir name.py\"
+@@ -3,0 +4 @@
++added
+"""
+
+        self.assertEqual(
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(diff),
+            [{"path": "dir name.py", "startLine": 4, "endLine": 4}],
+        )
+
+    def test_rejects_non_repository_new_path(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unexpected Git new-path header"):
+            PREPARE_CODEQL_DIFF_RANGES.parse_diff_ranges(
+                "+++ /tmp/outside.py\n@@ -0,0 +1 @@\n+bad\n"
+            )
 
 
 class SyncUpstreamMirrorTests(unittest.TestCase):
@@ -558,7 +641,6 @@ class RouteSelectionTests(unittest.TestCase):
             lanes,
             [
                 "codex.spawn-agent-tool-model-surface-targeted",
-                "codex.core-subagent-spawn-approval-targeted",
             ],
         )
 
@@ -614,6 +696,19 @@ class RouteSelectionTests(unittest.TestCase):
                 ".github/validation-lanes.json",
                 ".github/scripts/test_ci_planners.py",
             ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
+
+    def test_workflow_ci_route_accepts_plan_fingerprint_helper_alone(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [".github/scripts/validation_plan_fingerprint.py"],
             self.routes,
         )
         self.assertEqual(
@@ -741,9 +836,9 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_custom_prompt_review_prompt_core_path_stays_targeted(self) -> None:
+    def test_custom_prompt_review_prompt_crate_path_stays_targeted(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
-            ["codex-rs/core/src/review_prompts.rs"],
+            ["codex-rs/prompts/src/review_request.rs"],
             self.routes,
         )
         self.assertEqual(
@@ -1221,6 +1316,92 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("missing selection metadata env: SELECTION_META", proc.stderr)
+
+    def test_validation_lab_plan_fingerprint_reads_selection_stdin(self) -> None:
+        selection = {
+            "selected_lane_ids": ["codex.workflow-ci-sanity"],
+            "planned_matrix": {"include": []},
+        }
+        env = dict(os.environ)
+        env.pop("SELECTION_META", None)
+        proc = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
+                "--selection-meta-stdin",
+                "--workflow",
+                "validation-lab.yml",
+                "--workflow-ref",
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
+                "--workflow-sha",
+                "feedface",
+                "--target-head-sha",
+                "abc123",
+                "--profile",
+                "targeted",
+                "--lane-set",
+                "docs",
+                "--fanout-tier",
+                "enterprise",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            input=json.dumps(selection),
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        expected_payload = VALIDATION_PLAN_FINGERPRINT.plan_fingerprint_payload(
+            selection_meta=selection,
+            workflow="validation-lab.yml",
+            workflow_ref=(
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main"
+            ),
+            workflow_sha="feedface",
+            target_head_sha="abc123",
+            profile="targeted",
+            lane_set="docs",
+            fanout_tier="enterprise",
+            lanes="",
+            rust_batching="auto",
+            artifact_build=False,
+            include_explicit_lanes=False,
+        )
+        self.assertEqual(
+            proc.stdout.strip(),
+            VALIDATION_PLAN_FINGERPRINT.fingerprint_payload(expected_payload),
+        )
+
+    def test_validation_lab_plan_fingerprint_reports_missing_selection_stdin(self) -> None:
+        proc = subprocess.run(
+            [
+                "python3",
+                str(SCRIPTS_DIR / "validation_plan_fingerprint.py"),
+                "--selection-meta-stdin",
+                "--workflow",
+                "validation-lab.yml",
+                "--workflow-ref",
+                "sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
+                "--workflow-sha",
+                "feedface",
+                "--target-head-sha",
+                "abc123",
+                "--profile",
+                "targeted",
+                "--lane-set",
+                "docs",
+                "--fanout-tier",
+                "enterprise",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            input="",
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("missing selection metadata on stdin", proc.stderr)
 
     def recommend_lab_for_files(self, files: list[str]) -> dict:
         return run_script(
@@ -1756,7 +1937,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             [lane["lane_id"] for lane in payload["selected_matrix"]["include"]],
             [
                 "codex.spawn-agent-tool-model-surface-targeted",
-                "codex.core-subagent-spawn-approval-targeted",
             ],
         )
 
@@ -2026,6 +2206,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             (workflow_call_inputs.get("rust_batching") or {}).get("default"), "auto"
         )
+        for workflow_name in ("validation-lab.yml", "sedna-heavy-tests.yml"):
+            workflow_text = (
+                REPO_ROOT / ".github/workflows" / workflow_name
+            ).read_text()
+            self.assertIn('          - "off"\n', workflow_text)
+            self.assertNotIn("          - off\n", workflow_text)
 
         metadata_job = ((payload.get("jobs") or {}).get("metadata") or {})
         self.assertEqual(
@@ -2080,6 +2266,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(compute_env.get("LAB_WORKFLOW_REF"), "${{ github.workflow_ref }}")
         self.assertEqual(compute_env.get("LAB_WORKFLOW_SHA"), "${{ github.sha }}")
         self.assertIn("validation_plan_fingerprint.py", compute_run)
+        self.assertIn("--selection-meta-stdin", compute_run)
+        self.assertIn('< "${selection_meta_path}"', compute_run)
+        self.assertNotIn("--selection-meta-path", compute_run)
         self.assertIn("planner_fingerprint=${planner_fingerprint}", compute_run)
 
         dedupe_step = next(
@@ -2294,6 +2483,44 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
         self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
         self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
+
+    def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
+        )
+        jobs = payload.get("jobs") or {}
+
+        self.assertEqual(
+            (jobs["archive"].get("env") or {}).get("INPUT_TARGET"),
+            "${{ inputs.target }}",
+        )
+        self.assertEqual(
+            (jobs["archive"].get("env") or {}).get("INPUT_PROFILE"),
+            "${{ inputs.profile }}",
+        )
+        self.assertEqual(
+            (jobs["shard"].get("env") or {}).get("INPUT_TEST_THREADS"),
+            "${{ inputs.test_threads }}",
+        )
+
+        unsafe_expressions = (
+            "${{ inputs.target }}",
+            "${{ inputs.profile }}",
+            "${{ inputs.test_threads }}",
+        )
+        for job_name, job in jobs.items():
+            for step in (job or {}).get("steps") or []:
+                run_script = step.get("run") or ""
+                step_name = step.get("name") or step.get("id")
+                for expression in unsafe_expressions:
+                    message = (
+                        f"{job_name}/{step_name} interpolates {expression} into shell source"
+                    )
+                    self.assertNotIn(
+                        expression,
+                        run_script,
+                        message,
+                    )
 
     def test_just_recipe_bodies_handles_comma_separated_recipe_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2878,6 +3105,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
 
+        diff_ranges_step = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Restore complete CodeQL diff ranges for large pull requests"
+        )
+        self.assertEqual(
+            diff_ranges_step.get("if"),
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.changed_files >= 300 }}",
+        )
+        self.assertEqual(
+            (diff_ranges_step.get("env") or {}).get("BASE_SHA"),
+            "${{ github.event.pull_request.base.sha }}",
+        )
+        diff_ranges_run = diff_ranges_step.get("run") or ""
+        self.assertIn("prepare_codeql_diff_ranges.py", diff_ranges_run)
+        self.assertIn('> "${RUNNER_TEMP}/pr-diff-range.json"', diff_ranges_run)
+        self.assertNotIn("--output", diff_ranges_run)
+        self.assertLess(steps.index(init_step), steps.index(diff_ranges_step))
+        analyze_step = next(step for step in steps if step.get("name") == "Perform CodeQL Analysis")
+        self.assertLess(steps.index(diff_ranges_step), steps.index(analyze_step))
+
         save_rust_cache_step = next(
             step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
         )
@@ -3378,6 +3627,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("cargo nextest archive", archive_run)
         self.assertIn("--archive-file", archive_run)
+        self.assertNotIn("--all-features", archive_run)
         self.assertNotIn("cargo nextest run", archive_run)
         self.assertNotIn("tests", [step.get("name") for step in archive_steps])
 
@@ -3811,7 +4061,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "21")
-        self.assertEqual(payload["rust_integration_max_parallel"], "24")
+        self.assertEqual(payload["rust_integration_max_parallel"], "23")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -3843,7 +4093,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "23")
-        self.assertEqual(payload["rust_integration_max_parallel"], "25")
+        self.assertEqual(payload["rust_integration_max_parallel"], "24")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -4530,7 +4780,6 @@ class RustCiModeScriptTests(unittest.TestCase):
             ",".join(
                 [
                     "codex.spawn-agent-tool-model-surface-targeted",
-                    "codex.core-subagent-spawn-approval-targeted",
                 ]
             ),
         )
@@ -4589,7 +4838,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             "--head-sha",
             "1" * 40,
             "--primary-files-json",
-            json.dumps(["codex-rs/core/src/review_prompts.rs"]),
+            json.dumps(["codex-rs/prompts/src/review_request.rs"]),
             "--primary-line-count",
             "401",
         )
@@ -4677,7 +4926,6 @@ class RustCiModeScriptTests(unittest.TestCase):
             ",".join(
                 [
                     "codex.spawn-agent-tool-model-surface-targeted",
-                    "codex.core-subagent-spawn-approval-targeted",
                 ]
             ),
         )
@@ -4811,10 +5059,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
 
-    def test_review_prompts_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
+    def test_review_request_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
-            head_files={"codex-rs/core/src/review_prompts.rs": "fn review_prompt() {}\n"},
+            head_files={"codex-rs/prompts/src/review_request.rs": "fn review_prompt() {}\n"},
         )
 
         self.assertEqual(outputs["validation_mode"], "light_initial")

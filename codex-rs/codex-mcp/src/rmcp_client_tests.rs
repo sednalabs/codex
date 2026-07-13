@@ -157,6 +157,7 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
     let initial = list_tools_for_client_uncached(
         "changing",
         /*is_codex_apps_mcp_server*/ false,
+        /*codex_apps_refresh_trigger*/ "test",
         &client,
         Some(Duration::from_secs(5)),
         initialize_result.instructions.as_deref(),

@@ -172,6 +172,34 @@ fn merge_persisted_resume_metadata(
     }
 }
 
+fn merge_persisted_approvals_reviewer(
+    thread_history: &InitialHistory,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    typesafe_overrides: &mut ConfigOverrides,
+) {
+    if typesafe_overrides.approvals_reviewer.is_some()
+        || request_overrides.is_some_and(|overrides| overrides.contains_key("approvals_reviewer"))
+    {
+        return;
+    }
+
+    let InitialHistory::Resumed(resumed_history) = thread_history else {
+        return;
+    };
+    typesafe_overrides.approvals_reviewer =
+        resumed_history
+            .history
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                RolloutItem::TurnContext(turn_context) => turn_context.approvals_reviewer,
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    Some(event.thread_settings.approvals_reviewer)
+                }
+                _ => None,
+            });
+}
+
 fn normalize_thread_list_cwd_filters(
     cwd: Option<ThreadListCwdFilter>,
 ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
@@ -310,7 +338,10 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
             }
             return Err(format!("duplicate dynamic tool name: {name}"));
         }
-        if tool.defer_loading && namespace.is_none() {
+        if tool.defer_loading
+            && namespace.is_none()
+            && !is_bare_native_computer_use_dynamic_tool(tool)
+        {
             return Err(format!(
                 "deferred dynamic tool must include a namespace: {name}"
             ));
@@ -367,7 +398,6 @@ fn is_environment_scoped_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
 
 fn is_bare_native_computer_use_dynamic_tool(tool: &ApiDynamicToolSpec) -> bool {
     tool.namespace.is_none()
-        && tool.capability.is_none()
         && codex_tools::canonical_native_computer_use_dynamic_tool(tool).is_some()
 }
 
@@ -960,6 +990,12 @@ impl ThreadRequestProcessor {
             thread_source,
             environments,
         } = params;
+        if matches!(
+            history_mode,
+            Some(codex_app_server_protocol::ThreadHistoryMode::Paginated)
+        ) {
+            return Err(method_not_found("paginated_threads is not supported yet"));
+        }
         if sandbox.is_some() && permissions.is_some() {
             return Err(invalid_request(
                 "`permissions` cannot be combined with `sandbox`",
@@ -2388,7 +2424,7 @@ impl ThreadRequestProcessor {
                 let (mut thread, history) =
                     thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
                 if include_turns && let Some(history) = history {
-                    thread.turns = build_api_turns_from_rollout_items(&history.items);
+                    thread.turns = build_legacy_api_turns_from_rollout_items(&history.items);
                 }
                 Ok(Some(thread))
             }
@@ -2457,7 +2493,7 @@ impl ThreadRequestProcessor {
                 .load_history(/*include_archived*/ true)
                 .await
                 .map_err(|err| thread_read_history_load_error(thread_id, err))?;
-            thread.turns = build_api_turns_from_rollout_items(&history.items);
+            thread.turns = build_legacy_api_turns_from_rollout_items(&history.items);
         }
 
         Ok(())
@@ -3112,6 +3148,11 @@ impl ThreadRequestProcessor {
         request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: &mut ConfigOverrides,
     ) -> Option<ThreadMetadata> {
+        merge_persisted_approvals_reviewer(
+            thread_history,
+            request_overrides.as_ref(),
+            typesafe_overrides,
+        );
         let InitialHistory::Resumed(resumed_history) = thread_history else {
             return None;
         };
@@ -4302,7 +4343,7 @@ fn reconstruct_thread_turns_for_turns_list(
         || active_turn
             .as_ref()
             .is_some_and(|turn| matches!(turn.status, TurnStatus::InProgress));
-    let mut turns = build_api_turns_from_rollout_items(items);
+    let mut turns = build_legacy_api_turns_from_rollout_items(items);
     normalize_thread_turns_status(&mut turns, loaded_status, has_live_in_progress_turn);
     if let Some(active_turn) = active_turn {
         merge_turn_history_with_active_turn(&mut turns, active_turn);
@@ -4677,10 +4718,7 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
             },
             _ => None,
         })
-        .map(|preview| match preview.find(USER_MESSAGE_BEGIN) {
-            Some(idx) => preview[idx + USER_MESSAGE_BEGIN.len()..].trim().to_string(),
-            None => preview,
-        })
+        .map(|preview| strip_user_message_prefix(preview.as_str()).to_string())
         .unwrap_or_default()
 }
 

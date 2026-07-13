@@ -19,6 +19,11 @@
           "type": "string"
         },
         {
+          "const": "headers",
+          "description": "Backend auth supplied as request headers.",
+          "type": "string"
+        },
+        {
           "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
           "type": "string"

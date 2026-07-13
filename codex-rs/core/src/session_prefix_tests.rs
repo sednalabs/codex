@@ -1,4 +1,5 @@
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::items::SubagentNotificationItem;
 use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::models::ContentItem;
@@ -29,7 +30,7 @@ fn error_completion_message_stays_below_manual_review_threshold() {
 fn format_subagent_notification_message_round_trips_completed_status() {
     let status = AgentStatus::Completed(Some("done".to_string()));
     let item = ResponseItem::Message {
-        id: Some("msg-1".to_string()),
+        id: Some(ResponseItemId::from_server("msg-1".to_string())),
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format_subagent_notification_message("agent-123", &status),

@@ -637,7 +637,7 @@ impl Session {
             let network_proxy_active = match network_proxy.as_ref() {
                 Some(started_network_proxy) => {
                     match started_network_proxy.proxy().current_cfg().await {
-                        Ok(config) => config.network.enabled,
+                        Ok(config) => config.enabled,
                         Err(err) => {
                             warn!(
                                 "failed to read managed network proxy state for turn metrics: {err:#}"
@@ -740,6 +740,7 @@ impl Session {
             turn_context.config.memories.use_memories,
             turn_had_memory_citation,
         );
+        let started_at = turn_context.turn_timing_state.started_at_unix_secs().await;
         let (completed_at, duration_ms) = turn_context
             .turn_timing_state
             .completed_at_and_duration_ms()
@@ -762,13 +763,18 @@ impl Session {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_context.sub_id.clone()),
                 reason,
+                started_at,
+                completed_at,
+                duration_ms,
             })
         } else {
+            let error = turn_context.terminal_error.lock().await.clone();
             self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_context.sub_id.clone(),
                 last_agent_message,
+                error,
                 compaction_events_in_turn: {
                     let turn_state = {
                         self.active_turn
@@ -786,6 +792,7 @@ impl Session {
                 },
                 final_model: terminal_response_model_identity.final_model,
                 model_snapshot: terminal_response_model_identity.model_snapshot,
+                started_at,
                 completed_at,
                 duration_ms,
                 time_to_first_token_ms,
@@ -894,6 +901,16 @@ impl Session {
             }
         }
 
+        let started_at = task
+            .turn_context
+            .turn_timing_state
+            .started_at_unix_secs()
+            .await;
+        let (completed_at, duration_ms) = task
+            .turn_context
+            .turn_timing_state
+            .completed_at_and_duration_ms()
+            .await;
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {
@@ -903,6 +920,9 @@ impl Session {
         let event = EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: Some(task.turn_context.sub_id.clone()),
             reason,
+            started_at,
+            completed_at,
+            duration_ms,
         });
         self.send_event(task.turn_context.as_ref(), event).await;
         self.services

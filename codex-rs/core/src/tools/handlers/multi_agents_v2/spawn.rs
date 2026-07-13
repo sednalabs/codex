@@ -8,7 +8,6 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
-use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
 
@@ -143,21 +142,19 @@ async fn handle_spawn_agent(
         .unwrap_or_else(|| args.model.clone().unwrap_or_default());
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
-        .and_then(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or_else(|| args.reasoning_effort.clone().unwrap_or_default());
-    session
-        .send_event(
-            &turn,
-            SubAgentActivityEvent {
-                event_id: call_id,
-                occurred_at_ms: now_unix_timestamp_ms(),
-                agent_thread_id: new_thread_id,
-                agent_path: new_agent_path.clone(),
-                kind: SubAgentActivityKind::Started,
-            }
-            .into(),
-        )
-        .await;
+        .map(|snapshot| snapshot.reasoning_effort.clone())
+        .unwrap_or_else(|| args.reasoning_effort.clone());
+    emit_sub_agent_activity(
+        &session,
+        &turn,
+        SubAgentActivityItem {
+            id: call_id,
+            agent_thread_id: new_thread_id,
+            agent_path: new_agent_path.clone(),
+            kind: SubAgentActivityKind::Started,
+        },
+    )
+    .await;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
@@ -179,7 +176,7 @@ async fn handle_spawn_agent(
                 .model
                 .as_ref()
                 .map(|requested_model| requested_model == &effective_model),
-            effective_reasoning_effort: Some(effective_reasoning_effort.clone()),
+            effective_reasoning_effort: effective_reasoning_effort.clone(),
         })
     } else {
         Ok(SpawnAgentResult {
@@ -193,7 +190,7 @@ async fn handle_spawn_agent(
                 .model
                 .as_ref()
                 .map(|requested_model| requested_model == &effective_model),
-            effective_reasoning_effort: Some(effective_reasoning_effort),
+            effective_reasoning_effort,
         })
     }
 }
@@ -213,8 +210,6 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
-    #[serde(default)]
-    spawn_approval: SpawnAgentApproval,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }
@@ -271,7 +266,6 @@ pub(crate) struct SpawnAgentResult {
     effective_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     requested_model_honored: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     effective_reasoning_effort: Option<ReasoningEffort>,
 }
 

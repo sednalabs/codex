@@ -207,7 +207,7 @@ spark                no         n/a      n/a                           not built
 
 The main files to re-check when this behavior changes are:
 
-- `codex-rs/core/src/codex.rs`
+- `codex-rs/core/src/session/mod.rs`
 - `codex-rs/core/src/project_doc.rs`
 - `codex-rs/core/hierarchical_agents_message.md`
 - `codex-rs/core/src/tasks/review.rs`

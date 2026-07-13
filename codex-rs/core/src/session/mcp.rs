@@ -80,6 +80,7 @@ impl ElicitationReviewer for GuardianMcpElicitationReviewer {
 
 impl Session {
     pub(crate) async fn runtime_mcp_config(&self, config: &Config) -> McpConfig {
+        let originator = self.originator().await;
         let environments = self.services.turn_environments.snapshot().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
@@ -92,6 +93,7 @@ impl Session {
                 config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
+                &originator,
                 &available_environment_ids,
             )
             .await
@@ -134,6 +136,7 @@ impl Session {
                 &turn_context.config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
+                &turn_context.originator,
                 &available_environment_ids,
             )
             .await;
@@ -363,6 +366,9 @@ impl Session {
             cancellation_token
         };
         let current_runtime = self.services.latest_mcp_runtime();
+        let codex_apps_auth_manager =
+            codex_mcp::host_owned_codex_apps_enabled(&mcp_config, auth.as_ref())
+                .then(|| Arc::clone(&self.services.auth_manager));
         let refreshed_manager = McpConnectionManager::new(
             &mcp_servers,
             mcp_config.mcp_oauth_credentials_store_mode,
@@ -384,6 +390,7 @@ impl Session {
                 .load(std::sync::atomic::Ordering::Relaxed),
             tool_plugin_provenance,
             auth.as_ref(),
+            codex_apps_auth_manager,
             elicitation_reviewer,
             Some(self.mcp_elicitation_lifecycle()),
             current_runtime.manager().elicitation_router(),
@@ -473,6 +480,7 @@ impl Session {
                 &refresh_config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
+                &turn_context.originator,
                 &available_environment_ids,
             )
             .await;
@@ -541,6 +549,7 @@ impl Session {
                 refresh_config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
+                &turn_context.originator,
                 &available_environment_ids,
             )
             .await;

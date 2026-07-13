@@ -19,7 +19,7 @@ use codex_protocol::items::ReasoningItem;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
-use codex_protocol::items::WebSearchItem;
+use codex_protocol::items::WebSearchItem as CoreWebSearchItem;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
@@ -42,6 +42,8 @@ use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
+use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -2654,6 +2656,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }],
         source: CoreExecCommandSource::Agent,
         interaction_input: None,
+        terminal_wait: Some(CoreTerminalWaitInfo {
+            primitive: CoreTerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+            max_wait_ms: Some(10_000),
+            heartbeat_interval_ms: Some(1_000),
+        }),
         status: CoreCommandExecutionStatus::Completed,
         stdout: Some("done\n".to_string()),
         stderr: Some(String::new()),
@@ -2678,7 +2685,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             aggregated_output: Some("done\n".to_string()),
             exit_code: Some(0),
             duration_ms: Some(5),
-            terminal_wait: None,
+            terminal_wait: Some(TerminalWaitInfo {
+                primitive: TerminalWaitPrimitive::ExecCommandWaitUntilTerminal,
+                max_wait_ms: Some(10_000),
+                heartbeat_interval_ms: Some(1_000),
+            }),
         }
     );
 
@@ -2742,7 +2753,6 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
-            timed_out: false,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {
@@ -2774,7 +2784,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }
     );
 
-    let search_item = TurnItem::WebSearch(WebSearchItem {
+    let search_item = TurnItem::WebSearch(CoreWebSearchItem {
         id: "search-1".to_string(),
         query: "docs".to_string(),
         action: CoreWebSearchAction::Search {
@@ -2783,16 +2793,24 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         },
     });
 
+    let expected_search_item = WebSearchItem {
+        id: "search-1".to_string(),
+        query: "docs".to_string(),
+        action: Some(WebSearchAction::Search {
+            query: Some("docs".to_string()),
+            queries: None,
+        }),
+    };
+
     assert_eq!(
         ThreadItem::from(search_item),
-        ThreadItem::WebSearch {
-            id: "search-1".to_string(),
-            query: "docs".to_string(),
-            action: Some(WebSearchAction::Search {
-                query: Some("docs".to_string()),
-                queries: None,
-            }),
-        }
+        ThreadItem::WebSearch(expected_search_item.clone())
+    );
+    assert_eq!(
+        ThreadItem::from(TurnItem::Extension(
+            codex_extension_items::ExtensionItem::WebSearch(expected_search_item.clone()),
+        )),
+        ThreadItem::WebSearch(expected_search_item)
     );
 
     let image_view_item = TurnItem::ImageView(ImageViewItem {
@@ -3654,6 +3672,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     installed: false,
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
+                    install_policy_source: Some(PluginInstallPolicySource::WorkspaceSetting),
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: PluginAvailability::Available,
                     interface: None,
@@ -3676,6 +3695,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     "installed": false,
                     "enabled": false,
                     "installPolicy": "AVAILABLE",
+                    "installPolicySource": "WORKSPACE_SETTING",
                     "authPolicy": "ON_USE",
                     "availability": "AVAILABLE",
                     "interface": null,

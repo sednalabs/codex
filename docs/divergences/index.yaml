@@ -48,7 +48,7 @@
         "ledger runtime"
       ],
       "files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
@@ -71,7 +71,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/state/src/runtime.rs"
       ],
       "extraction_target": "extension-owned usage ledger storage namespace"
@@ -87,7 +87,7 @@
         "provider model identity display evidence"
       ],
       "files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/state/service.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
@@ -120,7 +120,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/turn.rs",
         "codex-rs/state/src/migrations.rs",
         "codex-rs/state/src/runtime.rs"
       ],
@@ -223,9 +223,7 @@
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/tools/spec.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
@@ -237,11 +235,12 @@
       },
       "guardrail_lane": "codex.core-subagent-surface-targeted",
       "tests": [
-        "spawn_agent_preserves_exact_requested_model_slug_through_role_layering",
-        "multi_agent_v2_list_agents_returns_completed_status_and_last_task_message",
-        "multi_agent_v2_list_agents_flags_active_descendants",
+        "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
+        "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+        "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
+        "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
-        "multi_agent_v2_wait_agent_honors_return_when_all",
+        "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
@@ -256,9 +255,7 @@
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
-        "codex-rs/core/src/tools/spec.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
@@ -365,17 +362,23 @@
         "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
         "codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs",
         "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/core/src/codex.rs"
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/rollout-trace/src/protocol_event_tests.rs"
       ],
-      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.blocking-waits-core-targeted; codex.blocking-waits-app-server-targeted",
+      "guardrail_lane": "core-carry-core-smoke; codex.blocking-waits-core-targeted; codex.blocking-waits-app-server-targeted",
       "tests": [
         "capacity_retry::tests",
         "server_overloaded_retries_beyond_stream_retry_budget",
@@ -388,8 +391,11 @@
         "wait_until_terminal_caps_requested_budget_at_two_hours",
         "exec_command_reports_chunk_and_exit_metadata",
         "write_stdin_returns_exit_metadata_and_clears_session",
-        "multi_agent_v2_wait_agent_honors_return_when_all",
-        "command_execution_completion_precedes_turn_completion_and_preserves_process_id",
+        "exec_command_trace_payloads_use_inferred_native_cwd",
+        "command_execution_item_lifecycle_emits_legacy_exec_events",
+        "core_turn_item_into_thread_item_converts_supported_variants",
+        "completion_rule_distinguishes_any_from_all",
+        "command_execution_notifications_include_process_id",
         "shell_command_approval_emits_task_complete_before_tool_response",
         "exec_command_tool_matches_expected_spec",
         "write_stdin_tool_matches_expected_spec",
@@ -404,10 +410,11 @@
         "code_mode_exec_nested_limit_formats_result_variable_before_configured_history_truncation",
         "code_mode_exec_without_nested_limit_formats_result_variable_before_default_history_truncation",
         "code_mode_exec_without_nested_limit_formats_result_variable_before_configured_history_truncation",
+        "continue_after_stream_error",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
+      "notes": "Lets long-running shell work and helper-backed coordination block on real terminal state instead of transcript polling, with downstream-only wait fields and cancellation outcome behavior gated by the shared capability provider. The canonical command-item bridge preserves live terminal-wait metadata after upstream lifecycle refactors and projects it into app-server v2 command items without fabricating it during history reconstruction. TurnCompleteEvent keeps upstream's structured terminal error alongside downstream compaction count and provider model identity metadata. Code-mode nested exec also observes bounded unified-exec summaries before JavaScript sees result.output, while remote unified-exec resolution keeps the session shell for omitted shell requests and uses the selected environment shell for matching explicit aliases instead of host shell lookup. This retains the read-only context-budget helper and keeps interactive direct-model-only tools hidden. Also preserves the user-visible, cancellable retry loop for selected-model capacity responses across sampling and compaction. Full targeted hosted coverage is split across the codex.blocking-waits-* lanes.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
@@ -415,12 +422,16 @@
         "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/compact.rs",
         "codex-rs/core/src/compact_remote.rs",
-        "codex-rs/core/src/codex.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/handlers/shell_spec.rs",
         "codex-rs/core/src/tools/handlers/unified_exec.rs",
         "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/events.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "tool runtime wait and terminal-outcome capabilities"
@@ -436,7 +447,8 @@
       ],
       "files": [
         "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/core/src/codex.rs"
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/context_manager/history.rs"
       ],
       "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults.",
       "upstream_equivalent": false,
@@ -453,7 +465,8 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-accounting-adapter",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/context_manager/history.rs",
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "review/history accounting contributor"
@@ -502,16 +515,24 @@
         "best-effort fallback recovery",
         "cached token expiry restoration",
         "encrypted local secrets keyring backend",
+        "concrete credential-store pinning",
+        "serialized durable credential reconciliation",
         "refresh scope hygiene"
       ],
       "files": [
         "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_transaction.rs",
+        "codex-rs/rmcp-client/src/oauth/resolved_store.rs",
+        "codex-rs/rmcp-client/src/oauth/store_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/persistor_tests.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/startup_error.rs",
         "codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs",
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, proactive refresh failures route to reauthentication, the selected direct-vs-secrets keyring backend is preserved through load, refresh, save, and delete paths, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh and reauthentication. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -521,18 +542,35 @@
       "tests": [
         "load_oauth_tokens_ignores_empty_fallback_file",
         "load_oauth_tokens_auto_ignores_corrupt_fallback_when_keyring_errors",
+        "request_oauth_token_response_strips_refresh_material",
         "refresh_expires_in_from_timestamp_marks_expired_tokens",
         "refresh_credentials_do_not_expose_granted_scopes_to_rmcp",
+        "locked_save_waits_for_refresh_transaction_lock",
+        "persist_if_needed_waits_for_refresh_credential_lock",
+        "persist_if_needed_preserves_newer_durable_credentials",
+        "persist_if_needed_preserves_durable_fields_from_request_only_credentials",
+        "durable_reconciliation_ignores_derived_expiry_drift",
+        "concurrent_refreshes_call_provider_once_and_carry_omitted_fields",
+        "stale_unauthorized_response_adopts_newer_access_token_without_refreshing",
+        "current_unauthorized_response_forces_refresh_and_keeps_request_credentials_minimal",
+        "oauth_refresh_extends_operation_deadline_without_resetting_budget",
+        "oauth_refresh_exclusions_accumulate_on_the_outer_initialize_deadline",
+        "caller_cancellation_does_not_cancel_refresh_persistence",
+        "oauth_authorization_required_refreshes_oauth",
+        "streamable_http_auth_required_refreshes_oauth",
         "refreshes_expired_persisted_token_before_initialize",
         "token_refresh_failure_requires_authentication",
         "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
-      "notes": "Keeps broken, partially-written, expired, refresh-missing, backend-mismatched, or over-broad refresh-scope credential state from turning into opaque MCP startup failures during MCP login and reconnect flows. During upstream syncs, preserve the downstream resolved-store refresh locking and no-unrequested-offline-access refresh staging while also retaining upstream AuthKeyringBackendKind::Secrets support.",
+      "notes": "Keeps broken, partially-written, expired, refresh-missing, backend-mismatched, stale-writer, or over-broad refresh-scope credential state from turning into opaque MCP startup failures during login and reconnect flows. During upstream syncs, preserve upstream concrete-store pinning, RMCP persistence, and Secrets support together with downstream request-only staging, resolved-store refresh locking, durable-state reconciliation, and no-unrequested-offline-access refresh behavior.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "client-hardening-fix",
       "hotspot_files": [
-
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_lock.rs",
+        "codex-rs/rmcp-client/src/oauth/refresh_transaction.rs",
+        "codex-rs/rmcp-client/src/oauth/tests/persistor_tests.rs"
       ],
       "extraction_target": "upstreamable OAuth fallback-file hardening"
     },
@@ -551,8 +589,11 @@
       "files": [
         "codex-rs/cli/src/mcp_cmd.rs",
         "codex-rs/codex-mcp/src/mcp/auth.rs",
+        "codex-rs/http-client/src/custom_ca.rs",
+        "codex-rs/http-client/src/lib.rs",
         "codex-rs/rmcp-client/src/auth_status.rs",
         "codex-rs/rmcp-client/src/perform_oauth_device_login.rs",
+        "codex-rs/rmcp-client/src/perform_oauth_login.rs",
         "codex-rs/rmcp-client/src/lib.rs",
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
@@ -572,10 +613,21 @@
         "device_login_dynamic_registration_omits_refresh_when_not_supported",
         "device_login_configured_client_id_skips_dynamic_registration",
         "device_login_polls_until_authorized",
+        "device_login_retries_without_pkce_when_rejected",
+        "start_authorization_uses_configured_client_id",
+        "reqwest_client_builder_installs_rustls_provider_without_custom_ca",
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
-      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths."
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "headless-oauth-login",
+      "hotspot_files": [
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "justfile"
+      ],
+      "extraction_target": "upstreamable MCP OAuth device login flow"
     },
     {
       "id": "startup-plugin-sync-bounded-wait",
@@ -643,7 +695,6 @@
       },
       "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
       "tests": [
-        "sync_session_tree_token_usage_updates_combined_status_line_items",
         "live_app_server_context_compaction_start_updates_status_header",
         "status_snapshot_distinguishes_session_and_thread_token_usage"
       ],
@@ -744,7 +795,11 @@
       "files": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
+        ".github/validation-lanes.json",
+        ".github/scripts/test_ci_planners.py",
+        "justfile",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -752,7 +807,7 @@
         "codex-rs/tui/src/app_event.rs",
         "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs"
       ],
-      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across core and TUI surfaces.",
+      "behavior": "The downstream fork keeps the restored file-backed custom prompt catalogue in core/protocol and preserves the ad hoc custom-review prompt flow across prompts and TUI surfaces. Custom review instructions are normalized once before prompt and default-hint derivation, while an explicit user-facing hint remains unchanged.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -761,7 +816,10 @@
       "guardrail_lane": "codex.custom-prompts-targeted",
       "tests": [
         "custom_prompts::tests::*",
-        "review_prompts::tests::*",
+        "resolve_review_request_custom_target_trims_prompt_and_hint",
+        "resolve_review_request_custom_target_preserves_explicit_hint_while_trimming_instructions",
+        "test_custom_prompt_review_prompt_crate_path_stays_targeted",
+        "test_review_request_pr_routes_to_custom_prompt_targeted_validation",
         "review_popup_custom_prompt_action_sends_event",
         "custom_prompt_submit_sends_review_op",
         "custom_prompt_enter_empty_does_not_send",
@@ -772,6 +830,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "prompt-catalog-adapter",
       "hotspot_files": [
+        "codex-rs/prompts/src/review_request.rs",
         "codex-rs/tui/src/app.rs"
       ],
       "extraction_target": "custom prompt and review-flow contributor"
@@ -779,35 +838,86 @@
     {
       "id": "code-mode-declaration-formatting",
       "title": "Code-mode declaration formatting",
-      "status": "upstream-equivalent",
+      "status": "live",
       "category": "core-protocol",
       "surface": [
         "code-mode declaration",
-        "tool metadata formatting"
+        "tool metadata formatting",
+        "fully-qualified callable routing"
       ],
       "files": [
-        "codex-rs/core/src/tools/code_mode_description.rs",
-        "codex-rs/core/src/tools/router.rs"
+        "codex-rs/code-mode-host/tests/stdio.rs",
+        "codex-rs/code-mode-protocol/src/description.rs",
+        "codex-rs/code-mode-protocol/src/host/payload.rs",
+        "codex-rs/code-mode/src/runtime/globals.rs",
+        "codex-rs/tools/src/code_mode.rs"
       ],
-      "behavior": "Code-mode declarations keep their downstream formatting and metadata shape, and custom tool calls preserve namespace metadata before routing.",
+      "behavior": "Code mode emits bounded, idempotent TypeScript declarations, exposes short-name and module metadata through ALL_TOOLS, reconstructs that metadata from canonical MCP names after a V1 wire round trip, and routes fully-qualified tool names without adding downstream metadata to the V1 wire payload.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-compile-smoke",
+      "guardrail_lane": "codex.code-mode-declaration-targeted",
       "tests": [
-        "code mode declaration formatting",
-        "build_custom_tool_call_uses_namespace_for_registry_name"
+        "render_json_schema_to_typescript_caps_deep_schema_recursion",
+        "augment_tool_definition_is_idempotent",
+        "augment_tool_definition_truncates_oversized_descriptions",
+        "code_mode_only_description_does_not_double_augment_tool_descriptions",
+        "enabled_tool_metadata_recovers_mcp_catalog_fields_from_canonical_name",
+        "code_mode_exports_all_tools_metadata_for_builtin_tools",
+        "code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools"
       ],
       "owner": "downstream",
-      "notes": "Keeps code-mode declarations namespaced and legible.",
+      "notes": "Keeps code-mode declarations bounded and legible while preserving the downstream metadata and routing contract outside the stable V1 wire shape. Runtime metadata falls back to the canonical mcp__server__tool name after V1 transport rather than widening the wire payload.",
       "upstreamability_tier": "upstream-pr",
-      "boundary_type": "upstream-equivalent-history",
+      "boundary_type": "code-mode-tool-metadata",
       "hotspot_files": [
-
+        "codex-rs/code-mode-protocol/src/description.rs",
+        "codex-rs/code-mode/src/runtime/globals.rs",
+        "codex-rs/tools/src/code_mode.rs"
       ],
-      "extraction_target": "historical upstream-equivalent code-mode formatting"
+      "extraction_target": "upstreamable bounded declaration and callable metadata contract"
+    },
+    {
+      "id": "preferred-user-skill-name-precedence",
+      "title": "Preferred user skill name precedence",
+      "status": "live",
+      "category": "config",
+      "surface_type": "operator-facing",
+      "surface": [
+        "skills.prefer_user_skill_names",
+        "user-versus-repository skill selection"
+      ],
+      "files": [
+        "codex-rs/config/src/skills_config.rs",
+        "codex-rs/core-skills/src/service.rs",
+        "codex-rs/core-skills/src/service_tests.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/config.schema.json",
+        "justfile"
+      ],
+      "behavior": "Operators can name skills whose user or session-layer copy takes precedence over a repository copy. The policy is derived from the effective config stack, participates in the skill snapshot cache key, and disables only matching repository skills when an enabled user copy is present.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "b911f6acb3da0f269b27fed1f42302163e64b8df",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "preferred_user_skill_names_from_stack_collects_user_and_session_layers",
+        "finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured",
+        "parses_prefer_user_skill_names"
+      ],
+      "owner": "downstream",
+      "notes": "Ports the downstream precedence policy onto the upstream SkillsService and HostSkillsSnapshot architecture without retaining the removed SkillsManager API.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "skill-selection-policy",
+      "hotspot_files": [
+        "codex-rs/core-skills/src/service.rs",
+        "codex-rs/core/config.schema.json"
+      ],
+      "extraction_target": "upstreamable user skill precedence policy"
     },
     {
       "id": "agent-orchestration-skills",
@@ -828,9 +938,7 @@
         ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
-        ".codex/skills/",
-        "codex-rs/core-skills/src/manager.rs",
-        "codex-rs/core-skills/src/manager_tests.rs"
+        ".codex/skills/"
       ],
       "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
       "upstream_equivalent": false,
@@ -863,21 +971,25 @@
       "surface": [
         "validation lanes",
         "Sedna sync and heavy test workflows",
-        "GitHub scripts and lane metadata"
+        "GitHub scripts and lane metadata",
+        "reusable workflow input-to-shell boundary"
       ],
       "files": [
         ".github/actions/",
         ".github/codeql/",
+        ".github/dependabot.yaml",
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
         "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
+        "scripts/test-remote-env.sh",
         "scripts/start-codex-exec.sh",
-        "scripts/dispatch_sedna_release"
+        "scripts/dispatch_sedna_release",
+        "tools/argument-comment-lint/list-bazel-targets.sh"
       ],
-      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork.",
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -887,10 +999,17 @@
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
+        "non_git_repo_skills_search_does_not_walk_parents",
+        "test_validation_lab_plan_fingerprint_reads_selection_stdin",
+        "test_validation_lab_plan_fingerprint_reports_missing_selection_stdin",
+        "test_validation_lab_exposes_exact_plan_dedupe_metadata",
+        "test_workflow_ci_route_accepts_plan_fingerprint_helper_alone",
+        "test_rust_ci_full_nextest_archive_is_reused_by_test_families",
+        "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure, and compact/resume rollback fixtures keep their event wait above nextest's 30-second slow threshold so hosted remote replay load does not masquerade as a product hang. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build default-feature ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. Default features keep the shared archive aligned with the non-sandbox V8 release artifact, while v8-canary owns explicit sandbox and non-sandbox runtime proof. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure. Remote replay excludes host-only compact/resume and hook fixtures; Guardian local-proxy fixtures use host-native cwd selections; the large-output summary remains host-only until exec-server replay preserves bounded head, tail, and omission metadata before core subscribes. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
@@ -978,9 +1097,9 @@
         "codex-rs/app-server/src/computer_use.rs",
         "codex-rs/app-server/src/bespoke_event_handling.rs",
         "codex-rs/app-server-protocol/src/protocol/common.rs",
-        "codex-rs/app-server-protocol/src/protocol/v2.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
-        "codex-rs/android-computer-use/src/lib.rs",
+        "codex-rs/android-computer-use/",
         "codex-rs/tui/src/android_computer_use_provider.rs",
         "codex-rs/browser-computer-use/src/lib.rs",
         "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
@@ -988,11 +1107,11 @@
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/exec/src/lib.rs",
-        "codex-rs/tui/src/app/app_server_adapter.rs",
+        "codex-rs/tui/src/app/app_server_requests.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/chatwidget.rs",
         "codex-rs/tui/src/chatwidget/interrupts.rs",
-        "codex-rs/tui/src/history_cell.rs",
+        "codex-rs/tui/src/history_cell/computer_use.rs",
         "codex-rs/rollout/src/policy.rs",
         "codex-rs/rollout-trace/src/protocol_event.rs",
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
@@ -1010,17 +1129,20 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.app-server-computer-use-targeted",
+      "guardrail_lane": "codex.app-server-computer-use-targeted; codex.native-computer-use-tool-registry-targeted; codex.build-policy-sanity",
       "tests": [
         "computer_use_call_round_trip_sends_client_response_to_model",
         "thread_resume_injects_native_android_tools_into_model_requests",
         "thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested",
+        "validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool",
+        "capability_bearing_native_dynamic_tool_requires_thread_reload",
         "thread_fork_injects_native_android_tools_into_model_requests",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
-        "android_dynamic_tools_use_canonical_codex_tool_definitions",
         "action_kind_accepts_current_and_compatibility_fields",
         "action_failure_summary_lists_completed_actions_without_payload_echo",
         "configured_android_tools_load_from_explicit_codex_home",
+        "verify_cargo_workspace_manifests.py",
+        "Bazel //codex-rs/android-computer-use/... build",
         "android_config_loads_provider_defaults_from_config_file",
         "launch_app_args_uses_configured_default_package_and_activity",
         "input_args_applies_default_serial_without_clobbering_explicit_serial",
@@ -1054,16 +1176,11 @@
         "desktop_provider_response_without_native_image_fails_loudly",
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
         "native_computer_use_check_reports_android_browser_and_desktop_config_files",
-        "bundled_browser_and_computer_use_plugins_are_tool_suggest_discoverable",
-        "duplicate_bare_android_dynamic_tools_register_native_handler_once",
-        "deferred_android_dynamic_tools_search_as_native_computer_use_tools",
         "computer_use_call_times_out_and_unregisters_pending_response",
-        "reconstructs_computer_use_items_from_request_and_response_events",
-        "computer_use_call_request_is_tool_runtime_start",
-        "computer_use_call_response_is_tool_runtime_end"
+        "computer_use_started_and_completed_translate_to_thread_events"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams.",
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, and provider registries until the tracked tagged function/namespace migration can preserve those boundaries losslessly.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "computer-use-provider-registry",
       "hotspot_files": [
@@ -1074,6 +1191,56 @@
         "codex-rs/tui/src/chatwidget.rs"
       ],
       "extraction_target": "shared native computer-use provider registry"
+    },
+    {
+      "id": "dynamic-tool-flat-compatibility",
+      "title": "Flat dynamic-tool compatibility across app-server persistence",
+      "status": "live",
+      "category": "app-server-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "app-server dynamicTools requests",
+        "thread dynamic-tool persistence and resume",
+        "provider capability metadata"
+      ],
+      "files": [
+        "codex-rs/protocol/src/dynamic_tools.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/core/src/session/",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/state/migrations/0004_thread_dynamic_tools.sql",
+        "codex-rs/state/migrations/0019_thread_dynamic_tools_defer_loading.sql",
+        "codex-rs/state/migrations/0027_thread_dynamic_tools_persist_on_resume.sql",
+        "codex-rs/state/migrations/0028_thread_dynamic_tools_capability_json.sql",
+        "codex-rs/state/migrations/0029_thread_dynamic_tools_namespace.sql"
+      ],
+      "behavior": "Downstream retains one flat function record with optional namespace, persistOnResume, and capability metadata across app-server input, session state, SQLite rows, resume filtering, and provider registries. Upstream's tagged function/namespace representation remains accepted only through lossless legacy ingestion until every persisted and runtime boundary can migrate together.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-protocol-test; codex.app-server-v2-contract-targeted",
+      "tests": [
+        "dynamic_tool_spec_deserializes_defer_loading",
+        "dynamic_tool_spec_legacy_expose_to_context_inverts_to_defer_loading",
+        "dynamic_tool_spec_deserializes_persist_on_resume",
+        "dynamic_tool_spec_deserializes_capability_metadata",
+        "environment_scoped_dynamic_tools_do_not_restore_without_revalidation",
+        "thread_start_injects_dynamic_tools_into_model_requests"
+      ],
+      "owner": "downstream",
+      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "tool-schema-persistence-compatibility",
+      "hotspot_files": [
+        "codex-rs/protocol/src/dynamic_tools.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/state/src/runtime/threads.rs"
+      ],
+      "extraction_target": "tagged dynamic-tool migration adapter"
     },
     {
       "id": "codex-tui-session-surfaces",
@@ -1220,7 +1387,7 @@
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-capability-adapter",
       "hotspot_files": [
-        "codex-rs/core/src/codex.rs",
+        "codex-rs/core/src/session/mod.rs",
         "codex-rs/core/src/config/permissions.rs",
         "codex-rs/linux-sandbox/src/linux_run_main.rs",
         "codex-rs/protocol/src/protocol.rs"
@@ -1326,9 +1493,14 @@
         "scripts/install_sedna_release_asset",
         "scripts/install/install.sh",
         "scripts/install/install.ps1",
+        "scripts/install/test_install_sh.py",
         "scripts/stage_npm_packages.py",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
         "scripts/list-bazel-clippy-targets.sh",
+        "defs.bzl",
         "patches/",
+        "sdk/typescript/package.json",
         "sdk/typescript/src/events.ts",
         "sdk/typescript/tests/exec.test.ts",
         "announcement_tip.toml",
@@ -1341,23 +1513,35 @@
         "tools/argument-comment-lint/Cargo.lock",
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "package.json",
-        "scripts/codex-resume-recent.sh"
+        "scripts/codex-resume-recent.sh",
+        "codex-rs/http-client/src/outbound_proxy.rs",
+        "codex-rs/network-proxy/src/certs.rs",
+        "codex-rs/secrets/src/lib.rs",
+        "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity",
+      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted",
       "tests": [
         "bash -n scripts/install/install.sh",
+        "test_custom_repository_and_tag_prefix_drive_latest_urls",
         "verify_bazel_clippy_lints.py",
         "verify_cargo_workspace_manifests.py",
-        "py_compile of stage_npm_packages.py and policy verifier scripts"
+        "py_compile of stage_npm_packages.py and policy verifier scripts",
+        "codex.sdk-python-targeted",
+        "test_stage_runtime_release_rejects_archive_path_traversal",
+        "test_stage_runtime_release_rejects_archive_links",
+        "system_proxy_cache_key_preserves_url_specific_pac_decisions",
+        "managed_ca_certificate_path_uses_matching_content_hash",
+        "environment_id_fallback_has_cwd_prefix",
+        "returns thread events"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
@@ -1366,6 +1550,53 @@
         "justfile"
       ],
       "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "sedna-release-update-routing",
+      "title": "Sedna release update routing",
+      "status": "live",
+      "category": "release",
+      "surface_type": "operator-facing",
+      "surface": [
+        "app-server update notifications",
+        "TUI update prompts and version selection",
+        "Sedna release asset installer"
+      ],
+      "files": [
+        ".github/scripts/resolve_sedna_release_version.py",
+        ".github/workflows/sedna-release.yml",
+        ".github/workflows/sedna-release-install.yml",
+        "codex-rs/app-server-daemon/src/update_loop.rs",
+        "codex-rs/tui/src/update_action.rs",
+        "codex-rs/tui/src/update_prompt.rs",
+        "codex-rs/tui/src/update_versions.rs",
+        "codex-rs/tui/src/version.rs",
+        "scripts/install_sedna_release_asset",
+        "scripts/resolve_sedna_release_version"
+      ],
+      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.build-policy-sanity; codex.workflow-ci-sanity",
+      "tests": [
+        "resolve_sedna_release_version.py tests",
+        "scripts/resolve_sedna_release_version --help",
+        "update prompt and version tests",
+        "sedna-release workflow policy checks"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "release-update-routing",
+      "hotspot_files": [
+        "codex-rs/app-server-daemon/src/update_loop.rs",
+        "codex-rs/tui/src/update_versions.rs",
+        ".github/workflows/sedna-release.yml"
+      ],
+      "extraction_target": "downstream release-channel adapter"
     },
     {
       "id": "side-chat-persistence-and-usage-ledger",
@@ -1383,6 +1614,7 @@
         "codex-rs/tui/src/app_event.rs",
         "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
+        "codex-rs/app-server-test-client/src/lib.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
@@ -1397,9 +1629,7 @@
       "guardrail_lane": "core-ledger-smoke; codex.app-server-protocol-test; codex.tui-agent-picker-targeted",
       "tests": [
         "state_runtime_records_direct_fork_snapshot_from_provider_rows",
-        "fork_stopped_thread_from_rollout_preserves_side_thread_source",
-        "thread_fork_side_source_persists_and_uses_side_filter",
-        "thread_list_hides_side_threads_until_side_filter_requested",
+        "thread_fork_side_source_persists_and_hides_from_default_list",
         "side_fork_config_is_persistent_and_appends_developer_guardrails",
         "slash_quit_in_side_conversation_requests_side_exit",
         "slash_exit_in_side_conversation_requests_side_exit",
@@ -1407,7 +1637,7 @@
       ],
       "owner": "downstream",
       "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
-      "upstreamability_tier": "downstream-product",
+      "upstreamability_tier": "downstream-adapter",
       "boundary_type": "interactive-history-and-ledger",
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
@@ -1420,6 +1650,51 @@
         "scripts/codex-resume-recent.sh"
       ],
       "extraction_target": "side-thread persistence and history filtering contract"
+    },
+    {
+      "id": "app-server-thread-metadata-compatibility",
+      "title": "App-server thread source and history mode compatibility",
+      "status": "live",
+      "category": "app-server-protocol",
+      "surface": [
+        "app-server thread list/read/resume",
+        "rollout and thread-store metadata",
+        "generated thread protocol schemas"
+      ],
+      "files": [
+        "codex-rs/protocol/",
+        "codex-rs/rollout/",
+        "codex-rs/state/",
+        "codex-rs/thread-store/",
+        "codex-rs/app-server-protocol/",
+        "codex-rs/app-server/tests/suite/conversation_summary.rs"
+      ],
+      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata. App-server, rollout, state, and thread-store paths retain both independent fields; paginated-history metadata must not erase side, agent, or other source provenance.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.app-server-protocol-test; core-ledger-smoke",
+      "tests": [
+        "thread_fork_side_source_persists_and_hides_from_default_list",
+        "observed_metadata_rebuilds_history_mode_from_canonical_session_meta",
+        "live_thread_memory_mode_update_before_rollout_materializes_keeps_history_mode",
+        "typescript_schema_fixtures_match_generated",
+        "json_schema_fixtures_match_generated"
+      ],
+      "owner": "downstream",
+      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode itself remains upstream-owned.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "thread-metadata-compatibility",
+      "hotspot_files": [
+        "codex-rs/protocol/",
+        "codex-rs/rollout/",
+        "codex-rs/state/",
+        "codex-rs/thread-store/",
+        "codex-rs/app-server-protocol/"
+      ],
+      "extraction_target": "thread provenance and history-mode coexistence contract"
     },
     {
       "id": "mcp-direct-app-tool-reconciliation",
@@ -1504,6 +1779,44 @@
         "codex-rs/codex-mcp/src/rmcp_client.rs"
       ],
       "extraction_target": "upstream MCP complete-catalogue collection and refresh"
+    },
+    {
+      "id": "large-pr-codeql-diff-ranges",
+      "title": "Complete CodeQL diff ranges for large pull requests",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "CodeQL pull-request analysis",
+        "large upstream-sync security gate"
+      ],
+      "files": [
+        ".github/scripts/prepare_codeql_diff_ranges.py",
+        ".github/scripts/test_ci_planners.py",
+        ".github/workflows/codeql.yml",
+        ".github/validation-lanes.json",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "When a pull request changes at least 300 files and the compare API cannot provide complete diff ranges, the hosted CodeQL workflow derives every added or modified line range from the checked-out Git history and supplies CodeQL's diff-informed restriction file after initialization. Full configured queries still run, while unchanged default-branch alerts are not misclassified as new solely because the API truncated the diff.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.workflow-ci-sanity; GitHub CodeQL aggregate",
+      "tests": [
+        "CodeqlDiffRangeTests",
+        "test_codeql_advanced_workflow_is_authoritative_hardened_setup"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve while github/codeql-action disables API-derived diff-informed analysis at 300 changed files. Drop when the action or GitHub comparison service supports complete large-PR ranges without downstream wiring.",
+      "upstreamability_tier": "external-gap",
+      "boundary_type": "hosted-security-validation",
+      "hotspot_files": [
+        ".github/workflows/codeql.yml"
+      ],
+      "extraction_target": "upstream CodeQL action support for complete large-PR diff ranges"
     },
     {
       "id": "python-code-quality-corrections",

@@ -8,6 +8,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
@@ -62,6 +63,7 @@ use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -616,7 +618,7 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
                 "spawn_agent",
                 function_payload(json!({
                     "message": "inspect this repo",
-                    "model": "gpt-5.3-codex",
+                    "model": "gpt-5.4-mini",
                     "service_tier": ServiceTier::Fast.request_value()
                 })),
             ))
@@ -627,7 +629,7 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
         assert_eq!(
             err,
             FunctionCallError::RespondToModel(
-                "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none"
+                "Service tier `priority` is not supported for model `gpt-5.4-mini`. Supported service tiers: none"
                     .to_string()
             )
         );
@@ -705,7 +707,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
                 "spawn_agent",
                 function_payload(json!({
                     "message": "inspect this repo",
-                    "model": "gpt-5.3-codex"
+                    "model": "gpt-5.4-mini"
                 })),
             ))
             .await
@@ -1706,9 +1708,11 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
             child_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
+                started_at: None,
                 last_agent_message: Some("done".to_string()),
                 final_model: None,
                 model_snapshot: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2225,10 +2229,12 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             first_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: first_turn.sub_id.clone(),
+                started_at: None,
                 last_agent_message: Some("first done".to_string()),
                 compaction_events_in_turn: 0,
                 final_model: None,
                 model_snapshot: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2269,10 +2275,12 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             second_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: second_turn.sub_id.clone(),
+                started_at: None,
                 last_agent_message: Some("second done".to_string()),
                 compaction_events_in_turn: 0,
                 final_model: None,
                 model_snapshot: None,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -2434,7 +2442,10 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
             aborted_turn.as_ref(),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(aborted_turn.sub_id.clone()),
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             }),
         )
         .await;
@@ -3168,7 +3179,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent target not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
 }
 
 #[tokio::test]
@@ -3185,7 +3196,7 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
     );
 }
 
@@ -3487,14 +3498,16 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait completed.");
-    assert_eq!(result.requested_ids, vec![id_a, id_b]);
-    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Terminal
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([
+                (id_a.to_string(), AgentStatus::NotFound),
+                (id_b.to_string(), AgentStatus::NotFound),
+            ]),
+            timed_out: false,
+        }
     );
-    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
@@ -3525,14 +3538,13 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
-    assert_eq!(result.requested_ids, vec![agent_id]);
-    assert_eq!(result.pending_ids, vec![agent_id]);
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Timeout
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::new(),
+            timed_out: true,
+        }
     );
-    assert!(result.timed_out);
     assert_eq!(success, None);
 
     let _ = thread
@@ -3622,14 +3634,13 @@ async fn wait_agent_returns_final_status_without_timeout() {
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait completed.");
-    assert_eq!(result.requested_ids, vec![agent_id]);
-    assert!(result.pending_ids.is_empty());
     assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Terminal
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
+            timed_out: false,
+        }
     );
-    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 

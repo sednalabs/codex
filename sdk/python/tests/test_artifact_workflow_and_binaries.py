@@ -57,6 +57,7 @@ def _write_fake_codex_package(package_dir: Path, script) -> Path:
     (package_dir / "codex-path").mkdir()
     (package_dir / "codex-package.json").write_text('{"variant":"codex"}\n')
     (package_dir / "bin" / script.runtime_binary_name()).write_text("fake codex\n")
+    (package_dir / "bin" / script.runtime_code_mode_host_name()).write_text("fake code mode host\n")
     (package_dir / "codex-resources" / "bwrap").write_text("fake bwrap\n")
     (package_dir / "codex-path" / "rg").write_text("fake rg\n")
     return package_dir
@@ -682,11 +683,13 @@ def test_stage_runtime_release_copies_package_layout_and_sets_version(
     assert {
         "metadata": (package_root / "codex-package.json").read_text(),
         "codex": (package_root / "bin" / script.runtime_binary_name()).read_text(),
+        "code_mode_host": (package_root / "bin" / script.runtime_code_mode_host_name()).read_text(),
         "bwrap": (package_root / "codex-resources" / "bwrap").read_text(),
         "rg": (package_root / "codex-path" / "rg").read_text(),
     } == {
         "metadata": '{"variant":"codex"}\n',
         "codex": "fake codex\n",
+        "code_mode_host": "fake code mode host\n",
         "bwrap": "fake bwrap\n",
         "rg": "fake rg\n",
     }
@@ -747,6 +750,50 @@ def test_stage_runtime_release_rejects_incomplete_package_layout(tmp_path: Path)
 
     with pytest.raises(RuntimeError, match="Missing Codex package layout entries"):
         script.stage_python_runtime_package(tmp_path / "runtime-stage", "1.2.3", package_archive)
+
+
+def test_stage_runtime_release_rejects_archive_path_traversal(tmp_path: Path) -> None:
+    script = _load_update_script_module()
+    package_archive = tmp_path / "codex-package.tar.gz"
+    staging_dir = tmp_path / "runtime-stage"
+    escaped_path = tmp_path / "escaped.txt"
+    safe_payload = b"must not be written before validation completes\n"
+    payload = b"outside extraction root\n"
+    with tarfile.open(package_archive, "w:gz") as archive:
+        safe_member = tarfile.TarInfo("bin/safe.txt")
+        safe_member.size = len(safe_payload)
+        archive.addfile(safe_member, io.BytesIO(safe_payload))
+        member = tarfile.TarInfo("../escaped.txt")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(RuntimeError, match="Unsafe path in Codex package archive"):
+        script.stage_python_runtime_package(
+            staging_dir,
+            "1.2.3",
+            package_archive,
+        )
+
+    assert not escaped_path.exists()
+    package_root = script.staged_runtime_package_root(staging_dir)
+    assert not (package_root / "bin" / "safe.txt").exists()
+
+
+def test_stage_runtime_release_rejects_archive_links(tmp_path: Path) -> None:
+    script = _load_update_script_module()
+    package_archive = tmp_path / "codex-package.tar.gz"
+    with tarfile.open(package_archive, "w:gz") as archive:
+        member = tarfile.TarInfo("bin/codex")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "../../outside"
+        archive.addfile(member)
+
+    with pytest.raises(RuntimeError, match="Unsupported link or special entry"):
+        script.stage_python_runtime_package(
+            tmp_path / "runtime-stage",
+            "1.2.3",
+            package_archive,
+        )
 
 
 def test_runtime_package_layout_is_included_by_wheel_config(

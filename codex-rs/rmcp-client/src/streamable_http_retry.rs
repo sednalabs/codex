@@ -26,6 +26,7 @@ pub(super) const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
 #[derive(Default)]
 struct InitializeAttemptContext {
     oauth_persistor: Option<OAuthPersistor>,
+    rejected_access_token: Option<String>,
 }
 
 impl RmcpClient {
@@ -39,29 +40,32 @@ impl RmcpClient {
         Option<OAuthPersistor>,
     )> {
         let mut attempt_context = InitializeAttemptContext::default();
-        let deadline = timeout.map(|duration| Instant::now() + duration);
-        match self
+        let mut deadline = timeout.map(|duration| Instant::now() + duration);
+        let mut excluded_oauth_time = Duration::ZERO;
+        let initial_result = self
             .connect_pending_transport_with_initialize_retries(
                 initial_transport,
                 client_service.clone(),
                 timeout,
                 &mut attempt_context,
+                &mut excluded_oauth_time,
             )
-            .await
-        {
+            .await;
+        extend_initialize_deadline(&mut deadline, excluded_oauth_time);
+
+        match initial_result {
             Ok(result) => Ok(result),
             Err(error) if Self::is_unauthorized_initialize_error(&error) => {
                 let Some(oauth_persistor) = attempt_context.oauth_persistor else {
                     return Err(error);
                 };
-                let refresh_result = match remaining_initialize_timeout(timeout, deadline)? {
-                    Some(remaining) => {
-                        oauth_persistor
-                            .refresh_after_unauthorized_with_timeout(remaining)
-                            .await
-                    }
-                    None => oauth_persistor.refresh_after_unauthorized().await,
-                };
+                // OAuth refresh has independent lock and provider bounds, so exclude it from the
+                // MCP initialize budget just as we do for pre-initialize expiry refreshes.
+                let refresh_started_at = Instant::now();
+                let refresh_result = oauth_persistor
+                    .refresh_after_unauthorized(attempt_context.rejected_access_token.as_deref())
+                    .await;
+                extend_initialize_deadline(&mut deadline, refresh_started_at.elapsed());
                 if let Err(error) = refresh_result {
                     remaining_initialize_timeout(timeout, deadline)?;
                     return Err(error);
@@ -78,11 +82,13 @@ impl RmcpClient {
                 };
                 let remaining = remaining_initialize_timeout(timeout, deadline)?;
                 let mut retry_context = InitializeAttemptContext::default();
+                let mut retry_excluded_oauth_time = Duration::ZERO;
                 self.connect_pending_transport_with_initialize_retries(
                     transport,
                     client_service,
                     remaining,
                     &mut retry_context,
+                    &mut retry_excluded_oauth_time,
                 )
                 .await
             }
@@ -96,6 +102,7 @@ impl RmcpClient {
         client_service: ElicitationClientService,
         timeout: Option<Duration>,
         attempt_context: &mut InitializeAttemptContext,
+        excluded_oauth_time: &mut Duration,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthPersistor>,
@@ -105,7 +112,7 @@ impl RmcpClient {
             PendingTransport::StreamableHttp { .. }
             | PendingTransport::StreamableHttpWithOAuth { .. } => true,
         };
-        let retry_deadline = timeout.map(|duration| Instant::now() + duration);
+        let mut retry_deadline = timeout.map(|duration| Instant::now() + duration);
         let mut pending_transport = Some(initial_transport);
 
         for (attempt, retry_delay_ms) in STREAMABLE_HTTP_RETRY_DELAYS_MS
@@ -130,14 +137,33 @@ impl RmcpClient {
                     }
                 }
             };
-            attempt_context.oauth_persistor = match &transport {
+            match &transport {
                 PendingTransport::StreamableHttpWithOAuth {
                     oauth_persistor, ..
-                } => Some(oauth_persistor.clone()),
+                } => {
+                    attempt_context.oauth_persistor = Some(oauth_persistor.clone());
+                }
                 PendingTransport::InProcess { .. }
                 | PendingTransport::Stdio { .. }
-                | PendingTransport::StreamableHttp { .. } => None,
-            };
+                | PendingTransport::StreamableHttp { .. } => {
+                    attempt_context.oauth_persistor = None;
+                    attempt_context.rejected_access_token = None;
+                }
+            }
+            if let PendingTransport::StreamableHttpWithOAuth {
+                oauth_persistor, ..
+            } = &transport
+            {
+                // OAuth refresh has its own lock and provider request bounds. Exclude it from the
+                // MCP handshake budget, and finish persistence before attempting initialize.
+                let refresh_started_at = Instant::now();
+                oauth_persistor.refresh_if_needed().await?;
+                let refresh_elapsed = refresh_started_at.elapsed();
+                *excluded_oauth_time += refresh_elapsed;
+                extend_initialize_deadline(&mut retry_deadline, refresh_elapsed);
+                attempt_context.rejected_access_token =
+                    oauth_persistor.access_token_snapshot().await;
+            }
             let attempt_timeout = remaining_initialize_timeout(timeout, retry_deadline)?;
 
             match Self::connect_pending_transport(
@@ -304,6 +330,12 @@ fn is_retryable_http_status(status: StatusCode) -> bool {
             | StatusCode::SERVICE_UNAVAILABLE
             | StatusCode::GATEWAY_TIMEOUT
     )
+}
+
+fn extend_initialize_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
+    if let Some(deadline) = deadline.as_mut() {
+        *deadline += excluded_time;
+    }
 }
 
 pub(super) fn remaining_initialize_timeout(

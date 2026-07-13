@@ -100,17 +100,18 @@ fn remote_windows_smoke_progress(
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
     const CALL_ID: &str = "wine-cmd-smoke";
     const PATCH_CALL_ID: &str = "wine-apply-patch";
+    const VERIFY_CALL_ID: &str = "wine-verify-patch";
     const PATCH_FILE: &str = "codex-apply-patch-smoke.txt";
     const COMMAND: &str = r#"if ((Get-Location).Path -ne 'C:\windows') { exit 1 }"#;
+    const VERIFY_COMMAND: &str = r#"$path = Join-Path (Get-Location) 'codex-apply-patch-smoke.txt'; if (-not (Test-Path $path)) { exit 1 }; if ([IO.File]::ReadAllText($path) -ne "patched through unified exec`n") { exit 2 }; Write-Output 'PATCH_VERIFIED'"#;
 
     WineExecServer
-        .scope(|exec_server_url, wine_prefix| async move {
+        .scope(|exec_server_url, _wine_prefix| async move {
             let server = start_mock_server().await;
             let arguments = serde_json::to_string(&json!({
                 "cmd": COMMAND,
-                // Request the selected Windows environment shell for PowerShell syntax.
-                "shell": "powershell",
                 "login": false,
+                "shell": "powershell",
                 // An absolute foreign workdir should replace the selected environment cwd and
                 // reach exec-server without conversion to the host path convention.
                 "workdir": r"C:\windows",
@@ -121,11 +122,15 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             );
             let patch_arguments = serde_json::to_string(&json!({
                 "cmd": format!("apply_patch <<'EOF'\n{patch}\nEOF\n"),
-                // Use the selected Windows shell for remote-environment shell
-                // resolution; apply_patch is intercepted before execution.
-                "shell": "powershell",
                 "login": false,
                 // Resolve this relative workdir using the selected Windows environment cwd.
+                "workdir": r"apply-patch-smoke\nested",
+                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
+            }))?;
+            let verify_arguments = serde_json::to_string(&json!({
+                "cmd": VERIFY_COMMAND,
+                "login": false,
+                "shell": "powershell",
                 "workdir": r"apply-patch-smoke\nested",
                 "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
             }))?;
@@ -144,8 +149,13 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                     ]),
                     sse(vec![
                         ev_response_created("resp-3"),
-                        ev_assistant_message("msg-1", "done"),
+                        ev_function_call(VERIFY_CALL_ID, "exec_command", &verify_arguments),
                         ev_completed("resp-3"),
+                    ]),
+                    sse(vec![
+                        ev_response_created("resp-4"),
+                        ev_assistant_message("msg-1", "done"),
+                        ev_completed("resp-4"),
                     ]),
                 ],
             )
@@ -297,20 +307,22 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 "apply_patch should retain the Windows cwd: {:?}",
                 events.patch_end.changes
             );
-            let patched_path = wine_prefix
-                .join("drive_c")
-                .join("codex-home")
-                .join("apply-patch-smoke")
-                .join("nested")
-                .join(PATCH_FILE);
-            assert_eq!(
-                fs::read_to_string(&patched_path)
-                    .with_context(|| format!("failed to read {}", patched_path.display()))?,
-                "patched through unified exec\n"
-            );
             let request = response_mock
                 .last_request()
                 .context("model should receive the command output")?;
+            let (verify_output, verify_success) = request
+                .function_call_output_content_and_success(VERIFY_CALL_ID)
+                .context("verification output should be present")?;
+            anyhow::ensure!(
+                verify_success != Some(false),
+                "verification command failed: {verify_output:?}"
+            );
+            anyhow::ensure!(
+                verify_output
+                    .as_deref()
+                    .is_some_and(|output| output.contains("PATCH_VERIFIED")),
+                "verification command did not confirm the patched file: {verify_output:?}"
+            );
 
             let (_output, success) = request
                 .function_call_output_content_and_success(CALL_ID)
@@ -354,14 +366,15 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                 "mock",
                 "compact",
             )?;
-            let mut app_server = TestAppServer::new_with_env(
-                codex_home.path(),
-                &[(
+            let mut app_server = TestAppServer::builder()
+                .with_codex_home(codex_home.path())
+                .without_auto_env()
+                .with_env_overrides(&[(
                     CODEX_EXEC_SERVER_URL_ENV_VAR,
                     Some(exec_server_url.as_str()),
-                )],
-            )
-            .await?;
+                )])
+                .build()
+                .await?;
             timeout(APP_SERVER_READ_TIMEOUT, app_server.initialize()).await??;
 
             let request_id = app_server

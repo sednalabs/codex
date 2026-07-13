@@ -393,7 +393,7 @@ When capability metadata is present, app-server validates and forwards it as
 part of the dynamic tool contract. That metadata describes runtime capability;
 it does not replace the Codex-owned native schema or transcript behavior for
 bare `android_observe`, `android_step`, `android_install_build_from_run`,
-`browser_observe`, or `browser_step`.
+`browser_observe`, `browser_step`, `desktop_observe`, or `desktop_step`.
 
 Deferred tool search also treats bare native dynamic tools as computer-use
 candidates, so deferred discovery loads the canonical Codex tool definition
@@ -446,16 +446,16 @@ The v2 app-server protocol includes:
 - `ComputerUseCallStatus`
 - `ThreadItem::ComputerUseCall`
 
-Thread history reconstructs in-progress and completed computer-use items from
-protocol events, and app-server turn snapshots replay the same
-`ThreadItem::ComputerUseCall` shape on resume or thread reads. The TUI renders
-live and replayed computer-use cells, including fallback messaging when the TUI
-session has no native computer-use provider for the request. Completed calls use
-adapter-specific transcript labels such as `Used browser`, `Used computer`, or
-`Used Android emulator`; in-flight calls use the matching `Using ...` label.
-The visible transcript summarizes text output and records native screenshots as
-`<native screenshot>` without embedding screenshot data into the transcript
-text.
+Computer-use calls are live app-server projections: request and response events
+are transient and are not canonical turn items or durable thread-history
+events. Thread reads and resumed sessions therefore do not reconstruct earlier
+`ThreadItem::ComputerUseCall` items. The TUI renders live computer-use cells,
+including fallback messaging when the active TUI session has no native
+computer-use provider for the request. Completed calls use adapter-specific
+transcript labels such as `Used browser`, `Used computer`, or `Used Android
+emulator`; in-flight calls use the matching `Using ...` label. The visible
+transcript summarizes text output and records native screenshots as `<native
+screenshot>` without embedding screenshot data into transcript text.
 
 For CLI/TUI sessions, configured local Android, browser, and desktop providers
 advertise the bare native dynamic tools at thread start, resume, and fork time.
@@ -482,8 +482,9 @@ Codex events.
 
 ## Rollout and Trace Semantics
 
-Computer-use request and response events are persisted in extended rollout
-mode. Rollout-trace maps them to tool-runtime start and end boundaries:
+Computer-use request and response events are transient in every history mode;
+they are not stored in a thread snapshot. Live rollout tracing maps them to
+tool-runtime start and end boundaries:
 
 - `ComputerUseCallRequest` starts the runtime span.
 - `ComputerUseCallResponse` ends the runtime span.
@@ -590,7 +591,7 @@ of an explicit `browser_observe` or `browser_step` URL. Provider-managed
 - `codex-rs/app-server/src/computer_use.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
 - `codex-rs/app-server-protocol/src/protocol/common.rs`
-- `codex-rs/app-server-protocol/src/protocol/v2.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
 - `codex-rs/android-computer-use/src/lib.rs`
 - `codex-rs/tui/src/android_computer_use_provider.rs`
@@ -600,11 +601,11 @@ of an explicit `browser_observe` or `browser_step` URL. Provider-managed
 - `codex-rs/tui/src/computer_use_provider.rs`
 - `codex-rs/tui/src/desktop_computer_use_provider.rs`
 - `codex-rs/exec/src/lib.rs`
-- `codex-rs/tui/src/app/app_server_adapter.rs`
+- `codex-rs/tui/src/app/app_server_requests.rs`
 - `codex-rs/tui/src/app/app_server_events.rs`
 - `codex-rs/tui/src/chatwidget.rs`
 - `codex-rs/tui/src/chatwidget/interrupts.rs`
-- `codex-rs/tui/src/history_cell.rs`
+- `codex-rs/tui/src/history_cell/computer_use.rs`
 - `codex-rs/rollout/src/policy.rs`
 - `codex-rs/rollout-trace/src/protocol_event.rs`
 - `codex-rs/app-server/tests/suite/v2/computer_use.rs`

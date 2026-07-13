@@ -4,12 +4,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
-use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
-use codex_app_server_protocol::PluginDetail;
-use codex_app_server_protocol::PluginInstallResponse;
-use codex_app_server_protocol::PluginListResponse;
-use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoal;
@@ -19,6 +14,7 @@ use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core_plugins::EffectivePluginsChange;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
@@ -66,7 +62,7 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
         _thread_manager: &Arc<ThreadManager>,
         _config: &Arc<Config>,
         _auth_manager: Arc<AuthManager>,
-        _on_effective_plugins_changed: Option<Arc<dyn Fn() + Send + Sync>>,
+        _on_effective_plugins_changed: Option<Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>>,
     ) {
     }
 
@@ -124,23 +120,8 @@ pub(crate) trait AppServerHooks: Send + Sync + 'static {
         false
     }
 
-    /// Opportunity to overlay plugin marketplace/list state before it reaches clients.
-    fn augment_plugin_list(&self, _response: &mut PluginListResponse) {}
-
-    /// Opportunity to overlay plugin/read details before they reach clients.
-    fn augment_plugin_read(&self, _plugin: &mut PluginDetail) {}
-
-    /// Opportunity to overlay plugin/install follow-up state before it reaches clients.
-    fn augment_plugin_install_response(&self, _response: &mut PluginInstallResponse) {}
-
-    /// Opportunity to overlay plugin/uninstall follow-up state before it reaches clients.
-    fn augment_plugin_uninstall_response(&self, _response: &mut PluginUninstallResponse) {}
-
     /// Opportunity to overlay marketplace/add state before it reaches clients.
     fn augment_marketplace_add_response(&self, _response: &mut MarketplaceAddResponse) {}
-
-    /// Opportunity to overlay app/list state before it reaches clients.
-    fn augment_apps_list_response(&self, _response: &mut AppsListResponse) {}
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -348,7 +329,7 @@ impl AppServerHooks for SednaAppServerHooks {
         thread_manager: &Arc<ThreadManager>,
         config: &Arc<Config>,
         auth_manager: Arc<AuthManager>,
-        on_effective_plugins_changed: Option<Arc<dyn Fn() + Send + Sync>>,
+        on_effective_plugins_changed: Option<Arc<dyn Fn(EffectivePluginsChange) + Send + Sync>>,
     ) {
         thread_manager
             .plugins_manager()
@@ -426,17 +407,7 @@ impl AppServerHooks for SednaAppServerHooks {
         true
     }
 
-    fn augment_plugin_list(&self, _response: &mut PluginListResponse) {}
-
-    fn augment_plugin_read(&self, _plugin: &mut PluginDetail) {}
-
-    fn augment_plugin_install_response(&self, _response: &mut PluginInstallResponse) {}
-
-    fn augment_plugin_uninstall_response(&self, _response: &mut PluginUninstallResponse) {}
-
     fn augment_marketplace_add_response(&self, _response: &mut MarketplaceAddResponse) {}
-
-    fn augment_apps_list_response(&self, _response: &mut AppsListResponse) {}
 }
 
 fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
@@ -448,7 +419,6 @@ fn nearest_existing_watch_ancestor(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;
@@ -528,77 +498,6 @@ mod tests {
             AbsolutePathBuf::try_from(temp_dir.path().to_path_buf()).expect("absolute root"),
         );
         assert_eq!(mapped, Some(target));
-    }
-
-    #[test]
-    fn noop_hooks_leave_plugin_surfaces_unchanged() {
-        let mut list_response = PluginListResponse {
-            marketplaces: vec![],
-            marketplace_load_errors: vec![],
-            featured_plugin_ids: vec!["plugin.one".into()],
-        };
-        let mut plugin = PluginDetail {
-            marketplace_name: "test".into(),
-            marketplace_path: Some(
-                AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace.json"))
-                    .expect("absolute marketplace path"),
-            ),
-            summary: codex_app_server_protocol::PluginSummary {
-                id: "plugin.one".into(),
-                remote_plugin_id: None,
-                version: None,
-                local_version: None,
-                name: "Plugin One".into(),
-                share_context: None,
-                source: codex_app_server_protocol::PluginSource::Local {
-                    path: AbsolutePathBuf::try_from(PathBuf::from("/tmp/plugin"))
-                        .expect("absolute plugin path"),
-                },
-                installed: true,
-                enabled: true,
-                install_policy: codex_app_server_protocol::PluginInstallPolicy::Available,
-                auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
-                availability: codex_app_server_protocol::PluginAvailability::Available,
-                interface: None,
-                keywords: vec![],
-            },
-            share_url: None,
-            description: None,
-            skills: vec![],
-            hooks: vec![],
-            apps: vec![],
-            app_templates: vec![],
-            mcp_servers: vec![],
-        };
-        let mut install_response = PluginInstallResponse {
-            auth_policy: codex_app_server_protocol::PluginAuthPolicy::OnUse,
-            apps_needing_auth: vec![],
-        };
-        let mut uninstall_response = PluginUninstallResponse {};
-        let mut marketplace_add_response = MarketplaceAddResponse {
-            marketplace_name: "test".into(),
-            installed_root: AbsolutePathBuf::try_from(PathBuf::from("/tmp/marketplace"))
-                .expect("absolute install root"),
-            already_added: false,
-        };
-        let mut apps_list_response = AppsListResponse {
-            data: vec![],
-            next_cursor: Some("2".into()),
-        };
-
-        noop_app_server_hooks().augment_plugin_list(&mut list_response);
-        noop_app_server_hooks().augment_plugin_read(&mut plugin);
-        noop_app_server_hooks().augment_plugin_install_response(&mut install_response);
-        noop_app_server_hooks().augment_plugin_uninstall_response(&mut uninstall_response);
-        noop_app_server_hooks().augment_marketplace_add_response(&mut marketplace_add_response);
-        noop_app_server_hooks().augment_apps_list_response(&mut apps_list_response);
-
-        assert_eq!(list_response.featured_plugin_ids, vec!["plugin.one"]);
-        assert_eq!(plugin.marketplace_name, "test");
-        assert!(install_response.apps_needing_auth.is_empty());
-        assert_eq!(uninstall_response, PluginUninstallResponse {});
-        assert_eq!(marketplace_add_response.marketplace_name, "test");
-        assert_eq!(apps_list_response.next_cursor.as_deref(), Some("2"));
     }
 
     #[tokio::test]
