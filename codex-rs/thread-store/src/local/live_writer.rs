@@ -115,13 +115,24 @@ pub(super) async fn append_items(
     store: &LocalThreadStore,
     params: AppendThreadItemsParams,
 ) -> ThreadStoreResult<()> {
-    let canonical_items = persisted_rollout_items(params.items.as_slice());
-    if canonical_items.is_empty() {
+    // A live append should always have a recorder: create/resume installs one, while
+    // shutdown/discard/delete removes it. Keep the lookup defensive so late appends fail after
+    // teardown.
+    let (recorder, history_mode) = store
+        .live_recorders
+        .lock()
+        .await
+        .get(&params.thread_id)
+        .map(|entry| (entry.recorder.clone(), entry.history_mode))
+        .ok_or(ThreadStoreError::ThreadNotFound {
+            thread_id: params.thread_id,
+        })?;
+    let persisted_items = persisted_rollout_items(params.items.as_slice(), history_mode);
+    if persisted_items.is_empty() {
         return Ok(());
     }
-    let recorder = store.live_recorder(params.thread_id).await?;
     recorder
-        .record_canonical_items(canonical_items.as_slice())
+        .record_canonical_items(persisted_items.as_slice())
         .await
         .map_err(thread_store_io_error)?;
     // LiveThread applies metadata immediately after append_items returns. Wait for the local

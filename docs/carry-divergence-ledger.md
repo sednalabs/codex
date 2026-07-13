@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-04-28`
-- downstream branch `main` (`origin/main`): `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- Audited on: `2026-07-12`
+- downstream branch `main` code tree: `a86d2c53a68eabb436bb641d1553db49c44f527f`
 - comparison basis: `mirror`
-- mirror branch `upstream-main` (`origin/upstream-main`): `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
-- `upstream/main`: `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
-- downstream branch vs `upstream/main`: `889` downstream ahead, `1` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+- `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+- downstream branch vs `upstream/main`: `1665` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `781` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1461` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -26,6 +26,9 @@ docs-only refresh commit that records this snapshot.
   (historically `carry/main`, now `main`) still differs from `upstream/main`.
 - Count generated schemas, snapshots, and inline test-module moves as
   derivative churn, not as standalone divergence items.
+- Keep canonical config schema generation in `codex-config`; `codex-core`
+  delegates to that implementation so Cargo and Bazel cannot normalize the
+  same fixture through different code paths.
 - Track exact-subject upstream matches separately as historical carry history.
 - Treat the exact-subject upstream match list as a lower bound for "already
   upstreamed" history, not a complete semantic-duplicate detector.
@@ -51,9 +54,17 @@ docs-only refresh commit that records this snapshot.
   Codex binary in an isolated temporary Cargo target directory and removes
   those host-side build artifacts before replaying the shared nextest archive,
   so remote-env setup does not consume the extraction headroom needed by the
-  227-binary archive. The `remote_tests` replay job keeps a 45-minute hosted budget
-  so long archive download and remote-environment setup time does not masquerade
-  as a product failure. The rust-ci-full summary parser records final nextest
+  227-binary archive. The archive uses default Cargo features, matching upstream
+  and the non-sandbox V8 release artifact; explicit sandbox coverage remains in
+  `v8-canary`. The `remote_tests` replay job keeps a 45-minute hosted budget so
+  long archive download and remote-environment setup time does not masquerade
+  as a product failure. Remote replay skips host-only compact/resume and hook
+  fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
+  large-output summary remains host-only until exec-server replay preserves
+  bounded head, tail, and omission metadata before core subscribes. The
+  full-suite skill-loader fixture explicitly suppresses parent project layers
+  so ambient hosted-runner repository markers cannot alter its non-Git case. The
+  rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
@@ -63,6 +74,20 @@ docs-only refresh commit that records this snapshot.
   retry once on narrow Cargo registry transport failures such as crates.io
   HTTP/2 or EOF download flakes, and argument-comment lint retries once on the
   same narrow Cargo metadata/fetch failure class before reporting a lint blocker.
+  Large validation-lab plans keep their resolved metadata in a runner-temp
+  JSON file for per-field parsing. The live workflow feeds that file to the
+  fingerprint helper through stdin instead of granting the helper a
+  caller-selected path or placing the complete plan in argv or the process
+  environment. The helper retains environment input only for legacy direct
+  callers; workflow wiring must preserve stdin until those callers are migrated.
+  This keeps `full`, `broad`, and Frontier Max dispatches below host exec limits
+  without widening the helper's path authority.
+  CodeQL's compare-API diff discovery stops when a pull request reaches 300
+  changed files. For large upstream-sync pull requests, downstream restores the
+  same diff-informed query restriction after CodeQL initialization by deriving
+  the complete added/modified line ranges from the runner's checked-out Git
+  history. This avoids treating unchanged base alerts as new without suppressing
+  queries, dismissing the base backlog, or weakening normal pull-request scans.
   Runtime
   permission policy keeps the configured `codex_linux_sandbox_exe` readable
   under restricted filesystem profiles so GitHub-hosted archived nextest runs
@@ -77,9 +102,15 @@ docs-only refresh commit that records this snapshot.
   dependency is on the fixed line, and the remaining trusted transitive
   `plist`/`syntect` and `wayland-scanner`/`arboard` paths keep synchronized
   RustSec exceptions in `deny.toml` and `.cargo/audit.toml` until those
-  upstream crates can use `quick-xml >=0.41.0`. Hosted macOS V8 staging, Bazel
+  upstream crates can use `quick-xml >=0.41.0`. The reqwest ownership ratchet
+  names `codex-android-computer-use` as temporary downstream migration debt
+  until its MCP transport moves behind `codex-http-client`; other new direct
+  reqwest owners remain denied. Hosted macOS V8 staging, Bazel
   clippy, and Bazel
   release-build verification keep fanout below runner process/thread ceilings.
+  Python SDK runtime-package staging rejects archive traversal, links, and
+  special entries before writing ordinary package files beneath the staging
+  root, without an unfiltered compatibility fallback on older Python runtimes.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
   linting ordinary Rust call sites; V8 proof-of-concept buildability remains
@@ -97,6 +128,12 @@ docs-only refresh commit that records this snapshot.
   tests and host-local integration. Compact/resume rollback fixtures keep their
   event wait above nextest's 30-second slow threshold so hosted remote replay
   load does not masquerade as a product hang.
+- The Bazel crate macro accepts and forwards optional unit-test arguments so
+  upstream's serialized exec-server unit-test declaration remains analyzable
+  until equivalent macro support lands upstream.
+- Windows hosted setup prefers a real Dev Drive but falls back to an existing
+  secondary or system volume when the runner image lacks Dev Drive formatting,
+  so validation does not fail before the requested command starts.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -109,12 +146,15 @@ docs-only refresh commit that records this snapshot.
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
   - `.github/scripts/run_validation_lane_batch.py`
+  - `.github/scripts/prepare_codeql_diff_ranges.py`
   - `.github/scripts/rusty_v8_bazel.py`
   - `.github/scripts/test_ci_planners.py`
   - `.github/workflows/blocking-ci.yml`
   - `.github/workflows/bazel.yml`
+  - `.github/workflows/codeql.yml`
   - `.github/workflows/rust-ci-full.yml`
   - `.github/workflows/v8-canary.yml`
+  - `defs.bzl`
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/config/permissions.rs`
   - `codex-rs/core/src/config/permissions_tests.rs`
@@ -160,7 +200,7 @@ docs-only refresh commit that records this snapshot.
   billing-turn reporting semantics before the canonical source of truth can
   move out of this repository.
 - Primary files:
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
@@ -191,7 +231,6 @@ docs-only refresh commit that records this snapshot.
   live effective model first so sub-agent status does not regress to the
   parent/session model.
 - Primary files:
-  - `codex-rs/core/src/codex.rs`
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/tasks/mod.rs`
@@ -232,6 +271,22 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
   - `scripts/codex-resume-recent.sh`
+
+### App-server Thread Source And History Mode Compatibility
+
+- Preserve downstream `thread_source` provenance alongside upstream
+  `history_mode` metadata in thread listing, summary, resume, persisted
+  metadata, and generated protocol schemas.
+- These fields are independent dimensions: history storage mode must not erase
+  whether a thread came from a side conversation, sub-agent, or another
+  attributed source.
+- Primary files:
+  - `codex-rs/protocol/`
+  - `codex-rs/rollout/`
+  - `codex-rs/state/`
+  - `codex-rs/thread-store/`
+  - `codex-rs/app-server-protocol/`
+  - `codex-rs/app-server/tests/suite/conversation_summary.rs`
 
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
@@ -296,26 +351,43 @@ docs-only refresh commit that records this snapshot.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
 - `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
-- The live tool-contract schema in `codex-rs/core/src/tools/spec.rs` and the
-  regression suite in `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-  are already back on upstream-native shape; the remaining carry is
+- The live tool-contract schema in
+  `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` and
+  `codex-rs/core/src/tools/spec_plan.rs`, plus the regression suite in
+  `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`, are already back
+  on upstream-native shape; the remaining carry is
   concentrated in role application, descendant inventory, spawn result
   metadata, wait summaries, and `agent/control.rs`.
-- Spawn-agent result and direct-child inventory reporting expose `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id` after role application, so the surviving setting is visible.
+- The historical `spawn_approval` argument was unused by both spawn handlers;
+  the upstream removal is retained rather than carried as a phantom contract.
+- The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
+- V2 requires `task_name`; when no effective reasoning effort is known it
+  serializes `null` rather than manufacturing a `medium` value. Wait completion
+  derives pending target ids from refreshed status snapshots, not the original
+  requested-id list.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
-- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out` so downstream joins happen on explicit tool contracts rather than transcript polling. The v2 schema also permits omitting `targets` when the caller intentionally wants a current-turn input-activity wait, including mailbox delivery or user steering, or timeout.
+- `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`,
+  `completion_reason`, and `timed_out` so downstream joins happen on explicit
+  tool contracts rather than transcript polling. These completion fields are
+  public tool-output-only; canonical transcript items retain target identities
+  and agent-state snapshots without duplicating timeout, mailbox, or pending
+  outcome state. The v2 schema also permits omitting `targets` when the caller
+  intentionally wants a current-turn input-activity wait, including mailbox
+  delivery or user steering, or timeout.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/role.rs`
-  - `codex-rs/core/src/tools/handlers/multi_agents/list_agents.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-  - `codex-rs/core/src/tools/spec.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+  - `codex-rs/core/src/tools/spec_plan.rs`
+  - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 
@@ -358,6 +430,11 @@ docs-only refresh commit that records this snapshot.
   invalid `wait_until_terminal` types, and enforce the empty-`chars`
   requirement for blocking `write_stdin`.
 - Timeout notes are appended to returned `raw_output`.
+- Canonical command-execution items retain optional live `terminal_wait`
+  metadata so upstream item-lifecycle adapters reproduce it on legacy begin
+  and end events and app-server v2 projects it into command items. History
+  reconstruction uses `None` when older persisted items do not contain that
+  live-only detail.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
 - Code-mode nested `exec_command` output follows the same model-policy bounded
@@ -376,7 +453,10 @@ docs-only refresh commit that records this snapshot.
   calls so joins happen on state transitions rather than transcript churn.
 - This blocking MCP tool pattern was carried downstream before task support was
   fully operational.
-- `TurnCompleteEvent` carries `compaction_events_in_turn`.
+- `TurnCompleteEvent` retains upstream's optional structured terminal `error`
+  payload alongside downstream `compaction_events_in_turn`, `final_model`, and
+  `model_snapshot` metadata. Future conflict resolution must keep this additive
+  union rather than choosing either field set.
 - Token-count events also carry provider and model context in downstream flow.
 - Sub-agent delegate forwarding should continue to surface `TokenCount` events
   back to the parent session; preserve this behavior even when re-homing the
@@ -394,11 +474,16 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec.rs`
   - `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`
+  - `codex-rs/core/src/tools/events.rs`
+  - `codex-rs/app-server/src/bespoke_event_handling.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/core/tests/suite/code_mode.rs`
   - `codex-rs/core/tests/suite/remote_env.rs`
   - `codex-rs/core/tests/suite/unified_exec.rs`
+  - `codex-rs/protocol/src/items.rs`
+  - `codex-rs/protocol/src/legacy_events.rs`
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/session/mod.rs`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
@@ -422,9 +507,19 @@ docs-only refresh commit that records this snapshot.
   `android_install_build_from_run`, `browser_observe`, `browser_step`,
   `desktop_observe`, and `desktop_step` dynamic tools into first-party native
   computer-use function tools with Codex-owned schemas.
-- Namespaced Android-like or browser-like tools remain ordinary dynamic tools
+- Namespaced Android-like, browser-like, or desktop-like tools remain ordinary dynamic tools
   so app-specific providers can keep their own tool surfaces without taking
   over the native Codex contract.
+- App-server `dynamicTools` accepts a deferred bare native tool so it can be
+  discovered through `tool_search`; the same bare deferred shape remains
+  invalid for ordinary dynamic tools. A capability-bearing native tool forces
+  a loaded-thread resume reload because its provider contract may have changed.
+- This sync intentionally retains the flat `DynamicToolSpec` compatibility
+  shape (`namespace` plus function metadata) because app-server requests,
+  persisted SQLite rows, provider registries, and resume filtering still share
+  that representation. Upstream's tagged function/namespace model should land
+  only through the tracked Dynamic Tools alignment work with lossless legacy
+  ingestion and state migration, not as an incidental conflict resolution.
 - `codex-core` owns `ComputerUseCallRequest` and
   `ComputerUseCallResponse` events, pending response registration, timeout
   cleanup, success/error projection, adapter selection, mutating
@@ -432,8 +527,9 @@ docs-only refresh commit that records this snapshot.
   formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
-- TUI and thread-history surfaces replay native computer-use items from
-  protocol events and snapshots. The TUI provider registry handles Android and
+- The active TUI session renders native computer-use items from live protocol
+  events. Computer-use events are transient, so thread history and snapshots do
+  not replay them after resume. The TUI provider registry handles Android and
   routes browser calls to either a configured provider command or the built-in
   Playwright provider for `backend=auto`; when that browser provider is
   configured, CLI/TUI thread start, resume, and fork requests advertise
@@ -463,8 +559,9 @@ docs-only refresh commit that records this snapshot.
   model as native image content items. Provider artifact paths are kept for
   diagnostics, audit, or replay; they are not the normal model-facing visual
   channel.
-- Rollout persistence keeps computer-use events in extended mode, and
-  rollout-trace maps those events to tool-runtime start/end boundaries.
+- Computer-use events remain transient in every history mode; live rollout
+  tracing maps them to tool-runtime start/end boundaries without writing them
+  into thread snapshots.
 - Runtime providers own Android sessions, browser sessions, screenshots,
   viewport capture, UI digests, input execution, and provider-side build
   installation. Solar Gravity Lab is a proving and consumer app, not the
@@ -491,7 +588,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
-  - `codex-rs/app-server-protocol/src/protocol/v2.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/browser-computer-use/src/lib.rs`
@@ -500,11 +597,11 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/computer_use_provider.rs`
   - `codex-rs/tui/src/desktop_computer_use_provider.rs`
   - `codex-rs/exec/src/lib.rs`
-  - `codex-rs/tui/src/app/app_server_adapter.rs`
+  - `codex-rs/tui/src/app/app_server_requests.rs`
   - `codex-rs/tui/src/app/app_server_events.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interrupts.rs`
-  - `codex-rs/tui/src/history_cell.rs`
+  - `codex-rs/tui/src/history_cell/computer_use.rs`
   - `codex-rs/rollout/src/policy.rs`
   - `codex-rs/rollout-trace/src/protocol_event.rs`
   - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
@@ -522,7 +619,8 @@ docs-only refresh commit that records this snapshot.
   stale defaults.
 - Primary files:
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/core/src/codex.rs`
+  - `codex-rs/core/src/guardian/review_session.rs`
+  - `codex-rs/core/src/context_manager/history.rs`
   - `docs/downstream.md`
 
 ### Direct And App-Backed MCP Tool Catalog Reconciliation
@@ -595,9 +693,18 @@ docs-only refresh commit that records this snapshot.
   instead of a generic MCP startup failure.
 - The selected keyring backend is intentional carry now that upstream supports
   encrypted local secrets storage. Syncs must preserve both upstream
-  `AuthKeyringBackendKind::Secrets` support and the downstream resolved-store
-  refresh lock that prevents replaying stale rotating refresh tokens from a
-  different backend.
+  concrete-store pinning and `AuthKeyringBackendKind::Secrets` support, plus the
+  downstream resolved-store refresh lock that prevents replaying stale rotating
+  refresh tokens from a different backend.
+- Normal requests stage access-only credentials in RMCP. Refresh material is
+  installed only inside the serialized refresh transaction, and RMCP-derived
+  persistence reacquires that same per-server lock, rereads the pinned store,
+  and adopts newer durable credentials rather than overwriting or deleting them.
+- Request-only staging strips `refresh_token` and derived `expires_in`; durable
+  reconciliation restores omitted refresh material, scopes, and expiry fields.
+  A matching `expires_at` makes a countdown-only `expires_in` difference
+  non-conflicting, and a newly rotated refresh token is retained in memory
+  before the durable write is attempted.
 - Refresh-only credential staging deliberately omits granted scopes when
   handing credentials to RMCP so refresh requests do not broaden explicit
   persisted scopes with authorization-server-advertised `offline_access`; Codex
@@ -608,6 +715,8 @@ docs-only refresh commit that records this snapshot.
   no-unrequested-`offline_access` refresh contract.
 - Primary files:
   - `codex-rs/rmcp-client/src/oauth.rs`
+  - `codex-rs/rmcp-client/src/oauth/resolved_store.rs`
+  - `codex-rs/rmcp-client/src/oauth/store_lock.rs`
   - `codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
@@ -808,8 +917,8 @@ docs-only refresh commit that records this snapshot.
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
-  - `39` carry-only merge commits are sync history, not independent downstream
-    behaviors.
+  - carry-only merge commits are sync history, not independent downstream
+    behaviors; do not treat their count as a behavior inventory.
 - Merge-repair and promotion-fix history:
   - examples include `Fix main core regressions after upstream sync`,
     `Fix main promotion follow-ups`, and
@@ -822,7 +931,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/plugins/manager.rs`
   - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
-  - `codex-rs/core/src/tools/spec.rs`
+  - `codex-rs/core/src/tools/spec_plan.rs`
 - Schema-generation adapters that preserve legacy wire deserialization while
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with

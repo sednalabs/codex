@@ -19,6 +19,7 @@ use codex_client::RequestBody;
 use codex_client::Response;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
+use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
@@ -309,7 +310,7 @@ async fn responses_client_stream_request_preserves_item_ids() -> Result<()> {
         model: "gpt-test".into(),
         instructions: "Say hi".into(),
         input: vec![ResponseItem::Message {
-            id: Some("msg_1".into()),
+            id: Some(ResponseItemId::with_suffix("msg", "1")),
             role: "user".into(),
             content: vec![ContentItem::InputText { text: "hi".into() }],
             phase: None,
@@ -321,6 +322,7 @@ async fn responses_client_stream_request_preserves_item_ids() -> Result<()> {
         reasoning: None,
         store: false,
         stream: true,
+        stream_options: None,
         include: Vec::new(),
         service_tier: None,
         prompt_cache_key: None,
@@ -407,6 +409,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         reasoning: None,
         store: false,
         stream: true,
+        stream_options: None,
         include: Vec::new(),
         service_tier: None,
         prompt_cache_key: None,
@@ -514,7 +517,7 @@ async fn azure_store_sends_ids_and_headers() -> Result<()> {
         model: "gpt-test".into(),
         instructions: "Say hi".into(),
         input: vec![ResponseItem::Message {
-            id: Some("msg_1".into()),
+            id: Some(ResponseItemId::with_suffix("msg", "1")),
             role: "user".into(),
             content: vec![ContentItem::InputText { text: "hi".into() }],
             phase: None,
@@ -526,6 +529,7 @@ async fn azure_store_sends_ids_and_headers() -> Result<()> {
         reasoning: None,
         store: true,
         stream: true,
+        stream_options: None,
         include: Vec::new(),
         service_tier: None,
         prompt_cache_key: None,

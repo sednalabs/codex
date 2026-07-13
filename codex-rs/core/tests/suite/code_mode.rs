@@ -40,6 +40,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -64,14 +65,6 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-
-fn run_code_mode_metadata_test<F, Fut>(test: F) -> Result<()>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<()>> + Send + 'static,
-{
-    core_test_support::run_large_stack_test("code-mode-metadata-test", test())
-}
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
     match req.custom_tool_call_output(call_id).get("output") {
@@ -195,10 +188,19 @@ async fn run_code_mode_turn_with_model_and_config(
     model: &'static str,
     configure: impl FnOnce(&mut Config) + Send + 'static,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let mut builder = test_codex().with_model(model).with_config(move |config| {
+    let builder = test_codex().with_model(model).with_config(move |config| {
         let _ = config.features.enable(Feature::CodeMode);
         configure(config);
     });
+    run_code_mode_turn_with_builder(server, prompt, code, builder).await
+}
+
+async fn run_code_mode_turn_with_builder(
+    server: &MockServer,
+    prompt: &str,
+    code: &str,
+    mut builder: TestCodexBuilder,
+) -> Result<(TestCodex, ResponseMock)> {
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -225,26 +227,29 @@ async fn run_code_mode_turn_with_model_and_config(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn missing_process_host_returns_a_tool_error() -> Result<()> {
+async fn missing_process_host_falls_back_to_in_process_code_mode() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, follow_up_mock) =
-        run_code_mode_turn_with_config(&server, "Run code mode", "text('unreachable')", |config| {
+    let builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_code_mode_host_program("codex-code-mode-host-does-not-exist".into())
+        .with_config(|config| {
             config
                 .features
-                .enable(Feature::CodeModeHost)
-                .expect("code mode host should be enabled");
-        })
-        .await?;
+                .enable(Feature::CodeMode)
+                .expect("code mode should be enabled");
+        });
+    let (_test, follow_up_mock) =
+        run_code_mode_turn_with_builder(&server, "Run code mode", "text('fallback')", builder)
+            .await?;
 
-    let output = follow_up_mock
-        .single_request()
-        .custom_tool_call_output("call-1");
-    assert!(
-        output["output"]
-            .as_str()
-            .is_some_and(|output| output.contains("failed to spawn code-mode host"))
+    assert_eq!(
+        text_item(
+            &custom_tool_output_items(&follow_up_mock.single_request(), "call-1"),
+            /*index*/ 1,
+        ),
+        "fallback"
     );
 
     Ok(())
@@ -328,9 +333,11 @@ text(result);
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn_with_permission_profile(
+    test.submit_turn_with_policy(
         "Search the web from code mode",
-        PermissionProfile::read_only(),
+        codex_protocol::protocol::SandboxPolicy::ReadOnly {
+            network_access: false,
+        },
     )
     .await?;
 
@@ -631,6 +638,7 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
         vec![
             "exec".to_string(),
             "wait".to_string(),
+            "request_user_input".to_string(),
             "web_search".to_string()
         ]
     );
@@ -721,8 +729,8 @@ if (!tool) {
         vec![
             "exec".to_string(),
             "wait".to_string(),
-            "web_search".to_string(),
-            "image_generation".to_string()
+            "request_user_input".to_string(),
+            "web_search".to_string()
         ]
     );
 
@@ -745,6 +753,7 @@ if (!tool) {
         })
         .expect("exec description should be present");
     assert!(exec_description.contains("filter `ALL_TOOLS` by `name` and `description`"));
+    assert!(exec_description.contains("Shared MCP Types:"));
     assert!(!exec_description.contains("calendar_timezone_option_99"));
 
     let request = follow_up_mock.single_request();
@@ -776,23 +785,30 @@ async fn app_only_tools_are_not_visible_or_runnable_by_code_mode_model() -> Resu
         AppsTestServer::mount_with_app_only_tool(&server, AppsTestToolLoading::Searchable).await?;
     let code = format!(
         r#"
-const visibleTool = ALL_TOOLS.find(({{ name }}) => name === {visible_tool_name:?});
-const tool = ALL_TOOLS.find(({{ name }}) => name === {tool_name:?});
+const visibleTool = ALL_TOOLS.find(
+  ({{ name, module }}) =>
+    name === {visible_tool_name:?} && module === {tool_module:?}
+);
+const tool = ALL_TOOLS.find(
+  ({{ name, module }}) => name === {tool_name:?} && module === {tool_module:?}
+);
 let error = null;
 try {{
-  await tools[{tool_name:?}]({{}});
+  await tools[{callable_tool_name:?}]({{}});
 }} catch (caught) {{
   error = String(caught);
 }}
 text(JSON.stringify({{
   visibleListed: visibleTool !== undefined,
   listed: tool !== undefined,
-  callable: typeof tools[{tool_name:?}] === "function",
+  callable: typeof tools[{callable_tool_name:?}] === "function",
   error,
 }}));
 "#,
-        visible_tool_name = "mcp__codex_apps__calendar_timezone_option_99",
-        tool_name = DIRECT_CALENDAR_APP_ONLY_TOOL,
+        visible_tool_name = "calendar_timezone_option_99",
+        tool_name = "calendar__app_only_action",
+        tool_module = "tools/mcp/codex_apps.js",
+        callable_tool_name = DIRECT_CALENDAR_APP_ONLY_TOOL,
     );
 
     responses::mount_sse_once(
@@ -836,7 +852,7 @@ text(JSON.stringify({{
         "code mode visibility check should complete successfully: {output}"
     );
     let parsed: Value = serde_json::from_str(&output)?;
-    assert_eq!(parsed["visibleListed"], false);
+    assert_eq!(parsed["visibleListed"], true);
     assert_eq!(parsed["listed"], false);
     assert_eq!(parsed["callable"], false);
     assert!(
@@ -2880,7 +2896,7 @@ async fn code_mode_resizes_explicit_original_image() -> Result<()> {
         &server,
         "use exec to return a large original-detail image",
         &code,
-        "gpt-5.3-codex",
+        "gpt-5.4",
         |_| {},
     )
     .await?;
@@ -2950,7 +2966,7 @@ async fn code_mode_can_use_view_image_result_with_image_helper() -> Result<()> {
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.4")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
         });
@@ -3044,7 +3060,7 @@ image(imageItem);
         &server,
         "use exec to call the rmcp image scenario tool and emit its image output",
         code,
-        "gpt-5.3-codex",
+        "gpt-5.4",
     )
     .await?;
 
@@ -3452,91 +3468,87 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
     Ok(())
 }
 
-#[test]
-fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
-    run_code_mode_metadata_test(|| async {
-        skip_if_no_network!(Ok(()));
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exports_all_tools_metadata_for_builtin_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
 
-        let server = responses::start_mock_server().await;
-        let code = r#"
+    let server = responses::start_mock_server().await;
+    let code = r#"
 const tool = ALL_TOOLS.find(({ name }) => name === "view_image");
 text(JSON.stringify(tool));
 "#;
 
-        let (_test, second_mock) =
-            run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code).await?;
+    let (_test, second_mock) =
+        run_code_mode_turn(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
-        let req = second_mock.single_request();
-        let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
-        assert_ne!(
-            success,
-            Some(false),
-            "exec ALL_TOOLS lookup failed unexpectedly: {output}"
-        );
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec ALL_TOOLS lookup failed unexpectedly: {output}"
+    );
 
-        let parsed: Value = serde_json::from_str(
-            &custom_tool_output_last_non_empty_text(&req, "call-1")
-                .expect("exec ALL_TOOLS lookup should emit JSON"),
-        )?;
-        assert_eq!(
-            parsed,
-            serde_json::json!({
-                "name": "view_image",
-                "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file.\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.\n  detail: \"high\" | \"original\";\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
-            })
-        );
+    let parsed: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&req, "call-1")
+            .expect("exec ALL_TOOLS lookup should emit JSON"),
+    )?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "name": "view_image",
+            "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file.\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.\n  detail: \"high\" | \"original\";\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
+        })
+    );
 
-        Ok(())
-    })
+    Ok(())
 }
 
-#[test]
-fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
-    run_code_mode_metadata_test(|| async {
-        skip_if_no_network!(Ok(()));
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
 
-        let server = responses::start_mock_server().await;
-        let code = r#"
+    let server = responses::start_mock_server().await;
+    let code = r#"
 const tool = ALL_TOOLS.find(
   ({ name, module }) => name === "echo" && module === "tools/mcp/rmcp.js"
 );
 text(JSON.stringify(tool));
 "#;
 
-        let (_test, second_mock) =
-            run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect ALL_TOOLS", code).await?;
 
-        let req = second_mock.single_request();
-        let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
-        assert_ne!(
-            success,
-            Some(false),
-            "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
-        );
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
+    );
 
-        let parsed: Value = serde_json::from_str(
-            &custom_tool_output_last_non_empty_text(&req, "call-1")
-                .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
-        )?;
-        assert_eq!(
-            parsed,
-            serde_json::json!({
-                "name": "echo",
-                "module": "tools/mcp/rmcp.js",
-                "description": concat!(
-                    "Use these tools to exercise the rmcp test server.\n\n",
-                    "Echo back the provided message and include environment data.\n\n",
-                    "exec tool declaration:\n",
-                    "```ts\n",
-                    "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
-                    "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
-                    "```",
-                ),
-            })
-        );
+    let parsed: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&req, "call-1")
+            .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
+    )?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "name": "echo",
+            "module": "tools/mcp/rmcp.js",
+            "description": concat!(
+                "Use these tools to exercise the rmcp test server.\n\n",
+                "Echo back the provided message and include environment data.\n\n",
+                "exec tool declaration:\n",
+                "```ts\n",
+                "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
+                "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
+                "```",
+            ),
+        })
+    );
 
-        Ok(())
-    })
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

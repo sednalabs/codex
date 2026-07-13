@@ -567,6 +567,11 @@
           "type": "string"
         },
         {
+          "const": "headers",
+          "description": "Backend auth supplied as request headers.",
+          "type": "string"
+        },
+        {
           "const": "agentIdentity",
           "description": "Programmatic Codex auth backed by a registered Agent Identity.",
           "type": "string"
@@ -2395,6 +2400,41 @@
       ],
       "type": "string"
     },
+    "ImageGenerationItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "revisedPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "savedPath": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "result"
+      ],
+      "type": "object"
+    },
     "InternalChatMessageMetadataPassthrough": {
       "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API\napproval and making the corresponding Responses API change.",
       "properties": {
@@ -3602,9 +3642,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3656,9 +3700,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3708,9 +3756,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3755,11 +3807,15 @@
               ]
             },
             "id": {
-              "description": "Legacy id field retained for compatibility with older payloads.",
-              "type": [
-                "string",
-                "null"
-              ]
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Legacy id field retained for compatibility with older payloads."
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
@@ -3797,9 +3853,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3849,9 +3909,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3890,9 +3954,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3928,9 +3996,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "input": {
@@ -3982,9 +4054,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4032,9 +4108,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4082,9 +4162,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4118,9 +4202,13 @@
         {
           "properties": {
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4165,9 +4253,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4216,9 +4308,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -4258,6 +4354,10 @@
           "type": "object"
         }
       ]
+    },
+    "ResponseItemId": {
+      "description": "A Responses API item ID. New IDs require an explicit prefix; deserialization\nremains permissive so legacy rollouts can still be read.",
+      "type": "string"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -5610,10 +5710,6 @@
               "$ref": "#/$defs/CollabAgentToolCallStatus",
               "description": "Current status of the collab tool call."
             },
-            "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
-              "type": "boolean"
-            },
             "tool": {
               "$ref": "#/$defs/CollabAgentTool",
               "description": "Name of the collab tool that was invoked."
@@ -5631,7 +5727,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -5668,23 +5763,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/WebSearchItem",
           "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/WebSearchAction"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "id": {
-              "type": "string"
-            },
-            "query": {
-              "type": "string"
-            },
             "type": {
               "const": "webSearch",
               "title": "WebSearchThreadItemType",
@@ -5692,9 +5772,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "query"
+            "type"
           ],
           "title": "WebSearchThreadItem",
           "type": "object"
@@ -5746,32 +5824,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/ImageGenerationItem",
           "properties": {
-            "id": {
-              "type": "string"
-            },
-            "result": {
-              "type": "string"
-            },
-            "revisedPrompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "savedPath": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/AbsolutePathBuf"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
             "type": {
               "const": "imageGeneration",
               "title": "ImageGenerationThreadItemType",
@@ -5779,10 +5833,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "status",
-            "result"
+            "type"
           ],
           "title": "ImageGenerationThreadItem",
           "type": "object"
@@ -6827,6 +6878,31 @@
           "type": "object"
         }
       ]
+    },
+    "WebSearchItem": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "query"
+      ],
+      "type": "object"
     },
     "WindowsSandboxSetupCompletedNotification": {
       "properties": {

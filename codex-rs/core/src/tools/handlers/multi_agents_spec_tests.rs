@@ -86,6 +86,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         Some(true)
     );
     assert!(properties.contains_key("fork_turns"));
+    assert!(!properties.contains_key("spawn_approval"));
     assert!(!properties.contains_key("items"));
     assert!(!properties.contains_key("fork_context"));
     assert_eq!(
@@ -108,9 +109,40 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         parameters.required.as_ref(),
         Some(&vec!["task_name".to_string(), "message".to_string()])
     );
+    let output_schema = output_schema.expect("spawn_agent output schema");
     assert_eq!(
-        output_schema.expect("spawn_agent output schema")["required"],
-        json!(["task_name", "nickname"])
+        output_schema["required"],
+        json!([
+            "task_name",
+            "effective_model",
+            "effective_reasoning_effort",
+            "agent_id"
+        ])
+    );
+    assert_eq!(
+        output_schema["properties"]
+            .as_object()
+            .expect("spawn result properties")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "agent_id",
+            "effective_model",
+            "effective_reasoning_effort",
+            "nickname",
+            "requested_model",
+            "requested_model_honored",
+            "requested_reasoning_effort",
+            "task_name",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_reasoning_effort"]["type"],
+        json!(["string", "null"])
     );
 }
 
@@ -225,6 +257,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
+        output_schema,
         ..
     }) = tool
     else {
@@ -241,6 +274,16 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     assert!(!properties.contains_key("service_tier"));
     assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(!description.contains("Available model overrides"));
+    let output_schema = output_schema.expect("spawn_agent output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!(["task_name", "effective_model", "effective_reasoning_effort"])
+    );
+    let output_properties = output_schema["properties"]
+        .as_object()
+        .expect("spawn result properties");
+    assert!(!output_properties.contains_key("agent_id"));
+    assert!(!output_properties.contains_key("nickname"));
 }
 
 #[test]

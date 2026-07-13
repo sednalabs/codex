@@ -62,17 +62,17 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-04-28`):
+Current downstream audit baseline (validated on `2026-07-12`):
 
-- downstream branch `main` (`origin/main`):
-  `62ed17c4df78ccf4d63cbbfdfad36671023b4225`
+- downstream branch `main` code tree:
+  `8ad2d045a555fa8454cf4a657caa39dc3ddbc772`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
+  `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
 - `upstream/main`:
-  `f431ec12c9f9e2671c1258fe2d259daf0ba25c95`
-- downstream divergence counts (`upstream/main...origin/main`):
-  `1` upstream ahead, `889` downstream ahead
+  `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+- downstream divergence counts (`upstream/main...main`):
+  `0` upstream ahead, `1657` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -98,6 +98,10 @@ Why:
 User-visible behavior:
 
 - `exec_command` and `write_stdin` support blocking wait parameters (`wait_until_terminal`, `max_wait_ms`, `heartbeat_interval_ms`).
+- Live command lifecycle events preserve the selected terminal-wait primitive
+  through the canonical command item, its legacy begin/end projections, and
+  app-server v2 command items; reconstructed history leaves it absent when no
+  persisted value is available.
 - `wait_until_terminal` gates provider resume until the process reaches a terminal state or the wait budget expires. The default and maximum wait budget is two hours.
 - `write_stdin` still requires `chars` to be empty when `wait_until_terminal=true`.
 - Wait-timeout notes are appended to emitted `raw_output`, and token accounting is derived from the final response text.
@@ -110,8 +114,13 @@ User-visible behavior:
 - Code mode keeps the read-only `get_context_remaining` budget helper
   available while direct-model-only tools that require interactive user input
   stay hidden from nested execution.
-- `TurnCompleteEvent` includes `compaction_events_in_turn`.
-- Guardrails for the carry-only turn-complete compaction count currently live in `codex.app-server-protocol-test` (`preserves_compaction_only_turn`) plus broader `TurnCompleteEvent` shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
+- `TurnCompleteEvent` preserves upstream's optional structured terminal `error`
+  payload while adding downstream `compaction_events_in_turn`, `final_model`,
+  and `model_snapshot` metadata.
+- Guardrails for the carry-only turn-complete metadata live in
+  `codex.app-server-protocol-test` (`preserves_compaction_only_turn`), the core
+  `continue_after_stream_error` regression, and broader `TurnCompleteEvent`
+  shape coverage in `codex-core`, `codex-exec`, and `codex-tui` tests.
 - Sub-agent delegate forwarding continues to emit `TokenCount` events back to the parent session, ensuring the downstream token accounting and provider/model metadata remain accurate even if upstream-native structures eventually rehost this carry.
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
@@ -121,7 +130,7 @@ User-visible behavior:
 Why:
 
 - Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
-- Let runtime providers supply Android or browser capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, TUI projection, rollout persistence, and rollout-trace runtime boundaries.
+- Let runtime providers supply Android, browser, or desktop capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
 User-visible behavior:
@@ -129,7 +138,17 @@ User-visible behavior:
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
-- Namespaced Android-like and browser-like tools remain normal dynamic tools.
+- Namespaced Android-like, browser-like, and desktop-like tools remain normal dynamic tools.
+- App-server `dynamicTools` accepts deferred bare native tools for
+  `tool_search`, while still rejecting deferred bare ordinary dynamic tools.
+  A capability-bearing native tool requests a full loaded-thread reload so the
+  provider contract cannot silently remain stale.
+- The current compatibility contract still serializes dynamic functions in the
+  flat `DynamicToolSpec` shape with an optional namespace; omitted
+  `deferLoading` defaults to `false` and omitted `persistOnResume` defaults to
+  `true`. A future tagged
+  function/namespace migration must preserve app-server input, persisted thread
+  state, resume filtering, and native promotion before this carry is removed.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
@@ -145,15 +164,16 @@ User-visible behavior:
   post-failure observations that help agents recover from partially completed
   mutating actions.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
-- TUI transcript and replay surfaces render native computer-use items with
-  compact adapter-specific labels such as `Used browser`, `Used computer`, and
-  `Used Android emulator`; exec JSON/human output projects the same calls as
-  compact computer-use events without embedding screenshot bytes in transcript
-  text.
+- The active TUI session renders live native computer-use items with compact
+  adapter-specific labels such as `Used browser`, `Used computer`, and `Used
+Android emulator`; these transient app-server projections are not persisted
+  into thread snapshots or replayed after resume. Exec JSON/human output
+  projects the same calls as compact computer-use events without embedding
+  screenshot bytes in transcript text.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
-- Computer-use events persist in extended rollout mode and appear in rollout-trace as tool-runtime start/end events.
+- Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
 - See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for the sanitized desktop, browser-shell, Chrome-extension, and bundled-plugin cleanroom contracts.
 
@@ -202,6 +222,7 @@ User-visible behavior:
 
 - Code-mode declarations use the imported form `import { tools } from "..."; declare function ...`.
 - Builtin tool metadata and namespaced MCP tool metadata are documented and tested against the same imported namespace shape.
+- The stable protocol-v1 host payload remains unchanged; after a host round trip, code mode reconstructs MCP short-name/module catalog metadata from the canonical `mcp__server__tool` name.
 - Namespaced custom tool calls preserve their namespace through `ToolRouter`, so MCP/app custom tools route by their registry name instead of a flattened plain name.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
@@ -218,12 +239,12 @@ Why:
 User-visible behavior:
 
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
-- `spawn_agent` returns `role`, `status`, `identity_source`, `effective_model`, `effective_reasoning_effort`, and `effective_model_provider_id`, letting callers see the resolved settings that actually launched after the role/profile overrides. That preserved `model_reasoning_summary` stays available through our internal metadata, not the raw tool response or inventory fields.
+- The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
-- `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
+- `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
@@ -235,8 +256,11 @@ Primary files:
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
 - `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-- `codex-rs/core/src/tools/spec.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+- `codex-rs/core/src/tools/spec_plan.rs`
+- `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
 - `docs/config.md`
 - `docs/downstream-tool-surface-matrix.md`
 
@@ -271,14 +295,20 @@ Why:
 - Keep MCP OAuth fallback credentials from becoming a brittle single point of failure when the keyring is unavailable or the fallback file is left empty/corrupt.
 - Reduce auth churn during login and reconnect flows by treating the fallback file as best-effort recovery state instead of authoritative required state.
 - Avoid partially-written replacement files by writing and syncing a temp file before the final rename.
-- Preserve the selected direct-vs-encrypted-secrets keyring backend while keeping downstream refresh locking tied to the store that originally supplied the tokens.
+- Preserve upstream's concrete-store pinning and RMCP persistence while keeping downstream refresh locking tied to the file or direct/encrypted-secrets store that originally supplied the tokens.
 
 User-visible behavior:
 
 - Empty fallback credential files are treated as absent instead of fatal.
 - If keyring loading fails and the fallback credential file is corrupt, downstream logs a warning and proceeds as though no cached OAuth credentials were available.
 - Fallback credential writes are atomic temp-file replacements with explicit syncs, which reduces the chance of leaving a half-written file behind after interruption or crash.
-- MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; refresh rereads and persists through the resolved store instead of silently falling back to another backend mid-refresh.
+- MCP OAuth token load, refresh, save, and delete paths honor `AuthKeyringBackendKind::Direct` versus `AuthKeyringBackendKind::Secrets`; retries and session recovery stay pinned to the resolved concrete store instead of silently switching authority.
+- RMCP receives request-only credentials during normal operation. Refresh material is exposed only inside the serialized refresh transaction, and every RMCP-derived durable save or delete reacquires the per-server refresh lock and reconciles the current pinned store before mutating it.
+- Request-only staging strips `refresh_token` and derived `expires_in`; durable
+  reconciliation restores omitted durable refresh material, scopes, and expiry
+  fields. A matching `expires_at` makes countdown-only `expires_in` drift
+  non-conflicting, and a rotated refresh token remains in memory before an
+  attempted durable write.
 
 ### MCP OAuth: device-code login for headless servers
 
@@ -411,6 +441,9 @@ User-visible behavior:
 
 - Review token usage is aligned across live flows and app-server/history views.
 - Review flows reuse the runtime turn effort and preserve downstream sampling rollout context needed for faithful reconstruction.
+- Thread records preserve downstream `thread_source` provenance alongside
+  upstream `history_mode`; list, read, resume, and stored-session paths carry
+  both fields independently.
 
 ### Core: MCP forced approvals still participate in session remember keys
 

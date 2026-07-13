@@ -1,22 +1,16 @@
-#[cfg(test)]
-use crate::protocol::ComputerUseCallResponseEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
-#[cfg(test)]
-use codex_protocol::computer_use::ComputerUseCallRequest;
-#[cfg(test)]
-use codex_protocol::computer_use::ComputerUseOutputContentItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
-#[cfg(test)]
-use std::time::Duration;
+use codex_protocol::protocol::ThreadHistoryMode;
 
 /// Whether a rollout `item` should be persisted in rollout files.
-pub fn is_persisted_rollout_item(item: &RolloutItem) -> bool {
+pub fn is_persisted_rollout_item(item: &RolloutItem, history_mode: ThreadHistoryMode) -> bool {
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
         RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
-        RolloutItem::EventMsg(ev) => should_persist_event_msg(ev),
+        RolloutItem::EventMsg(ev) => should_persist_event_msg(ev, history_mode),
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
@@ -25,11 +19,14 @@ pub fn is_persisted_rollout_item(item: &RolloutItem) -> bool {
     }
 }
 
-/// Return the canonical rollout items that should be persisted for a live append.
-pub fn persisted_rollout_items(items: &[RolloutItem]) -> Vec<RolloutItem> {
+/// Return the rollout items that should be persisted for a live append.
+pub fn persisted_rollout_items(
+    items: &[RolloutItem],
+    history_mode: ThreadHistoryMode,
+) -> Vec<RolloutItem> {
     let mut persisted = Vec::new();
     for item in items {
-        if is_persisted_rollout_item(item) {
+        if is_persisted_rollout_item(item, history_mode) {
             persisted.push(item.clone());
         }
     }
@@ -86,36 +83,38 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
 
 /// Whether an `EventMsg` should be persisted in rollout files.
 #[inline]
-pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
+pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) -> bool {
     match ev {
-        EventMsg::UserMessage(_)
-        | EventMsg::AgentMessage(_)
-        | EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::PatchApplyEnd(_)
-        | EventMsg::TokenCount(_)
+        EventMsg::ItemCompleted(event) => {
+            // Paginated rollouts store TurnItems.
+            // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
+            matches!(history_mode, ThreadHistoryMode::Paginated)
+                || matches!(event.item, TurnItem::Plan(_) | TurnItem::Sleep(_))
+        }
+        EventMsg::TokenCount(_)
         | EventMsg::ThreadGoalUpdated(_)
-        | EventMsg::ContextCompacted(_)
-        | EventMsg::EnteredReviewMode(_)
-        | EventMsg::ExitedReviewMode(_)
-        | EventMsg::McpToolCallEnd(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)
+        | EventMsg::ThreadSettingsApplied(_) => true,
+
+        // Only persist these legacy events when the thread's history mode is Legacy.
+        // New, paginated rollouts persist ItemCompleted events with TurnItems.
+        EventMsg::UserMessage(_)
+        | EventMsg::AgentMessage(_)
+        | EventMsg::AgentReasoning(_)
+        | EventMsg::AgentReasoningRawContent(_)
+        | EventMsg::EnteredReviewMode(_)
+        | EventMsg::ExitedReviewMode(_)
+        | EventMsg::PatchApplyEnd(_)
+        | EventMsg::ContextCompacted(_)
+        | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationEnd(_)
-        | EventMsg::SubAgentActivity(_) => true,
-        EventMsg::ItemCompleted(event) => {
-            // These items have no equivalent raw ResponseItem or legacy event,
-            // so persist their completion for replay without retaining every
-            // item lifecycle event.
-            matches!(
-                event.item,
-                codex_protocol::items::TurnItem::Plan(_)
-                    | codex_protocol::items::TurnItem::Sleep(_)
-            )
-        }
+        | EventMsg::SubAgentActivity(_) => matches!(history_mode, ThreadHistoryMode::Legacy),
+
+        // Transient, non-durable events.
         EventMsg::Error(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::ExecCommandEnd(_)
@@ -142,7 +141,6 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)
@@ -177,38 +175,4 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabResumeBegin(_) => false,
     }
-}
-
-#[test]
-fn computer_use_events_are_live_only_in_single_persistence_policy() {
-    let request = EventMsg::ComputerUseCallRequest(ComputerUseCallRequest {
-        call_id: "call-android-1".to_string(),
-        turn_id: "turn-1".to_string(),
-        environment_id: Some("env-1".to_string()),
-        adapter: "android".to_string(),
-        tool: "android_observe".to_string(),
-        arguments: serde_json::json!({"scope": "screen_and_ui"}),
-    });
-    let response = EventMsg::ComputerUseCallResponse(ComputerUseCallResponseEvent {
-        call_id: "call-android-1".to_string(),
-        turn_id: "turn-1".to_string(),
-        environment_id: Some("env-1".to_string()),
-        adapter: "android".to_string(),
-        tool: "android_observe".to_string(),
-        arguments: serde_json::json!({"scope": "screen_and_ui"}),
-        content_items: vec![ComputerUseOutputContentItem::InputText {
-            text: "screen summary".to_string(),
-        }],
-        success: true,
-        error: None,
-        duration: Duration::from_millis(12),
-    });
-
-    assert_eq!(
-        vec![
-            should_persist_event_msg(&request),
-            should_persist_event_msg(&response),
-        ],
-        vec![false, false]
-    );
 }

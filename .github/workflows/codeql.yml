@@ -157,6 +157,21 @@ jobs:
           config-file: ${{ matrix.config_file }}
           dependency-caching: ${{ github.event_name == 'pull_request' && 'restore' || 'full' }}
 
+      # The compare API truncates at 300 files, so codeql-action cannot build
+      # complete diff ranges for large upstream-sync pull requests by itself.
+      - name: Restore complete CodeQL diff ranges for large pull requests
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.changed_files >= 300 }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          python3 .github/scripts/prepare_codeql_diff_ranges.py \
+            --base "${BASE_SHA}" \
+            --head "${GITHUB_SHA}" \
+            > "${RUNNER_TEMP}/pr-diff-range.json"
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:

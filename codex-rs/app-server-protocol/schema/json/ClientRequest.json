@@ -558,6 +558,13 @@
     },
     "ConsumeAccountRateLimitResetCreditParams": {
       "properties": {
+        "creditId": {
+          "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "idempotencyKey": {
           "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
           "type": "string"
@@ -1522,6 +1529,17 @@
         },
         {
           "properties": {
+            "appBrand": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoginAppBrand"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "codexStreamlinedLogin": {
               "type": "boolean"
             },
@@ -1529,6 +1547,9 @@
               "const": "chatgpt",
               "title": "ChatgptLoginAccountParamsType",
               "type": "string"
+            },
+            "useHostedLoginSuccessPage": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -1582,8 +1603,38 @@
           ],
           "title": "ChatgptAuthTokensLoginAccountParams",
           "type": "object"
+        },
+        {
+          "description": "[UNSTABLE] Managed Amazon Bedrock login is experimental.",
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockLoginAccountParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "apiKey",
+            "region"
+          ],
+          "title": "AmazonBedrockLoginAccountParams",
+          "type": "object"
         }
       ]
+    },
+    "LoginAppBrand": {
+      "enum": [
+        "codex",
+        "chatgpt"
+      ],
+      "type": "string"
     },
     "MarketplaceAddParams": {
       "properties": {
@@ -2616,9 +2667,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2670,9 +2725,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2722,9 +2781,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2769,11 +2832,15 @@
               ]
             },
             "id": {
-              "description": "Legacy id field retained for compatibility with older payloads.",
-              "type": [
-                "string",
-                "null"
-              ]
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Legacy id field retained for compatibility with older payloads."
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
@@ -2811,9 +2878,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2863,9 +2934,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2904,9 +2979,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -2942,9 +3021,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "input": {
@@ -2996,9 +3079,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3046,9 +3133,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3096,9 +3187,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3132,9 +3227,13 @@
         {
           "properties": {
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3179,9 +3278,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3230,9 +3333,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -3272,6 +3379,10 @@
           "type": "object"
         }
       ]
+    },
+    "ResponseItemId": {
+      "description": "A Responses API item ID. New IDs require an explicit prefix; deserialization\nremains permissive so legacy rollouts can still be read.",
+      "type": "string"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -4533,6 +4644,13 @@
         },
         "codexResponsesAsItems": {
           "description": "Sends automatic Codex responses as realtime conversation items instead of handoff appends.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "flushTranscriptTailOnSessionEnd": {
+          "description": "Routes any transcript tail remaining at session end through Codex. Defaults to false.\nTODO: Remove this rollout knob once transcript-tail flushing is always enabled.",
           "type": [
             "boolean",
             "null"

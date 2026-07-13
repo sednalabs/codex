@@ -837,6 +837,7 @@
       "enum": [
         "auto",
         "prompt",
+        "writes",
         "approve"
       ],
       "type": "string"
@@ -1057,6 +1058,11 @@
         {
           "const": "chatgptAuthTokens",
           "description": "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.\n\nChatGPT auth tokens are supplied by an external host app and are only\nstored in memory. Token refresh must be handled by the external host app.",
+          "type": "string"
+        },
+        {
+          "const": "headers",
+          "description": "Backend auth supplied as request headers.",
           "type": "string"
         },
         {
@@ -4716,6 +4722,13 @@
     "ConsumeAccountRateLimitResetCreditParams": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "creditId": {
+          "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "idempotencyKey": {
           "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
           "type": "string"
@@ -7169,6 +7182,41 @@
       ],
       "type": "string"
     },
+    "ImageGenerationItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "revisedPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "savedPath": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "result"
+      ],
+      "type": "object"
+    },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
       "properties": {
@@ -7560,6 +7608,17 @@
         },
         {
           "properties": {
+            "appBrand": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LoginAppBrand"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "codexStreamlinedLogin": {
               "type": "boolean"
             },
@@ -7567,6 +7626,9 @@
               "const": "chatgpt",
               "title": "Chatgptv2::LoginAccountParamsType",
               "type": "string"
+            },
+            "useHostedLoginSuccessPage": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -7619,6 +7681,29 @@
             "chatgptAccountId"
           ],
           "title": "ChatgptAuthTokensv2::LoginAccountParams",
+          "type": "object"
+        },
+        {
+          "description": "[UNSTABLE] Managed Amazon Bedrock login is experimental.",
+          "properties": {
+            "apiKey": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockv2::LoginAccountParamsType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "apiKey",
+            "region"
+          ],
+          "title": "AmazonBedrockv2::LoginAccountParams",
           "type": "object"
         }
       ],
@@ -7705,9 +7790,30 @@
           ],
           "title": "ChatgptAuthTokensv2::LoginAccountResponse",
           "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "amazonBedrock",
+              "title": "AmazonBedrockv2::LoginAccountResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AmazonBedrockv2::LoginAccountResponse",
+          "type": "object"
         }
       ],
       "title": "LoginAccountResponse"
+    },
+    "LoginAppBrand": {
+      "enum": [
+        "codex",
+        "chatgpt"
+      ],
+      "type": "string"
     },
     "LogoutAccountResponse": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9377,6 +9483,15 @@
           },
           "type": "array"
         },
+        "scheduledTasks": {
+          "items": {
+            "$ref": "#/definitions/ScheduledTaskSummary"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "shareUrl": {
           "type": [
             "string",
@@ -9453,6 +9568,13 @@
         "NOT_AVAILABLE",
         "AVAILABLE",
         "INSTALLED_BY_DEFAULT"
+      ],
+      "type": "string"
+    },
+    "PluginInstallPolicySource": {
+      "enum": [
+        "WORKSPACE_SETTING",
+        "IMPLICIT_CANONICAL_APP"
       ],
       "type": "string"
     },
@@ -10327,6 +10449,16 @@
         "installPolicy": {
           "$ref": "#/definitions/PluginInstallPolicy"
         },
+        "installPolicySource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginInstallPolicySource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "installed": {
           "type": "boolean"
         },
@@ -10555,17 +10687,91 @@
       ],
       "type": "string"
     },
+    "RateLimitResetCredit": {
+      "properties": {
+        "description": {
+          "description": "Backend-provided display description for this credit, or `null` when unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "description": "Unix timestamp in seconds when the credit expires, or `null` if it does not expire.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grantedAt": {
+          "description": "Unix timestamp in seconds when the credit was granted.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Opaque backend identifier for this reset credit.",
+          "type": "string"
+        },
+        "resetType": {
+          "$ref": "#/definitions/RateLimitResetType"
+        },
+        "status": {
+          "$ref": "#/definitions/RateLimitResetCreditStatus"
+        },
+        "title": {
+          "description": "Backend-provided display title for this credit, or `null` when unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "resetType",
+        "status",
+        "grantedAt"
+      ],
+      "type": "object"
+    },
+    "RateLimitResetCreditStatus": {
+      "enum": [
+        "available",
+        "redeeming",
+        "redeemed",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "RateLimitResetCreditsSummary": {
       "properties": {
         "availableCount": {
           "format": "int64",
           "type": "integer"
+        },
+        "credits": {
+          "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known, while an empty array means details were fetched\nand no available credits were returned. The backend may cap this list, so its length can be\nless than `availableCount`.",
+          "items": {
+            "$ref": "#/definitions/RateLimitResetCredit"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
         "availableCount"
       ],
       "type": "object"
+    },
+    "RateLimitResetType": {
+      "enum": [
+        "codexRateLimits",
+        "unknown"
+      ],
+      "type": "string"
     },
     "RateLimitSnapshot": {
       "properties": {
@@ -11187,9 +11393,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11241,9 +11451,13 @@
               "type": "array"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11293,9 +11507,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11340,11 +11558,15 @@
               ]
             },
             "id": {
-              "description": "Legacy id field retained for compatibility with older payloads.",
-              "type": [
-                "string",
-                "null"
-              ]
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Legacy id field retained for compatibility with older payloads."
             },
             "internal_chat_message_metadata_passthrough": {
               "anyOf": [
@@ -11382,9 +11604,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11434,9 +11660,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11475,9 +11705,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11513,9 +11747,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "input": {
@@ -11567,9 +11805,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11617,9 +11859,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11667,9 +11913,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11703,9 +11953,13 @@
         {
           "properties": {
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11750,9 +12004,13 @@
               "type": "string"
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11801,9 +12059,13 @@
               ]
             },
             "id": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ResponseItemId"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "internal_chat_message_metadata_passthrough": {
@@ -11843,6 +12105,10 @@
           "type": "object"
         }
       ]
+    },
+    "ResponseItemId": {
+      "description": "A Responses API item ID. New IDs require an explicit prefix; deserialization\nremains permissive so legacy rollouts can still be read.",
+      "type": "string"
     },
     "ResponsesApiWebSearchAction": {
       "oneOf": [
@@ -12192,6 +12458,135 @@
         }
       },
       "type": "object"
+    },
+    "ScheduledTaskSchedule": {
+      "oneOf": [
+        {
+          "properties": {
+            "days": {
+              "items": {
+                "$ref": "#/definitions/ScheduledTaskWeekday"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "intervalHours": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "hourly",
+              "title": "HourlyScheduledTaskScheduleType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "intervalHours"
+          ],
+          "title": "HourlyScheduledTaskSchedule",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "time": {
+              "type": "string"
+            },
+            "type": {
+              "const": "daily",
+              "title": "DailyScheduledTaskScheduleType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "time"
+          ],
+          "title": "DailyScheduledTaskSchedule",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "time": {
+              "type": "string"
+            },
+            "type": {
+              "const": "weekdays",
+              "title": "WeekdaysScheduledTaskScheduleType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "time"
+          ],
+          "title": "WeekdaysScheduledTaskSchedule",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "days": {
+              "items": {
+                "$ref": "#/definitions/ScheduledTaskWeekday"
+              },
+              "type": "array"
+            },
+            "time": {
+              "type": "string"
+            },
+            "type": {
+              "const": "weekly",
+              "title": "WeeklyScheduledTaskScheduleType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "days",
+            "time"
+          ],
+          "title": "WeeklyScheduledTaskSchedule",
+          "type": "object"
+        }
+      ]
+    },
+    "ScheduledTaskSummary": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/definitions/ScheduledTaskSchedule"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "prompt",
+        "schedule"
+      ],
+      "type": "object"
+    },
+    "ScheduledTaskWeekday": {
+      "enum": [
+        "MO",
+        "TU",
+        "WE",
+        "TH",
+        "FR",
+        "SA",
+        "SU"
+      ],
+      "type": "string"
     },
     "SelectedCapabilityRoot": {
       "description": "A user-selected root that can expose one or more runtime capabilities.",
@@ -15424,10 +15819,6 @@
               "$ref": "#/definitions/CollabAgentToolCallStatus",
               "description": "Current status of the collab tool call."
             },
-            "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
-              "type": "boolean"
-            },
             "tool": {
               "$ref": "#/definitions/CollabAgentTool",
               "description": "Name of the collab tool that was invoked."
@@ -15445,7 +15836,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -15482,23 +15872,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/definitions/WebSearchItem",
           "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/WebSearchAction"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "id": {
-              "type": "string"
-            },
-            "query": {
-              "type": "string"
-            },
             "type": {
               "const": "webSearch",
               "title": "WebSearchThreadItemType",
@@ -15506,9 +15881,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "query"
+            "type"
           ],
           "title": "WebSearchThreadItem",
           "type": "object"
@@ -15560,32 +15933,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/definitions/ImageGenerationItem",
           "properties": {
-            "id": {
-              "type": "string"
-            },
-            "result": {
-              "type": "string"
-            },
-            "revisedPrompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "savedPath": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/AbsolutePathBuf"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
             "type": {
               "const": "imageGeneration",
               "title": "ImageGenerationThreadItemType",
@@ -15593,10 +15942,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "status",
-            "result"
+            "type"
           ],
           "title": "ImageGenerationThreadItem",
           "type": "object"
@@ -17882,6 +18228,31 @@
         "high"
       ],
       "type": "string"
+    },
+    "WebSearchItem": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "query"
+      ],
+      "type": "object"
     },
     "WebSearchLocation": {
       "additionalProperties": false,

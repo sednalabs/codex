@@ -1,14 +1,23 @@
 # Configure a fast drive for Windows CI jobs.
 #
 # GitHub-hosted Windows runners do not always expose a secondary D: volume. When
-# they do not, try to create a Dev Drive VHD and fall back to C: if the runner
-# image does not allow that provisioning path.
+# they do not, try to create a Dev Drive VHD. Some hosted images expose the
+# Hyper-V cmdlets without the DevDrive formatting switch, so fall back to an
+# existing secondary volume or C: rather than failing before validation starts.
 
 function Use-FallbackDrive {
     param([string]$Reason)
 
-    Write-Warning "$Reason Falling back to C:"
-    return "C:"
+    $FallbackDrive = if (Test-Path "D:\") { "D:" } else { "C:" }
+    Write-Warning "$Reason Using $FallbackDrive without Dev Drive acceleration."
+    return $FallbackDrive
+}
+
+function Test-DevDrive {
+    param([string]$Drive)
+
+    & fsutil devdrv query $Drive *> $null
+    return $LASTEXITCODE -eq 0
 }
 
 function Invoke-BestEffort {
@@ -21,13 +30,21 @@ function Invoke-BestEffort {
     }
 }
 
-if (Test-Path "D:\") {
-    Write-Output "Using existing drive at D:"
+if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {
+    Write-Output "Using existing Dev Drive at D:"
     $Drive = "D:"
 } else {
+    if (Test-Path "D:\") {
+        Write-Output "Existing D: volume is not a Dev Drive; provisioning a new Dev Drive VHD."
+    }
+
     try {
         $VhdPath = Join-Path $env:RUNNER_TEMP "codex-dev-drive.vhdx"
         $SizeBytes = 64GB
+        $FormatVolumeCommand = Get-Command Format-Volume -ErrorAction Stop
+        if (-not $FormatVolumeCommand.Parameters.ContainsKey("DevDrive")) {
+            throw "Format-Volume does not support the DevDrive switch on this runner image."
+        }
 
         if (Test-Path $VhdPath) {
             Remove-Item -Path $VhdPath -Force
@@ -42,9 +59,12 @@ if (Test-Path "D:\") {
 
         $Drive = "$($Volume.DriveLetter):"
 
+        if (-not (Test-DevDrive $Drive)) {
+            throw "Provisioned volume at $Drive did not pass Dev Drive verification."
+        }
+
         Invoke-BestEffort { fsutil devdrv trust $Drive } "Trusting Dev Drive $Drive"
         Invoke-BestEffort { fsutil devdrv enable /disallowAv } "Disabling AV filter attachment for Dev Drives"
-        Invoke-BestEffort { fsutil devdrv query $Drive } "Querying Dev Drive $Drive"
 
         Write-Output "Using Dev Drive at $Drive"
     } catch {
@@ -52,11 +72,7 @@ if (Test-Path "D:\") {
     }
 }
 
-$Tmp = "$Drive\codex-tmp"
-New-Item -Path $Tmp -ItemType Directory -Force | Out-Null
+"CI_BUILD_ROOT=$Drive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-@(
-    "DEV_DRIVE=$Drive"
-    "TMP=$Tmp"
-    "TEMP=$Tmp"
-) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+# A failed fsutil probe sets LASTEXITCODE even when the fallback succeeds.
+$global:LASTEXITCODE = 0

@@ -22,7 +22,7 @@ string.
 
 ### 1.1 Base instructions
 
-Base instructions are resolved in `codex-rs/core/src/codex.rs` in this order:
+Base instructions are resolved in `codex-rs/core/src/session/mod.rs` in this order:
 
 1. `config.base_instructions`
 2. `conversation_history.get_base_instructions()` from resumed/forked session
@@ -65,7 +65,7 @@ the hierarchical AGENTS message in addition to the project-doc blend.
 ### 1.3 Per-turn developer bundle
 
 After the base instructions are resolved, the code assembles a per-turn
-developer bundle in `codex-rs/core/src/codex.rs`.
+developer bundle in `codex-rs/core/src/session/mod.rs`.
 
 In the current implementation, the developer sections are built in this general
 order:
@@ -328,7 +328,7 @@ from a `worker` plus explicit spawn overrides.
 
 Commit attribution is implemented in
 `codex-rs/core/src/commit_attribution.rs` and injected from
-`codex-rs/core/src/codex.rs`.
+`codex-rs/core/src/session/mod.rs`.
 
 ### 7.1 When it is injected
 
@@ -468,7 +468,7 @@ particular:
 
 The key files for this behavior in the current implementation are:
 
-- `codex-rs/core/src/codex.rs`
+- `codex-rs/core/src/session/mod.rs`
 - `codex-rs/core/src/project_doc.rs`
 - `codex-rs/core/hierarchical_agents_message.md`
 - `codex-rs/core/src/models_manager/model_info.rs`

@@ -584,6 +584,41 @@
       ],
       "type": "string"
     },
+    "ImageGenerationItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "revisedPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "savedPath": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "result"
+      ],
+      "type": "object"
+    },
     "LegacyAppPathString": {
       "type": "string"
     },
@@ -1820,10 +1855,6 @@
               "$ref": "#/$defs/CollabAgentToolCallStatus",
               "description": "Current status of the collab tool call."
             },
-            "timedOut": {
-              "description": "Whether a wait call completed due to timeout.",
-              "type": "boolean"
-            },
             "tool": {
               "$ref": "#/$defs/CollabAgentTool",
               "description": "Name of the collab tool that was invoked."
@@ -1841,7 +1872,6 @@
             "status",
             "senderThreadId",
             "receiverThreadIds",
-            "timedOut",
             "agentsStates"
           ],
           "title": "CollabAgentToolCallThreadItem",
@@ -1878,23 +1908,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/WebSearchItem",
           "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/WebSearchAction"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "id": {
-              "type": "string"
-            },
-            "query": {
-              "type": "string"
-            },
             "type": {
               "const": "webSearch",
               "title": "WebSearchThreadItemType",
@@ -1902,9 +1917,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "query"
+            "type"
           ],
           "title": "WebSearchThreadItem",
           "type": "object"
@@ -1956,32 +1969,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/ImageGenerationItem",
           "properties": {
-            "id": {
-              "type": "string"
-            },
-            "result": {
-              "type": "string"
-            },
-            "revisedPrompt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "savedPath": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/AbsolutePathBuf"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
             "type": {
               "const": "imageGeneration",
               "title": "ImageGenerationThreadItemType",
@@ -1989,10 +1978,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "status",
-            "result"
+            "type"
           ],
           "title": "ImageGenerationThreadItem",
           "type": "object"
@@ -2475,6 +2461,31 @@
           "type": "object"
         }
       ]
+    },
+    "WebSearchItem": {
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "query"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

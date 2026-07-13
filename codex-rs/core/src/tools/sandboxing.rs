@@ -122,16 +122,11 @@ pub(crate) struct ApprovalCtx<'a> {
     pub session: &'a Arc<Session>,
     pub turn: &'a Arc<TurnContext>,
     pub call_id: &'a str,
-    /// Guardian review lifecycle ID for this approval, when guardian is reviewing it.
-    ///
-    /// This is separate from `call_id`: `call_id` identifies the tool item under
-    /// review, while this ID identifies the review itself. Keeping both lets
-    /// denial handling, overrides, and app-server notifications refer to the
-    /// review without overloading the tool call ID as a review ID.
-    pub guardian_review_id: Option<String>,
     pub retry_reason: Option<String>,
     pub network_approval_context: Option<NetworkApprovalContext>,
 }
+
+pub(crate) use super::approvals::ApprovalAction;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PermissionRequestPayload {
@@ -368,6 +363,8 @@ pub(crate) trait Approvable<Req> {
         req: &'a Req,
         ctx: ApprovalCtx<'a>,
     ) -> BoxFuture<'a, ReviewDecision>;
+
+    fn approval_action(&self, req: &Req, ctx: &ApprovalCtx<'_>) -> std::io::Result<ApprovalAction>;
 }
 
 pub(crate) trait Sandboxable {
@@ -423,9 +420,17 @@ pub(crate) struct SandboxAttempt<'a> {
     pub windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
     pub windows_sandbox_private_desktop: bool,
     pub network_denial_cancellation_token: Option<CancellationToken>,
+    pub(crate) network_proxy: Option<&'a NetworkProxy>,
 }
 
 impl<'a> SandboxAttempt<'a> {
+    pub(crate) fn network_proxy<'b>(
+        &'b self,
+        fallback: Option<&'b NetworkProxy>,
+    ) -> Option<&'b NetworkProxy> {
+        fallback.map(|fallback| self.network_proxy.unwrap_or(fallback))
+    }
+
     pub fn env_for(
         &self,
         command: SandboxCommand,
@@ -433,6 +438,7 @@ impl<'a> SandboxAttempt<'a> {
         network: Option<&NetworkProxy>,
         environment_id: Option<&str>,
     ) -> Result<crate::sandboxing::ExecRequest, CodexErr> {
+        let network = self.network_proxy(network);
         let request = self
             .manager
             .transform(SandboxTransformRequest {
@@ -465,6 +471,7 @@ impl<'a> SandboxAttempt<'a> {
         network: Option<&NetworkProxy>,
         environment_id: Option<&str>,
     ) -> Result<crate::sandboxing::ExecRequest, CodexErr> {
+        let network = self.network_proxy(network);
         let managed_network = command.managed_network.clone();
         let exec_server_permissions = effective_permission_profile(
             self.exec_server_permissions,
@@ -497,7 +504,11 @@ impl<'a> SandboxAttempt<'a> {
             exec_request.exec_server_sandbox = Some(FileSystemSandboxContext {
                 permissions: exec_server_permissions.into(),
                 cwd: Some(exec_request.windows_sandbox_policy_cwd.clone()),
-                workspace_roots: Vec::new(),
+                workspace_roots: self
+                    .workspace_roots
+                    .iter()
+                    .map(PathUri::from_abs_path)
+                    .collect(),
                 windows_sandbox_level: self.windows_sandbox_level,
                 windows_sandbox_private_desktop: self.windows_sandbox_private_desktop,
                 use_legacy_landlock: self.use_legacy_landlock,

@@ -8,9 +8,9 @@
 use std::error::Error as StdError;
 use std::time::Duration;
 
-use codex_client::build_reqwest_client_with_custom_ca;
-use codex_client::with_chatgpt_cloudflare_cookie_store;
 use codex_exec_server_protocol::JSONRPCErrorError;
+use codex_http_client::build_reqwest_client_with_custom_ca;
+use codex_http_client::with_chatgpt_cloudflare_cookie_store;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -30,6 +30,7 @@ use crate::protocol::HttpRedirectPolicy;
 use crate::protocol::HttpRequestBodyDeltaNotification;
 use crate::protocol::HttpRequestParams;
 use crate::protocol::HttpRequestResponse;
+use crate::protocol::MAX_HTTP_BODY_DELTA_BYTES;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
@@ -222,21 +223,23 @@ impl ReqwestHttpRequestRunner {
         while let Some(chunk) = body.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if !send_body_delta(
-                        &notifications,
-                        HttpRequestBodyDeltaNotification {
-                            request_id: request_id.clone(),
-                            seq,
-                            delta: bytes.to_vec().into(),
-                            done: false,
-                            error: None,
-                        },
-                    )
-                    .await
-                    {
-                        return;
+                    for chunk in bytes.chunks(MAX_HTTP_BODY_DELTA_BYTES) {
+                        if !send_body_delta(
+                            &notifications,
+                            HttpRequestBodyDeltaNotification {
+                                request_id: request_id.clone(),
+                                seq,
+                                delta: chunk.to_vec().into(),
+                                done: false,
+                                error: None,
+                            },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        seq += 1;
                     }
-                    seq += 1;
                 }
                 Err(error) => {
                     let _ = send_body_delta(

@@ -4,6 +4,7 @@ use crate::common::ResponseModelIdentity;
 use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
+use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
@@ -12,8 +13,9 @@ use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
 use codex_client::TransportError;
-use codex_client::maybe_build_rustls_client_config_with_custom_ca;
-use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+use codex_http_client::HttpClientFactory;
+use codex_websocket_client::WebSocketConnection;
+use codex_websocket_client::WebSocketConnector;
 use futures::SinkExt;
 use futures::StreamExt;
 use http::HeaderMap;
@@ -26,14 +28,10 @@ use serde_json::map::Map as JsonMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
-use tokio_tungstenite::MaybeTlsStream;
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -63,7 +61,7 @@ enum WsCommand {
 }
 
 impl WsStream {
-    fn new(inner: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+    fn new(inner: WebSocketConnection) -> Self {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
 
@@ -160,6 +158,24 @@ const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
+const RESPONSES_WEBSOCKET_TIMING_KIND: &str = "responsesapi.websocket_timing";
+const RESPONSES_WEBSOCKET_TIMING_EVENT_TARGET: &str = "codex_api::responses_websocket_timing";
+const SESSION_ID_CLIENT_METADATA_KEY: &str = "session_id";
+const THREAD_ID_CLIENT_METADATA_KEY: &str = "thread_id";
+const TURN_ID_CLIENT_METADATA_KEY: &str = "turn_id";
+const WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str = "x-codex-ws-stream-request-start-ms";
+
+struct ResponsesWebsocketTimingLogContext {
+    model: String,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+    traceparent: Option<String>,
+    previous_response_id: Option<String>,
+    request_start_ms: Option<String>,
+    warmup: bool,
+    connection_reused: bool,
+}
 
 pub struct ResponsesWebsocketConnection {
     stream: Arc<Mutex<Option<WsStream>>>,
@@ -227,6 +243,31 @@ impl ResponsesWebsocketConnection {
         let models_etag = self.models_etag.clone();
         let server_model = self.server_model.clone();
         let telemetry = self.telemetry.clone();
+        let ResponsesWsRequest::ResponseCreate(ws_request) = &request;
+        let client_metadata = ws_request.client_metadata.as_ref();
+        let timing_log_context = ResponsesWebsocketTimingLogContext {
+            model: ws_request.model.clone(),
+            session_id: client_metadata
+                .and_then(|metadata| metadata.get(SESSION_ID_CLIENT_METADATA_KEY))
+                .cloned(),
+            thread_id: client_metadata
+                .and_then(|metadata| metadata.get(THREAD_ID_CLIENT_METADATA_KEY))
+                .cloned(),
+            turn_id: client_metadata
+                .and_then(|metadata| metadata.get(TURN_ID_CLIENT_METADATA_KEY))
+                .cloned(),
+            traceparent: client_metadata
+                .and_then(|metadata| {
+                    metadata.get(WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY)
+                })
+                .cloned(),
+            previous_response_id: ws_request.previous_response_id.clone(),
+            request_start_ms: client_metadata
+                .and_then(|metadata| metadata.get(WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY))
+                .cloned(),
+            warmup: ws_request.generate == Some(false),
+            connection_reused,
+        };
         let request_text = serialize_websocket_request(&request)?;
 
         let current_span = Span::current();
@@ -264,8 +305,8 @@ impl ResponsesWebsocketConnection {
                         request_text,
                         idle_timeout,
                         telemetry,
-                        connection_reused,
                         turn_state.as_deref(),
+                        &timing_log_context,
                     )
                     .await
                 };
@@ -335,6 +376,7 @@ impl ResponsesWebsocketClient {
     )]
     pub async fn connect(
         &self,
+        http_client_factory: &HttpClientFactory,
         extra_headers: HeaderMap,
         default_headers: HeaderMap,
         turn_state: Option<Arc<OnceLock<String>>>,
@@ -350,7 +392,7 @@ impl ResponsesWebsocketClient {
         self.auth.add_auth_headers(&mut headers);
 
         let (stream, _status, server_reasoning_included, models_etag, server_model) =
-            connect_websocket(ws_url, headers, turn_state.clone()).await?;
+            connect_websocket(ws_url, headers, http_client_factory, turn_state.clone()).await?;
         Ok(ResponsesWebsocketConnection::new(
             stream,
             self.provider.stream_idle_timeout,
@@ -370,6 +412,7 @@ impl ResponsesWebsocketClient {
     /// a usable connection from a policy rejection that closes right away.
     pub async fn probe_handshake(
         &self,
+        http_client_factory: &HttpClientFactory,
         extra_headers: HeaderMap,
         default_headers: HeaderMap,
         immediate_close_timeout: Duration,
@@ -384,7 +427,13 @@ impl ResponsesWebsocketClient {
         self.auth.add_auth_headers(&mut headers);
 
         let (mut stream, status, reasoning_included, models_etag, server_model) =
-            connect_websocket(ws_url.clone(), headers, /*turn_state*/ None).await?;
+            connect_websocket(
+                ws_url.clone(),
+                headers,
+                http_client_factory,
+                /*turn_state*/ None,
+            )
+            .await?;
         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
             .await
             .ok()
@@ -438,9 +487,9 @@ fn merge_request_headers(
 async fn connect_websocket(
     url: Url,
     headers: HeaderMap,
+    http_client_factory: &HttpClientFactory,
     turn_state: Option<Arc<OnceLock<String>>>,
 ) -> Result<(WsStream, StatusCode, bool, Option<String>, Option<String>), ApiError> {
-    ensure_rustls_crypto_provider();
     info!("connecting to websocket: {url}");
 
     let mut request = url
@@ -449,20 +498,9 @@ async fn connect_websocket(
         .map_err(|err| ApiError::Stream(format!("failed to build websocket request: {err}")))?;
     request.headers_mut().extend(headers);
 
-    // Secure websocket traffic needs the same custom-CA policy as reqwest-based HTTPS traffic.
-    // If a Codex-specific CA bundle is configured, build an explicit rustls connector so this
-    // websocket path does not fall back to tungstenite's default native-roots-only behavior.
-    let connector = maybe_build_rustls_client_config_with_custom_ca()
-        .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?
-        .map(tokio_tungstenite::Connector::Rustls);
-
-    let response = connect_async_tls_with_config(
-        request,
-        Some(websocket_config()),
-        false, // `false` means "do not disable Nagle", which is tungstenite's recommended default.
-        connector,
-    )
-    .await;
+    let connector = WebSocketConnector::new(http_client_factory)
+        .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+    let response = connector.connect(request, websocket_config()).await;
 
     let (stream, response) = match response {
         Ok((stream, response)) => {
@@ -632,8 +670,8 @@ async fn run_websocket_response_stream(
     request_text: String,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
-    connection_reused: bool,
     turn_state: Option<&OnceLock<String>>,
+    timing_log_context: &ResponsesWebsocketTimingLogContext,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     let mut last_server_model_identity: Option<ResponseModelIdentity> = None;
@@ -643,7 +681,7 @@ async fn run_websocket_response_stream(
         request_text,
         idle_timeout,
         telemetry.as_ref(),
-        connection_reused,
+        timing_log_context.connection_reused,
     )
     .await?;
 
@@ -686,6 +724,11 @@ async fn run_websocket_response_stream(
                         continue;
                     }
                 };
+                emit_responses_websocket_timing_event(
+                    event.kind(),
+                    text.as_str(),
+                    timing_log_context,
+                );
                 if let Some(response_turn_state) = event.turn_state()
                     && let Some(turn_state) = turn_state
                 {
@@ -782,6 +825,35 @@ async fn run_websocket_response_stream(
     Ok(())
 }
 
+fn emit_responses_websocket_timing_event(
+    kind: &str,
+    payload: &str,
+    context: &ResponsesWebsocketTimingLogContext,
+) {
+    if kind != RESPONSES_WEBSOCKET_TIMING_KIND {
+        return;
+    }
+
+    // This full payload is excluded from always-on sinks. Opt in with
+    // `RUST_LOG='codex_api::responses_websocket_timing=trace'`.
+    tracing::event!(
+        name: RESPONSES_WEBSOCKET_TIMING_KIND,
+        target: RESPONSES_WEBSOCKET_TIMING_EVENT_TARGET,
+        tracing::Level::TRACE,
+        model = context.model.as_str(),
+        session_id = context.session_id.as_deref().unwrap_or_default(),
+        thread_id = context.thread_id.as_deref().unwrap_or_default(),
+        turn_id = context.turn_id.as_deref().unwrap_or_default(),
+        traceparent = context.traceparent.as_deref().unwrap_or_default(),
+        previous_response_id = context.previous_response_id.as_deref().unwrap_or_default(),
+        request_start_ms = context.request_start_ms.as_deref().unwrap_or_default(),
+        warmup = context.warmup,
+        connection_reused = context.connection_reused,
+        payload,
+        "responses websocket timing"
+    );
+}
+
 fn safety_buffering_for_event(
     event: &ResponsesStreamEvent,
     treatment: &mut SafetyBufferingTreatment,
@@ -835,6 +907,7 @@ fn serialize_websocket_request(request: &ResponsesWsRequest) -> Result<String, A
 mod tests {
     use super::*;
     use crate::common::ResponseCreateWsRequest;
+    use codex_protocol::ResponseItemId;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
     use pretty_assertions::assert_eq;
@@ -848,7 +921,7 @@ mod tests {
             instructions: "Use the available tools.".to_string(),
             previous_response_id: Some("resp-1".to_string()),
             input: vec![ResponseItem::Message {
-                id: Some("msg-1".to_string()),
+                id: Some(ResponseItemId::with_suffix("msg", "1")),
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "hello".to_string(),
@@ -866,6 +939,7 @@ mod tests {
             reasoning: None,
             store: false,
             stream: true,
+            stream_options: None,
             include: vec!["reasoning.encrypted_content".to_string()],
             service_tier: Some("priority".to_string()),
             prompt_cache_key: Some("cache-key".to_string()),

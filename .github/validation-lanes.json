@@ -937,34 +937,6 @@
       "needs_sccache": true
     },
     {
-      "lane_id": "codex.core-subagent-spawn-approval-targeted",
-      "groups": [
-        "core"
-      ],
-      "lane_sets": [
-        "all",
-        "subagents",
-        "core-carry"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "subagents",
-        "core-carry"
-      ],
-      "setup_class": "rust_integration",
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
-      "script_args": [
-        "core-subagent-spawn-approval-targeted"
-      ],
-      "needs_just": true,
-      "needs_node": false,
-      "needs_nextest": false,
-      "needs_linux_build_deps": true,
-      "needs_dotslash": true,
-      "needs_sccache": true
-    },
-    {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "groups": [
         "core"
@@ -1726,6 +1698,7 @@
         ".github/workflows/_validation-lane-rust-minimal.yml",
         ".github/workflows/_validation-lane-workflow.yml",
         ".github/workflows/_sedna-linux-rust.yml",
+        ".github/workflows/codeql.yml",
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
@@ -1734,10 +1707,12 @@
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
+        ".github/scripts/prepare_codeql_diff_ranges.py",
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation_plan_fingerprint.py",
         ".github/scripts/write_lane_summary.py",
         ".github/scripts/validation-lanes/build-nextest-archive-core-carry-pilot.sh",
         ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
@@ -1760,6 +1735,7 @@
         ".github/workflows/_validation-lane-rust-minimal.yml",
         ".github/workflows/_validation-lane-workflow.yml",
         ".github/workflows/_sedna-linux-rust.yml",
+        ".github/workflows/codeql.yml",
         ".github/workflows/docs-sanity.yml",
         ".github/workflows/rust-ci-full.yml",
         ".github/workflows/rust-ci.yml",
@@ -1768,10 +1744,12 @@
         ".github/workflows/validation-lab.yml",
         ".github/scripts/aggregate_validation_summary.py",
         ".github/scripts/check_markdown_links.py",
+        ".github/scripts/prepare_codeql_diff_ranges.py",
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation_plan_fingerprint.py",
         ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "scripts/downstream-divergence-audit.py",
@@ -1931,7 +1909,8 @@
       "allowed_paths": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
         "codex-rs/core/src/lib.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/protocol/src/lib.rs",
@@ -1947,7 +1926,8 @@
       "required_any_paths": [
         "codex-rs/core/src/custom_prompts.rs",
         "codex-rs/core/src/custom_prompts_tests.rs",
-        "codex-rs/core/src/review_prompts.rs",
+        "codex-rs/prompts/src/review_request.rs",
+        "codex-rs/prompts/src/review_request_tests.rs",
         "codex-rs/protocol/src/custom_prompts.rs",
         "codex-rs/tui/src/bottom_pane/custom_prompt_view.rs",
         "codex-rs/tui/src/chatwidget/tests/review_mode.rs"
@@ -2007,8 +1987,7 @@
     {
       "route_id": "subagent-spawn-tool-surface",
       "lane_ids": [
-        "codex.spawn-agent-tool-model-surface-targeted",
-        "codex.core-subagent-spawn-approval-targeted"
+        "codex.spawn-agent-tool-model-surface-targeted"
       ],
       "allowed_paths": [
         "codex-rs/protocol/src/openai_models.rs",
@@ -2029,26 +2008,6 @@
       "required_any_paths": [
         "codex-rs/tools/src/agent_tool.rs",
         "codex-rs/tools/src/agent_tool_tests.rs"
-      ]
-    },
-    {
-      "route_id": "core-subagent-spawn-approval",
-      "lane_ids": [
-        "codex.core-subagent-spawn-approval-targeted"
-      ],
-      "allowed_paths": [
-        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
-        "docs/downstream-regression-matrix.md",
-        "justfile"
-      ],
-      "required_any_paths": [
-        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
-        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs"
       ]
     },
     {

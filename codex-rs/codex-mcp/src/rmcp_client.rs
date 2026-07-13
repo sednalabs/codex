@@ -21,6 +21,7 @@ use std::time::Instant;
 use crate::codex_apps::normalize_codex_apps_callable_name;
 use crate::codex_apps::normalize_codex_apps_callable_namespace;
 use crate::codex_apps::normalize_codex_apps_tool_title;
+use crate::codex_apps::prepare_openai_file_params_for_model;
 use crate::codex_apps_cache::CodexAppsToolsCacheContext;
 use crate::codex_apps_cache::CodexAppsToolsFetchSource;
 use crate::codex_apps_cache::CodexAppsToolsFetchTicket;
@@ -35,7 +36,6 @@ use crate::server::McpServerLaunch;
 use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
-use crate::tools::tool_with_model_visible_input_schema;
 use anyhow::Result;
 use anyhow::anyhow;
 use arc_swap::ArcSwap;
@@ -85,6 +85,7 @@ pub const OPENAI_FORM_CAPABILITY: &str = "openai/form";
 pub(crate) const MCP_TOOLS_LIST_DURATION_METRIC: &str = "codex.mcp.tools.list.duration_ms";
 pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
     "codex.mcp.tools.fetch_uncached.duration_ms";
+pub(crate) const CODEX_APPS_REFRESH_DURATION_METRIC: &str = "codex.apps.refresh.duration_ms";
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -179,6 +180,7 @@ impl ManagedClient {
         match list_tools_for_client_uncached(
             &self.server_name,
             self.is_codex_apps_mcp_server,
+            /*codex_apps_refresh_trigger*/ "list_changed",
             &self.client,
             self.tool_timeout,
             self.server_instructions.as_deref(),
@@ -417,6 +419,7 @@ impl ManagedClientStartup {
             .unwrap_or_default();
         let cancel_token_for_fut = cancel_token;
         async move {
+            let refresh_start = is_codex_apps_mcp_server.then(Instant::now);
             let outcome = match async {
                 if let Err(error) = validate_mcp_server_name(&server_name) {
                     return Err(error.into());
@@ -462,6 +465,15 @@ impl ManagedClientStartup {
                 Ok(result) => result,
                 Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
             };
+            if outcome.is_ok()
+                && let Some(refresh_start) = refresh_start
+            {
+                emit_duration(
+                    CODEX_APPS_REFRESH_DURATION_METRIC,
+                    refresh_start.elapsed(),
+                    &[("path", "legacy"), ("trigger", "initial")],
+                );
+            }
 
             startup_complete.store(true, Ordering::Release);
             outcome
@@ -677,10 +689,12 @@ impl From<anyhow::Error> for StartupOutcomeError {
 pub(crate) async fn list_tools_for_client_uncached(
     server_name: &str,
     is_codex_apps_mcp_server: bool,
+    codex_apps_refresh_trigger: &'static str,
     client: &Arc<RmcpClient>,
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<ListedToolCatalogue> {
+    let fetch_start = Instant::now();
     let catalogue = client.list_all_tools_with_connector_ids(timeout).await?;
     let tools = catalogue
         .tools
@@ -694,6 +708,19 @@ pub(crate) async fn list_tools_for_client_uncached(
             )
         })
         .collect();
+    if is_codex_apps_mcp_server {
+        emit_duration(
+            MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
+            fetch_start.elapsed(),
+            &[("trigger", codex_apps_refresh_trigger)],
+        );
+    } else {
+        emit_duration(
+            MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
+            fetch_start.elapsed(),
+            &[],
+        );
+    }
     Ok(ListedToolCatalogue {
         generation: catalogue.generation,
         tools,
@@ -708,7 +735,7 @@ fn prepare_codex_apps_tools_for_model(
     tool_plugin_provenance: &ToolPluginProvenance,
 ) -> Vec<ToolInfo> {
     for tool in &mut tools {
-        tool.tool = tool_with_model_visible_input_schema(&tool.tool);
+        prepare_openai_file_params_for_model(tool);
         let plugin_names = match tool.connector_id.as_deref() {
             Some(connector_id) => {
                 tool_plugin_provenance.plugin_display_names_for_connector_id(connector_id)
@@ -821,6 +848,7 @@ fn codex_apps_tool_info_from_listed_tool(
         callable_namespace,
         namespace_description,
         tool: tool_def,
+        openai_file_input_optional_fields: HashMap::new(),
         connector_id,
         connector_name,
         plugin_display_names: Vec::new(),
@@ -844,6 +872,7 @@ fn regular_mcp_tool_info_from_listed_tool(
         callable_namespace: server_name.to_string(),
         namespace_description: server_instructions.map(str::to_string),
         tool: tool_def,
+        openai_file_input_optional_fields: HashMap::new(),
         connector_id: None,
         connector_name: None,
         plugin_display_names: Vec::new(),
@@ -934,24 +963,19 @@ async fn start_server_task(
         .and_then(|exp| exp.get(MCP_SANDBOX_STATE_META_CAPABILITY))
         .is_some();
     let list_start = Instant::now();
-    let fetch_start = Instant::now();
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|cache_context| cache_context.begin_fetch(CodexAppsToolsFetchSource::Startup));
     let catalogue = list_tools_for_client_uncached(
         &server_name,
         is_codex_apps_mcp_server,
+        /*codex_apps_refresh_trigger*/ "initial",
         &client,
         startup_timeout,
         initialize_result.instructions.as_deref(),
     )
     .await
     .map_err(StartupOutcomeError::from)?;
-    emit_duration(
-        MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
-        fetch_start.elapsed(),
-        &[],
-    );
     let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
     let tools = match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
         (Some(cache_context), Some(fetch_ticket)) => {
@@ -1241,6 +1265,7 @@ mod tests {
             callable_namespace: "codex_apps__gmail".to_string(),
             namespace_description: Some("Mail connector".to_string()),
             tool: expected_tool,
+            openai_file_input_optional_fields: HashMap::new(),
             connector_id: Some("connector_gmail".to_string()),
             connector_name: Some("Gmail".to_string()),
             plugin_display_names: Vec::new(),

@@ -14,7 +14,7 @@ import tempfile
 import types
 import typing
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Sequence, get_args, get_origin
 
 SDK_DISTRIBUTION_NAME = "openai-codex"
@@ -51,6 +51,10 @@ def _is_windows() -> bool:
 
 def runtime_binary_name() -> str:
     return "codex.exe" if _is_windows() else "codex"
+
+
+def runtime_code_mode_host_name() -> str:
+    return "codex-code-mode-host.exe" if _is_windows() else "codex-code-mode-host"
 
 
 def staged_runtime_package_root(root: Path) -> Path:
@@ -257,11 +261,46 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
         raise RuntimeError(f"Expected a .tar.gz Codex package archive: {package_archive}")
 
     runtime_package_root.mkdir(parents=True, exist_ok=True)
+    extraction_root = runtime_package_root.resolve()
     with tarfile.open(package_archive, "r:gz") as archive:
-        try:
-            archive.extractall(runtime_package_root, filter="data")
-        except TypeError:
-            archive.extractall(runtime_package_root)
+        validated_members: list[tuple[tarfile.TarInfo, Path]] = []
+        for member in archive.getmembers():
+            relative_path = PurePosixPath(member.name)
+            path_parts = tuple(part for part in relative_path.parts if part not in ("", "."))
+            if (
+                relative_path.is_absolute()
+                or not path_parts
+                or ".." in path_parts
+                or "\\" in member.name
+                or ":" in path_parts[0]
+            ):
+                raise RuntimeError(f"Unsafe path in Codex package archive: {member.name!r}")
+
+            destination = extraction_root.joinpath(*path_parts).resolve()
+            try:
+                destination.relative_to(extraction_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Unsafe path in Codex package archive: {member.name!r}"
+                ) from exc
+
+            if not member.isdir() and not member.isfile():
+                raise RuntimeError(
+                    f"Unsupported link or special entry in Codex package archive: {member.name!r}"
+                )
+            validated_members.append((member, destination))
+
+        for member, destination in validated_members:
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise RuntimeError(f"Unable to read Codex package archive entry: {member.name!r}")
+            with source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
+            destination.chmod(member.mode & 0o777)
 
     _validate_codex_package_layout(runtime_package_root, package_archive)
 
@@ -276,6 +315,9 @@ def _validate_codex_package_layout(package_dir: Path, package_archive: Path) -> 
     package_binary = package_dir / "bin" / runtime_binary_name()
     if not package_binary.is_file():
         missing_entries.append(str(Path("bin") / runtime_binary_name()))
+    code_mode_host = package_dir / "bin" / runtime_code_mode_host_name()
+    if not code_mode_host.is_file():
+        missing_entries.append(str(Path("bin") / runtime_code_mode_host_name()))
     if missing_entries:
         missing = ", ".join(missing_entries)
         raise RuntimeError(f"Missing Codex package layout entries in {package_archive}: {missing}")

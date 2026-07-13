@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -15,6 +16,7 @@ use codex_api::SharedAuthProvider;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
+use codex_keyring_store::DefaultKeyringStore;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use oauth2::TokenResponse;
@@ -35,7 +37,6 @@ use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
@@ -66,11 +67,11 @@ use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::in_process_transport::InProcessTransportFactory;
-use crate::load_oauth_tokens_with_source;
-use crate::oauth::LoadedOAuthTokens;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
+use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
+use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
@@ -88,7 +89,6 @@ mod streamable_http_retry;
 
 use self::streamable_http_retry::HandshakeError;
 use self::streamable_http_retry::STREAMABLE_HTTP_RETRY_DELAYS_MS;
-use self::streamable_http_retry::initialize_timeout_error;
 use self::streamable_http_retry::remaining_initialize_timeout;
 use self::streamable_http_retry::sleep_with_retry_deadline;
 
@@ -97,7 +97,7 @@ enum PendingTransport {
         transport: tokio::io::DuplexStream,
     },
     Stdio {
-        transport: StdioServerTransport,
+        transport: Box<StdioServerTransport>,
     },
     StreamableHttp {
         transport: StreamableHttpClientTransport<StreamableHttpClientAdapter>,
@@ -136,6 +136,7 @@ enum TransportRecipe {
         env_http_headers: Option<HashMap<String, String>>,
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
+        pinned_credential_store: Arc<OnceLock<ResolvedOAuthCredentialStore>>,
         http_client: Arc<dyn HttpClient>,
         auth_provider: Option<SharedAuthProvider>,
     },
@@ -238,7 +239,7 @@ where
 enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
-    #[error("timed out awaiting {label} after {duration:?}")]
+    #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
 }
 
@@ -258,6 +259,12 @@ fn remaining_operation_timeout(
         })
     } else {
         Ok(Some(remaining))
+    }
+}
+
+fn extend_operation_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
+    if let Some(deadline) = deadline.as_mut() {
+        *deadline += excluded_time;
     }
 }
 
@@ -294,7 +301,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.map(|meta| serde_json::Value::Object(meta.0)),
+            meta: None,
         }
     }
 }
@@ -304,15 +311,8 @@ impl From<ElicitationResponse> for CreateElicitationResult {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.and_then(value_to_meta),
+            meta: None,
         }
-    }
-}
-
-fn value_to_meta(value: serde_json::Value) -> Option<Meta> {
-    match value {
-        serde_json::Value::Object(object) => Some(Meta(object)),
-        _ => None,
     }
 }
 
@@ -505,6 +505,7 @@ impl RmcpClient {
             env_http_headers,
             store_mode,
             keyring_backend_kind,
+            pinned_credential_store: Arc::new(OnceLock::new()),
             http_client,
             auth_provider,
         };
@@ -578,8 +579,14 @@ impl RmcpClient {
             }
             *guard = ClientState::Ready {
                 service,
-                oauth: oauth_persistor,
+                oauth: oauth_persistor.clone(),
             };
+        }
+
+        if let Some(runtime) = oauth_persistor
+            && let Err(error) = runtime.persist_if_needed().await
+        {
+            warn!("failed to persist OAuth tokens after initialize: {error}");
         }
 
         Ok(initialize_result)
@@ -597,6 +604,7 @@ impl RmcpClient {
                 async move { service.list_tools(params).await }.boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -631,6 +639,7 @@ impl RmcpClient {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        self.persist_oauth_tokens().await;
         Ok(ListToolsWithConnectorIdResult {
             next_cursor: result.next_cursor,
             tools,
@@ -703,6 +712,7 @@ impl RmcpClient {
                 async move { service.list_resources(params).await }.boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -718,6 +728,7 @@ impl RmcpClient {
                 async move { service.list_resource_templates(params).await }.boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -733,6 +744,7 @@ impl RmcpClient {
                 async move { service.read_resource(params).await }.boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -763,9 +775,7 @@ impl RmcpClient {
             None => None,
         };
         let mut rmcp_params = CallToolRequestParams::new(name);
-        if let Some(arguments) = arguments {
-            rmcp_params = rmcp_params.with_arguments(arguments);
-        }
+        rmcp_params.arguments = arguments;
         let result = self
             .run_service_operation("tools/call", timeout, move |service| {
                 let rmcp_params = rmcp_params.clone();
@@ -792,6 +802,7 @@ impl RmcpClient {
                 .boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -821,6 +832,7 @@ impl RmcpClient {
             },
         )
         .await?;
+        self.persist_oauth_tokens().await;
         Ok(())
     }
 
@@ -843,6 +855,7 @@ impl RmcpClient {
                 .boxed()
             })
             .await?;
+        self.persist_oauth_tokens().await;
         Ok(response)
     }
 
@@ -882,6 +895,17 @@ impl RmcpClient {
         drop(previous_state);
     }
 
+    /// This should be called after every tool call so that if a given tool call triggered
+    /// a refresh of the OAuth tokens, they are persisted.
+    async fn persist_oauth_tokens(&self) {
+        if let Some(runtime) = self.oauth_persistor().await
+            && let Err(error) = runtime.persist_if_needed().await
+        {
+            warn!("failed to persist OAuth tokens: {error}");
+        }
+    }
+
+    /// OAuth uses independent lock/request bounds and completes before the operation timeout starts.
     async fn refresh_oauth_if_needed(&self) -> Result<()> {
         if let Some(runtime) = self.oauth_persistor().await {
             runtime.refresh_if_needed().await?;
@@ -899,7 +923,9 @@ impl RmcpClient {
             }
             TransportRecipe::Stdio { command, launcher } => {
                 let transport = launcher.launch(command.clone()).await?;
-                Ok(PendingTransport::Stdio { transport })
+                Ok(PendingTransport::Stdio {
+                    transport: Box::new(transport),
+                })
             }
             TransportRecipe::StreamableHttp {
                 server_name,
@@ -909,6 +935,7 @@ impl RmcpClient {
                 env_http_headers,
                 store_mode,
                 keyring_backend_kind,
+                pinned_credential_store,
                 http_client,
                 auth_provider,
             } => {
@@ -921,37 +948,56 @@ impl RmcpClient {
                         auth_provider.clone()
                     };
 
-                let initial_oauth_tokens = if bearer_token.is_none()
+                let resolved_oauth_tokens = if bearer_token.is_none()
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {
-                    match load_oauth_tokens_with_source(
-                        server_name,
-                        url,
-                        *store_mode,
-                        *keyring_backend_kind,
-                    ) {
-                        Ok(tokens) => tokens,
-                        Err(err) => {
-                            warn!("failed to read tokens for server `{server_name}`: {err}");
-                            None
+                    if let Some(store) = pinned_credential_store.get().copied() {
+                        // Rebuilds reread the source selected during first construction. Only the
+                        // initial construction below evaluates configured store policy.
+                        store
+                            .load(&DefaultKeyringStore, server_name, url)?
+                            .map(|tokens| ResolvedOAuthTokens { tokens, store })
+                    } else {
+                        match resolve_oauth_tokens_from_store_policy(
+                            &DefaultKeyringStore,
+                            server_name,
+                            url,
+                            *store_mode,
+                            *keyring_backend_kind,
+                        ) {
+                            Ok(tokens) => {
+                                if let Some(resolved) = tokens.as_ref() {
+                                    // Retries and session recovery rebuild this transport. Pin the
+                                    // first concrete source so Auto is not reevaluated mid-client.
+                                    pinned_credential_store.set(resolved.store).map_err(|_| {
+                                        anyhow!(
+                                            "OAuth credential store pinned concurrently for MCP server `{server_name}`"
+                                        )
+                                    })?;
+                                }
+                                tokens
+                            }
+                            Err(err) => {
+                                warn!("failed to read tokens for server `{server_name}`: {err}");
+                                None
+                            }
                         }
                     }
                 } else {
                     None
                 };
 
-                if let Some(LoadedOAuthTokens {
+                if let Some(ResolvedOAuthTokens {
                     tokens: initial_tokens,
                     store: credential_store,
-                }) = initial_oauth_tokens
+                }) = resolved_oauth_tokens
                 {
                     match create_oauth_transport_and_runtime(
                         server_name,
                         url,
                         initial_tokens.clone(),
                         credential_store,
-                        *keyring_backend_kind,
                         default_headers.clone(),
                         Arc::clone(http_client),
                     )
@@ -1028,7 +1074,7 @@ impl RmcpClient {
                 None,
             ),
             PendingTransport::Stdio { transport } => (
-                service::serve_client(client_service, transport).boxed(),
+                service::serve_client(client_service, *transport).boxed(),
                 None,
             ),
             PendingTransport::StreamableHttp { transport } => (
@@ -1038,26 +1084,10 @@ impl RmcpClient {
             PendingTransport::StreamableHttpWithOAuth {
                 transport,
                 oauth_persistor,
-            } => {
-                match remaining_initialize_timeout(timeout, deadline)? {
-                    Some(remaining) => {
-                        if let Err(error) = oauth_persistor
-                            .refresh_if_needed_with_timeout(remaining)
-                            .await
-                        {
-                            if remaining_initialize_timeout(timeout, deadline).is_err() {
-                                return Err(initialize_timeout_error(timeout, remaining));
-                            }
-                            return Err(error);
-                        }
-                    }
-                    None => oauth_persistor.refresh_if_needed().await?,
-                }
-                (
-                    service::serve_client(client_service, transport).boxed(),
-                    Some(oauth_persistor),
-                )
-            }
+            } => (
+                service::serve_client(client_service, transport).boxed(),
+                Some(oauth_persistor),
+            ),
         };
 
         let handshake_timeout = remaining_initialize_timeout(timeout, deadline)?;
@@ -1074,7 +1104,19 @@ impl RmcpClient {
                 .await
                 .map_err(|source| anyhow::Error::from(HandshakeError { source })),
         };
-        let service = service_result?;
+        let service = match service_result {
+            Ok(service) => service,
+            Err(error) => {
+                if let Some(runtime) = oauth_persistor.as_ref()
+                    && let Err(persist_error) = runtime.persist_if_needed().await
+                {
+                    warn!(
+                        "failed to persist OAuth tokens after failed initialize: {persist_error}"
+                    );
+                }
+                return Err(error);
+            }
+        };
 
         Ok((Arc::new(service), oauth_persistor))
     }
@@ -1090,6 +1132,12 @@ impl RmcpClient {
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
         let service = self.service().await?;
+        let mut deadline = timeout.map(|duration| Instant::now() + duration);
+        let oauth_persistor = self.oauth_persistor().await;
+        let rejected_access_token = match oauth_persistor.as_ref() {
+            Some(oauth_persistor) => oauth_persistor.access_token_snapshot().await,
+            None => None,
+        };
         let mut result = Self::run_service_operation_with_transient_retries(
             Arc::clone(&service),
             label,
@@ -1102,13 +1150,19 @@ impl RmcpClient {
         if result
             .as_ref()
             .is_err_and(Self::is_unauthorized_operation_error)
-            && let Some(oauth_persistor) = self.oauth_persistor().await
+            && let Some(oauth_persistor) = oauth_persistor
         {
-            oauth_persistor.refresh_after_unauthorized().await?;
+            let refresh_started_at = Instant::now();
+            let refresh_result = oauth_persistor
+                .refresh_after_unauthorized(rejected_access_token.as_deref())
+                .await;
+            extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
+            refresh_result?;
+            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
             result = Self::run_service_operation_with_transient_retries(
                 Arc::clone(&service),
                 label,
-                timeout,
+                remaining,
                 self.elicitation_pause_state.clone(),
                 &operation,
             )
@@ -1116,13 +1170,13 @@ impl RmcpClient {
         }
 
         if result.as_ref().is_err_and(Self::is_session_expired_404) {
-            self.reinitialize_after_recoverable_transport_error(&service)
-                .await?;
+            self.reinitialize_after_session_expiry(&service).await?;
             let recovered_service = self.service().await?;
+            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
             result = Self::run_service_operation_with_transient_retries(
                 recovered_service,
                 label,
-                timeout,
+                remaining,
                 self.elicitation_pause_state.clone(),
                 &operation,
             )
@@ -1262,7 +1316,7 @@ impl RmcpClient {
             .is_some_and(Self::is_unauthorized_streamable_http_error)
     }
 
-    async fn reinitialize_after_recoverable_transport_error(
+    async fn reinitialize_after_session_expiry(
         &self,
         failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
     ) -> Result<()> {
@@ -1310,8 +1364,14 @@ impl RmcpClient {
             }
             *guard = ClientState::Ready {
                 service,
-                oauth: oauth_persistor,
+                oauth: oauth_persistor.clone(),
             };
+        }
+
+        if let Some(runtime) = oauth_persistor
+            && let Err(error) = runtime.persist_if_needed().await
+        {
+            warn!("failed to persist OAuth tokens after session recovery: {error}");
         }
 
         Ok(())
@@ -1323,7 +1383,6 @@ async fn create_oauth_transport_and_runtime(
     url: &str,
     initial_tokens: StoredOAuthTokens,
     credential_store: ResolvedOAuthCredentialStore,
-    keyring_backend_kind: AuthKeyringBackendKind,
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
 ) -> Result<(
@@ -1368,7 +1427,6 @@ async fn create_oauth_transport_and_runtime(
         url.to_string(),
         auth_manager,
         credential_store,
-        keyring_backend_kind,
         Some(initial_tokens.clone()),
     );
     runtime.adopt_credentials(initial_tokens).await?;
@@ -1588,23 +1646,24 @@ mod tests {
         assert!(matches!(walk, ToolCatalogueWalk::Changed));
     }
 
-    #[tokio::test]
-    async fn active_time_timeout_pauses_while_elicitation_is_pending() {
-        let pause_state = ElicitationPauseState::new();
-        let pause = pause_state.enter();
-        tokio::spawn(async move {
-            time::sleep(Duration::from_millis(75)).await;
-            drop(pause);
-        });
+    #[test]
+    fn client_operation_timeout_rounds_duration() {
+        let error = ClientOperationError::Timeout {
+            label: "tools/list".to_string(),
+            duration: Duration::from_nanos(29_999_999_875),
+        };
 
-        let result =
-            active_time_timeout(Duration::from_millis(50), pause_state.subscribe(), async {
-                time::sleep(Duration::from_millis(90)).await;
-                "done"
-            })
-            .await;
+        assert_eq!(error.to_string(), "timed out awaiting tools/list after 30s");
+    }
 
-        assert_eq!(Ok("done"), result);
+    #[test]
+    fn oauth_refresh_extends_operation_deadline_without_resetting_budget() {
+        let initial_deadline = Instant::now() + Duration::from_secs(30);
+        let mut deadline = Some(initial_deadline);
+
+        extend_operation_deadline(&mut deadline, Duration::from_secs(20));
+
+        assert_eq!(deadline, Some(initial_deadline + Duration::from_secs(20)));
     }
 
     fn transport_send_error(
@@ -1639,5 +1698,24 @@ mod tests {
         let error = transport_send_error(StreamableHttpError::UnexpectedEndOfStream);
 
         assert!(!RmcpClient::is_session_expired_404(&error));
+    }
+
+    #[tokio::test]
+    async fn active_time_timeout_pauses_while_elicitation_is_pending() {
+        let pause_state = ElicitationPauseState::new();
+        let pause = pause_state.enter();
+        tokio::spawn(async move {
+            time::sleep(Duration::from_millis(75)).await;
+            drop(pause);
+        });
+
+        let result =
+            active_time_timeout(Duration::from_millis(50), pause_state.subscribe(), async {
+                time::sleep(Duration::from_millis(90)).await;
+                "done"
+            })
+            .await;
+
+        assert_eq!(Ok("done"), result);
     }
 }

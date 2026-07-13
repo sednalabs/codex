@@ -444,33 +444,77 @@ fn spawn_agent_output_schema_v1() -> Value {
 }
 
 fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
-    if hide_agent_metadata {
-        return json!({
-            "type": "object",
-            "properties": {
-                "task_name": {
-                    "type": "string",
-                    "description": "Canonical task name for the spawned agent."
-                }
-            },
-            "required": ["task_name"],
-            "additionalProperties": false
-        });
+    let mut required = vec![
+        "task_name".to_string(),
+        "effective_model".to_string(),
+        "effective_reasoning_effort".to_string(),
+    ];
+    let mut properties = serde_json::Map::from_iter([
+        (
+            "task_name".to_string(),
+            json!({
+                "type": "string",
+                "description": "Canonical task name for the spawned agent."
+            }),
+        ),
+        (
+            "requested_model".to_string(),
+            json!({
+                "type": "string",
+                "description": "Model explicitly requested for the spawned agent."
+            }),
+        ),
+        (
+            "requested_reasoning_effort".to_string(),
+            json!({
+                "type": "string",
+                "description": "Reasoning effort explicitly requested for the spawned agent."
+            }),
+        ),
+        (
+            "effective_model".to_string(),
+            json!({
+                "type": "string",
+                "description": "Model selected after role and profile resolution."
+            }),
+        ),
+        (
+            "requested_model_honored".to_string(),
+            json!({
+                "type": "boolean",
+                "description": "Whether the requested model was selected."
+            }),
+        ),
+        (
+            "effective_reasoning_effort".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Reasoning effort selected after role and profile resolution, when configured."
+            }),
+        ),
+    ]);
+    if !hide_agent_metadata {
+        required.push("agent_id".to_string());
+        properties.insert(
+            "agent_id".to_string(),
+            json!({
+                "type": "string",
+                "description": "Thread identifier for the spawned agent."
+            }),
+        );
+        properties.insert(
+            "nickname".to_string(),
+            json!({
+                "type": "string",
+                "description": "User-facing nickname for the spawned agent when available."
+            }),
+        );
     }
 
     json!({
         "type": "object",
-        "properties": {
-            "task_name": {
-                "type": "string",
-                "description": "Canonical task name for the spawned agent."
-            },
-            "nickname": {
-                "type": ["string", "null"],
-                "description": "User-facing nickname for the spawned agent when available."
-            }
-        },
-        "required": ["task_name", "nickname"],
+        "properties": properties,
+        "required": required,
         "additionalProperties": false
     })
 }

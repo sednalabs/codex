@@ -72,7 +72,7 @@ fn test_model_info(
         base_instructions: "base instructions".to_string(),
         model_messages: None,
         include_skills_usage_instructions: false,
-        supports_reasoning_summaries: false,
+        supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
         default_verbosity: None,
@@ -94,7 +94,12 @@ fn test_model_info(
 async fn wait_for_model_available(manager: &SharedModelsManager, slug: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let available_models = manager.list_models(RefreshStrategy::Online).await;
+        let available_models = manager
+            .list_models(
+                RefreshStrategy::Online,
+                codex_core::test_support::default_http_client_factory(),
+            )
+            .await;
         if available_models.iter().any(|model| model.model == slug) {
             return;
         }
