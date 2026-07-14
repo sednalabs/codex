@@ -469,6 +469,26 @@ async fn get_status_returns_not_found_without_manager() {
 }
 
 #[tokio::test]
+async fn inspect_agent_tree_rejects_excessive_root_filters() {
+    let roots = (0..=MAX_INSPECT_AGENT_ROOTS)
+        .map(|index| format!("/root/worker-{index}"))
+        .collect::<Vec<_>>();
+    let err = AgentControl::default()
+        .inspect_agent_tree(
+            ThreadId::new(),
+            &SessionSource::Exec,
+            None,
+            Some(&roots),
+            AgentTreeScope::Live,
+            2,
+            10,
+        )
+        .await
+        .expect_err("excessive root filters should fail");
+    assert!(err.to_string().contains("agent_roots accepts at most"));
+}
+
+#[tokio::test]
 async fn on_event_updates_status_from_task_started() {
     let status = agent_status_from_event(&EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "turn-1".to_string(),

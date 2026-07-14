@@ -274,6 +274,9 @@ where
 #[derive(Debug, Deserialize)]
 struct ListAgentsResult {
     agents: Vec<ListedAgentResult>,
+    truncated: bool,
+    scan_limit_reached: bool,
+    candidate_agents_omitted: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2045,6 +2048,9 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
     assert_eq!(worker.identity.latest_turn_request_identity, None);
     assert!(!worker.identity.identity_truncated);
     assert_eq!(worker.identity.identity_fields_omitted, 0);
+    assert!(!result.truncated);
+    assert!(!result.scan_limit_reached);
+    assert_eq!(result.candidate_agents_omitted, 0);
     assert_eq!(success, Some(true));
 }
 

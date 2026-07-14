@@ -1,5 +1,8 @@
 use super::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
 use super::multi_agents_common::model_supports_multi_agent_backend;
+use crate::agent::control::MAX_INSPECT_AGENT_ROOTS;
+use crate::agent::control::MAX_INSPECT_AGENT_ROWS;
+use crate::agent::control::MAX_LIST_AGENT_ROWS;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -324,7 +327,7 @@ fn create_list_agents_tool_with_capabilities(capabilities: ToolRuntimeCapabiliti
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
         description:
-            "List live agents and their effective model identities in the current root thread tree. Optionally filter by task-path prefix."
+            "List a bounded snapshot of live agents and their inference identity receipts in the current root thread tree. Optionally filter by task-path prefix."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -346,10 +349,9 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
             "agent_roots".to_string(),
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
-                Some(
-                    "Optional task-path roots to keep in the returned tree. Matching rows include the named agent and its descendants."
-                        .to_string(),
-                ),
+                Some(format!(
+                    "Optional task-path roots to keep in the returned tree, up to {MAX_INSPECT_AGENT_ROOTS} entries. Matching rows include the named agent and its descendants."
+                )),
             ),
         ),
         (
@@ -377,7 +379,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "inspect_agent_tree".to_string(),
-        description: "Inspect a compact nested agent tree for the current subtree or a target task path. Returns tree rows with authoritative effective model identity, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
+        description: "Inspect a bounded nested agent tree for the current subtree or a target task path. Returns identity receipts, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -736,6 +738,7 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
         "properties": {
             "agents": {
                 "type": "array",
+                "maxItems": MAX_LIST_AGENT_ROWS,
                 "items": {
                     "type": "object",
                     "properties": agent_properties,
@@ -743,9 +746,26 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
+            },
+            "truncated": {
+                "type": "boolean",
+                "description": "Whether candidates or matching rows were omitted by an inventory bound."
+            },
+            "scan_limit_reached": {
+                "type": "boolean",
+                "description": "Whether the live-agent scan stopped at its fixed candidate limit."
+            },
+            "candidate_agents_omitted": {
+                "type": "number",
+                "description": "Candidate agents not scanned or matching rows omitted by the row limit."
             }
         },
-        "required": ["agents"],
+        "required": [
+            "agents",
+            "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted"
+        ],
         "additionalProperties": false
     })
 }
@@ -827,6 +847,14 @@ fn inspect_agent_tree_output_schema() -> Value {
                 "type": "boolean",
                 "description": "Whether the returned tree rows were truncated."
             },
+            "scan_limit_reached": {
+                "type": "boolean",
+                "description": "Whether traversal reached its fixed candidate scan limit."
+            },
+            "candidate_agents_omitted": {
+                "type": "number",
+                "description": "Candidate or matching agents omitted by scan, depth, or row bounds."
+            },
             "summary": {
                 "type": "object",
                 "properties": {
@@ -857,6 +885,7 @@ fn inspect_agent_tree_output_schema() -> Value {
             },
             "agents": {
                 "type": "array",
+                "maxItems": MAX_INSPECT_AGENT_ROWS,
                 "items": {
                     "type": "object",
                     "properties": agent_properties,
@@ -872,6 +901,8 @@ fn inspect_agent_tree_output_schema() -> Value {
             "max_depth_applied",
             "max_agents_applied",
             "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted",
             "summary",
             "agents"
         ],
