@@ -268,6 +268,21 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/compact_remote_v2.rs`
   - `codex-rs/core/src/tasks/mod.rs`
 
+### Parent-Visible Completion Provider Receipt
+
+- MultiAgentV2 child completion forwards a bounded runtime-authored
+  `<completion_provider_receipt>` before the child-controlled `Payload`. The
+  receipt carries terminal provider model and snapshot identity plus the exact
+  turn usage persisted by `TurnCompleteEvent`.
+- If no provider identity or usage evidence exists, the completion envelope
+  renders exactly as it did before this carry. Provider identity is XML-escaped
+  and length-bounded, and receipt-shaped child payload text remains after the
+  runtime-authored receipt boundary.
+- Primary files:
+  - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/core/src/session_prefix.rs`
+  - `codex-rs/core/src/context/inter_agent_completion_message.rs`
+
 ### Side Chat Persistence And Usage Ledger Tracking
 
 - `/side` conversations are persisted as side-tagged fork threads instead of
