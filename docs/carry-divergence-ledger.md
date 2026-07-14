@@ -226,7 +226,7 @@ docs-only refresh commit that records this snapshot.
   captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
   TUI, and usage-ledger consumers receive provider-confirmed identity instead
   of falling back to `None`.
-- Each concrete HTTP or WebSocket sampling attempt emits a durable, payload-free
+- Each concrete HTTP sampling attempt emits a durable, payload-free
   rollout lifecycle with a stable local id, configured/requested identity,
   provider-supplied terminal identity, and exact per-response usage only on
   completed observations. Authentication retries, transport fallback, outer

@@ -106,7 +106,7 @@
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata for downstream audit workflows. Client-observed inference attempts also emit durable rollout events with configured/requested identity, provider-supplied terminal identity, exact completed-response usage, and distinct retry/fallback lifecycle ids.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata for downstream audit workflows. Client-observed HTTP inference attempts also emit durable rollout events with configured/requested identity, provider-supplied terminal identity, exact completed-response usage, and distinct retry lifecycle ids.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -122,7 +122,7 @@
         "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends event-level auditing while keeping client-observed attempts distinct from provider physical or billable calls. The first capture slice persists low-cardinality rollout events only; SQLite query projection and pricing remain separate follow-ups.",
+      "notes": "Extends event-level auditing while keeping client-observed HTTP attempts distinct from provider physical or billable calls. The first capture slice persists low-cardinality rollout events only; WebSocket adoption, SQLite query projection, and pricing remain separate follow-ups.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
