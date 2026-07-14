@@ -477,11 +477,11 @@ async fn inspect_agent_tree_rejects_excessive_root_filters() {
         .inspect_agent_tree(
             ThreadId::new(),
             &SessionSource::Exec,
-            None,
+            /*target*/ None,
             Some(&roots),
             AgentTreeScope::Live,
-            2,
-            10,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
         )
         .await
         .expect_err("excessive root filters should fail");
