@@ -764,6 +764,7 @@ impl Session {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_context.sub_id.clone()),
                 reason,
+                provider_usage,
                 started_at,
                 completed_at,
                 duration_ms,
@@ -922,6 +923,7 @@ impl Session {
         let event = EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: Some(task.turn_context.sub_id.clone()),
             reason,
+            provider_usage: task.turn_context.provider_usage().await,
             started_at,
             completed_at,
             duration_ms,
