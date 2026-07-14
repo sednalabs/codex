@@ -4446,6 +4446,155 @@ fn get_service_tier_ignores_configured_tier_when_fast_mode_disabled() {
 }
 
 #[tokio::test]
+async fn configured_inference_identity_preserves_original_model_alias_and_fallback() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.collaboration_mode.settings.model = "resolved-model-slug".to_string();
+    session_configuration.service_tier = None;
+
+    let mut original_config = (*session_configuration.original_config_do_not_use).clone();
+    original_config.model = Some("configured-model-alias".to_string());
+    original_config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    let _ = original_config.features.disable(Feature::FastMode);
+    session_configuration.original_config_do_not_use = Arc::new(original_config);
+
+    let configured = session_configuration.configured_inference_identity();
+    assert_eq!(
+        (
+            configured.configured_model.as_str(),
+            configured.configured_service_tier.as_deref(),
+        ),
+        (
+            "configured-model-alias",
+            Some(ServiceTier::Fast.request_value()),
+        ),
+        "request normalization must not replace the configured alias or tier"
+    );
+
+    let supported_model = model_with_default_service_tier(/*default_service_tier*/ None);
+    assert_eq!(
+        get_service_tier(
+            configured.configured_service_tier.clone(),
+            /*fast_mode_enabled*/ false,
+            &supported_model,
+        ),
+        None,
+        "Fast Mode disabled removes the tier only from the request identity"
+    );
+
+    let mut unsupported_model = supported_model;
+    unsupported_model.service_tiers.clear();
+    assert_eq!(
+        get_service_tier(
+            configured.configured_service_tier.clone(),
+            /*fast_mode_enabled*/ true,
+            &unsupported_model,
+        ),
+        None,
+        "an unsupported model removes the tier only from the request identity"
+    );
+
+    let mut original_config = (*session_configuration.original_config_do_not_use).clone();
+    original_config.model = None;
+    session_configuration.original_config_do_not_use = Arc::new(original_config);
+    assert_eq!(
+        session_configuration
+            .configured_inference_identity()
+            .configured_model,
+        "resolved-model-slug"
+    );
+
+    let mut original_config = (*session_configuration.original_config_do_not_use).clone();
+    original_config.model = Some(String::new());
+    session_configuration.original_config_do_not_use = Arc::new(original_config);
+    assert_eq!(
+        session_configuration
+            .configured_inference_identity()
+            .configured_model,
+        "resolved-model-slug"
+    );
+}
+
+#[tokio::test]
+async fn turn_inference_identity_captures_final_request_service_tier() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.enable(Feature::FastMode);
+    config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    turn_context.config = Arc::new(config);
+    turn_context.model_info = model_with_default_service_tier(/*default_service_tier*/ None);
+
+    let supported = turn_context.inference_identity();
+    assert_eq!(
+        (
+            supported.turn_id.as_str(),
+            supported.request_model.as_str(),
+            supported.model_provider_id.as_str(),
+            supported.request_service_tier.as_deref(),
+        ),
+        (
+            "turn_id",
+            turn_context.model_info.slug.as_str(),
+            turn_context.config.model_provider_id.as_str(),
+            Some(ServiceTier::Fast.request_value()),
+        )
+    );
+
+    turn_context.model_info.service_tiers.clear();
+    assert_eq!(
+        turn_context.inference_identity().request_service_tier,
+        None,
+        "a model change invalidates a tier the new model does not support"
+    );
+
+    turn_context.model_info = model_with_default_service_tier(/*default_service_tier*/ None);
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.disable(Feature::FastMode);
+    turn_context.config = Arc::new(config);
+    assert_eq!(turn_context.inference_identity().request_service_tier, None);
+
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.enable(Feature::FastMode);
+    config.service_tier = Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string());
+    turn_context.config = Arc::new(config);
+    assert_eq!(
+        turn_context.inference_identity().request_service_tier,
+        None,
+        "an explicit clear is omitted from the request"
+    );
+}
+
+#[tokio::test]
+async fn real_turn_construction_publishes_configured_and_request_identity() {
+    let (session, _initial_context) = make_session_and_context().await;
+    let turn = session
+        .new_turn_with_sub_id(
+            "identity-turn".to_string(),
+            SessionSettingsUpdate::default(),
+        )
+        .await
+        .expect("turn should build");
+    let snapshot = session.inference_identity_snapshot().await;
+    let configured = session.thread_config_snapshot().await;
+
+    assert_eq!(turn.configured_inference_identity(), &snapshot.configured);
+    assert_eq!(snapshot.latest_turn, Some(turn.inference_identity()));
+    assert_eq!(
+        (
+            snapshot.configured.configured_model.as_str(),
+            snapshot.configured.configured_model_provider_id.as_str(),
+            snapshot.configured.configured_reasoning_effort,
+            snapshot.configured.configured_service_tier.as_deref(),
+        ),
+        (
+            configured.model.as_str(),
+            configured.model_provider_id.as_str(),
+            configured.reasoning_effort,
+            configured.service_tier.as_deref(),
+        )
+    );
+}
+
+#[tokio::test]
 async fn session_settings_null_service_tier_update_uses_default_service_tier() {
     let session_configuration = make_session_configuration_for_tests().await;
 
