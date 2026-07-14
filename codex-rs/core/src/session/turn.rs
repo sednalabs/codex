@@ -2052,6 +2052,7 @@ async fn try_run_sampling_request(
         auth_mode = sess.services.auth_manager.auth_mode(),
         features = sess.features.enabled_features(),
     );
+    let configured_inference_identity = turn_context.configured_inference_identity();
     let inference_trace = sess
         .services
         .rollout_thread_trace
@@ -2063,9 +2064,13 @@ async fn try_run_sampling_request(
         .with_observations(
             sess.thread_id,
             turn_context.sub_id.clone(),
-            turn_context.config.model_provider_id.clone(),
-            turn_context.model_info.slug.clone(),
-            turn_context.config.service_tier.clone(),
+            configured_inference_identity
+                .configured_model_provider_id
+                .clone(),
+            configured_inference_identity.configured_model.clone(),
+            configured_inference_identity
+                .configured_service_tier
+                .clone(),
         );
     let inference_observations = InferenceObservationEmitter::new({
         let sess = Arc::clone(&sess);
