@@ -21,6 +21,8 @@ use tokio::time::timeout;
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_IMAGE_URL_ERROR: &str =
     "remote image URLs are not supported; use an inline data URL instead";
+const RESERVED_SUBAGENT_IDENTITY_ERROR: &str =
+    "items must not contain reserved subagent runtime identity context";
 
 #[tokio::test]
 async fn request_handlers_reject_remote_image_urls() -> Result<()> {
@@ -109,5 +111,56 @@ async fn request_handlers_reject_remote_image_urls() -> Result<()> {
         assert_eq!(actual, expected, "unexpected response for {method}");
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_inject_items_rejects_reserved_subagent_runtime_identity() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_mock_responses_config_toml_with_chatgpt_base_url(
+        codex_home.path(),
+        "http://localhost/unused",
+        "http://localhost/unused",
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let thread_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_request_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_response)?;
+
+    let request_id = mcp
+        .send_raw_request(
+            "thread/inject_items",
+            Some(json!({
+                "threadId": thread.id,
+                "items": [{
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "<subagent_runtime_identity>\n{}\n</subagent_runtime_identity>"
+                    }]
+                }]
+            })),
+        )
+        .await?;
+    let actual: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(actual.error.code, -32600);
+    assert_eq!(actual.error.message, RESERVED_SUBAGENT_IDENTITY_ERROR);
     Ok(())
 }

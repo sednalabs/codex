@@ -1,5 +1,6 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
+use crate::context::SubagentRuntimeIdentity;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
@@ -482,6 +483,14 @@ impl CodexThread {
         if items.is_empty() {
             return Err(CodexErr::InvalidRequest(
                 "items must not be empty".to_string(),
+            ));
+        }
+        if items
+            .iter()
+            .any(SubagentRuntimeIdentity::matches_response_item)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "items must not contain reserved subagent runtime identity context".to_string(),
             ));
         }
 
