@@ -208,6 +208,38 @@ model_reasoning_effort = "low"
     role_name
 }
 
+async fn install_role_with_reasoning_override(turn: &mut TurnContext) -> String {
+    let role_name = "reasoning-override-role".to_string();
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("codex home should be created");
+    let role_config_path = turn
+        .config
+        .codex_home
+        .as_path()
+        .join("reasoning-override-role.toml");
+    tokio::fs::write(
+        &role_config_path,
+        r#"model_reasoning_effort = "low"
+"#,
+    )
+    .await
+    .expect("role config should be written");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        role_name.clone(),
+        AgentRoleConfig {
+            description: Some("Role with a reasoning effort override".to_string()),
+            config_file: Some(role_config_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+
+    role_name
+}
+
 fn set_turn_config(turn: &mut TurnContext, config: crate::config::Config) {
     turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
@@ -1185,6 +1217,71 @@ async fn multi_agent_v2_spawn_expected_model_mismatch_rejects_before_creation_an
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_expected_reasoning_effort_mismatch_rejects_before_creation_and_prompt_delivery()
+ {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_reasoning_override(&mut turn).await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not reach the reasoning-mismatched child",
+                "task_name": "reasoning_mismatch",
+                "agent_type": role_name,
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "xhigh",
+                "expected_reasoning_effort": "xhigh",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("the exact reasoning effort assertion should reject the role override");
+
+    let FunctionCallError::RespondToModel(receipt) = err else {
+        panic!("a reasoning effort mismatch should surface as a model-facing error");
+    };
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).expect("reasoning effort mismatch receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "error": "spawn_agent_reasoning_effort_mismatch",
+            "requested_reasoning_effort": "xhigh",
+            "expected_reasoning_effort": "xhigh",
+            "effective_reasoning_effort": "low"
+        })
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert_eq!(manager.list_live_thread_spawn_edges().await, Vec::new());
+    assert!(!manager.captured_ops().iter().any(|(_, op)| {
+        matches!(
+            op,
+            Op::InterAgentCommunication { communication }
+                if communication.encrypted_content.as_deref()
+                    == Some("must not reach the reasoning-mismatched child")
+        )
+    }));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
     #[derive(Debug, Deserialize, PartialEq)]
     struct SpawnAgentResult {
@@ -1231,6 +1328,7 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
                 "agent_type": "terminal-babysitter",
                 "model": "gpt-5.6-terra",
                 "expected_model": "gpt-5.4-mini",
+                "expected_reasoning_effort": "low",
                 "fork_turns": "none"
             })),
         ))

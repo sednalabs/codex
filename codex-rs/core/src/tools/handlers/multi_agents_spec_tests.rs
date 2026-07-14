@@ -121,6 +121,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert_eq!(
         properties
+            .get("expected_reasoning_effort")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_REASONING_EFFORT_ASSERTION_DESCRIPTION)
+    );
+    assert_eq!(
+        properties
             .get("service_tier")
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
@@ -330,6 +336,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
         assert!(!properties.contains_key(property));
     }
     assert!(properties.contains_key("expected_model"));
+    assert!(properties.contains_key("expected_reasoning_effort"));
     assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(!description.contains("Available model overrides"));
     let output_schema = output_schema.expect("spawn_agent output schema");

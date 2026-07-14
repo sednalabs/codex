@@ -21,6 +21,7 @@ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your 
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_MODEL_ASSERTION_DESCRIPTION: &str = "Optional exact model assertion. The spawn is rejected before child creation and prompt delivery if the model selected after role and profile resolution differs.";
+const SPAWN_AGENT_REASONING_EFFORT_ASSERTION_DESCRIPTION: &str = "Optional exact reasoning effort assertion. The spawn is rejected before child creation and prompt delivery if the reasoning effort selected after model, role, and profile resolution differs.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
@@ -1028,6 +1029,12 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             JsonSchema::string(Some(
                 "Reasoning effort override for the new agent. Omit to inherit the parent effort."
                     .to_string(),
+            )),
+        ),
+        (
+            "expected_reasoning_effort".to_string(),
+            JsonSchema::string(Some(
+                SPAWN_AGENT_REASONING_EFFORT_ASSERTION_DESCRIPTION.to_string(),
             )),
         ),
         (
