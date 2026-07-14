@@ -773,7 +773,8 @@ fn stored_thread_from_state(
             .and_then(|metadata| metadata.model_provider.clone())
             .unwrap_or_else(|| "test".to_string()),
         model: metadata.and_then(|metadata| metadata.model.clone()),
-        reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone()),
+        reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone().flatten()),
+        service_tier: metadata.and_then(|metadata| metadata.service_tier.clone().flatten()),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
             .unwrap_or_else(Utc::now),

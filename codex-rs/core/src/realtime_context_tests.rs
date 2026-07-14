@@ -39,6 +39,7 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
         model_provider: "test-provider".to_string(),
         model: Some("gpt-5.2".to_string()),
         reasoning_effort: None,
+        service_tier: None,
         created_at: Utc
             .timestamp_opt(1_709_251_100, 0)
             .single()

@@ -217,7 +217,10 @@
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
         "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/session/turn_context.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
@@ -225,9 +228,16 @@
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
-        "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/migrations/0045_threads_service_tier.sql",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/state/src/model/thread_metadata.rs",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides and the complete persisted child inference identity, including service tier, across eviction and reload. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -243,11 +253,16 @@
         "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
+        "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
+        "inspect_agent_tree_uses_live_and_stored_effective_identity_sources",
+        "thread_service_tier_round_trips_through_state",
+        "service_tier_migration_preserves_legacy_rows_as_null",
+        "inference_identity_items_emit_complete_metadata_patches",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Durable metadata is authoritative for an evicted child's model, provider, reasoning effort, and service tier; ambient caller config must not replace that identity on reload. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [

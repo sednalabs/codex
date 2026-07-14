@@ -37,7 +37,10 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
         RolloutItem::EventMsg(
-            EventMsg::TokenCount(_) | EventMsg::UserMessage(_) | EventMsg::ThreadGoalUpdated(_),
+            EventMsg::TokenCount(_)
+            | EventMsg::UserMessage(_)
+            | EventMsg::ThreadGoalUpdated(_)
+            | EventMsg::ThreadSettingsApplied(_),
         ) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
             if matches!(event.item, TurnItem::UserMessage(_)) =>
@@ -88,6 +91,7 @@ fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem)
     }
     metadata.model = Some(turn_ctx.model.clone());
     metadata.reasoning_effort = turn_ctx.effort.clone();
+    metadata.service_tier = turn_ctx.service_tier.clone();
     metadata.sandbox_policy =
         serde_json::to_string(&turn_ctx.permission_profile()).unwrap_or_default();
     metadata.approval_mode = enum_to_string(&turn_ctx.approval_policy);
@@ -113,6 +117,15 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
             if !objective.is_empty() {
                 set_preview_if_empty(metadata, Some(objective.to_string()));
             }
+        }
+        EventMsg::ThreadSettingsApplied(event) => {
+            let settings = &event.thread_settings;
+            metadata.model = Some(settings.model.clone());
+            if !settings.model_provider_id.is_empty() {
+                metadata.model_provider = settings.model_provider_id.clone();
+            }
+            metadata.reasoning_effort = settings.reasoning_effort.clone();
+            metadata.service_tier = settings.service_tier.clone();
         }
         _ => {}
     }
@@ -155,6 +168,10 @@ mod tests {
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
     use codex_protocol::items::TurnItem;
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::models::ContentItem;
@@ -173,6 +190,8 @@ mod tests {
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use codex_protocol::protocol::UserMessageEvent;
@@ -387,6 +406,7 @@ mod tests {
                 network: None,
                 file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
+                service_tier: None,
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -433,6 +453,7 @@ mod tests {
                 network: None,
                 file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
+                service_tier: None,
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -475,6 +496,7 @@ mod tests {
                 network: None,
                 file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
+                service_tier: None,
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -491,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_context_sets_model_and_reasoning_effort() {
+    fn turn_context_sets_inference_identity() {
         let mut metadata = metadata_for_test();
 
         apply_rollout_item(
@@ -514,6 +536,7 @@ mod tests {
                 network: None,
                 file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
+                service_tier: Some("priority".to_string()),
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -526,8 +549,65 @@ mod tests {
             "test-provider",
         );
 
-        assert_eq!(metadata.model.as_deref(), Some("gpt-5"));
-        assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(
+            (
+                metadata.model.as_deref(),
+                metadata.reasoning_effort,
+                metadata.service_tier.as_deref(),
+            ),
+            (Some("gpt-5"), Some(ReasoningEffort::High), Some("priority"),)
+        );
+    }
+
+    #[test]
+    fn thread_settings_applied_updates_inference_identity() {
+        let mut metadata = metadata_for_test();
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+                ThreadSettingsAppliedEvent {
+                    thread_settings: ThreadSettingsSnapshot {
+                        model: "gpt-5.6".to_string(),
+                        model_provider_id: "updated-provider".to_string(),
+                        service_tier: Some("flex".to_string()),
+                        approval_policy: AskForApproval::OnRequest,
+                        approvals_reviewer: ApprovalsReviewer::User,
+                        permission_profile: PermissionProfile::Disabled,
+                        active_permission_profile: None,
+                        cwd: serde_json::from_value(serde_json::json!("/tmp"))
+                            .expect("absolute cwd"),
+                        reasoning_effort: Some(ReasoningEffort::Medium),
+                        reasoning_summary: None,
+                        personality: None,
+                        collaboration_mode: CollaborationMode {
+                            mode: ModeKind::Default,
+                            settings: Settings {
+                                model: "gpt-5.6".to_string(),
+                                reasoning_effort: Some(ReasoningEffort::Medium),
+                                developer_instructions: None,
+                            },
+                        },
+                    },
+                },
+            )),
+            "test-provider",
+        );
+
+        assert_eq!(
+            (
+                metadata.model.as_deref(),
+                metadata.model_provider.as_str(),
+                metadata.reasoning_effort,
+                metadata.service_tier.as_deref(),
+            ),
+            (
+                Some("gpt-5.6"),
+                "updated-provider",
+                Some(ReasoningEffort::Medium),
+                Some("flex"),
+            )
+        );
     }
 
     #[test]
@@ -590,6 +670,7 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            service_tier: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

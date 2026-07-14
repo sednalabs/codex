@@ -240,9 +240,19 @@ impl ThreadMetadataSync {
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
                     update.model = Some(turn_ctx.model.clone());
-                    update.reasoning_effort = turn_ctx.effort.clone();
+                    update.reasoning_effort = Some(turn_ctx.effort.clone());
+                    update.service_tier = Some(turn_ctx.service_tier.clone());
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
+                }
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    let settings = &event.thread_settings;
+                    update.model = Some(settings.model.clone());
+                    if !settings.model_provider_id.is_empty() {
+                        update.model_provider = Some(settings.model_provider_id.clone());
+                    }
+                    update.reasoning_effort = Some(settings.reasoning_effort.clone());
+                    update.service_tier = Some(settings.service_tier.clone());
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
                     self.observe_user_message(user, &mut update);
@@ -345,6 +355,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.model_provider.is_some()
         || update.model.is_some()
         || update.reasoning_effort.is_some()
+        || update.service_tier.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
         || update.source.is_some()
@@ -374,7 +385,14 @@ fn git_info_patch_from_observation(git_info: GitInfo) -> GitInfoPatch {
 mod tests {
     use std::sync::Arc;
 
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
     use codex_protocol::items::UserMessageItem;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::SessionMeta;
@@ -383,6 +401,9 @@ mod tests {
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::user_input::UserInput;
@@ -472,6 +493,82 @@ mod tests {
         assert_eq!(update.patch.title, None);
         assert_eq!(update.patch.first_user_message, None);
         assert!(update.patch.updated_at.is_some());
+    }
+
+    #[test]
+    fn inference_identity_items_emit_complete_metadata_patches() {
+        let thread_id = ThreadId::new();
+        let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));
+        let turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "gpt-turn",
+            "service_tier": "priority",
+            "effort": "high",
+            "summary": "auto",
+        }))
+        .expect("turn context should deserialize");
+
+        let turn_update = sync
+            .observe_appended_items(&[RolloutItem::TurnContext(turn_context)])
+            .expect("turn context metadata update");
+        sync.mark_pending_update_applied(&turn_update);
+        assert_eq!(
+            (
+                turn_update.patch.model,
+                turn_update.patch.reasoning_effort,
+                turn_update.patch.service_tier,
+            ),
+            (
+                Some("gpt-turn".to_string()),
+                Some(Some(ReasoningEffort::High)),
+                Some(Some("priority".to_string())),
+            )
+        );
+
+        let settings_update = sync
+            .observe_appended_items(&[RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+                ThreadSettingsAppliedEvent {
+                    thread_settings: ThreadSettingsSnapshot {
+                        model: "gpt-settings".to_string(),
+                        model_provider_id: "settings-provider".to_string(),
+                        service_tier: Some("flex".to_string()),
+                        approval_policy: AskForApproval::Never,
+                        approvals_reviewer: ApprovalsReviewer::User,
+                        permission_profile: PermissionProfile::Disabled,
+                        active_permission_profile: None,
+                        cwd: serde_json::from_value(serde_json::json!("/tmp"))
+                            .expect("absolute cwd"),
+                        reasoning_effort: Some(ReasoningEffort::Medium),
+                        reasoning_summary: None,
+                        personality: None,
+                        collaboration_mode: CollaborationMode {
+                            mode: ModeKind::Default,
+                            settings: Settings {
+                                model: "gpt-settings".to_string(),
+                                reasoning_effort: Some(ReasoningEffort::Medium),
+                                developer_instructions: None,
+                            },
+                        },
+                    },
+                },
+            ))])
+            .expect("thread settings metadata update");
+        assert_eq!(
+            (
+                settings_update.patch.model,
+                settings_update.patch.model_provider,
+                settings_update.patch.reasoning_effort,
+                settings_update.patch.service_tier,
+            ),
+            (
+                Some("gpt-settings".to_string()),
+                Some("settings-provider".to_string()),
+                Some(Some(ReasoningEffort::Medium)),
+                Some(Some("flex".to_string())),
+            )
+        );
     }
 
     #[test]

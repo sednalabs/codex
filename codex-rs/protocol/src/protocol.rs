@@ -3302,6 +3302,9 @@ pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_system_sandbox_policy: Option<FileSystemSandboxPolicy>,
     pub model: String,
+    /// Effective service tier selected for this turn, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5992,6 +5995,7 @@ mod tests {
         assert_eq!(item.network, None);
         assert_eq!(item.file_system_sandbox_policy, None);
         assert_eq!(item.comp_hash, None);
+        assert_eq!(item.service_tier, None);
         Ok(())
     }
 
@@ -6113,6 +6117,7 @@ mod tests {
                 },
             ])),
             model: "gpt-5".to_string(),
+            service_tier: Some("priority".to_string()),
             comp_hash: None,
             personality: None,
             collaboration_mode: None,
@@ -6124,6 +6129,7 @@ mod tests {
         };
 
         let value = serde_json::to_value(item)?;
+        assert_eq!(value["service_tier"], "priority");
         assert_eq!(
             value["network"],
             json!({

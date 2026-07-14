@@ -2252,6 +2252,7 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            service_tier: None,
             created_at,
             updated_at: created_at,
             recency_at: created_at,

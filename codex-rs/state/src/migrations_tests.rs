@@ -14,6 +14,7 @@ const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
 const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
 const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
 const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
+const PRE_SERVICE_TIER_MIGRATION_VERSION: i64 = 44;
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -46,6 +47,54 @@ fn state_migration_versions_are_unique() {
         duplicates.is_empty(),
         "duplicate state migration versions: {duplicates:?}"
     );
+}
+
+#[tokio::test]
+async fn service_tier_migration_preserves_legacy_rows_as_null() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(PRE_SERVICE_TIER_MIGRATION_VERSION)
+        .run(&pool)
+        .await
+        .expect("pre-service-tier migrations should apply");
+
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
+    sandbox_policy, approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .bind("/tmp/legacy-service-tier.jsonl")
+    .bind(1_700_000_000_i64)
+    .bind(1_700_000_100_i64)
+    .bind("cli")
+    .bind("openai")
+    .bind("/tmp")
+    .bind("")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(&pool)
+    .await
+    .expect("legacy row should insert");
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("service-tier migration should apply");
+
+    let service_tier =
+        sqlx::query_scalar::<_, Option<String>>("SELECT service_tier FROM threads WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000045")
+            .fetch_one(&pool)
+            .await
+            .expect("migrated row should load");
+    assert_eq!(service_tier, None);
 }
 
 #[tokio::test]
