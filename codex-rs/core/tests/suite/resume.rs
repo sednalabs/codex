@@ -11,6 +11,7 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_completed_without_usage;
+use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -23,6 +24,7 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,21 +65,21 @@ async fn resume_until_initial_messages(
     }
 }
 
-fn remove_provider_usage_from_persisted_turn_complete(path: &PathBuf) -> Result<()> {
+fn remove_provider_usage_from_persisted_turn_abort(path: &PathBuf) -> Result<()> {
     let contents = fs::read_to_string(path)?;
     let mut found = false;
     let lines = contents
         .lines()
         .map(|line| -> Result<String> {
             let mut line: RolloutLine = serde_json::from_str(line)?;
-            if let RolloutItem::EventMsg(EventMsg::TurnComplete(completed)) = &mut line.item {
-                completed.provider_usage = None;
+            if let RolloutItem::EventMsg(EventMsg::TurnAborted(aborted)) = &mut line.item {
+                aborted.provider_usage = None;
                 found = true;
             }
             Ok(serde_json::to_string(&line)?)
         })
         .collect::<Result<Vec<_>>>()?;
-    assert!(found, "expected a persisted turn completion event");
+    assert!(found, "expected a persisted turn abort event");
     fs::write(path, format!("{}\n", lines.join("\n")))?;
     Ok(())
 }
@@ -213,7 +215,7 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_accepts_persisted_turn_complete_without_provider_usage() -> Result<()> {
+async fn aborted_provider_usage_is_durable_isolated_and_legacy_compatible() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -225,20 +227,28 @@ async fn resume_accepts_persisted_turn_complete_without_provider_usage() -> Resu
         .rollout_path
         .clone()
         .expect("rollout path");
-    mount_sse_once(
+    let args = json!({"command": "sleep 60", "timeout_ms": 60_000}).to_string();
+    let responses = mount_sse_sequence(
         &server,
-        sse(vec![
-            ev_response_created("resp-legacy"),
-            ev_assistant_message("msg-legacy", "Legacy-compatible turn"),
-            ev_completed_with_tokens("resp-legacy", 19),
-        ]),
+        vec![
+            sse(vec![
+                ev_response_created("resp-aborted"),
+                ev_function_call("call-sleep", "shell_command", &args),
+                ev_completed_with_tokens("resp-aborted", 19),
+            ]),
+            sse(vec![
+                ev_response_created("resp-after-resume"),
+                ev_assistant_message("msg-after-resume", "Completed after resume"),
+                ev_completed_without_usage("resp-after-resume"),
+            ]),
+        ],
     )
     .await;
     initial
         .codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
-                text: "Persist a turn receipt".into(),
+                text: "Start a tool that will be interrupted".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
@@ -248,32 +258,130 @@ async fn resume_accepts_persisted_turn_complete_without_provider_usage() -> Resu
         })
         .await?;
     wait_for_event(&initial.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+        matches!(event, EventMsg::ExecCommandBegin(_))
     })
     .await;
+    initial.codex.submit(Op::Interrupt).await?;
+    let aborted = wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    let EventMsg::TurnAborted(aborted) = aborted else {
+        unreachable!("wait predicate only accepts aborted turns");
+    };
+    assert_eq!(
+        aborted.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 19,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 19,
+        })
+    );
     initial.codex.flush_rollout().await?;
+
+    let persisted_aborted = fs::read_to_string(&rollout_path)?
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => Some(event),
+            _ => None,
+        })
+        .expect("persisted TurnAborted receipt");
+    assert_eq!(persisted_aborted, aborted);
     drop(initial);
 
-    remove_provider_usage_from_persisted_turn_complete(&rollout_path)?;
-    let resumed =
-        resume_until_initial_messages(&mut builder, &server, home, rollout_path, |messages| {
+    let resumed = resume_until_initial_messages(
+        &mut builder,
+        &server,
+        Arc::clone(&home),
+        rollout_path.clone(),
+        |messages| {
             messages
                 .iter()
-                .any(|event| matches!(event, EventMsg::TurnComplete(_)))
-        })
-        .await?;
-    let completed = resumed
+                .any(|event| matches!(event, EventMsg::TurnAborted(_)))
+        },
+    )
+    .await?;
+    let resumed_aborted = resumed
         .session_configured
         .initial_messages
         .as_ref()
         .and_then(|messages| {
             messages.iter().find_map(|event| match event {
-                EventMsg::TurnComplete(completed) => Some(completed),
+                EventMsg::TurnAborted(aborted) => Some(aborted),
                 _ => None,
             })
         })
-        .expect("resumed turn completion");
+        .expect("resumed turn abort");
+    assert_eq!(resumed_aborted, &aborted);
+
+    resumed
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Continue after resume".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let completed = wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let EventMsg::TurnComplete(completed) = completed else {
+        unreachable!("wait predicate only accepts completed turns");
+    };
     assert_eq!(completed.provider_usage, None);
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let resumed_request = requests[1].body_json().to_string();
+    assert!(resumed_request.contains("<turn_aborted>"));
+    assert!(!resumed_request.contains("\"type\":\"turn_aborted\""));
+    assert!(!resumed_request.contains("\"provider_usage\""));
+
+    resumed.codex.flush_rollout().await?;
+    drop(resumed);
+    remove_provider_usage_from_persisted_turn_abort(&rollout_path)?;
+    let legacy_rollout = fs::read_to_string(&rollout_path)?;
+    assert!(
+        legacy_rollout
+            .lines()
+            .filter(|line| line.contains("\"turn_aborted\""))
+            .all(|line| !line.contains("\"provider_usage\""))
+    );
+    let legacy = resume_until_initial_messages(
+        &mut builder,
+        &server,
+        home,
+        rollout_path,
+        |messages| {
+            messages.iter().any(|event| {
+                matches!(event, EventMsg::TurnAborted(aborted) if aborted.provider_usage.is_none())
+            })
+        },
+    )
+    .await?;
+    let legacy_aborted = legacy
+        .session_configured
+        .initial_messages
+        .as_ref()
+        .and_then(|messages| {
+            messages.iter().find_map(|event| match event {
+                EventMsg::TurnAborted(aborted) => Some(aborted),
+                _ => None,
+            })
+        })
+        .expect("legacy resumed turn abort");
+    assert_eq!(legacy_aborted.provider_usage, None);
     Ok(())
 }
 
