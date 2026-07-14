@@ -45,6 +45,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::InferenceCallEvent;
 use codex_protocol::protocol::InferenceCallStatus;
 use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::InternalSessionSource;
@@ -58,6 +59,9 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use core_test_support::responses::WebSocketConnectionConfig;
+use core_test_support::responses::start_websocket_server;
+use core_test_support::responses::start_websocket_server_with_headers;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -100,6 +104,14 @@ fn test_model_client_with_thread_id(
     session_source: SessionSource,
 ) -> ModelClient {
     let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    test_model_client_with_provider(thread_id, session_source, provider)
+}
+
+fn test_model_client_with_provider(
+    thread_id: ThreadId,
+    session_source: SessionSource,
+    provider: ModelProviderInfo,
+) -> ModelClient {
     ModelClient::new(
         /*auth_manager*/ None,
         AgentIdentityAuthPolicy::JwtOnly,
@@ -118,6 +130,40 @@ fn test_model_client_with_thread_id(
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )
+}
+
+fn test_prompt(text: &str) -> Prompt {
+    Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "test instructions".to_string(),
+        },
+        ..Default::default()
+    }
+}
+
+async fn receive_inference_observations(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<InferenceCallEvent>,
+    count: usize,
+) -> Vec<InferenceCallEvent> {
+    let mut events = Vec::with_capacity(count);
+    for _ in 0..count {
+        events.push(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("inference observation delivery timed out")
+                .expect("inference observation channel closed"),
+        );
+    }
+    events
 }
 
 #[tokio::test]
@@ -581,6 +627,350 @@ async fn summarize_memories_returns_empty_for_empty_input() {
         .await
         .expect("empty summarize request should succeed");
     assert_eq!(output.len(), 0);
+}
+
+#[tokio::test]
+async fn websocket_fallback_records_distinct_attempts_and_http_completion_evidence()
+-> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(/*status*/ 426))
+        .expect(/*requests*/ 1)
+        .mount(&server)
+        .await;
+    let response_events = [
+        json!({
+            "type": "response.created",
+            "response": {
+                "id": "response-http",
+                "headers": {
+                    "OpenAI-Model": "observed-model",
+                    "OpenAI-Model-Snapshot": "observed-snapshot"
+                }
+            }
+        }),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "response-http",
+                "service_tier": "priority",
+                "usage": {
+                    "input_tokens": 7,
+                    "input_tokens_details": {"cached_tokens": 2},
+                    "output_tokens": 5,
+                    "output_tokens_details": {"reasoning_tokens": 3},
+                    "total_tokens": 12
+                }
+            }
+        }),
+    ];
+    let response_body = response_events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect::<String>();
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("x-request-id", "request-http")
+                .set_body_raw(response_body, "text/event-stream"),
+        )
+        .expect(/*requests*/ 1)
+        .mount(&server)
+        .await;
+
+    let thread_id = ThreadId::new();
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    provider.name = "provider-display-name".to_string();
+    provider.supports_websockets = true;
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    let client = test_model_client_with_provider(thread_id, SessionSource::Exec, provider);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{thread_id}:0"),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let trace = InferenceTraceContext::disabled().with_observations(
+        thread_id,
+        "turn-1".to_string(),
+        "provider-id".to_string(),
+        "gpt-test".to_string(),
+        Some("configured-tier".to_string()),
+    );
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut session = client.new_session();
+    session.set_inference_observation_emitter(super::InferenceObservationEmitter::new(
+        move |event| {
+            let event_tx = event_tx.clone();
+            async move {
+                let _ = event_tx.send(event);
+            }
+        },
+    ));
+    let prompt = test_prompt("hello");
+    let model_info = test_model_info();
+    let telemetry = test_session_telemetry();
+
+    let mut stream = session
+        .stream(
+            &prompt,
+            &model_info,
+            &telemetry,
+            None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            Some("requested-tier".to_string()),
+            &metadata,
+            &trace,
+        )
+        .await?;
+    while let Some(event) = stream.next().await {
+        if matches!(event?, ResponseEvent::Completed { .. }) {
+            break;
+        }
+    }
+    let events = receive_inference_observations(&mut event_rx, 4).await;
+
+    assert_eq!(
+        events.iter().map(|event| event.status).collect::<Vec<_>>(),
+        vec![
+            InferenceCallStatus::Started,
+            InferenceCallStatus::Failed,
+            InferenceCallStatus::Started,
+            InferenceCallStatus::Completed,
+        ]
+    );
+    assert_eq!(
+        events[0].transport,
+        InferenceCallTransport::ResponsesWebsocket
+    );
+    assert_eq!(events[1].inference_call_id, events[0].inference_call_id);
+    assert_eq!(events[2].transport, InferenceCallTransport::ResponsesHttp);
+    assert_eq!(events[3].inference_call_id, events[2].inference_call_id);
+    assert_ne!(events[0].inference_call_id, events[2].inference_call_id);
+    assert_eq!(events[3].configured_provider, "provider-id");
+    assert_eq!(events[3].response_id.as_deref(), Some("response-http"));
+    assert_eq!(
+        events[3].upstream_request_id.as_deref(),
+        Some("request-http")
+    );
+    assert_eq!(events[3].observed_model.as_deref(), Some("observed-model"));
+    assert_eq!(
+        events[3].observed_model_snapshot.as_deref(),
+        Some("observed-snapshot")
+    );
+    assert_eq!(events[3].observed_service_tier.as_deref(), Some("priority"));
+    let usage = events[3].token_usage.as_ref().expect("completed usage");
+    assert_eq!(
+        (
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+            usage.reasoning_output_tokens,
+            usage.total_tokens,
+        ),
+        (7, 2, 5, 3, 12)
+    );
+    let failed = &events[1];
+    assert!(failed.response_id.is_none());
+    assert!(failed.observed_model.is_none());
+    assert!(failed.observed_model_snapshot.is_none());
+    assert!(failed.observed_service_tier.is_none());
+    assert!(failed.token_usage.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_completion_records_observed_identity_and_exact_usage() -> anyhow::Result<()> {
+    let server = start_websocket_server(vec![vec![vec![
+        json!({
+            "type": "response.created",
+            "response": {
+                "id": "response-ws",
+                "headers": {
+                    "OpenAI-Model": "observed-ws-model",
+                    "OpenAI-Model-Snapshot": "observed-ws-snapshot"
+                }
+            }
+        }),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "response-ws",
+                "service_tier": "flex",
+                "usage": {
+                    "input_tokens": 11,
+                    "input_tokens_details": {"cached_tokens": 4},
+                    "output_tokens": 6,
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                    "total_tokens": 17
+                }
+            }
+        }),
+    ]]])
+    .await;
+    let thread_id = ThreadId::new();
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    provider.supports_websockets = true;
+    let client = test_model_client_with_provider(thread_id, SessionSource::Exec, provider);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{thread_id}:0"),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let trace = InferenceTraceContext::disabled().with_observations(
+        thread_id,
+        "turn-1".to_string(),
+        "provider-id".to_string(),
+        "gpt-test".to_string(),
+        None,
+    );
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut session = client.new_session();
+    session.set_inference_observation_emitter(super::InferenceObservationEmitter::new(
+        move |event| {
+            let event_tx = event_tx.clone();
+            async move {
+                let _ = event_tx.send(event);
+            }
+        },
+    ));
+    let prompt = test_prompt("hello");
+    let model_info = test_model_info();
+    let telemetry = test_session_telemetry();
+
+    let mut stream = session
+        .stream(
+            &prompt,
+            &model_info,
+            &telemetry,
+            None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            None,
+            &metadata,
+            &trace,
+        )
+        .await?;
+    while let Some(event) = stream.next().await {
+        if matches!(event?, ResponseEvent::Completed { .. }) {
+            break;
+        }
+    }
+    let events = receive_inference_observations(&mut event_rx, 2).await;
+    let completed = &events[1];
+    assert_eq!(events[0].status, InferenceCallStatus::Started);
+    assert_eq!(completed.status, InferenceCallStatus::Completed);
+    assert_eq!(completed.inference_call_id, events[0].inference_call_id);
+    assert_eq!(
+        completed.transport,
+        InferenceCallTransport::ResponsesWebsocket
+    );
+    assert_eq!(
+        completed.observed_model.as_deref(),
+        Some("observed-ws-model")
+    );
+    assert_eq!(
+        completed.observed_model_snapshot.as_deref(),
+        Some("observed-ws-snapshot")
+    );
+    assert_eq!(completed.observed_service_tier.as_deref(), Some("flex"));
+    let usage = completed.token_usage.as_ref().expect("completed usage");
+    assert_eq!(
+        (
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+            usage.reasoning_output_tokens,
+            usage.total_tokens,
+        ),
+        (11, 4, 6, 2, 17)
+    );
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_pending_websocket_setup_records_cancellation() -> anyhow::Result<()> {
+    let server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
+        requests: Vec::new(),
+        response_headers: Vec::new(),
+        accept_delay: Some(Duration::from_millis(250)),
+        close_after_requests: true,
+    }])
+    .await;
+    let thread_id = ThreadId::new();
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
+    provider.supports_websockets = true;
+    let client = test_model_client_with_provider(thread_id, SessionSource::Exec, provider);
+    let metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{thread_id}:0"),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let trace = InferenceTraceContext::disabled().with_observations(
+        thread_id,
+        "turn-1".to_string(),
+        "provider-id".to_string(),
+        "gpt-test".to_string(),
+        None,
+    );
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut session = client.new_session();
+    session.set_inference_observation_emitter(super::InferenceObservationEmitter::new(
+        move |event| {
+            let event_tx = event_tx.clone();
+            async move {
+                let _ = event_tx.send(event);
+            }
+        },
+    ));
+    let prompt = test_prompt("hello");
+    let model_info = test_model_info();
+    let telemetry = test_session_telemetry();
+    let mut stream_future = Box::pin(session.stream(
+        &prompt,
+        &model_info,
+        &telemetry,
+        None,
+        codex_protocol::config_types::ReasoningSummary::Auto,
+        None,
+        &metadata,
+        &trace,
+    ));
+
+    let started = tokio::select! {
+        result = &mut stream_future => {
+            let _ = result;
+            panic!("websocket setup unexpectedly finished")
+        },
+        event = event_rx.recv() => event.expect("started observation"),
+    };
+    drop(stream_future);
+    let cancelled = receive_inference_observations(&mut event_rx, 1)
+        .await
+        .remove(0);
+
+    assert_eq!(started.status, InferenceCallStatus::Started);
+    assert_eq!(cancelled.status, InferenceCallStatus::Cancelled);
+    assert_eq!(cancelled.inference_call_id, started.inference_call_id);
+    assert!(cancelled.response_id.is_none());
+    assert!(cancelled.observed_model.is_none());
+    assert!(cancelled.observed_model_snapshot.is_none());
+    assert!(cancelled.observed_service_tier.is_none());
+    assert!(cancelled.token_usage.is_none());
+    server.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test]
