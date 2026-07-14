@@ -22,6 +22,7 @@ use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -537,7 +538,12 @@ async fn summarize_context_three_requests_and_instructions() {
         panic!("expected warning event after compact");
     };
     assert_eq!(message, COMPACT_WARNING_MESSAGE);
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let compact_complete =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let EventMsg::TurnComplete(compact_complete) = compact_complete else {
+        unreachable!("wait predicate only accepts turn completion events");
+    };
+    assert_eq!(compact_complete.provider_usage, Some(TokenUsage::default()));
 
     // 3) Next user input – third hit; history should include only the summary.
     codex
@@ -5015,7 +5021,7 @@ async fn manual_compaction_keeps_the_creation_time_global_instructions() -> Resu
             responses::sse(vec![
                 responses::ev_response_created("compact-response"),
                 responses::ev_assistant_message("compact-message", "summary"),
-                responses::ev_completed("compact-response"),
+                responses::ev_completed_without_usage("compact-response"),
             ]),
             responses::sse(vec![
                 responses::ev_response_created("follow-up-response"),
@@ -5057,10 +5063,14 @@ async fn manual_compaction_keeps_the_creation_time_global_instructions() -> Resu
     assert_eq!(source, rewritten_source);
 
     test.codex.submit(Op::Compact).await?;
-    wait_for_event(&test.codex, |event| {
+    let compact_complete = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    let EventMsg::TurnComplete(compact_complete) = compact_complete else {
+        unreachable!("wait predicate only accepts turn completion events");
+    };
+    assert_eq!(compact_complete.provider_usage, None);
     test.submit_turn("after compact").await?;
 
     // Assert ordinary and compact turns keep the old rendering even though the reported source

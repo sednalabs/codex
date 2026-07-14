@@ -262,6 +262,10 @@ docs-only refresh commit that records this snapshot.
   steering or local compaction retains earlier usage in the same logical turn.
   Usage from a successful response remains attributable to that turn even if a
   later follow-up fails.
+- `TurnAbortedEvent.provider_usage` carries the same optional exact aggregate
+  through interrupted, replaced, and budget-limited terminal paths. Legacy
+  rollout events without the field resume as absent, and a persisted receipt
+  never seeds the next turn after resume.
 - Primary files:
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/session/turn_context.rs`
