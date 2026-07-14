@@ -204,10 +204,11 @@
         "openai_model_header_mismatch_only_emits_one_warning_per_turn",
         "nonterminal_response_identity_is_not_reported_when_follow_up_fails",
         "remote_compact_replaces_history_for_followups",
-        "remote_compact_v2_reuses_compaction_trigger_for_followups"
+        "remote_compact_v2_reuses_compaction_trigger_for_followups",
+        "steered_user_input_follows_compact_when_only_the_steer_needs_follow_up"
       ],
       "owner": "downstream",
-      "notes": "Adapts upstream exact response-completion usage capture to a persisted turn aggregate. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the turn, resets at each ordinary or compaction turn boundary, remains attributable after a later failed follow-up, and is never inferred from configured identity, token estimates, or session-total deltas. App-server projection remains a separate follow-up surface.",
+      "notes": "Adapts upstream exact response-completion usage capture to a persisted turn aggregate. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the logical turn, including sampling re-entry after steering or local compaction, resets once per ordinary or compaction task, remains attributable after a later failed follow-up, and is never inferred from configured identity, token estimates, or session-total deltas. App-server projection remains a separate follow-up surface.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "turn-completion-provider-usage",
       "hotspot_files": [

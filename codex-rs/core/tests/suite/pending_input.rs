@@ -15,6 +15,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -1096,12 +1097,36 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         .codex;
 
     submit_user_input(&codex, "first prompt").await;
-    wait_for_agent_message(&codex, "first answer").await;
+    let mut turn_started_count = 0;
+    loop {
+        match wait_for_event(&codex, |_| true).await {
+            EventMsg::TurnStarted(_) => turn_started_count += 1,
+            EventMsg::AgentMessage(message) if message.message == "first answer" => break,
+            EventMsg::TurnComplete(_) => panic!("turn completed before steering"),
+            _ => {}
+        }
+    }
     steer_user_input(&codex, "second prompt").await;
     let _ = gate_first_completed_tx.send(());
 
-    wait_for_agent_message(&codex, "processed steered prompt").await;
-    wait_for_turn_complete(&codex).await;
+    let turn_complete = loop {
+        match wait_for_event(&codex, |_| true).await {
+            EventMsg::TurnStarted(_) => turn_started_count += 1,
+            EventMsg::TurnComplete(event) => break event,
+            _ => {}
+        }
+    };
+    assert_eq!(turn_started_count, 1);
+    assert_eq!(
+        turn_complete.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 620,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 620,
+        })
+    );
 
     let requests = server.requests().await;
     assert_eq!(requests.len(), 3);
