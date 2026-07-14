@@ -26,6 +26,7 @@ pub(crate) enum ConfiguredIdentitySource {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TurnRequestIdentitySource {
     TurnRequest,
+    StoredThreadMetadata,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -127,21 +128,57 @@ impl ModelVisibleAgentIdentity {
         encoding: ModelVisibleIdentityEncoding,
     ) -> Self {
         let mut truncated = false;
-        let configured_identity = ModelVisibleConfiguredIdentity {
-            model: bounded_optional(stored.model.as_deref(), encoding, &mut truncated),
-            model_provider_id: bounded_optional(
-                non_empty(stored.model_provider.as_str()),
-                encoding,
-                &mut truncated,
-            ),
-            reasoning_effort: stored.reasoning_effort.clone(),
-            // StoredThread does not yet persist configured service tier.
-            service_tier: None,
-            source: ConfiguredIdentitySource::StoredThreadMetadata,
+        let configured_identity = stored
+            .configured_inference_identity
+            .as_ref()
+            .map(|identity| ModelVisibleConfiguredIdentity {
+                model: bounded_optional(Some(identity.model.as_str()), encoding, &mut truncated),
+                model_provider_id: bounded_optional(
+                    non_empty(identity.model_provider_id.as_str()),
+                    encoding,
+                    &mut truncated,
+                ),
+                reasoning_effort: identity.reasoning_effort.clone(),
+                service_tier: None,
+                source: ConfiguredIdentitySource::StoredThreadMetadata,
+            });
+        let latest_turn_request_identity = if let Some(identity) =
+            stored.latest_request_inference_identity.as_ref()
+        {
+            Some(ModelVisibleTurnRequestIdentity {
+                turn_id: None,
+                model: bounded_optional(Some(identity.model.as_str()), encoding, &mut truncated),
+                model_provider_id: bounded_optional(
+                    non_empty(identity.model_provider_id.as_str()),
+                    encoding,
+                    &mut truncated,
+                ),
+                reasoning_effort: identity.reasoning_effort.clone(),
+                service_tier: None,
+                source: TurnRequestIdentitySource::StoredThreadMetadata,
+            })
+        } else {
+            // Older rows only have the observed request fields. A provider by itself is not
+            // evidence that a request occurred.
+            stored
+                .model
+                .as_deref()
+                .map(|model| ModelVisibleTurnRequestIdentity {
+                    turn_id: None,
+                    model: bounded_optional(Some(model), encoding, &mut truncated),
+                    model_provider_id: bounded_optional(
+                        non_empty(stored.model_provider.as_str()),
+                        encoding,
+                        &mut truncated,
+                    ),
+                    reasoning_effort: stored.reasoning_effort.clone(),
+                    service_tier: None,
+                    source: TurnRequestIdentitySource::StoredThreadMetadata,
+                })
         };
         Self {
-            configured_identity: Some(configured_identity),
-            latest_turn_request_identity: None,
+            configured_identity,
+            latest_turn_request_identity,
             identity_truncated: truncated,
             identity_fields_omitted: 0,
         }

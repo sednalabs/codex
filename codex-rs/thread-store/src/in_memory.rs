@@ -57,6 +57,8 @@ mod tests {
     use crate::ThreadPersistenceMetadata;
     use crate::ThreadSortKey;
     use codex_protocol::models::BaseInstructions;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::SessionSource;
 
     #[tokio::test]
@@ -218,6 +220,56 @@ mod tests {
             })
             .await
             .expect("register rollout path");
+        let identities = (
+            ThreadInferenceIdentity {
+                model: "configured-alias".to_string(),
+                model_provider_id: "configured-provider".to_string(),
+                reasoning_effort: None,
+            },
+            ThreadInferenceIdentity {
+                model: "normalized-request".to_string(),
+                model_provider_id: "configured-provider".to_string(),
+                reasoning_effort: Some(ReasoningEffort::High),
+            },
+        );
+        let updated = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(Some(identities.0.clone())),
+                    latest_request_inference_identity: Some(Some(identities.1.clone())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set inference identities");
+        assert_eq!(
+            (
+                updated.configured_inference_identity,
+                updated.latest_request_inference_identity,
+            ),
+            (Some(identities.0), Some(identities.1))
+        );
+        let cleared = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(None),
+                    latest_request_inference_identity: Some(None),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("clear inference identities");
+        assert_eq!(
+            (
+                cleared.configured_inference_identity,
+                cleared.latest_request_inference_identity,
+            ),
+            (None, None)
+        );
         {
             let mut state = store.state.lock().await;
             state
@@ -774,6 +826,10 @@ fn stored_thread_from_state(
             .unwrap_or_else(|| "test".to_string()),
         model: metadata.and_then(|metadata| metadata.model.clone()),
         reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone()),
+        configured_inference_identity: metadata
+            .and_then(|metadata| metadata.configured_inference_identity.clone().flatten()),
+        latest_request_inference_identity: metadata
+            .and_then(|metadata| metadata.latest_request_inference_identity.clone().flatten()),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
             .unwrap_or_else(Utc::now),

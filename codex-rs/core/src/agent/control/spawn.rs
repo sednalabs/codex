@@ -203,11 +203,25 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
+        let (model, provider_id, reasoning_effort) =
+            if let Some(identity) = stored_thread.configured_inference_identity.as_ref() {
+                (
+                    Some(identity.model.as_str()),
+                    identity.model_provider_id.as_str(),
+                    identity.reasoning_effort.clone(),
+                )
+            } else {
+                (
+                    stored_thread.model.as_deref(),
+                    stored_thread.model_provider.as_str(),
+                    stored_thread.reasoning_effort.clone(),
+                )
+            };
         restore_persisted_agent_model_selection(
             &mut config,
-            stored_thread.model.as_deref(),
-            &stored_thread.model_provider,
-            stored_thread.reasoning_effort.clone(),
+            model,
+            provider_id,
+            reasoning_effort,
             thread_id,
         )?;
         let history = stored_thread

@@ -1,6 +1,7 @@
 use crate::model::ThreadMetadata;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMetaLine;
@@ -19,7 +20,9 @@ pub fn apply_rollout_item(
 ) {
     match item {
         RolloutItem::SessionMeta(meta_line) => apply_session_meta_from_item(metadata, meta_line),
-        RolloutItem::TurnContext(turn_ctx) => apply_turn_context(metadata, turn_ctx),
+        RolloutItem::TurnContext(turn_ctx) => {
+            apply_turn_context(metadata, turn_ctx, default_provider)
+        }
         RolloutItem::EventMsg(event) => apply_event_msg(metadata, event),
         RolloutItem::ResponseItem(item) => apply_response_item(metadata, item),
         RolloutItem::InterAgentCommunication(_)
@@ -85,12 +88,33 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     }
 }
 
-fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem) {
+fn apply_turn_context(
+    metadata: &mut ThreadMetadata,
+    turn_ctx: &TurnContextItem,
+    default_provider: &str,
+) {
     if metadata.cwd.as_os_str().is_empty() {
         metadata.cwd = turn_ctx.cwd.clone().into_path_buf();
     }
-    metadata.model = Some(turn_ctx.model.clone());
-    metadata.reasoning_effort = turn_ctx.effort.clone();
+    let model_provider_id = metadata
+        .configured_inference_identity
+        .as_ref()
+        .map(|identity| identity.model_provider_id.as_str())
+        .filter(|provider| !provider.is_empty())
+        .or_else(|| {
+            (!metadata.model_provider.is_empty()).then_some(metadata.model_provider.as_str())
+        })
+        .unwrap_or(default_provider)
+        .to_string();
+    let latest_request_identity = ThreadInferenceIdentity {
+        model: turn_ctx.model.clone(),
+        model_provider_id,
+        reasoning_effort: turn_ctx.effort.clone(),
+    };
+    metadata.model_provider = latest_request_identity.model_provider_id.clone();
+    metadata.model = Some(latest_request_identity.model.clone());
+    metadata.reasoning_effort = latest_request_identity.reasoning_effort.clone();
+    metadata.latest_request_inference_identity = Some(latest_request_identity);
     metadata.sandbox_policy =
         serde_json::to_string(&turn_ctx.permission_profile()).unwrap_or_default();
     metadata.approval_mode = enum_to_string(&turn_ctx.approval_policy);
@@ -119,9 +143,11 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
         }
         EventMsg::ThreadSettingsApplied(event) => {
             let settings = &event.thread_settings;
-            metadata.model = Some(settings.model.clone());
-            metadata.model_provider = settings.model_provider_id.clone();
-            metadata.reasoning_effort = settings.reasoning_effort.clone();
+            metadata.configured_inference_identity = Some(ThreadInferenceIdentity {
+                model: settings.model.clone(),
+                model_provider_id: settings.model_provider_id.clone(),
+                reasoning_effort: settings.reasoning_effort.clone(),
+            });
         }
         _ => {}
     }
@@ -169,6 +195,7 @@ mod tests {
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::models::ThreadInferenceIdentity;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
@@ -466,6 +493,11 @@ mod tests {
     fn turn_context_sets_cwd_when_session_cwd_missing() {
         let mut metadata = metadata_for_test();
         metadata.cwd = PathBuf::new();
+        metadata.configured_inference_identity = Some(ThreadInferenceIdentity {
+            model: "configured-alias".to_string(),
+            model_provider_id: "configured-provider".to_string(),
+            reasoning_effort: None,
+        });
         let fallback_cwd = std::env::current_dir()
             .expect("current directory")
             .join("fallback/workspace");
@@ -485,7 +517,7 @@ mod tests {
                 permission_profile: None,
                 network: None,
                 file_system_sandbox_policy: None,
-                model: "gpt-5".to_string(),
+                model: "normalized-request-model".to_string(),
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -499,46 +531,14 @@ mod tests {
         );
 
         assert_eq!(metadata.cwd, fallback_cwd);
-    }
-
-    #[test]
-    fn turn_context_sets_model_and_reasoning_effort() {
-        let mut metadata = metadata_for_test();
-
-        apply_rollout_item(
-            &mut metadata,
-            &RolloutItem::TurnContext(TurnContextItem {
-                turn_id: Some("turn-1".to_string()),
-                cwd: serde_json::from_value(serde_json::json!(
-                    std::env::current_dir()
-                        .expect("current directory")
-                        .join("fallback/workspace")
-                ))
-                .expect("absolute fallback cwd"),
-                workspace_roots: None,
-                current_date: None,
-                timezone: None,
-                approval_policy: AskForApproval::OnRequest,
-                approvals_reviewer: None,
-                sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                permission_profile: None,
-                network: None,
-                file_system_sandbox_policy: None,
-                model: "gpt-5".to_string(),
-                comp_hash: None,
-                personality: None,
-                collaboration_mode: None,
-                multi_agent_version: None,
-                multi_agent_mode: None,
-                realtime_active: None,
-                effort: Some(ReasoningEffort::High),
-                summary: codex_protocol::config_types::ReasoningSummary::Auto,
-            }),
-            "test-provider",
+        assert_eq!(
+            metadata.latest_request_inference_identity,
+            Some(ThreadInferenceIdentity {
+                model: "normalized-request-model".to_string(),
+                model_provider_id: "configured-provider".to_string(),
+                reasoning_effort: Some(ReasoningEffort::High),
+            })
         );
-
-        assert_eq!(metadata.model.as_deref(), Some("gpt-5"));
-        assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
@@ -584,13 +584,15 @@ mod tests {
         apply_rollout_item(&mut metadata, &item, "ambient-provider");
 
         assert_eq!(
-            (
-                metadata.model.as_deref(),
-                metadata.model_provider.as_str(),
-                metadata.reasoning_effort,
-            ),
-            (Some(model), "configured-provider", None)
+            metadata.configured_inference_identity,
+            Some(ThreadInferenceIdentity {
+                model: model.to_string(),
+                model_provider_id: "configured-provider".to_string(),
+                reasoning_effort: None,
+            })
         );
+        assert_eq!(metadata.model, None);
+        assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
@@ -653,6 +655,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity: None,
+            latest_request_inference_identity: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

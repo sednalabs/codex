@@ -213,10 +213,15 @@
       "surface": [
         "spawn overrides",
         "agent inventory",
-        "blocking waits"
+        "blocking waits",
+        "durable inference identity receipts"
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/identity.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/state/src/model/thread_metadata.rs",
+        "codex-rs/thread-store/src/types.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -227,16 +232,19 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides and distinct durable configured-versus-real-request model identities while richer inventory and wait behavior remain capability-declared.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted",
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+        "update_thread_metadata_applies_combined_explicit_patch",
+        "settings_events_replace_complete_configured_identity_and_preserve_clears",
+        "thread_metadata_patch_round_trips_optional_clears",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
         "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",

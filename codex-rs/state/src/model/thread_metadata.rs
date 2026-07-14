@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
@@ -104,6 +105,10 @@ pub struct ThreadMetadata {
     pub model: Option<String>,
     /// The latest observed reasoning effort for the thread.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Latest complete configured inference identity, when durably observed.
+    pub configured_inference_identity: Option<ThreadInferenceIdentity>,
+    /// Latest complete real-request inference identity, when durably observed.
+    pub latest_request_inference_identity: Option<ThreadInferenceIdentity>,
     /// The working directory for the thread.
     pub cwd: PathBuf,
     /// Version of the CLI that created the thread.
@@ -242,6 +247,8 @@ impl ThreadMetadataBuilder {
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity: None,
+            latest_request_inference_identity: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
             title: String::new(),
@@ -323,6 +330,12 @@ impl ThreadMetadata {
         if self.reasoning_effort != other.reasoning_effort {
             diffs.push("reasoning_effort");
         }
+        if self.configured_inference_identity != other.configured_inference_identity {
+            diffs.push("configured_inference_identity");
+        }
+        if self.latest_request_inference_identity != other.latest_request_inference_identity {
+            diffs.push("latest_request_inference_identity");
+        }
         if self.cwd != other.cwd {
             diffs.push("cwd");
         }
@@ -383,6 +396,8 @@ pub(crate) struct ThreadRow {
     model_provider: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    configured_inference_identity: Option<String>,
+    latest_request_inference_identity: Option<String>,
     cwd: String,
     cli_version: String,
     title: String,
@@ -414,6 +429,8 @@ impl ThreadRow {
             model_provider: row.try_get("model_provider")?,
             model: row.try_get("model")?,
             reasoning_effort: row.try_get("reasoning_effort")?,
+            configured_inference_identity: row.try_get("configured_inference_identity")?,
+            latest_request_inference_identity: row.try_get("latest_request_inference_identity")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
             title: row.try_get("title")?,
@@ -449,6 +466,8 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model_provider,
             model,
             reasoning_effort,
+            configured_inference_identity,
+            latest_request_inference_identity,
             cwd,
             cli_version,
             title,
@@ -483,6 +502,10 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model,
             reasoning_effort: reasoning_effort
                 .and_then(|value| value.parse::<ReasoningEffort>().ok()),
+            configured_inference_identity: configured_inference_identity
+                .and_then(|value| serde_json::from_str(&value).ok()),
+            latest_request_inference_identity: latest_request_inference_identity
+                .and_then(|value| serde_json::from_str(&value).ok()),
             cwd: PathBuf::from(cwd),
             cli_version,
             title,
@@ -580,6 +603,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
+            configured_inference_identity: Some("{malformed".to_string()),
+            latest_request_inference_identity: Some("[]".to_string()),
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
@@ -612,6 +637,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort,
+            configured_inference_identity: None,
+            latest_request_inference_identity: None,
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
