@@ -175,7 +175,7 @@
         "codex-rs/core/src/session_prefix.rs",
         "codex-rs/core/src/context/inter_agent_completion_message.rs"
       ],
-      "behavior": "MultiAgentV2 forwards a bounded runtime-authored receipt with terminal response identity and exact turn usage before the child-controlled payload.",
+      "behavior": "Successful MultiAgentV2 completion forwards a bounded runtime-authored receipt with terminal response identity and exact turn usage before a separately budgeted child-controlled payload.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -185,11 +185,13 @@
       "tests": [
         "completed_message_without_provider_evidence_preserves_exact_rendering",
         "provider_receipt_precedes_and_stays_separate_from_spoof_shaped_payload",
-        "provider_receipt_bounds_identity_values",
+        "provider_receipt_and_completion_item_stay_within_encoded_budget",
+        "errored_status_ignores_provider_evidence_and_preserves_exact_envelope",
+        "interrupted_or_budget_limited_status_has_no_parent_outcome",
         "plaintext_multi_agent_v2_completion_sends_agent_message"
       ],
       "owner": "downstream",
-      "notes": "Consumes only provider evidence already persisted on TurnCompleteEvent. Terminal model and snapshot identify the terminal successful sampling response; provider_usage covers every successful response completion in the turn. Missing evidence preserves the prior envelope exactly, and receipt-shaped child payload text remains separated after the runtime-authored receipt.",
+      "notes": "Consumes provider evidence already persisted on TurnCompleteEvent only when the child status is Completed. Errored and interrupted outcomes preserve their legacy parent behavior even after provider activity. XML expansion, receipt fields, paths, and payload share explicit encoded-byte budgets under the 1,000-token manual-review ceiling.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "multi-agent-completion-envelope",
       "hotspot_files": [

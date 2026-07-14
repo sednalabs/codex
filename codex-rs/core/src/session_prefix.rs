@@ -4,12 +4,12 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
+use crate::context::COMPLETION_MESSAGE_MAX_TOKENS;
 use crate::context::CompletionProviderReceipt;
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentCompletionMessage;
 use crate::context::SubagentNotification;
 
-const COMPLETION_MESSAGE_MAX_TOKENS: usize = 1_000;
 const COMPLETION_MESSAGE_ENVELOPE_TOKEN_RESERVE: usize = 100;
 const ERROR_MAX_TOKENS: usize =
     COMPLETION_MESSAGE_MAX_TOKENS - COMPLETION_MESSAGE_ENVELOPE_TOKEN_RESERVE;
@@ -51,13 +51,21 @@ pub(crate) fn format_inter_agent_completion_message_with_receipt(
         AgentStatus::NotFound => "Agent was not found.".to_string(),
         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
     };
-    let provider_receipt = turn_complete.and_then(|event| {
-        CompletionProviderReceipt::new(
-            event.final_model.clone(),
-            event.model_snapshot.clone(),
-            event.provider_usage.clone(),
-        )
-    });
+    let provider_receipt = match status {
+        AgentStatus::Completed(_) => turn_complete.and_then(|event| {
+            CompletionProviderReceipt::new(
+                event.final_model.clone(),
+                event.model_snapshot.clone(),
+                event.provider_usage.clone(),
+            )
+        }),
+        AgentStatus::Errored(_)
+        | AgentStatus::Shutdown
+        | AgentStatus::NotFound
+        | AgentStatus::PendingInit
+        | AgentStatus::Running
+        | AgentStatus::Interrupted => None,
+    };
     let message = match provider_receipt {
         Some(provider_receipt) => InterAgentCompletionMessage::with_provider_receipt(
             task_name,

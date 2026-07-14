@@ -1289,10 +1289,12 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
 enum CompletionScenario {
     Completed,
     TerminalError,
+    ProviderActivityThenTerminalError,
 }
 
 #[test_case(CompletionScenario::Completed ; "completed")]
 #[test_case(CompletionScenario::TerminalError ; "terminal_error")]
+#[test_case(CompletionScenario::ProviderActivityThenTerminalError ; "provider_activity_then_terminal_error")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     scenario: CompletionScenario,
@@ -1324,11 +1326,21 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             ev_completed_with_provider_usage("resp-child-1"),
         ],
         CompletionScenario::TerminalError => vec![ev_response_created("resp-child-1")],
+        CompletionScenario::ProviderActivityThenTerminalError => vec![
+            ev_response_created("resp-child-1"),
+            ev_tool_search_call(
+                "child-provider-activity",
+                &json!({"query": "spawn agent", "limit": 1}),
+            ),
+            ev_completed_with_provider_usage("resp-child-1"),
+        ],
     };
     let child_response = match scenario {
-        CompletionScenario::Completed => sse_response(sse(child_events))
-            .insert_header("OpenAI-Model", "provider-child-model")
-            .insert_header("OpenAI-Model-Snapshot", "provider-child-snapshot"),
+        CompletionScenario::Completed | CompletionScenario::ProviderActivityThenTerminalError => {
+            sse_response(sse(child_events))
+                .insert_header("OpenAI-Model", "provider-child-model")
+                .insert_header("OpenAI-Model-Snapshot", "provider-child-snapshot")
+        }
         CompletionScenario::TerminalError => sse_response(sse(child_events)),
     }
     .set_delay(Duration::from_secs(1));
@@ -1338,6 +1350,21 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         child_response,
     )
     .await;
+    let _failed_child_followup = if matches!(
+        scenario,
+        CompletionScenario::ProviderActivityThenTerminalError
+    ) {
+        Some(
+            mount_response_once_match(
+                &server,
+                |req: &wiremock::Request| body_contains(req, "child-provider-activity"),
+                sse_response(sse(vec![ev_response_created("resp-child-2")])),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
@@ -1353,7 +1380,8 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let error = "stream disconnected before completion: stream closed before response.completed";
     let (payload, expected_text) = match scenario {
         CompletionScenario::Completed => ("child done".to_string(), "child done"),
-        CompletionScenario::TerminalError => (
+        CompletionScenario::TerminalError
+        | CompletionScenario::ProviderActivityThenTerminalError => (
             format!(
                 "Agent errored: {error}\n\nThis agent's turn failed. If you still need this agent, use the available collaboration tools to give it another task."
             ),
@@ -1364,7 +1392,8 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         CompletionScenario::Completed => {
             "\n<completion_provider_receipt>\n  <terminal_response_model>provider-child-model</terminal_response_model>\n  <terminal_response_snapshot>provider-child-snapshot</terminal_response_snapshot>\n  <turn_provider_usage input_tokens=\"11\" cached_input_tokens=\"3\" output_tokens=\"7\" reasoning_output_tokens=\"2\" total_tokens=\"18\" />\n</completion_provider_receipt>"
         }
-        CompletionScenario::TerminalError => "",
+        CompletionScenario::TerminalError
+        | CompletionScenario::ProviderActivityThenTerminalError => "",
     };
     let notification = format!(
         "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker{receipt}\nPayload:\n{payload}"

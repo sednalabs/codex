@@ -1,5 +1,7 @@
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::TokenUsage;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::truncate_text;
 
 use super::ContextualUserFragment;
 
@@ -11,7 +13,13 @@ pub(crate) struct InterAgentCompletionMessage {
     payload: String,
 }
 
-const RECEIPT_IDENTITY_MAX_CHARS: usize = 256;
+pub(crate) const COMPLETION_MESSAGE_MAX_TOKENS: usize = 1_000;
+pub(crate) const COMPLETION_MESSAGE_MAX_RENDERED_BYTES: usize =
+    (COMPLETION_MESSAGE_MAX_TOKENS - 1) * 4;
+const COMPLETION_RECEIPT_MAX_RENDERED_BYTES: usize = 1_024;
+const COMPLETION_PATH_MAX_RENDERED_BYTES: usize = 256;
+const RECEIPT_IDENTITY_MAX_ESCAPED_BYTES: usize = 256;
+const TRUNCATION_MARKER_MAX_BYTES: usize = 64;
 
 /// Runtime-authored provider evidence for a child completion.
 ///
@@ -49,15 +57,12 @@ impl CompletionProviderReceipt {
     fn render(&self) -> String {
         let mut lines = vec!["<completion_provider_receipt>".to_string()];
         if let Some(model) = self.terminal_response_model.as_deref() {
-            lines.push(format!(
-                "  <terminal_response_model>{}</terminal_response_model>",
-                bounded_xml_value(model)
-            ));
+            lines.push(render_identity_element("terminal_response_model", model));
         }
         if let Some(snapshot) = self.terminal_response_snapshot.as_deref() {
-            lines.push(format!(
-                "  <terminal_response_snapshot>{}</terminal_response_snapshot>",
-                bounded_xml_value(snapshot)
+            lines.push(render_identity_element(
+                "terminal_response_snapshot",
+                snapshot,
             ));
         }
         if let Some(usage) = self.turn_provider_usage.as_ref() {
@@ -71,25 +76,53 @@ impl CompletionProviderReceipt {
             ));
         }
         lines.push("</completion_provider_receipt>".to_string());
-        lines.join("\n")
+        let rendered = lines.join("\n");
+        if rendered.len() <= COMPLETION_RECEIPT_MAX_RENDERED_BYTES {
+            rendered
+        } else {
+            "<completion_provider_receipt>\n  <omitted reason=\"encoded_budget\" />\n</completion_provider_receipt>"
+                .to_string()
+        }
     }
 }
 
-fn bounded_xml_value(value: &str) -> String {
-    value
-        .chars()
-        .take(RECEIPT_IDENTITY_MAX_CHARS)
-        .fold(String::new(), |mut escaped, ch| {
-            match ch {
-                '&' => escaped.push_str("&amp;"),
-                '<' => escaped.push_str("&lt;"),
-                '>' => escaped.push_str("&gt;"),
-                '\"' => escaped.push_str("&quot;"),
-                '\'' => escaped.push_str("&apos;"),
-                _ => escaped.push(ch),
-            }
-            escaped
-        })
+fn render_identity_element(name: &str, value: &str) -> String {
+    let (value, truncated) = bounded_xml_value(value);
+    let truncation = if truncated { " truncated=\"true\"" } else { "" };
+    format!("  <{name}{truncation}>{value}</{name}>")
+}
+
+fn bounded_xml_value(value: &str) -> (String, bool) {
+    let mut escaped = String::new();
+    let mut utf8 = [0_u8; 4];
+    for ch in value.chars() {
+        let encoded = ch.encode_utf8(&mut utf8);
+        let encoded = match ch {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '\"' => "&quot;",
+            '\'' => "&apos;",
+            '\t' | '\n' | '\r' => encoded,
+            ch if ch >= ' ' && ch != '\u{fffe}' && ch != '\u{ffff}' => encoded,
+            _ => "\u{fffd}",
+        };
+        if escaped.len().saturating_add(encoded.len()) > RECEIPT_IDENTITY_MAX_ESCAPED_BYTES {
+            return (escaped, true);
+        }
+        escaped.push_str(encoded);
+    }
+    (escaped, false)
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    truncate_text(
+        value,
+        TruncationPolicy::Bytes(max_bytes.saturating_sub(TRUNCATION_MARKER_MAX_BYTES)),
+    )
 }
 
 impl InterAgentCompletionMessage {
@@ -136,9 +169,17 @@ impl ContextualUserFragment for InterAgentCompletionMessage {
             .as_ref()
             .map(|receipt| format!("\n{}", receipt.render()))
             .unwrap_or_default();
-        format!(
-            "Message Type: FINAL_ANSWER\nTask name: {}\nSender: {}{receipt}\nPayload:\n{}",
-            self.task_name, self.sender, self.payload,
-        )
+        let task_name = bounded_text(self.task_name.as_str(), COMPLETION_PATH_MAX_RENDERED_BYTES);
+        let sender = bounded_text(self.sender.as_str(), COMPLETION_PATH_MAX_RENDERED_BYTES);
+        let prefix = format!(
+            "Message Type: FINAL_ANSWER\nTask name: {task_name}\nSender: {sender}{receipt}\nPayload:\n"
+        );
+        let payload = bounded_text(
+            &self.payload,
+            COMPLETION_MESSAGE_MAX_RENDERED_BYTES.saturating_sub(prefix.len()),
+        );
+        let rendered = format!("{prefix}{payload}");
+        debug_assert!(rendered.len() <= COMPLETION_MESSAGE_MAX_RENDERED_BYTES);
+        rendered
     }
 }
