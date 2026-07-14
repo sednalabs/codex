@@ -507,11 +507,12 @@ mod tests {
         assert_eq!(update.patch, expected);
         sync.mark_pending_update_applied(&update);
 
+        let reasoning_effort = None;
         let cleared = sync
             .observe_appended_items(&[thread_settings_item(
                 "next-model",
                 "next-provider",
-                /* reasoning_effort */ None,
+                reasoning_effort,
             )])
             .expect("settings clear update");
         let expected = ThreadMetadataPatch {
