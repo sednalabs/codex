@@ -28,6 +28,7 @@ on:
           - core-carry-ui-smoke
           - core-ledger-smoke
           - core-runtime-surface-smoke
+          - codex.skill-loader-fixture-hermeticity-targeted
           - codex.core-startup-sync-targeted
           - codex.core-subagent-surface-targeted
           - codex.core-subagent-inspect-tree-fallback-targeted
