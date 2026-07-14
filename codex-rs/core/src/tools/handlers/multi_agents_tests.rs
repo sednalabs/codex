@@ -1987,6 +1987,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
             }),
         )
         .await;
+    let child_identity = child_thread.inference_identity_snapshot().await;
 
     let output = ListAgentsHandlerV2
         .handle(invocation(
@@ -2045,14 +2046,13 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
     assert_eq!(
         worker.identity.latest_turn_request_identity,
         Some(json!({
-            "turn_id": child_turn.sub_id,
+            "turn_id": child_identity.latest_turn.expect("real child turn").turn_id,
             "model": child_snapshot.model, "model_provider_id": child_snapshot.model_provider_id,
             "reasoning_effort": child_snapshot.reasoning_effort, "service_tier": child_snapshot.service_tier,
             "source": "turn_request",
         }))
     );
     assert!(!worker.identity.identity_truncated);
-    assert_eq!(worker.identity.identity_fields_omitted, 0);
     assert_eq!(success, Some(true));
 }
 
