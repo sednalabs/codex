@@ -231,19 +231,21 @@ impl InferenceTraceAttempt {
         let InferenceTraceAttemptState::Enabled(attempt) = &self.state else {
             return None;
         };
-        attempt.observation.as_ref().map(|observation| {
-            observation.event(
-                &attempt.context,
-                &attempt.inference_call_id,
-                InferenceCallStatus::Started,
-                /*request_completed_at_ms*/ None,
-                /*response_id*/ None,
-                /*upstream_request_id*/ None,
-                /*observed_model*/ None,
-                /*observed_model_snapshot*/ None,
-                /*observed_service_tier*/ None,
-                /*token_usage*/ None,
-            )
+        attempt.observation.as_ref().and_then(|observation| {
+            observation
+                .event(
+                    &attempt.context,
+                    &attempt.inference_call_id,
+                    InferenceCallStatus::Started,
+                    /*request_completed_at_ms*/ None,
+                    /*response_id*/ None,
+                    /*upstream_request_id*/ None,
+                    /*observed_model*/ None,
+                    /*observed_model_snapshot*/ None,
+                    /*observed_service_tier*/ None,
+                    /*token_usage*/ None,
+                )
+                .into_durable()
         })
     }
 
@@ -501,6 +503,8 @@ impl InferenceAttemptObservation {
             observed_model_snapshot: observed_model_snapshot.map(str::to_string),
             observed_service_tier: observed_service_tier.map(str::to_string),
             token_usage: token_usage.cloned(),
+            truncated_fields: Vec::new(),
+            omitted_fields: Vec::new(),
         }
     }
 }
@@ -517,19 +521,21 @@ impl EnabledInferenceTraceAttempt {
         observed_service_tier: Option<&str>,
         token_usage: Option<&TokenUsage>,
     ) -> Option<InferenceCallEvent> {
-        self.observation.as_ref().map(|observation| {
-            observation.event(
-                &self.context,
-                &self.inference_call_id,
-                status,
-                Some(now_unix_timestamp_ms()),
-                response_id,
-                upstream_request_id,
-                observed_model,
-                observed_model_snapshot,
-                observed_service_tier,
-                token_usage,
-            )
+        self.observation.as_ref().and_then(|observation| {
+            observation
+                .event(
+                    &self.context,
+                    &self.inference_call_id,
+                    status,
+                    Some(now_unix_timestamp_ms()),
+                    response_id,
+                    upstream_request_id,
+                    observed_model,
+                    observed_model_snapshot,
+                    observed_service_tier,
+                    token_usage,
+                )
+                .into_durable()
         })
     }
 }
