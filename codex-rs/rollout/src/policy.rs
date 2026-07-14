@@ -92,6 +92,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                 || matches!(event.item, TurnItem::Plan(_) | TurnItem::Sleep(_))
         }
         EventMsg::TokenCount(_)
+        | EventMsg::InferenceCall(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)

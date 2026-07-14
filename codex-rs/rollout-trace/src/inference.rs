@@ -8,8 +8,14 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
+use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::InferenceCallEvent;
+use codex_protocol::protocol::InferenceCallStatus;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::TokenUsage;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -46,11 +52,13 @@ enum InferenceTraceContextState {
 
 #[derive(Clone, Debug)]
 struct EnabledInferenceTraceContext {
-    writer: Arc<TraceWriter>,
+    writer: Option<Arc<TraceWriter>>,
     thread_id: AgentThreadId,
     codex_turn_id: CodexTurnId,
     model: String,
     provider_name: String,
+    observation_thread_id: Option<ThreadId>,
+    configured_service_tier: Option<String>,
 }
 
 /// One concrete upstream request attempt.
@@ -73,8 +81,17 @@ enum InferenceTraceAttemptState {
 #[derive(Debug)]
 struct EnabledInferenceTraceAttempt {
     context: EnabledInferenceTraceContext,
+    observation: Option<InferenceAttemptObservation>,
     inference_call_id: InferenceCallId,
     terminal_recorded: AtomicBool,
+}
+
+#[derive(Debug)]
+struct InferenceAttemptObservation {
+    transport: InferenceCallTransport,
+    requested_model: String,
+    requested_service_tier: Option<String>,
+    request_started_at_ms: i64,
 }
 
 /// Non-delta response payload saved for completed or interrupted inference streams.
@@ -109,17 +126,67 @@ impl InferenceTraceContext {
     ) -> Self {
         Self {
             state: InferenceTraceContextState::Enabled(EnabledInferenceTraceContext {
-                writer,
+                writer: Some(writer),
                 thread_id,
                 codex_turn_id,
                 model,
                 provider_name,
+                observation_thread_id: None,
+                configured_service_tier: None,
             }),
+        }
+    }
+
+    /// Adds always-on, payload-free inference observation metadata.
+    pub fn with_observations(
+        self,
+        thread_id: ThreadId,
+        turn_id: String,
+        configured_provider: String,
+        configured_model: String,
+        configured_service_tier: Option<String>,
+    ) -> Self {
+        let context = match self.state {
+            InferenceTraceContextState::Disabled => EnabledInferenceTraceContext {
+                writer: None,
+                thread_id: thread_id.to_string(),
+                codex_turn_id: turn_id,
+                model: configured_model,
+                provider_name: configured_provider,
+                observation_thread_id: Some(thread_id),
+                configured_service_tier,
+            },
+            InferenceTraceContextState::Enabled(mut context) => {
+                context.observation_thread_id = Some(thread_id);
+                context.configured_service_tier = configured_service_tier;
+                context
+            }
+        };
+        Self {
+            state: InferenceTraceContextState::Enabled(context),
         }
     }
 
     /// Starts a new attempt after the concrete provider request has been built.
     pub fn start_attempt(&self) -> InferenceTraceAttempt {
+        let requested_model = match &self.state {
+            InferenceTraceContextState::Disabled => String::new(),
+            InferenceTraceContextState::Enabled(context) => context.model.clone(),
+        };
+        self.start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            requested_model,
+            /*requested_service_tier*/ None,
+        )
+    }
+
+    /// Starts an attempt with the configured/requested observation boundary.
+    pub fn start_observed_attempt(
+        &self,
+        transport: InferenceCallTransport,
+        requested_model: String,
+        requested_service_tier: Option<String>,
+    ) -> InferenceTraceAttempt {
         let InferenceTraceContextState::Enabled(context) = &self.state else {
             return InferenceTraceAttempt::disabled();
         };
@@ -127,6 +194,14 @@ impl InferenceTraceContext {
         InferenceTraceAttempt {
             state: InferenceTraceAttemptState::Enabled(EnabledInferenceTraceAttempt {
                 context: context.clone(),
+                observation: context.observation_thread_id.as_ref().map(|_| {
+                    InferenceAttemptObservation {
+                        transport,
+                        requested_model,
+                        requested_service_tier,
+                        request_started_at_ms: now_unix_timestamp_ms(),
+                    }
+                }),
                 inference_call_id: next_inference_call_id(),
                 terminal_recorded: AtomicBool::new(false),
             }),
@@ -149,6 +224,27 @@ impl InferenceTraceAttempt {
                 Some(attempt.inference_call_id.as_str())
             }
         }
+    }
+
+    /// Returns the durable started observation for this attempt.
+    pub fn started_observation(&self) -> Option<InferenceCallEvent> {
+        let InferenceTraceAttemptState::Enabled(attempt) = &self.state else {
+            return None;
+        };
+        attempt.observation.as_ref().map(|observation| {
+            observation.event(
+                &attempt.context,
+                &attempt.inference_call_id,
+                InferenceCallStatus::Started,
+                /*request_completed_at_ms*/ None,
+                /*response_id*/ None,
+                /*upstream_request_id*/ None,
+                /*observed_model*/ None,
+                /*observed_model_snapshot*/ None,
+                /*observed_service_tier*/ None,
+                /*token_usage*/ None,
+            )
+        })
     }
 
     /// Adds rollout-trace propagation headers for this attempt when tracing is enabled.
@@ -175,22 +271,24 @@ impl InferenceTraceAttempt {
         let InferenceTraceAttemptState::Enabled(attempt) = &self.state else {
             return;
         };
-        let Some(request_payload) = write_json_payload_best_effort(
-            &attempt.context.writer,
-            RawPayloadKind::InferenceRequest,
-            request,
-        ) else {
+        let context = &attempt.context;
+        let Some(writer) = &context.writer else {
+            return;
+        };
+        let Some(request_payload) =
+            write_json_payload_best_effort(writer, RawPayloadKind::InferenceRequest, request)
+        else {
             return;
         };
 
         append_with_context_best_effort(
-            &attempt.context,
+            context,
             RawTraceEventPayload::InferenceStarted {
                 inference_call_id: attempt.inference_call_id.clone(),
-                thread_id: attempt.context.thread_id.clone(),
-                codex_turn_id: attempt.context.codex_turn_id.clone(),
-                model: attempt.context.model.clone(),
-                provider_name: attempt.context.provider_name.clone(),
+                thread_id: context.thread_id.clone(),
+                codex_turn_id: context.codex_turn_id.clone(),
+                model: context.model.clone(),
+                provider_name: context.provider_name.clone(),
                 request_payload,
             },
         );
@@ -209,28 +307,59 @@ impl InferenceTraceAttempt {
         token_usage: &Option<TokenUsage>,
         output_items: &[ResponseItem],
     ) {
+        let _ = self.record_completed_observation(
+            response_id,
+            upstream_request_id,
+            token_usage,
+            output_items,
+            /*observed_model*/ None,
+            /*observed_model_snapshot*/ None,
+            /*observed_service_tier*/ None,
+        );
+    }
+
+    /// Records successful completion and returns its payload-free observation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_completed_observation(
+        &self,
+        response_id: &str,
+        upstream_request_id: Option<&str>,
+        token_usage: &Option<TokenUsage>,
+        output_items: &[ResponseItem],
+        observed_model: Option<&str>,
+        observed_model_snapshot: Option<&str>,
+        observed_service_tier: Option<&str>,
+    ) -> Option<InferenceCallEvent> {
         let Some(attempt) = self.take_terminal_attempt() else {
-            return;
+            return None;
         };
-        let Some(response_payload) = write_response_payload_best_effort(
-            attempt,
+        if let Some(response_payload) = write_response_payload_best_effort(
+            &attempt.context,
             Some(response_id),
             upstream_request_id,
             token_usage.as_ref(),
             output_items,
-        ) else {
-            return;
-        };
+        ) {
+            append_with_context_best_effort(
+                &attempt.context,
+                RawTraceEventPayload::InferenceCompleted {
+                    inference_call_id: attempt.inference_call_id.clone(),
+                    response_id: Some(response_id.to_string()),
+                    upstream_request_id: upstream_request_id.map(str::to_string),
+                    response_payload,
+                },
+            );
+        }
 
-        append_with_context_best_effort(
-            &attempt.context,
-            RawTraceEventPayload::InferenceCompleted {
-                inference_call_id: attempt.inference_call_id.clone(),
-                response_id: Some(response_id.to_string()),
-                upstream_request_id: upstream_request_id.map(str::to_string),
-                response_payload,
-            },
-        );
+        attempt.terminal_observation(
+            InferenceCallStatus::Completed,
+            Some(response_id),
+            upstream_request_id,
+            observed_model,
+            observed_model_snapshot,
+            observed_service_tier,
+            token_usage.as_ref(),
+        )
     }
 
     /// Records pre-response and mid-stream failures.
@@ -239,30 +368,41 @@ impl InferenceTraceAttempt {
         error: impl Display,
         upstream_request_id: Option<&str>,
         output_items: &[ResponseItem],
-    ) {
+    ) -> Option<InferenceCallEvent> {
         let Some(attempt) = self.take_terminal_attempt() else {
-            return;
+            return None;
         };
-        let partial_response_payload = if output_items.is_empty() {
-            None
-        } else {
-            write_response_payload_best_effort(
-                attempt,
-                /*response_id*/ None,
-                upstream_request_id,
-                /*token_usage*/ None,
-                output_items,
-            )
-        };
-        append_with_context_best_effort(
-            &attempt.context,
-            RawTraceEventPayload::InferenceFailed {
-                inference_call_id: attempt.inference_call_id.clone(),
-                upstream_request_id: upstream_request_id.map(str::to_string),
-                error: error.to_string(),
-                partial_response_payload,
-            },
-        );
+        if attempt.context.writer.is_some() {
+            let partial_response_payload = if output_items.is_empty() {
+                None
+            } else {
+                write_response_payload_best_effort(
+                    &attempt.context,
+                    /*response_id*/ None,
+                    upstream_request_id,
+                    /*token_usage*/ None,
+                    output_items,
+                )
+            };
+            append_with_context_best_effort(
+                &attempt.context,
+                RawTraceEventPayload::InferenceFailed {
+                    inference_call_id: attempt.inference_call_id.clone(),
+                    upstream_request_id: upstream_request_id.map(str::to_string),
+                    error: error.to_string(),
+                    partial_response_payload,
+                },
+            );
+        }
+        attempt.terminal_observation(
+            InferenceCallStatus::Failed,
+            /*response_id*/ None,
+            upstream_request_id,
+            /*observed_model*/ None,
+            /*observed_model_snapshot*/ None,
+            /*observed_service_tier*/ None,
+            /*token_usage*/ None,
+        )
     }
 
     /// Records a provider stream that Codex intentionally stopped consuming.
@@ -275,30 +415,41 @@ impl InferenceTraceAttempt {
         reason: impl Display,
         upstream_request_id: Option<&str>,
         output_items: &[ResponseItem],
-    ) {
+    ) -> Option<InferenceCallEvent> {
         let Some(attempt) = self.take_terminal_attempt() else {
-            return;
+            return None;
         };
-        let partial_response_payload = if output_items.is_empty() {
-            None
-        } else {
-            write_response_payload_best_effort(
-                attempt,
-                /*response_id*/ None,
-                upstream_request_id,
-                /*token_usage*/ None,
-                output_items,
-            )
-        };
-        append_with_context_best_effort(
-            &attempt.context,
-            RawTraceEventPayload::InferenceCancelled {
-                inference_call_id: attempt.inference_call_id.clone(),
-                upstream_request_id: upstream_request_id.map(str::to_string),
-                reason: reason.to_string(),
-                partial_response_payload,
-            },
-        );
+        if attempt.context.writer.is_some() {
+            let partial_response_payload = if output_items.is_empty() {
+                None
+            } else {
+                write_response_payload_best_effort(
+                    &attempt.context,
+                    /*response_id*/ None,
+                    upstream_request_id,
+                    /*token_usage*/ None,
+                    output_items,
+                )
+            };
+            append_with_context_best_effort(
+                &attempt.context,
+                RawTraceEventPayload::InferenceCancelled {
+                    inference_call_id: attempt.inference_call_id.clone(),
+                    upstream_request_id: upstream_request_id.map(str::to_string),
+                    reason: reason.to_string(),
+                    partial_response_payload,
+                },
+            );
+        }
+        attempt.terminal_observation(
+            InferenceCallStatus::Cancelled,
+            /*response_id*/ None,
+            upstream_request_id,
+            /*observed_model*/ None,
+            /*observed_model_snapshot*/ None,
+            /*observed_service_tier*/ None,
+            /*token_usage*/ None,
+        )
     }
 
     fn take_terminal_attempt(&self) -> Option<&EnabledInferenceTraceAttempt> {
@@ -310,6 +461,76 @@ impl InferenceTraceAttempt {
             return None;
         }
         Some(attempt)
+    }
+}
+
+impl InferenceAttemptObservation {
+    #[allow(clippy::too_many_arguments)]
+    fn event(
+        &self,
+        context: &EnabledInferenceTraceContext,
+        inference_call_id: &str,
+        status: InferenceCallStatus,
+        request_completed_at_ms: Option<i64>,
+        response_id: Option<&str>,
+        upstream_request_id: Option<&str>,
+        observed_model: Option<&str>,
+        observed_model_snapshot: Option<&str>,
+        observed_service_tier: Option<&str>,
+        token_usage: Option<&TokenUsage>,
+    ) -> InferenceCallEvent {
+        InferenceCallEvent {
+            inference_call_id: inference_call_id.to_string(),
+            thread_id: context
+                .observation_thread_id
+                .clone()
+                .expect("observation attempts have a thread id"),
+            turn_id: context.codex_turn_id.clone(),
+            status,
+            transport: self.transport,
+            configured_provider: context.provider_name.clone(),
+            configured_model: context.model.clone(),
+            configured_service_tier: context.configured_service_tier.clone(),
+            requested_model: self.requested_model.clone(),
+            requested_service_tier: self.requested_service_tier.clone(),
+            request_started_at_ms: self.request_started_at_ms,
+            request_completed_at_ms,
+            response_id: response_id.map(str::to_string),
+            upstream_request_id: upstream_request_id.map(str::to_string),
+            observed_model: observed_model.map(str::to_string),
+            observed_model_snapshot: observed_model_snapshot.map(str::to_string),
+            observed_service_tier: observed_service_tier.map(str::to_string),
+            token_usage: token_usage.cloned(),
+        }
+    }
+}
+
+impl EnabledInferenceTraceAttempt {
+    #[allow(clippy::too_many_arguments)]
+    fn terminal_observation(
+        &self,
+        status: InferenceCallStatus,
+        response_id: Option<&str>,
+        upstream_request_id: Option<&str>,
+        observed_model: Option<&str>,
+        observed_model_snapshot: Option<&str>,
+        observed_service_tier: Option<&str>,
+        token_usage: Option<&TokenUsage>,
+    ) -> Option<InferenceCallEvent> {
+        self.observation.as_ref().map(|observation| {
+            observation.event(
+                &self.context,
+                &self.inference_call_id,
+                status,
+                Some(now_unix_timestamp_ms()),
+                response_id,
+                upstream_request_id,
+                observed_model,
+                observed_model_snapshot,
+                observed_service_tier,
+                token_usage,
+            )
+        })
     }
 }
 
@@ -348,6 +569,14 @@ fn next_inference_call_id() -> InferenceCallId {
     Uuid::new_v4().to_string()
 }
 
+fn now_unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
+}
+
 fn write_json_payload_best_effort(
     writer: &TraceWriter,
     kind: RawPayloadKind,
@@ -357,34 +586,34 @@ fn write_json_payload_best_effort(
 }
 
 fn write_response_payload_best_effort(
-    attempt: &EnabledInferenceTraceAttempt,
+    context: &EnabledInferenceTraceContext,
     response_id: Option<&str>,
     upstream_request_id: Option<&str>,
     token_usage: Option<&TokenUsage>,
     output_items: &[ResponseItem],
 ) -> Option<crate::RawPayloadRef> {
+    let writer = context.writer.as_ref()?;
     let response_payload = TracedResponseStreamOutput {
         response_id,
         upstream_request_id,
         token_usage,
         output_items: output_items.iter().map(trace_response_item_json).collect(),
     };
-    write_json_payload_best_effort(
-        &attempt.context.writer,
-        RawPayloadKind::InferenceResponse,
-        &response_payload,
-    )
+    write_json_payload_best_effort(writer, RawPayloadKind::InferenceResponse, &response_payload)
 }
 
 fn append_with_context_best_effort(
     context: &EnabledInferenceTraceContext,
     payload: RawTraceEventPayload,
 ) {
+    let Some(writer) = &context.writer else {
+        return;
+    };
     let event_context = RawTraceEventContext {
         thread_id: Some(context.thread_id.clone()),
         codex_turn_id: Some(context.codex_turn_id.clone()),
     };
-    let _ = context.writer.append_with_context(event_context, payload);
+    let _ = writer.append_with_context(event_context, payload);
 }
 
 #[cfg(test)]
@@ -521,6 +750,104 @@ mod tests {
                 "content": [{"type": "text", "text": "raw reasoning"}],
                 "encrypted_content": "encoded",
             }),
+        );
+    }
+
+    #[test]
+    fn observations_keep_exact_usage_and_distinct_retry_boundaries() {
+        let thread_id = ThreadId::new();
+        let context = InferenceTraceContext::disabled().with_observations(
+            thread_id,
+            "turn-1".to_string(),
+            "configured-provider".to_string(),
+            "configured-model".to_string(),
+            Some("fast".to_string()),
+        );
+        let attempt = context.start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            "requested-model".to_string(),
+            Some("priority".to_string()),
+        );
+        let started = attempt.started_observation().expect("started observation");
+        let token_usage = TokenUsage {
+            input_tokens: 101,
+            cached_input_tokens: 23,
+            output_tokens: 47,
+            reasoning_output_tokens: 11,
+            total_tokens: 148,
+        };
+
+        let completed = attempt
+            .record_completed_observation(
+                "resp-1",
+                Some("req-1"),
+                &Some(token_usage.clone()),
+                /*output_items*/ &[],
+                Some("observed-model"),
+                Some("snapshot-1"),
+                Some("priority"),
+            )
+            .expect("completed observation");
+
+        assert_eq!(
+            completed,
+            InferenceCallEvent {
+                status: InferenceCallStatus::Completed,
+                request_completed_at_ms: completed.request_completed_at_ms,
+                response_id: Some("resp-1".to_string()),
+                upstream_request_id: Some("req-1".to_string()),
+                observed_model: Some("observed-model".to_string()),
+                observed_model_snapshot: Some("snapshot-1".to_string()),
+                observed_service_tier: Some("priority".to_string()),
+                token_usage: Some(token_usage),
+                ..started
+            }
+        );
+        let failed_attempt = context.start_observed_attempt(
+            InferenceCallTransport::ResponsesWebsocket,
+            "requested-model".to_string(),
+            /*requested_service_tier*/ None,
+        );
+        let failed_started = failed_attempt.started_observation().expect("failed start");
+        let failed = failed_attempt
+            .record_failed("fallback", None, &[])
+            .expect("failed observation");
+        let cancelled_attempt = context.start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            "requested-model".to_string(),
+            /*requested_service_tier*/ None,
+        );
+        let cancelled_started = cancelled_attempt
+            .started_observation()
+            .expect("cancelled start");
+        let cancelled = cancelled_attempt
+            .record_cancelled("interrupted", Some("req-2"), &[])
+            .expect("cancelled observation");
+
+        assert_eq!(failed.inference_call_id, failed_started.inference_call_id);
+        assert_eq!(
+            cancelled.inference_call_id,
+            cancelled_started.inference_call_id
+        );
+        assert_eq!(
+            (
+                failed.status,
+                failed.transport,
+                failed.token_usage,
+                cancelled.status,
+                cancelled.token_usage,
+            ),
+            (
+                InferenceCallStatus::Failed,
+                InferenceCallTransport::ResponsesWebsocket,
+                None,
+                InferenceCallStatus::Cancelled,
+                None,
+            )
+        );
+        assert_ne!(
+            failed_started.inference_call_id,
+            cancelled_started.inference_call_id
         );
     }
 }

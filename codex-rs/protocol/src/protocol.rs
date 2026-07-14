@@ -1447,6 +1447,9 @@ pub enum EventMsg {
 
     RawResponseItem(RawResponseItemEvent),
 
+    /// Low-cardinality lifecycle observation for one client-side inference attempt.
+    InferenceCall(InferenceCallEvent),
+
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
     HookStarted(HookStartedEvent),
@@ -1805,6 +1808,59 @@ impl CodexErrorInfo {
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseItemEvent {
     pub item: ResponseItem,
+}
+
+/// One lifecycle observation for a client-side inference attempt.
+///
+/// A unique `inference_call_id` identifies the attempt across its started and
+/// terminal observations. This event does not claim that the provider executed
+/// or billed a physical request; provider-side accounting remains a separate
+/// observation surface.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct InferenceCallEvent {
+    pub inference_call_id: String,
+    pub thread_id: ThreadId,
+    pub turn_id: String,
+    pub status: InferenceCallStatus,
+    pub transport: InferenceCallTransport,
+    pub configured_provider: String,
+    pub configured_model: String,
+    pub configured_service_tier: Option<String>,
+    pub requested_model: String,
+    pub requested_service_tier: Option<String>,
+    pub request_started_at_ms: i64,
+    pub request_completed_at_ms: Option<i64>,
+    /// Responses API `response.id`, when a completed response supplied it.
+    pub response_id: Option<String>,
+    /// Provider transport request id, such as `x-request-id`, when observed.
+    pub upstream_request_id: Option<String>,
+    /// Terminal execution model reported by the provider, when supplied.
+    pub observed_model: Option<String>,
+    /// Terminal model snapshot reported by the provider, when supplied.
+    pub observed_model_snapshot: Option<String>,
+    /// Terminal service tier reported by the provider, when supplied.
+    pub observed_service_tier: Option<String>,
+    /// Exact per-response usage. Present only on completed observations when
+    /// the provider supplied usage for that response.
+    pub token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum InferenceCallStatus {
+    Started,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum InferenceCallTransport {
+    ResponsesHttp,
+    ResponsesWebsocket,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
