@@ -257,6 +257,141 @@ fn removed_legacy_environment_renders_unavailable() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn newly_visible_subagents_render_a_diff() {
+    let previous = WorldStateSection::snapshot(&EnvironmentsState::default());
+    let current = EnvironmentsState::default().with_subagents(subagent_context("model-a"));
+
+    assert_eq!(
+        Some(user_message(
+            r#"<environment_context>
+  <subagents>
+    <agent name="worker" model="model-a" source="thread_config_snapshot" />
+  </subagents>
+</environment_context>"#,
+        )),
+        render_fragment(WorldStateSection::render_diff(
+            &current,
+            PreviousSectionState::Known(&previous),
+        )),
+    );
+}
+
+#[test]
+fn changed_subagent_identity_renders_the_new_identity() {
+    let previous = EnvironmentsState::default().with_subagents(subagent_context("model-a"));
+    let previous = WorldStateSection::snapshot(&previous);
+    let current = EnvironmentsState::default().with_subagents(subagent_context("model-b"));
+
+    assert_eq!(
+        Some(user_message(
+            r#"<environment_context>
+  <subagents>
+    <agent name="worker" model="model-b" source="thread_config_snapshot" />
+  </subagents>
+</environment_context>"#,
+        )),
+        render_fragment(WorldStateSection::render_diff(
+            &current,
+            PreviousSectionState::Known(&previous),
+        )),
+    );
+}
+
+#[test]
+fn removed_subagents_render_an_explicit_clear() {
+    let previous = EnvironmentsState::default().with_subagents(subagent_context("model-a"));
+    let previous = WorldStateSection::snapshot(&previous);
+
+    assert_eq!(
+        Some(user_message(
+            r#"<environment_context>
+  <subagents status="unavailable" />
+</environment_context>"#,
+        )),
+        render_fragment(WorldStateSection::render_diff(
+            &EnvironmentsState::default(),
+            PreviousSectionState::Known(&previous),
+        )),
+    );
+}
+
+#[test]
+fn unchanged_subagents_do_not_duplicate_context() {
+    let current = EnvironmentsState::default().with_subagents(subagent_context("model-a"));
+    let previous = WorldStateSection::snapshot(&current);
+
+    assert_eq!(
+        None,
+        render_fragment(WorldStateSection::render_diff(
+            &current,
+            PreviousSectionState::Known(&previous),
+        )),
+    );
+}
+
+#[test]
+fn subagent_context_enforces_row_field_and_total_caps() {
+    let hostile = format!("  <escape attr=\"x\">\n{}", "<&\"' oversized ".repeat(400));
+    let total_rows = 100;
+    let mut builder = SubagentContextBuilder::default();
+    let mut omitted = 0;
+    for index in 0..total_rows {
+        let row = SubagentContextRow::new(
+            format!("worker-{index}-{hostile}").as_str(),
+            Some(hostile.as_str()),
+            Some(hostile.as_str()),
+            Some(hostile.as_str()),
+            Some(hostile.as_str()),
+            Some(hostile.as_str()),
+            hostile.as_str(),
+        );
+        if !builder.push(row) {
+            omitted = total_rows - index;
+            break;
+        }
+    }
+    builder.note_omitted(omitted);
+    let subagents = builder.finish();
+    let row_count = subagents.as_str().matches("<agent ").count();
+
+    assert!(row_count <= SUBAGENT_CONTEXT_MAX_ROWS);
+    assert_eq!(omitted, total_rows - row_count);
+    assert!(
+        subagents
+            .as_str()
+            .contains(&format!("<omitted count=\"{omitted}\" />"))
+    );
+    assert!(subagents.as_str().contains("&lt;escape"));
+    assert!(subagents.as_str().contains("&quot;"));
+    assert!(!subagents.as_str().contains("\n<escape"));
+
+    let rendered = EnvironmentsState::default()
+        .with_subagents(subagents)
+        .render();
+    let start = rendered.find("  <subagents>").expect("subagents start");
+    let end = rendered.find("  </subagents>").expect("subagents end") + "  </subagents>\n".len();
+    assert!(
+        end - start <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES,
+        "subagent section exceeded hard cap: {} bytes",
+        end - start
+    );
+}
+
+fn subagent_context(model: &str) -> SubagentContext {
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new(
+        "worker",
+        /*nickname*/ None,
+        Some(model),
+        /*effective_model_provider_id*/ None,
+        /*effective_reasoning_effort*/ None,
+        /*effective_service_tier*/ None,
+        "thread_config_snapshot",
+    )));
+    builder.finish()
+}
+
 fn available(cwd: &str, shell: &str) -> Result<EnvironmentState> {
     Ok(EnvironmentState {
         cwd: PathUri::parse(cwd)?,
