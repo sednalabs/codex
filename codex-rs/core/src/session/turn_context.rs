@@ -307,6 +307,7 @@ impl TurnContext {
             sub_id: self.sub_id.clone(),
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
+            configured_inference_identity: self.configured_inference_identity.clone(),
             config: Arc::new(config),
             auth_manager: self.auth_manager.clone(),
             model_info: model_info.clone(),
