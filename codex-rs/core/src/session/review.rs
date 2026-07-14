@@ -1,5 +1,6 @@
 use super::turn_context::TurnResponseModelIdentity;
 use super::*;
+use crate::codex_thread::ConfiguredInferenceIdentity;
 use std::sync::atomic::AtomicBool;
 
 /// Spawn a review thread using the given prompt.
@@ -100,6 +101,12 @@ pub(super) async fn spawn_review_thread(
     let reasoning_summary = per_turn_config
         .model_reasoning_summary
         .unwrap_or(model_info.default_reasoning_summary);
+    let configured_inference_identity = ConfiguredInferenceIdentity {
+        configured_model: model,
+        configured_model_provider_id: per_turn_config.model_provider_id.clone(),
+        configured_reasoning_effort: reasoning_effort.clone(),
+        configured_service_tier: per_turn_config.service_tier.clone(),
+    };
     let session_source = parent_turn_context.session_source.clone();
     let (forked_from_thread_id, thread_source) = {
         let state = sess.state.lock().await;
@@ -140,6 +147,7 @@ pub(super) async fn spawn_review_thread(
         model_info: model_info.clone(),
         session_telemetry: session_telemetry_for_context,
         provider: provider_for_context,
+        configured_inference_identity,
         reasoning_effort,
         reasoning_summary,
         session_source,
