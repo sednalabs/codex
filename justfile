@@ -138,7 +138,6 @@ core-startup-sync-targeted:
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib --no-tests=fail -- multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests=fail -- agent::control::tests::inspect_agent_tree_uses_live_and_stored_effective_identity_sources
 
 # Focused inspect_agent_tree stale-descendant fallback regression.
 core-subagent-inspect-tree-fallback-targeted:
@@ -337,19 +336,15 @@ mcp-device-login-targeted:
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --lib --no-tests=fail -- tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --test all --no-tests=fail -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --test all --no-tests=fail -- suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests=fail -- agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models session::tests::turn_inference_identity_captures_final_request_service_tier session::tests::real_turn_construction_publishes_configured_and_request_identity agent::identity::tests::projection_caps_json_and_xml_after_escaping agent::identity::tests::configured_and_turn_request_provenance_stay_separate agent::control::tests::identity_receipt_survives_settings_update_eviction_and_reload agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::subagent_notifications::list_agents_returns_model_visible_identity_receipts --exact
+    cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay local::read_thread::tests::read_thread_keeps_complete_indexed_identity_for_malformed_rollout thread_metadata_sync::tests::settings_events_replace_complete_configured_identity_and_preserve_clears types::tests::thread_metadata_patch_round_trips_optional_clears types::tests::legacy_reasoning_effort_null_remains_a_noop --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
     cargo nextest run -p codex-state --lib --no-tests=fail -- thread_spawn_edges_track_directional_status
-    cargo nextest run -p codex-state --lib --no-tests=fail -- service_tier_migration_preserves_legacy_rows_as_null
-    cargo nextest run -p codex-state --lib --no-tests=fail -- thread_service_tier_round_trips_through_state
-    cargo nextest run -p codex-state --lib --no-tests=fail -- turn_context_sets_inference_identity turn_context_preserves_legacy_identity_and_applies_explicit_clears
-    cargo nextest run -p codex-state --lib --no-tests=fail -- thread_settings_applied_updates_inference_identity
-    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- inference_identity_items_emit_complete_metadata_patches legacy_reasoning_effort_null_remains_a_noop
+    cargo nextest run -p codex-state --lib --no-tests=fail -- inference_identity_migration_preserves_legacy_rows_as_null thread_inference_tiers_round_trip_through_state extract::tests::turn_context_keeps_configured_and_request_identity_separate extract::tests::legacy_turn_context_does_not_replace_known_configured_identity extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort
+    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- thread_metadata_sync::tests::inference_identity_receipts_remain_separate_and_preserve_clears types::tests::legacy_reasoning_effort_null_remains_a_noop
 
 # Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:

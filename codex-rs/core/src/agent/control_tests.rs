@@ -26,6 +26,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -35,6 +36,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -303,7 +305,7 @@ async fn wait_for_live_thread_spawn_children(
 }
 
 #[tokio::test]
-async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
+async fn identity_receipt_survives_settings_update_eviction_and_reload() {
     let (home, mut config) = test_config().await;
     config
         .features
@@ -315,7 +317,7 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
         .control
         .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
 
-    let mut child_config = config;
+    let mut child_config = config.clone();
     child_config.model_reasoning_effort = Some(ReasoningEffort::High);
     child_config.service_tier = Some("priority".to_string());
     let child_path = AgentPath::try_from("/root/worker").expect("valid child path");
@@ -341,6 +343,26 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
         .get_thread(child_thread_id)
         .await
         .expect("child thread should be live");
+    child_thread
+        .submit(Op::ThreadSettings {
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("gpt-5.4".to_string()),
+                effort: Some(Some(ReasoningEffort::Low)),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("settings update should submit");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = child_thread.next_event().await.expect("settings event");
+            if matches!(event.msg, EventMsg::ThreadSettingsApplied(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("settings update should be applied");
     let child_snapshot = child_thread.config_snapshot().await;
     let child_turn = child_thread.codex.session.new_default_turn().await;
     child_thread
@@ -369,16 +391,26 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
         .iter()
         .find(|agent| agent.agent_name == child_path.as_str())
         .expect("live child should be listed");
-    assert_eq!(
-        live_child.identity,
-        EffectiveAgentIdentity {
-            effective_model: Some(child_snapshot.model.clone()),
-            effective_model_provider_id: Some(child_snapshot.model_provider_id.clone()),
-            effective_reasoning_effort: child_snapshot.reasoning_effort.clone(),
-            effective_service_tier: child_snapshot.service_tier.clone(),
-            identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
-        }
+    let live_identity = ModelVisibleAgentIdentity::from_live(
+        &child_thread.inference_identity_snapshot().await,
+        ModelVisibleIdentityEncoding::Json,
     );
+    assert_eq!(live_child.identity, live_identity);
+    let configured = live_child
+        .identity
+        .configured_identity
+        .as_ref()
+        .expect("live configured receipt");
+    assert_eq!(
+        configured.model.as_deref(),
+        Some(child_snapshot.model.as_str())
+    );
+    assert_eq!(
+        configured.model_provider_id.as_deref(),
+        Some(child_snapshot.model_provider_id.as_str())
+    );
+    assert_eq!(configured.reasoning_effort, child_snapshot.reasoning_effort);
+    assert_eq!(configured.service_tier, child_snapshot.service_tier);
 
     let stored_child = child_thread
         .read_thread(
@@ -394,18 +426,30 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
 
     let stored_identity = harness
         .control
-        .get_agent_identity(child_thread_id)
+        .get_model_visible_agent_identity(child_thread_id)
         .await
         .expect("closed child identity should resolve from storage");
     assert_eq!(
         stored_identity,
-        EffectiveAgentIdentity {
-            effective_model: stored_child.model.clone(),
-            effective_model_provider_id: Some(stored_child.model_provider.clone()),
-            effective_reasoning_effort: stored_child.reasoning_effort.clone(),
-            effective_service_tier: stored_child.service_tier.clone(),
-            identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
-        }
+        ModelVisibleAgentIdentity::from_stored(&stored_child, ModelVisibleIdentityEncoding::Json,)
+    );
+    let stored_configured = stored_identity
+        .configured_identity
+        .as_ref()
+        .expect("stored configured receipt");
+    assert_eq!(stored_configured.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        stored_configured.model_provider_id.as_deref(),
+        Some(child_snapshot.model_provider_id.as_str())
+    );
+    assert_eq!(
+        stored_configured.reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
+    assert_eq!(stored_configured.service_tier.as_deref(), Some("priority"));
+    assert_eq!(
+        stored_identity.latest_turn_request_identity.as_ref(),
+        live_identity.latest_turn_request_identity.as_ref()
     );
 
     let all_tree = harness
@@ -429,6 +473,35 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
     assert_eq!(stale_child.session_state, AgentSessionState::Stale);
     assert_eq!(stale_child.agent_status, None);
     assert_eq!(stale_child.identity, stored_identity);
+
+    let rollout_path = stored_child
+        .rollout_path
+        .clone()
+        .expect("stored child rollout path");
+    let mut conflicting_resume_config = config;
+    conflicting_resume_config.model = Some("gpt-5.2".to_string());
+    conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::Medium);
+    let resumed = harness
+        .manager
+        .resume_thread_from_rollout(
+            conflicting_resume_config,
+            rollout_path,
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("stored child should reload");
+    let resumed_identity = resumed.thread.inference_identity_snapshot().await;
+    assert_eq!(resumed_identity.configured.configured_model, "gpt-5.4");
+    assert_eq!(
+        resumed_identity.configured.configured_model_provider_id,
+        child_snapshot.model_provider_id
+    );
+    assert_eq!(
+        resumed_identity.configured.configured_reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
 }
 
 #[tokio::test]
@@ -494,6 +567,26 @@ async fn get_status_returns_not_found_without_manager() {
     let control = AgentControl::default();
     let got = control.get_status(ThreadId::new()).await;
     assert_eq!(got, AgentStatus::NotFound);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_rejects_excessive_root_filters() {
+    let roots = (0..=MAX_INSPECT_AGENT_ROOTS)
+        .map(|index| format!("/root/worker-{index}"))
+        .collect::<Vec<_>>();
+    let err = AgentControl::default()
+        .inspect_agent_tree(
+            ThreadId::new(),
+            &SessionSource::Exec,
+            None,
+            Some(&roots),
+            AgentTreeScope::Live,
+            2,
+            10,
+        )
+        .await
+        .expect_err("excessive root filters should fail");
+    assert!(err.to_string().contains("agent_roots accepts at most"));
 }
 
 #[tokio::test]
@@ -793,6 +886,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .expect("child thread should exist");
     let original_config = child_thread.config_snapshot().await;
     let child_turn = child_thread.codex.session.new_default_turn().await;
+    let persisted_request_identity = child_turn.inference_identity();
     child_thread
         .codex
         .session
@@ -836,8 +930,33 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .await
         .expect("cleared child metadata should be readable");
     assert_eq!(
-        (stored_child.reasoning_effort, stored_child.service_tier),
+        (
+            stored_child.reasoning_effort.clone(),
+            stored_child.configured_service_tier.clone()
+        ),
         (None, None)
+    );
+    let stored_request_identity = stored_child
+        .latest_turn_request_identity
+        .as_ref()
+        .expect("latest request identity should survive configured settings clears");
+    assert_eq!(
+        (
+            stored_request_identity.turn_id.as_deref(),
+            stored_request_identity.request_model.as_str(),
+            stored_request_identity.model_provider_id.as_deref(),
+            stored_request_identity.requested_reasoning_effort.clone(),
+            stored_request_identity.request_service_tier.as_deref(),
+        ),
+        (
+            Some(persisted_request_identity.turn_id.as_str()),
+            persisted_request_identity.request_model.as_str(),
+            Some(persisted_request_identity.model_provider_id.as_str()),
+            persisted_request_identity
+                .requested_reasoning_effort
+                .clone(),
+            persisted_request_identity.request_service_tier.as_deref(),
+        )
     );
     child_thread
         .shutdown_and_wait()
@@ -886,8 +1005,22 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .find(|agent| agent.agent_name == agent_path.as_str())
         .expect("unloaded child should remain in persisted inventory");
     assert_eq!(stale_child.session_state, AgentSessionState::Stale);
-    assert_eq!(stale_child.identity.effective_reasoning_effort, None);
-    assert_eq!(stale_child.identity.effective_service_tier, None);
+    let stale_configured = stale_child
+        .identity
+        .configured_identity
+        .as_ref()
+        .expect("stored configured identity should remain visible");
+    assert_eq!(stale_configured.reasoning_effort, None);
+    assert_eq!(stale_configured.service_tier, None);
+    let stale_request = stale_child
+        .identity
+        .latest_turn_request_identity
+        .as_ref()
+        .expect("stored request identity should remain visible");
+    assert_eq!(
+        stale_request.service_tier.as_deref(),
+        persisted_request_identity.request_service_tier.as_deref()
+    );
 
     let mut conflicting_resume_config = harness.config.clone();
     conflicting_resume_config.model = Some("different-caller-model".to_string());
@@ -931,7 +1064,6 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             None,
         )
     );
-
     let communication = InterAgentCommunication::new(
         AgentPath::root(),
         agent_path,

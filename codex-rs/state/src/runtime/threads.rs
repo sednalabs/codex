@@ -24,7 +24,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
-    threads.service_tier,
+    threads.configured_service_tier,
+    threads.latest_turn_request_identity,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -577,6 +578,11 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let latest_turn_request_identity = metadata
+            .latest_turn_request_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let result = sqlx::query(
             r#"
 INSERT INTO threads (
@@ -597,7 +603,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
-    service_tier,
+    configured_service_tier,
+    latest_turn_request_identity,
     cwd,
     cli_version,
     title,
@@ -612,7 +619,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -643,7 +650,8 @@ ON CONFLICT(id) DO NOTHING
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
-        .bind(metadata.service_tier.as_deref())
+        .bind(metadata.configured_service_tier.as_deref())
+        .bind(latest_turn_request_identity.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -830,6 +838,11 @@ WHERE id = ?
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let insert_recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let latest_turn_request_identity = metadata
+            .latest_turn_request_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         // Backfill/reconcile callers merge existing git info before upserting, but that
         // read/modify/write is not atomic. Preserve non-null SQLite git fields here so
         // an explicit metadata update cannot be lost if a stale rollout upsert lands later.
@@ -853,7 +866,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
-    service_tier,
+    configured_service_tier,
+    latest_turn_request_identity,
     cwd,
     cli_version,
     title,
@@ -868,7 +882,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -886,7 +900,8 @@ ON CONFLICT(id) DO UPDATE SET
     model_provider = excluded.model_provider,
     model = excluded.model,
     reasoning_effort = excluded.reasoning_effort,
-    service_tier = excluded.service_tier,
+    configured_service_tier = excluded.configured_service_tier,
+    latest_turn_request_identity = excluded.latest_turn_request_identity,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
     title = excluded.title,
@@ -929,7 +944,8 @@ ON CONFLICT(id) DO UPDATE SET
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
-        .bind(metadata.service_tier.as_deref())
+        .bind(metadata.configured_service_tier.as_deref())
+        .bind(latest_turn_request_identity.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -1326,7 +1342,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
-    threads.service_tier,
+    threads.configured_service_tier,
+    threads.latest_turn_request_identity,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -1539,7 +1556,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[tokio::test]
-    async fn thread_service_tier_round_trips_through_state() {
+    async fn thread_inference_tiers_round_trip_through_state() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
@@ -1547,7 +1564,15 @@ mod tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000045").expect("thread id");
         let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
-        metadata.service_tier = Some("priority".to_string());
+        metadata.configured_service_tier = Some("priority".to_string());
+        metadata.latest_turn_request_identity =
+            Some(codex_protocol::protocol::TurnRequestIdentity {
+                turn_id: Some("turn-1".to_string()),
+                request_model: "gpt-request".to_string(),
+                model_provider_id: Some("test-provider".to_string()),
+                requested_reasoning_effort: None,
+                request_service_tier: Some("flex".to_string()),
+            });
 
         runtime
             .upsert_thread(&metadata)

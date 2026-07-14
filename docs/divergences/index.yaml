@@ -237,7 +237,7 @@
         "codex-rs/thread-store/src/thread_metadata_sync.rs",
         "codex-rs/thread-store/src/types.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides and the complete persisted child inference identity, including service tier, across eviction and reload. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides and restores the persisted child configured inference identity across eviction and reload. Configured settings and the latest normalized request identity remain separate in durable inventory. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -254,16 +254,16 @@
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
         "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
-        "inspect_agent_tree_uses_live_and_stored_effective_identity_sources",
-        "thread_service_tier_round_trips_through_state",
-        "service_tier_migration_preserves_legacy_rows_as_null",
-        "turn_context_preserves_legacy_identity_and_applies_explicit_clears",
-        "inference_identity_items_emit_complete_metadata_patches",
+        "identity_receipt_survives_settings_update_eviction_and_reload",
+        "thread_inference_tiers_round_trip_through_state",
+        "inference_identity_migration_preserves_legacy_rows_as_null",
+        "turn_context_keeps_configured_and_request_identity_separate",
+        "inference_identity_receipts_remain_separate_and_preserve_clears",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Durable metadata is authoritative for an evicted child's model, provider, reasoning effort, and service tier; ambient caller config must not replace that identity on reload. Presence-aware update fields permit current rollouts to clear nullable identity fields without reinterpreting legacy nulls or omissions as clear operations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Indexed durable metadata is authoritative for an evicted child's configured model, provider, reasoning effort, and configured service tier; ambient caller config must not replace that identity on reload. The latest normalized request identity is retained as a separate receipt and is not reused as configuration. Presence-aware update fields permit current rollouts to clear nullable configured fields without reinterpreting legacy nulls or omissions as clear operations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [

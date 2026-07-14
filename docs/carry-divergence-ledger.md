@@ -367,14 +367,14 @@ docs-only refresh commit that records this snapshot.
   requested-id list.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
-- Evicted V2 children restore their complete durable inference identity before
+- Evicted V2 children restore their durable configured inference identity before
   runtime reconstruction. The caller still supplies current permissions and
-  cwd policy, but its ambient service tier cannot replace the child's persisted
-  model, provider, reasoning effort, or service tier.
-- Turn-context and thread-settings rollout items update the same nullable
-  service-tier metadata used by SQLite, local stores, in-memory stores, and
-  stale inventory. Current rollout items carry presence-aware service-tier and
-  reasoning updates, while legacy omissions leave already recovered metadata
+  cwd policy, but its ambient settings cannot replace the child's persisted
+  model, provider, reasoning effort, or configured service tier.
+- Turn-context rollout items persist configured identity separately from the
+  latest request identity after per-turn normalization. Thread-settings items
+  replace only the configured receipt. SQLite and thread stores preserve
+  explicit nullable clears, while legacy omissions leave indexed metadata
   unchanged instead of being reinterpreted as clear operations.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
