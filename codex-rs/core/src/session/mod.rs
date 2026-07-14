@@ -3806,7 +3806,7 @@ impl Session {
             }
             EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot)
         };
-        let item = SubagentRuntimeIdentity::new(identity).into();
+        let item = ContextualUserFragment::into(SubagentRuntimeIdentity::new(identity));
         self.record_conversation_items(turn_context, std::slice::from_ref(&item))
             .await;
     }
