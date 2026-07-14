@@ -115,7 +115,7 @@ pub(crate) struct EffectiveAgentIdentity {
 }
 
 impl EffectiveAgentIdentity {
-    fn from_thread_config_snapshot(snapshot: &ThreadConfigSnapshot) -> Self {
+    pub(crate) fn from_thread_config_snapshot(snapshot: &ThreadConfigSnapshot) -> Self {
         Self {
             effective_model: Some(snapshot.model.clone()),
             effective_model_provider_id: non_empty_identity_value(
