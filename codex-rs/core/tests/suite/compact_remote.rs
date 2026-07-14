@@ -439,7 +439,10 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         _ => None,
     })
     .await;
-    assert_eq!(post_compact_turn_complete.provider_usage, None);
+    assert_eq!(
+        post_compact_turn_complete.provider_usage,
+        Some(TokenUsage::default())
+    );
 
     let compact_request = compact_mock.single_request();
     assert_eq!(compact_request.path(), "/v1/responses/compact");
