@@ -35,6 +35,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -302,7 +303,7 @@ async fn wait_for_live_thread_spawn_children(
 }
 
 #[tokio::test]
-async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
+async fn identity_receipt_survives_settings_update_eviction_and_reload() {
     let (home, mut config) = test_config().await;
     config
         .features
@@ -314,7 +315,7 @@ async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
         .control
         .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
 
-    let mut child_config = config;
+    let mut child_config = config.clone();
     child_config.model_reasoning_effort = Some(ReasoningEffort::High);
     child_config.service_tier = Some("priority".to_string());
     let child_path = AgentPath::try_from("/root/worker").expect("valid child path");
@@ -340,6 +341,26 @@ async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
         .get_thread(child_thread_id)
         .await
         .expect("child thread should be live");
+    child_thread
+        .submit(Op::ThreadSettings {
+            thread_settings: ThreadSettingsOverrides {
+                model: Some("gpt-5.4".to_string()),
+                effort: Some(Some(ReasoningEffort::Low)),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("settings update should submit");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = child_thread.next_event().await.expect("settings event");
+            if matches!(event.msg, EventMsg::ThreadSettingsApplied(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("settings update should be applied");
     let child_snapshot = child_thread.config_snapshot().await;
     let child_turn = child_thread.codex.session.new_default_turn().await;
     child_thread
@@ -410,6 +431,19 @@ async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
         stored_identity,
         ModelVisibleAgentIdentity::from_stored(&stored_child, ModelVisibleIdentityEncoding::Json,)
     );
+    let stored_configured = stored_identity
+        .configured_identity
+        .as_ref()
+        .expect("stored configured receipt");
+    assert_eq!(stored_configured.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        stored_configured.model_provider_id.as_deref(),
+        Some(child_snapshot.model_provider_id.as_str())
+    );
+    assert_eq!(
+        stored_configured.reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
 
     let all_tree = harness
         .control
@@ -432,6 +466,35 @@ async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
     assert_eq!(stale_child.session_state, AgentSessionState::Stale);
     assert_eq!(stale_child.agent_status, None);
     assert_eq!(stale_child.identity, stored_identity);
+
+    let rollout_path = stored_child
+        .rollout_path
+        .clone()
+        .expect("stored child rollout path");
+    let mut conflicting_resume_config = config;
+    conflicting_resume_config.model = Some("gpt-5.2".to_string());
+    conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::Medium);
+    let resumed = harness
+        .manager
+        .resume_thread_from_rollout(
+            conflicting_resume_config,
+            rollout_path,
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("stored child should reload");
+    let resumed_identity = resumed.thread.inference_identity_snapshot().await;
+    assert_eq!(resumed_identity.configured.configured_model, "gpt-5.4");
+    assert_eq!(
+        resumed_identity.configured.configured_model_provider_id,
+        child_snapshot.model_provider_id
+    );
+    assert_eq!(
+        resumed_identity.configured.configured_reasoning_effort,
+        Some(ReasoningEffort::Low)
+    );
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
@@ -844,7 +907,6 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             original_config.reasoning_effort,
         )
     );
-
     let communication = InterAgentCommunication::new(
         AgentPath::root(),
         agent_path,
