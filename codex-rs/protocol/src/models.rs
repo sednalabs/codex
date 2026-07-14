@@ -28,6 +28,34 @@ use schemars::JsonSchema;
 
 use crate::ResponseItemId;
 use crate::mcp::CallToolResult;
+use crate::openai_models::ReasoningEffort;
+
+/// Complete model-selection identity for configured settings or a real request.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadInferenceIdentity {
+    pub model: String,
+    pub model_provider_id: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Durable presence and validity of a thread inference identity.
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum ThreadInferenceIdentityAuthority {
+    #[default]
+    LegacyMissing,
+    Valid(ThreadInferenceIdentity),
+    Cleared,
+    Malformed {
+        raw: String,
+    },
+}
+
+impl From<Option<ThreadInferenceIdentity>> for ThreadInferenceIdentityAuthority {
+    fn from(value: Option<ThreadInferenceIdentity>) -> Self {
+        value.map_or(Self::Cleared, Self::Valid)
+    }
+}
 
 /// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(

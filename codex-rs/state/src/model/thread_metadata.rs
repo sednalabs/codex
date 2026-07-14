@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
@@ -104,6 +105,10 @@ pub struct ThreadMetadata {
     pub model: Option<String>,
     /// The latest observed reasoning effort for the thread.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Durable configured model-selection authority.
+    pub configured_inference_identity_authority: ThreadInferenceIdentityAuthority,
+    /// Durable latest-request model-selection authority.
+    pub latest_request_inference_identity_authority: ThreadInferenceIdentityAuthority,
     /// The working directory for the thread.
     pub cwd: PathBuf,
     /// Version of the CLI that created the thread.
@@ -242,6 +247,8 @@ impl ThreadMetadataBuilder {
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity_authority: Default::default(),
+            latest_request_inference_identity_authority: Default::default(),
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
             title: String::new(),
@@ -323,6 +330,16 @@ impl ThreadMetadata {
         if self.reasoning_effort != other.reasoning_effort {
             diffs.push("reasoning_effort");
         }
+        if self.configured_inference_identity_authority
+            != other.configured_inference_identity_authority
+        {
+            diffs.push("configured_inference_identity_authority");
+        }
+        if self.latest_request_inference_identity_authority
+            != other.latest_request_inference_identity_authority
+        {
+            diffs.push("latest_request_inference_identity_authority");
+        }
         if self.cwd != other.cwd {
             diffs.push("cwd");
         }
@@ -367,6 +384,51 @@ fn canonicalize_datetime(dt: DateTime<Utc>) -> DateTime<Utc> {
     epoch_millis_to_datetime(datetime_to_epoch_millis(dt)).unwrap_or(dt)
 }
 
+const INFERENCE_IDENTITY_AUTHORITY_VERSION: u8 = 1;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct VersionedInferenceIdentityAuthority {
+    version: u8,
+    authority: ThreadInferenceIdentityAuthority,
+}
+
+pub(crate) fn decode_inference_identity_authority(
+    raw: Option<String>,
+) -> ThreadInferenceIdentityAuthority {
+    let Some(raw) = raw else {
+        return ThreadInferenceIdentityAuthority::LegacyMissing;
+    };
+    match serde_json::from_str::<VersionedInferenceIdentityAuthority>(&raw) {
+        Ok(value)
+            if value.version == INFERENCE_IDENTITY_AUTHORITY_VERSION
+                && matches!(
+                    &value.authority,
+                    ThreadInferenceIdentityAuthority::Valid(_)
+                        | ThreadInferenceIdentityAuthority::Cleared
+                ) =>
+        {
+            value.authority
+        }
+        Ok(_) | Err(_) => ThreadInferenceIdentityAuthority::Malformed { raw },
+    }
+}
+
+pub(crate) fn encode_inference_identity_authority(
+    authority: &ThreadInferenceIdentityAuthority,
+) -> serde_json::Result<Option<String>> {
+    match authority {
+        ThreadInferenceIdentityAuthority::LegacyMissing => Ok(None),
+        ThreadInferenceIdentityAuthority::Malformed { raw } => Ok(Some(raw.clone())),
+        ThreadInferenceIdentityAuthority::Valid(_) | ThreadInferenceIdentityAuthority::Cleared => {
+            serde_json::to_string(&VersionedInferenceIdentityAuthority {
+                version: INFERENCE_IDENTITY_AUTHORITY_VERSION,
+                authority: authority.clone(),
+            })
+            .map(Some)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ThreadRow {
     id: String,
@@ -383,6 +445,8 @@ pub(crate) struct ThreadRow {
     model_provider: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    configured_inference_identity_authority: Option<String>,
+    latest_request_inference_identity_authority: Option<String>,
     cwd: String,
     cli_version: String,
     title: String,
@@ -414,6 +478,10 @@ impl ThreadRow {
             model_provider: row.try_get("model_provider")?,
             model: row.try_get("model")?,
             reasoning_effort: row.try_get("reasoning_effort")?,
+            configured_inference_identity_authority: row
+                .try_get("configured_inference_identity_authority")?,
+            latest_request_inference_identity_authority: row
+                .try_get("latest_request_inference_identity_authority")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
             title: row.try_get("title")?,
@@ -449,6 +517,8 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model_provider,
             model,
             reasoning_effort,
+            configured_inference_identity_authority,
+            latest_request_inference_identity_authority,
             cwd,
             cli_version,
             title,
@@ -483,6 +553,12 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model,
             reasoning_effort: reasoning_effort
                 .and_then(|value| value.parse::<ReasoningEffort>().ok()),
+            configured_inference_identity_authority: decode_inference_identity_authority(
+                configured_inference_identity_authority,
+            ),
+            latest_request_inference_identity_authority: decode_inference_identity_authority(
+                latest_request_inference_identity_authority,
+            ),
             cwd: PathBuf::from(cwd),
             cli_version,
             title,
@@ -556,9 +632,13 @@ pub struct BackfillStats {
 mod tests {
     use super::ThreadMetadata;
     use super::ThreadRow;
+    use super::decode_inference_identity_authority;
+    use super::encode_inference_identity_authority;
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::ThreadHistoryMode;
     use pretty_assertions::assert_eq;
@@ -580,6 +660,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
+            configured_inference_identity_authority: None,
+            latest_request_inference_identity_authority: None,
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
@@ -612,6 +694,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort,
+            configured_inference_identity_authority: Default::default(),
+            latest_request_inference_identity_authority: Default::default(),
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
@@ -646,6 +730,30 @@ mod tests {
         assert_eq!(
             metadata,
             expected_thread_metadata(Some(ReasoningEffort::Custom("future".to_string())))
+        );
+    }
+
+    #[test]
+    fn inference_identity_authority_distinguishes_presence_and_malformed_data() {
+        let valid = ThreadInferenceIdentityAuthority::Valid(ThreadInferenceIdentity {
+            model: "configured-alias".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+        });
+        for authority in [valid, ThreadInferenceIdentityAuthority::Cleared] {
+            let encoded =
+                encode_inference_identity_authority(&authority).expect("authority should encode");
+            assert_eq!(decode_inference_identity_authority(encoded), authority);
+        }
+        assert_eq!(
+            decode_inference_identity_authority(None),
+            ThreadInferenceIdentityAuthority::LegacyMissing
+        );
+        assert_eq!(
+            decode_inference_identity_authority(Some("{malformed".to_string())),
+            ThreadInferenceIdentityAuthority::Malformed {
+                raw: "{malformed".to_string(),
+            }
         );
     }
 

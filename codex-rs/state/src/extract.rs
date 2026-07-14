@@ -653,6 +653,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity_authority: Default::default(),
+            latest_request_inference_identity_authority: Default::default(),
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

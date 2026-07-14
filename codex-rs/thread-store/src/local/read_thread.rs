@@ -375,6 +375,9 @@ async fn stored_thread_from_sqlite_metadata(
         model_provider: metadata.model_provider,
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
+        configured_inference_identity_authority: metadata.configured_inference_identity_authority,
+        latest_request_inference_identity_authority: metadata
+            .latest_request_inference_identity_authority,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
         recency_at: metadata.recency_at,
@@ -449,6 +452,8 @@ fn stored_thread_from_meta_line(
             .unwrap_or_else(|| store.config.default_model_provider_id.clone()),
         model: None,
         reasoning_effort: None,
+        configured_inference_identity_authority: Default::default(),
+        latest_request_inference_identity_authority: Default::default(),
         created_at,
         updated_at,
         recency_at: updated_at,

@@ -269,6 +269,12 @@ async fn apply_metadata_update(
             if let Some(reasoning_effort) = reasoning_effort_update {
                 metadata.reasoning_effort = reasoning_effort;
             }
+            if let Some(identity) = patch.configured_inference_identity {
+                metadata.configured_inference_identity_authority = identity.into();
+            }
+            if let Some(identity) = patch.latest_request_inference_identity {
+                metadata.latest_request_inference_identity_authority = identity.into();
+            }
             if let Some(created_at) = patch.created_at {
                 metadata.created_at = created_at;
             }
@@ -472,7 +478,9 @@ fn sqlite_write_failure_should_block(patch: &ThreadMetadataPatch) -> bool {
     // failure isolation so a corrupted optional state DB does not make JSONL transcript durability
     // look broken. Explicit git-only updates still require SQLite because partial git patches need
     // the existing SQLite value to preserve unspecified fields.
-    patch.git_info.is_some() && !has_observed_metadata_facts(patch)
+    patch.configured_inference_identity.is_some()
+        || patch.latest_request_inference_identity.is_some()
+        || (patch.git_info.is_some() && !has_observed_metadata_facts(patch))
 }
 
 fn sqlite_write_error_is_best_effort(err: &ThreadStoreError) -> bool {
@@ -719,6 +727,8 @@ fn rollout_path_is_archived(store: &LocalThreadStore, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::ThreadHistoryMode;
     use pretty_assertions::assert_eq;
     use serde_json::Value;
@@ -1325,6 +1335,15 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let path =
             write_session_file(home.path(), "2025-01-03T15-30-00", uuid).expect("session file");
+        let configured = ThreadInferenceIdentity {
+            model: "configured".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            reasoning_effort: None,
+        };
+        let requested = ThreadInferenceIdentity {
+            model: "requested".to_string(),
+            ..configured.clone()
+        };
 
         let thread = store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -1336,6 +1355,8 @@ mod tests {
                         branch: Some(Some("combined".to_string())),
                         ..Default::default()
                     }),
+                    configured_inference_identity: Some(Some(configured.clone())),
+                    latest_request_inference_identity: Some(Some(requested.clone())),
                     ..Default::default()
                 },
                 include_archived: false,
@@ -1344,6 +1365,16 @@ mod tests {
             .expect("combined patch should apply");
 
         assert_eq!(thread.name.as_deref(), Some("Combined metadata"));
+        assert_eq!(
+            (
+                thread.configured_inference_identity_authority.clone(),
+                thread.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Valid(configured.clone()),
+                ThreadInferenceIdentityAuthority::Valid(requested),
+            )
+        );
         assert_eq!(
             thread.git_info.expect("git info").branch.as_deref(),
             Some("combined")
@@ -1361,6 +1392,53 @@ mod tests {
             .await
             .expect("thread memory mode should be readable");
         assert_eq!(memory_mode.as_deref(), Some("disabled"));
+
+        let replacement = ThreadInferenceIdentity {
+            model: "requested-replacement".to_string(),
+            ..configured.clone()
+        };
+        let replaced = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    latest_request_inference_identity: Some(Some(replacement.clone())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("request replacement should apply");
+        assert_eq!(
+            (
+                replaced.configured_inference_identity_authority,
+                replaced.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Valid(configured.clone()),
+                ThreadInferenceIdentityAuthority::Valid(replacement.clone()),
+            )
+        );
+        let cleared = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(None),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("configured clear should apply");
+        assert_eq!(
+            (
+                cleared.configured_inference_identity_authority,
+                cleared.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Cleared,
+                ThreadInferenceIdentityAuthority::Valid(replacement),
+            )
+        );
     }
 
     #[test]

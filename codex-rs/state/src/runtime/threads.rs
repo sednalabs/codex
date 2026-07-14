@@ -24,6 +24,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_inference_identity_authority,
+    threads.latest_request_inference_identity_authority,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -576,6 +578,12 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let configured_identity_authority = crate::model::encode_inference_identity_authority(
+            &metadata.configured_inference_identity_authority,
+        )?;
+        let latest_request_identity_authority = crate::model::encode_inference_identity_authority(
+            &metadata.latest_request_inference_identity_authority,
+        )?;
         let result = sqlx::query(
             r#"
 INSERT INTO threads (
@@ -596,6 +604,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_inference_identity_authority,
+    latest_request_inference_identity_authority,
     cwd,
     cli_version,
     title,
@@ -610,7 +620,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -641,6 +651,8 @@ ON CONFLICT(id) DO NOTHING
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(configured_identity_authority.as_deref())
+        .bind(latest_request_identity_authority.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -827,6 +839,12 @@ WHERE id = ?
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let insert_recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let configured_identity_authority = crate::model::encode_inference_identity_authority(
+            &metadata.configured_inference_identity_authority,
+        )?;
+        let latest_request_identity_authority = crate::model::encode_inference_identity_authority(
+            &metadata.latest_request_inference_identity_authority,
+        )?;
         // Backfill/reconcile callers merge existing git info before upserting, but that
         // read/modify/write is not atomic. Preserve non-null SQLite git fields here so
         // an explicit metadata update cannot be lost if a stale rollout upsert lands later.
@@ -850,6 +868,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_inference_identity_authority,
+    latest_request_inference_identity_authority,
     cwd,
     cli_version,
     title,
@@ -864,7 +884,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -882,6 +902,14 @@ ON CONFLICT(id) DO UPDATE SET
     model_provider = excluded.model_provider,
     model = excluded.model,
     reasoning_effort = excluded.reasoning_effort,
+    configured_inference_identity_authority = COALESCE(
+        excluded.configured_inference_identity_authority,
+        threads.configured_inference_identity_authority
+    ),
+    latest_request_inference_identity_authority = COALESCE(
+        excluded.latest_request_inference_identity_authority,
+        threads.latest_request_inference_identity_authority
+    ),
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
     title = excluded.title,
@@ -924,6 +952,8 @@ ON CONFLICT(id) DO UPDATE SET
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(configured_identity_authority.as_deref())
+        .bind(latest_request_identity_authority.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -1320,6 +1350,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_inference_identity_authority,
+    threads.latest_request_inference_identity_authority,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -1521,6 +1553,7 @@ mod tests {
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use anyhow::Result;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GitInfo;
     use codex_protocol::protocol::SessionMeta;
@@ -2391,6 +2424,12 @@ mod tests {
         metadata.git_sha = Some("sqlite-sha".to_string());
         metadata.git_branch = Some("sqlite-branch".to_string());
         metadata.git_origin_url = Some("git@example.com:openai/codex.git".to_string());
+        metadata.configured_inference_identity_authority =
+            ThreadInferenceIdentityAuthority::Cleared;
+        metadata.latest_request_inference_identity_authority =
+            ThreadInferenceIdentityAuthority::Malformed {
+                raw: "{diagnostic".to_string(),
+            };
 
         runtime
             .upsert_thread(&metadata)
@@ -2401,6 +2440,8 @@ mod tests {
         rollout_metadata.git_sha = Some("rollout-sha".to_string());
         rollout_metadata.git_branch = Some("rollout-branch".to_string());
         rollout_metadata.git_origin_url = Some("https://example.com/repo.git".to_string());
+        rollout_metadata.configured_inference_identity_authority = Default::default();
+        rollout_metadata.latest_request_inference_identity_authority = Default::default();
 
         runtime
             .upsert_thread(&rollout_metadata)
@@ -2414,6 +2455,18 @@ mod tests {
             .expect("thread should exist");
         assert_eq!(persisted.git_sha.as_deref(), Some("sqlite-sha"));
         assert_eq!(persisted.git_branch.as_deref(), Some("sqlite-branch"));
+        assert_eq!(
+            (
+                persisted.configured_inference_identity_authority,
+                persisted.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Cleared,
+                ThreadInferenceIdentityAuthority::Malformed {
+                    raw: "{diagnostic".to_string(),
+                },
+            )
+        );
         assert_eq!(
             persisted.git_origin_url.as_deref(),
             Some("git@example.com:openai/codex.git")

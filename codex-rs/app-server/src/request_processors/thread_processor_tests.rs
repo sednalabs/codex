@@ -510,6 +510,8 @@ mod thread_processor_behavior_tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity_authority: Default::default(),
+            latest_request_inference_identity_authority: Default::default(),
             created_at: created_at.with_timezone(&Utc),
             updated_at: updated_at.with_timezone(&Utc),
             recency_at: updated_at.with_timezone(&Utc),
