@@ -321,7 +321,10 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
     let EventMsg::TurnComplete(second_turn_complete) = second_turn_complete else {
         panic!("expected second turn complete event");
     };
-    assert_eq!(second_turn_complete.provider_usage, None);
+    assert_eq!(
+        second_turn_complete.provider_usage,
+        Some(TokenUsage::default())
+    );
 
     Ok(())
 }
