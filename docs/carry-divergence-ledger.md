@@ -360,6 +360,15 @@ docs-only refresh commit that records this snapshot.
   metadata, wait summaries, and `agent/control.rs`.
 - The historical `spawn_approval` argument was unused by both spawn handlers;
   the upstream removal is retained rather than carried as a phantom contract.
+- Spawned agents receive one bounded `<subagent_runtime_identity>` developer
+  fragment before provider requests. It is rendered from the child thread's
+  authoritative config snapshot, labels model, provider, reasoning effort,
+  and service tier as configured request identity rather than terminal usage
+  evidence, and is rebuilt with canonical initial context after compaction.
+  A settings change appends a latest-fragment-wins update without rewriting
+  cached history. Oversized or marker-bearing identity values are replaced by
+  explicit length-and-digest metadata, and full-history forks remove inherited
+  parent fragments so task text cannot become routing truth.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
