@@ -235,7 +235,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, explicit spawn-agent authorization guidance, and bounded refreshable runtime-authored configured-request identity context keep sub-agent routing observable without relying on task text or environment inference.",
+      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, explicit spawn-agent authorization guidance, and bounded refreshable runtime-authored configured and latest-turn request identity context keep sub-agent routing observable without relying on task text or environment inference.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -257,7 +257,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn. Spawned agents receive one bounded developer fragment from their ThreadConfigSnapshot before provider sampling; inherited parent fragments are removed from full-history forks, and the fragment explicitly distinguishes configured request identity from terminal provider and usage evidence.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn. Spawned agents receive the shared bounded model-visible identity projection before provider sampling; configured settings and the latest normalized turn request retain separate provenance, inherited parent fragments are removed from full-history forks, and neither receipt is presented as terminal provider or usage evidence.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
