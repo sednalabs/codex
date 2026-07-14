@@ -134,7 +134,9 @@ impl EffectiveAgentIdentity {
                 stored_thread.model_provider.clone(),
             ),
             effective_reasoning_effort: stored_thread.reasoning_effort.clone(),
-            effective_service_tier: stored_thread.service_tier.clone(),
+            // StoredThread does not currently persist service tier, so keep this
+            // field nullable instead of reconstructing it from ambient config.
+            effective_service_tier: None,
             identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
         }
     }

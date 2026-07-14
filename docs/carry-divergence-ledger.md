@@ -367,15 +367,6 @@ docs-only refresh commit that records this snapshot.
   requested-id list.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
-- Evicted V2 children restore their complete durable inference identity before
-  runtime reconstruction. The caller still supplies current permissions and
-  cwd policy, but its ambient service tier cannot replace the child's persisted
-  model, provider, reasoning effort, or service tier.
-- Turn-context and thread-settings rollout items update the same nullable
-  service-tier metadata used by SQLite, local stores, in-memory stores, and
-  stale inventory. Current rollout items carry presence-aware service-tier and
-  reasoning updates, while legacy omissions leave already recovered metadata
-  unchanged instead of being reinterpreted as clear operations.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`,
@@ -389,10 +380,7 @@ docs-only refresh commit that records this snapshot.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
-  - `codex-rs/core/src/agent/control.rs`
-  - `codex-rs/core/src/agent/control/spawn.rs`
   - `codex-rs/core/src/agent/role.rs`
-  - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
@@ -400,13 +388,6 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
-  - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/state/migrations/0045_threads_service_tier.sql`
-  - `codex-rs/state/src/extract.rs`
-  - `codex-rs/state/src/model/thread_metadata.rs`
-  - `codex-rs/state/src/runtime/threads.rs`
-  - `codex-rs/thread-store/src/thread_metadata_sync.rs`
-  - `codex-rs/thread-store/src/types.rs`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 

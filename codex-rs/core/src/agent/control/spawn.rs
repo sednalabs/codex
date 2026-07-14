@@ -23,15 +23,14 @@ enum SpawnInitialInput {
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
-/// Restore the agent's latest durable inference identity before reopening an evicted V2 runtime.
+/// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
 /// The caller's config is still the source of current runtime policy such as permissions and cwd,
-/// but it must not silently replace the child's model, provider, reasoning effort, or service tier.
-fn restore_persisted_agent_inference_identity(
+/// but it must not silently replace the child's model, provider, or reasoning effort.
+fn restore_persisted_agent_model_selection(
     config: &mut Config,
     model: Option<&str>,
     provider_id: &str,
     reasoning_effort: Option<ReasoningEffort>,
-    service_tier: Option<&str>,
     thread_id: ThreadId,
 ) -> CodexResult<()> {
     let Some(model) = model else {
@@ -50,7 +49,6 @@ fn restore_persisted_agent_inference_identity(
     config.model_provider_id = provider_id.to_string();
     config.model_provider = provider;
     config.model_reasoning_effort = reasoning_effort;
-    config.service_tier = service_tier.map(str::to_string);
     Ok(())
 }
 
@@ -204,12 +202,11 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
-        restore_persisted_agent_inference_identity(
+        restore_persisted_agent_model_selection(
             &mut config,
             stored_thread.model.as_deref(),
             &stored_thread.model_provider,
             stored_thread.reasoning_effort.clone(),
-            stored_thread.service_tier.as_deref(),
             thread_id,
         )?;
         let history = stored_thread
