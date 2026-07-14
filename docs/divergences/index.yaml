@@ -106,7 +106,7 @@
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata for downstream audit workflows. Client-observed inference attempts also emit durable rollout events with configured/requested identity, provider-supplied terminal identity, exact completed-response usage, and distinct retry/fallback lifecycle ids.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata for downstream audit workflows. Client-observed HTTP inference attempts also emit durable rollout events with configured/requested identity, provider-supplied terminal identity, exact completed-response usage, and distinct retry lifecycle ids.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -122,7 +122,7 @@
         "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends event-level auditing while keeping client-observed attempts distinct from provider physical or billable calls. The first capture slice persists low-cardinality rollout events only; SQLite query projection and pricing remain separate follow-ups.",
+      "notes": "Extends event-level auditing while keeping client-observed HTTP attempts distinct from provider physical or billable calls. The first capture slice persists low-cardinality rollout events only; WebSocket adoption, SQLite query projection, and pricing remain separate follow-ups.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -969,6 +969,38 @@
       "extraction_target": "operator-owned agent workflow skills"
     },
     {
+      "id": "skill-loader-fixture-hermeticity",
+      "title": "Skill-loader fixture hermeticity",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "skill-loader test fixture construction",
+        "hosted test isolation from parent project layers"
+      ],
+      "files": [
+        "codex-rs/core-skills/src/loader_tests.rs"
+      ],
+      "behavior": "Downstream test fixtures explicitly isolate project-layer inputs and ignore ambient repository scope when asserting skill-root order. This changes only test setup and expectations; runtime skill loading remains upstream-owned.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "d2075153cf8f73c25e108b762b95861fd5757e6c",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.skill-loader-fixture-hermeticity-targeted",
+      "tests": [
+        "non_git_repo_skills_search_does_not_walk_parents",
+        "skill_roots_include_admin_with_lowest_priority"
+      ],
+      "owner": "downstream",
+      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "test-fixture-hermeticity",
+      "hotspot_files": [
+        "codex-rs/core-skills/src/loader_tests.rs"
+      ],
+      "extraction_target": "upstreamable explicit project-layer fixture isolation for skill-loader tests"
+    },
+    {
       "id": "ci-workflow-automation",
       "title": "CI/workflow automation and validation lanes",
       "status": "live",
@@ -1005,7 +1037,6 @@
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
-        "non_git_repo_skills_search_does_not_walk_parents",
         "test_validation_lab_plan_fingerprint_reads_selection_stdin",
         "test_validation_lab_plan_fingerprint_reports_missing_selection_stdin",
         "test_validation_lab_exposes_exact_plan_dedupe_metadata",

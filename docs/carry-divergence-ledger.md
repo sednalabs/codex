@@ -62,9 +62,10 @@ docs-only refresh commit that records this snapshot.
   fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
   large-output summary remains host-only until exec-server replay preserves
   bounded head, tail, and omission metadata before core subscribes. The
-  full-suite skill-loader fixture explicitly suppresses parent project layers
-  so ambient hosted-runner repository markers cannot alter its non-Git case. The
-  rust-ci-full summary parser records final nextest
+  `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
+  skill-loader fixture assertions that suppress or ignore ambient parent
+  project layers, so hosted-runner repository markers cannot alter the result.
+  The rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
   harvest artifacts. Validation-lab Rust batches reclaim target artifacts before
@@ -225,7 +226,7 @@ docs-only refresh commit that records this snapshot.
   captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
   TUI, and usage-ledger consumers receive provider-confirmed identity instead
   of falling back to `None`.
-- Each concrete HTTP or WebSocket sampling attempt emits a durable, payload-free
+- Each concrete HTTP sampling attempt emits a durable, payload-free
   rollout lifecycle with a stable local id, configured/requested identity,
   provider-supplied terminal identity, and exact per-response usage only on
   completed observations. Authentication retries, transport fallback, outer

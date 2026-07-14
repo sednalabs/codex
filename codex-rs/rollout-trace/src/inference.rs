@@ -55,10 +55,11 @@ struct EnabledInferenceTraceContext {
     writer: Option<Arc<TraceWriter>>,
     thread_id: AgentThreadId,
     codex_turn_id: CodexTurnId,
-    model: String,
-    provider_name: String,
+    raw_trace_model: String,
+    raw_trace_provider_name: String,
+    configured_model: String,
+    configured_provider: String,
     observation_thread_id: Option<ThreadId>,
-    observation_provider_name: Option<String>,
     configured_service_tier: Option<String>,
 }
 
@@ -131,10 +132,11 @@ impl InferenceTraceContext {
                 writer: Some(writer),
                 thread_id,
                 codex_turn_id,
-                model,
-                provider_name,
+                raw_trace_model: model.clone(),
+                raw_trace_provider_name: provider_name.clone(),
+                configured_model: model,
+                configured_provider: provider_name,
                 observation_thread_id: None,
-                observation_provider_name: None,
                 configured_service_tier: None,
             }),
         }
@@ -154,15 +156,17 @@ impl InferenceTraceContext {
                 writer: None,
                 thread_id: thread_id.to_string(),
                 codex_turn_id: turn_id,
-                model: configured_model,
-                provider_name: configured_provider.clone(),
+                raw_trace_model: configured_model.clone(),
+                raw_trace_provider_name: configured_provider.clone(),
+                configured_model,
+                configured_provider,
                 observation_thread_id: Some(thread_id),
-                observation_provider_name: Some(configured_provider),
                 configured_service_tier,
             },
             InferenceTraceContextState::Enabled(mut context) => {
+                context.configured_model = configured_model;
+                context.configured_provider = configured_provider;
                 context.observation_thread_id = Some(thread_id);
-                context.observation_provider_name = Some(configured_provider);
                 context.configured_service_tier = configured_service_tier;
                 context
             }
@@ -176,13 +180,33 @@ impl InferenceTraceContext {
     pub fn start_attempt(&self) -> InferenceTraceAttempt {
         let requested_model = match &self.state {
             InferenceTraceContextState::Disabled => String::new(),
-            InferenceTraceContextState::Enabled(context) => context.model.clone(),
+            InferenceTraceContextState::Enabled(context) => context.raw_trace_model.clone(),
         };
         self.start_observed_attempt(
             InferenceCallTransport::ResponsesHttp,
             requested_model,
             /*requested_service_tier*/ None,
         )
+    }
+
+    /// Starts a raw-trace-only attempt without emitting a durable observation.
+    ///
+    /// This keeps transports that have not adopted the observation contract on
+    /// the existing raw replay path while another transport is wired first.
+    pub fn start_raw_attempt(&self) -> InferenceTraceAttempt {
+        let InferenceTraceContextState::Enabled(context) = &self.state else {
+            return InferenceTraceAttempt::disabled();
+        };
+
+        InferenceTraceAttempt {
+            state: InferenceTraceAttemptState::Enabled(EnabledInferenceTraceAttempt {
+                context: context.clone(),
+                observation: None,
+                inference_call_id: next_inference_call_id(),
+                raw_started: AtomicBool::new(false),
+                terminal_recorded: AtomicBool::new(false),
+            }),
+        }
     }
 
     /// Starts an attempt with the configured/requested observation boundary.
@@ -296,8 +320,8 @@ impl InferenceTraceAttempt {
                 inference_call_id: attempt.inference_call_id.clone(),
                 thread_id: context.thread_id.clone(),
                 codex_turn_id: context.codex_turn_id.clone(),
-                model: context.model.clone(),
-                provider_name: context.provider_name.clone(),
+                model: context.raw_trace_model.clone(),
+                provider_name: context.raw_trace_provider_name.clone(),
                 request_payload,
             },
         );
@@ -499,11 +523,8 @@ impl InferenceAttemptObservation {
             turn_id: context.codex_turn_id.clone(),
             status,
             transport: self.transport,
-            configured_provider: context
-                .observation_provider_name
-                .clone()
-                .expect("observation attempts have a configured provider"),
-            configured_model: context.model.clone(),
+            configured_provider: context.configured_provider.clone(),
+            configured_model: context.configured_model.clone(),
             configured_service_tier: context.configured_service_tier.clone(),
             requested_model: self.requested_model.clone(),
             requested_service_tier: self.requested_service_tier.clone(),
@@ -837,6 +858,72 @@ mod tests {
                 "encrypted_content": "encoded",
             }),
         );
+    }
+
+    #[test]
+    fn raw_trace_toggle_preserves_configured_and_requested_identity() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let configured_provider = "configured-provider";
+        let configured_model = "configured-model-alias";
+        let requested_model = "resolved-request-model";
+        let requested_service_tier = Some("priority".to_string());
+
+        let disabled = InferenceTraceContext::disabled()
+            .with_observations(
+                thread_id,
+                "turn-identity".to_string(),
+                configured_provider.to_string(),
+                configured_model.to_string(),
+                /*configured_service_tier*/ None,
+            )
+            .start_observed_attempt(
+                InferenceCallTransport::ResponsesHttp,
+                requested_model.to_string(),
+                requested_service_tier.clone(),
+            )
+            .started_observation()
+            .expect("disabled raw trace still records an observation");
+
+        let temp = TempDir::new()?;
+        let writer = Arc::new(TraceWriter::create(
+            temp.path(),
+            "trace-identity".to_string(),
+            "rollout-identity".to_string(),
+            thread_id.to_string(),
+        )?);
+        let enabled = InferenceTraceContext::enabled(
+            writer,
+            thread_id.to_string(),
+            "turn-identity".to_string(),
+            "raw-trace-model".to_string(),
+            "raw-trace-provider".to_string(),
+        )
+        .with_observations(
+            thread_id,
+            "turn-identity".to_string(),
+            configured_provider.to_string(),
+            configured_model.to_string(),
+            /*configured_service_tier*/ None,
+        )
+        .start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            requested_model.to_string(),
+            requested_service_tier,
+        )
+        .started_observation()
+        .expect("enabled raw trace records an observation");
+
+        assert_eq!(enabled.configured_provider, configured_provider);
+        assert_eq!(enabled.configured_model, configured_model);
+        assert_eq!(enabled.requested_model, requested_model);
+
+        let normalize = |mut event: InferenceCallEvent| {
+            event.inference_call_id.clear();
+            event.request_started_at_ms = 0;
+            event
+        };
+        assert_eq!(normalize(enabled), normalize(disabled));
+        Ok(())
     }
 
     #[test]
