@@ -2252,6 +2252,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            configured_inference_identity_authority: Default::default(),
+            latest_request_inference_identity_authority: Default::default(),
             created_at,
             updated_at: created_at,
             recency_at: created_at,

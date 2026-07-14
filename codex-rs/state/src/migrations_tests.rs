@@ -285,3 +285,36 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
 }
+
+#[tokio::test]
+async fn inference_identity_authority_migration_upgrades_0044_schema() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(/*version*/ 44)
+        .run(&pool)
+        .await
+        .expect("0044 schema should apply");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("upgrade should apply");
+
+    let columns = sqlx::query("PRAGMA table_info(threads)")
+        .fetch_all(&pool)
+        .await
+        .expect("thread columns should load")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .filter(|name| name.ends_with("inference_identity_authority"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        vec![
+            "configured_inference_identity_authority",
+            "latest_request_inference_identity_authority",
+        ]
+    );
+}

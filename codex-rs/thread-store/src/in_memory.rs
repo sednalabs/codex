@@ -57,6 +57,8 @@ mod tests {
     use crate::ThreadPersistenceMetadata;
     use crate::ThreadSortKey;
     use codex_protocol::models::BaseInstructions;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::SessionSource;
 
     #[tokio::test]
@@ -309,6 +311,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn inference_identity_patches_mutate_only_the_present_field_in_memory() {
+        let store = InMemoryThreadStore::default();
+        let thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(thread_id, ThreadHistoryMode::Legacy))
+            .await
+            .expect("create thread");
+        let configured = identity("configured");
+        let requested = identity("requested");
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(Some(configured)),
+                    latest_request_inference_identity: Some(Some(requested.clone())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set identities");
+
+        let replacement = identity("configured-replacement");
+        let updated = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(Some(replacement.clone())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("replace configured identity");
+        assert_eq!(
+            (
+                updated.configured_inference_identity_authority,
+                updated.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Valid(replacement.clone()),
+                ThreadInferenceIdentityAuthority::Valid(requested),
+            )
+        );
+
+        let cleared = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    latest_request_inference_identity: Some(None),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("clear request identity");
+        assert_eq!(
+            (
+                cleared.configured_inference_identity_authority,
+                cleared.latest_request_inference_identity_authority,
+            ),
+            (
+                ThreadInferenceIdentityAuthority::Valid(replacement),
+                ThreadInferenceIdentityAuthority::Cleared,
+            )
+        );
+    }
+
     fn create_thread_params(
         thread_id: ThreadId,
         history_mode: ThreadHistoryMode,
@@ -337,6 +408,14 @@ mod tests {
             cwd: None,
             model_provider: "test-provider".to_string(),
             memory_mode: ThreadMemoryMode::Enabled,
+        }
+    }
+
+    fn identity(model: &str) -> ThreadInferenceIdentity {
+        ThreadInferenceIdentity {
+            model: model.to_string(),
+            model_provider_id: "test-provider".to_string(),
+            reasoning_effort: None,
         }
     }
 
@@ -774,6 +853,22 @@ fn stored_thread_from_state(
             .unwrap_or_else(|| "test".to_string()),
         model: metadata.and_then(|metadata| metadata.model.clone()),
         reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone()),
+        configured_inference_identity_authority: metadata
+            .and_then(|metadata| {
+                metadata
+                    .configured_inference_identity
+                    .clone()
+                    .map(Into::into)
+            })
+            .unwrap_or_default(),
+        latest_request_inference_identity_authority: metadata
+            .and_then(|metadata| {
+                metadata
+                    .latest_request_inference_identity
+                    .clone()
+                    .map(Into::into)
+            })
+            .unwrap_or_default(),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
             .unwrap_or_else(Utc::now),
