@@ -775,7 +775,10 @@ fn stored_thread_from_state(
         model: metadata.and_then(|metadata| metadata.model.clone()),
         reasoning_effort: metadata
             .and_then(|metadata| metadata.resolved_reasoning_effort().flatten()),
-        service_tier: metadata.and_then(|metadata| metadata.service_tier.clone().flatten()),
+        configured_service_tier: metadata
+            .and_then(|metadata| metadata.configured_service_tier.clone().flatten()),
+        latest_turn_request_identity: metadata
+            .and_then(|metadata| metadata.latest_turn_request_identity.clone().flatten()),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
             .unwrap_or_else(Utc::now),
