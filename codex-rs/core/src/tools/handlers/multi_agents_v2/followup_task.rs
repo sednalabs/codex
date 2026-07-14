@@ -33,6 +33,7 @@ impl Handler {
             MessageDeliveryMode::TriggerTurn,
             args.target,
             args.message,
+            args.expected_model,
         )
         .await
         .map(boxed_tool_output)

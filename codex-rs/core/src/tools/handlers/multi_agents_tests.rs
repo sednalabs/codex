@@ -2251,6 +2251,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             function_payload(json!({
                 "target": agent_id.to_string(),
                 "message": "continue",
+                "expected_model": worker_config.model.clone(),
             })),
         ))
         .await
@@ -2264,6 +2265,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             "effective_model": worker_config.model,
             "effective_model_provider_id": worker_config.model_provider_id,
             "effective_reasoning_effort": worker_config.reasoning_effort,
+            "effective_service_tier": worker_config.service_tier,
         })
     );
 
@@ -2352,6 +2354,72 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
     .expect("parent should receive one completion notification per child turn");
 
     assert_eq!(notifications.len(), 2);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_followup_task_rejects_unexpected_model_without_sending() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = turn.config.as_ref().clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    root.thread.codex.session.new_default_turn().await;
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "boot worker",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn worker");
+    let agent_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker should resolve");
+
+    let err = FollowupTaskHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "followup_task",
+            function_payload(json!({
+                "target": agent_id.to_string(),
+                "message": "continue",
+                "expected_model": "another-model",
+            })),
+        ))
+        .await
+        .err()
+        .expect("a model mismatch should reject the follow-up");
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("a model mismatch should surface as a model-facing error");
+    };
+    assert!(message.contains("follow-up task was not sent"));
+    assert!(message.contains("not expected model `another-model`"));
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == agent_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.encrypted_content.as_deref() == Some("continue")
+            )
+    }));
 }
 
 #[tokio::test]

@@ -51,6 +51,7 @@ pub(crate) struct SendMessageArgs {
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    pub(crate) expected_model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +60,7 @@ struct FollowupTaskResult {
     effective_model: String,
     effective_model_provider_id: String,
     effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_service_tier: Option<String>,
 }
 
 pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
@@ -76,6 +78,7 @@ pub(crate) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    expected_model: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     handle_message_submission(
         invocation,
@@ -83,6 +86,7 @@ pub(crate) async fn handle_message_string_tool(
         target,
         message_content(message)?,
         /*interrupt*/ false,
+        expected_model,
     )
     .await
 }
@@ -122,6 +126,7 @@ async fn handle_message_submission(
     target: String,
     message: String,
     interrupt: bool,
+    expected_model: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -175,6 +180,14 @@ async fn handle_message_submission(
                 "agent with id {receiver_thread_id} has no runtime config snapshot"
             ))
         })?;
+    if let Some(expected_model) = expected_model
+        && receiver_config.model != expected_model
+    {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "follow-up task was not sent: target {receiver_agent_path} uses model `{}`, not expected model `{expected_model}`",
+            receiver_config.model
+        )));
+    }
     let author = turn
         .session_source
         .get_agent_path()
@@ -213,6 +226,7 @@ async fn handle_message_submission(
                 effective_model: receiver_config.model,
                 effective_model_provider_id: receiver_config.model_provider_id,
                 effective_reasoning_effort: receiver_config.reasoning_effort,
+                effective_service_tier: receiver_config.service_tier,
             },
             "followup_task",
         ),
@@ -229,5 +243,8 @@ pub(crate) async fn handle_message_items_tool(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let tool_name = invocation.tool_name.clone();
     let prompt = message_content_from_items(tool_name.name.as_str(), items)?;
-    handle_message_submission(invocation, mode, target, prompt, interrupt).await
+    handle_message_submission(
+        invocation, mode, target, prompt, interrupt, /*expected_model*/ None,
+    )
+    .await
 }
