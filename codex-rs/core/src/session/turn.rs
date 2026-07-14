@@ -158,10 +158,6 @@ pub(crate) async fn run_turn(
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
     turn_context.reset_terminal_response_model_identity().await;
-    // Make configured request identity visible even if pre-sampling compaction is the first
-    // provider call. The post-reconciliation ensure below repairs any replacement history.
-    sess.ensure_subagent_runtime_identity_context(turn_context.as_ref())
-        .await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -193,8 +189,6 @@ pub(crate) async fn run_turn(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(turn_context.as_ref()),
     );
-    sess.ensure_subagent_runtime_identity_context(turn_context.as_ref())
-        .await;
 
     let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,
