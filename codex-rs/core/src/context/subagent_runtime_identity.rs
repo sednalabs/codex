@@ -4,7 +4,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use serde::Serialize;
 use sha1::Digest;
-use std::fmt::Write;
 
 use super::ContextualUserFragment;
 use crate::ThreadConfigSnapshot;
@@ -144,11 +143,7 @@ fn bounded_identity_value<'a>(
 
 fn sha1_hex(value: &str) -> String {
     let digest = sha1::Sha1::digest(value.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut hex, "{byte:02x}").expect("writing to a String should not fail");
-    }
-    hex
+    format!("{digest:x}")
 }
 
 impl ContextualUserFragment for SubagentRuntimeIdentity {
@@ -165,8 +160,15 @@ impl ContextualUserFragment for SubagentRuntimeIdentity {
     }
 
     fn body(&self) -> String {
-        let payload = serde_json::to_string(&self.payload())
-            .expect("effective subagent identity should serialize to JSON");
+        let payload = match serde_json::to_string(&self.payload()) {
+            Ok(payload) => payload,
+            Err(_) => concat!(
+                "{\"identity_semantics\":\"runtime_identity_serialization_failed\",",
+                "\"usage_accounting\":",
+                "\"not_terminal_provider_response_or_usage_accounting\"}"
+            )
+            .to_string(),
+        };
         format!("\n{payload}\n")
     }
 }

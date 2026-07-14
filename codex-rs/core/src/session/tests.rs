@@ -8768,9 +8768,12 @@ async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() 
         2,
         "changed identity should append one update"
     );
-    let current_snapshot = session.thread_config_snapshot().await;
-    let current_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(&current_snapshot)
-        .expect("thread-spawn identity");
+    let current_identity = {
+        let state = session.state.lock().await;
+        let current_snapshot = state.session_configuration.thread_config_snapshot();
+        SubagentRuntimeIdentity::from_thread_config_snapshot(&current_snapshot)
+            .expect("thread-spawn identity")
+    };
     assert!(
         current_identity.matches_current_response_item(
             identities
