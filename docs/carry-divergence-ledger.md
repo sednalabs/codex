@@ -351,6 +351,7 @@ docs-only refresh commit that records this snapshot.
 - Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
+- A validated, versioned identity-authority codec and optional store sidecar distinguish legacy absence, valid data, deliberate clears, and exact malformed diagnostics without changing existing public thread literals or store implementations.
 - `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
 - The live tool-contract schema in
   `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` and
@@ -380,6 +381,10 @@ docs-only refresh commit that records this snapshot.
   delivery or user steering, or timeout.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
+  - `codex-rs/protocol/src/models.rs`
+  - `codex-rs/state/src/inference_identity.rs`
+  - `codex-rs/state/migrations/0045_threads_inference_identity_authority.sql`
+  - `codex-rs/thread-store/src/inference_identity.rs`
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
