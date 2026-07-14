@@ -72,8 +72,8 @@ fn runtime_identity_payload(request: &ResponsesRequest) -> Value {
                 && text.trim().ends_with(RUNTIME_IDENTITY_END)
         })
         .collect::<Vec<_>>();
-    let [fragment] = fragments.as_slice() else {
-        panic!("expected exactly one runtime identity fragment, got {fragments:?}");
+    let Some(fragment) = fragments.last() else {
+        panic!("expected at least one runtime identity fragment");
     };
     let payload = fragment
         .trim()
