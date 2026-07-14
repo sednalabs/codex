@@ -367,8 +367,9 @@ docs-only refresh commit that records this snapshot.
   evidence, and is rebuilt with canonical initial context after compaction.
   A settings change appends a latest-fragment-wins update without rewriting
   cached history. Oversized or marker-bearing identity values are replaced by
-  explicit length-and-digest metadata, and full-history forks remove inherited
-  parent fragments so task text cannot become routing truth.
+  explicit length-and-digest metadata, full-history forks remove inherited
+  parent fragments, and raw history injection reserves the marker so task text
+  and client-supplied developer items cannot become routing truth.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
