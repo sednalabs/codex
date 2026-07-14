@@ -94,6 +94,11 @@ async fn handle_spawn_agent(
         args.model.as_deref(),
         args.expected_model.as_deref(),
     )?;
+    validate_spawn_agent_expected_reasoning_effort(
+        &config,
+        args.reasoning_effort.as_ref(),
+        args.expected_reasoning_effort.as_ref(),
+    )?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -216,6 +221,7 @@ struct SpawnAgentArgs {
     model: Option<String>,
     expected_model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    expected_reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
@@ -287,6 +293,38 @@ fn validate_spawn_agent_expected_model(
             effective_model,
         },
         "spawn_agent model mismatch",
+    )))
+}
+
+#[derive(Debug, Serialize)]
+struct SpawnAgentReasoningEffortMismatch<'a> {
+    error: &'static str,
+    requested_reasoning_effort: Option<&'a ReasoningEffort>,
+    expected_reasoning_effort: &'a ReasoningEffort,
+    effective_reasoning_effort: Option<&'a ReasoningEffort>,
+}
+
+fn validate_spawn_agent_expected_reasoning_effort(
+    config: &Config,
+    requested_reasoning_effort: Option<&ReasoningEffort>,
+    expected_reasoning_effort: Option<&ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    let Some(expected_reasoning_effort) = expected_reasoning_effort else {
+        return Ok(());
+    };
+    let effective_reasoning_effort = config.model_reasoning_effort.as_ref();
+    if effective_reasoning_effort == Some(expected_reasoning_effort) {
+        return Ok(());
+    }
+
+    Err(FunctionCallError::RespondToModel(tool_output_json_text(
+        &SpawnAgentReasoningEffortMismatch {
+            error: "spawn_agent_reasoning_effort_mismatch",
+            requested_reasoning_effort,
+            expected_reasoning_effort,
+            effective_reasoning_effort,
+        },
+        "spawn_agent reasoning effort mismatch",
     )))
 }
 
