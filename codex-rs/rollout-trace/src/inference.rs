@@ -648,6 +648,7 @@ mod tests {
 
     use super::*;
     use crate::model::ExecutionStatus;
+    use crate::raw_event::RawTraceEvent;
     use crate::replay_bundle;
 
     #[test]
