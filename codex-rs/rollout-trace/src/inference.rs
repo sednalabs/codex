@@ -55,8 +55,10 @@ struct EnabledInferenceTraceContext {
     writer: Option<Arc<TraceWriter>>,
     thread_id: AgentThreadId,
     codex_turn_id: CodexTurnId,
-    model: String,
-    provider_name: String,
+    raw_trace_model: String,
+    raw_trace_provider_name: String,
+    configured_model: String,
+    configured_provider: String,
     observation_thread_id: Option<ThreadId>,
     configured_service_tier: Option<String>,
 }
@@ -129,8 +131,10 @@ impl InferenceTraceContext {
                 writer: Some(writer),
                 thread_id,
                 codex_turn_id,
-                model,
-                provider_name,
+                raw_trace_model: model.clone(),
+                raw_trace_provider_name: provider_name.clone(),
+                configured_model: model,
+                configured_provider: provider_name,
                 observation_thread_id: None,
                 configured_service_tier: None,
             }),
@@ -151,12 +155,16 @@ impl InferenceTraceContext {
                 writer: None,
                 thread_id: thread_id.to_string(),
                 codex_turn_id: turn_id,
-                model: configured_model,
-                provider_name: configured_provider,
+                raw_trace_model: configured_model.clone(),
+                raw_trace_provider_name: configured_provider.clone(),
+                configured_model,
+                configured_provider,
                 observation_thread_id: Some(thread_id),
                 configured_service_tier,
             },
             InferenceTraceContextState::Enabled(mut context) => {
+                context.configured_model = configured_model;
+                context.configured_provider = configured_provider;
                 context.observation_thread_id = Some(thread_id);
                 context.configured_service_tier = configured_service_tier;
                 context
@@ -171,7 +179,7 @@ impl InferenceTraceContext {
     pub fn start_attempt(&self) -> InferenceTraceAttempt {
         let requested_model = match &self.state {
             InferenceTraceContextState::Disabled => String::new(),
-            InferenceTraceContextState::Enabled(context) => context.model.clone(),
+            InferenceTraceContextState::Enabled(context) => context.raw_trace_model.clone(),
         };
         self.start_observed_attempt(
             InferenceCallTransport::ResponsesHttp,
@@ -289,8 +297,8 @@ impl InferenceTraceAttempt {
                 inference_call_id: attempt.inference_call_id.clone(),
                 thread_id: context.thread_id.clone(),
                 codex_turn_id: context.codex_turn_id.clone(),
-                model: context.model.clone(),
-                provider_name: context.provider_name.clone(),
+                model: context.raw_trace_model.clone(),
+                provider_name: context.raw_trace_provider_name.clone(),
                 request_payload,
             },
         );
@@ -490,8 +498,8 @@ impl InferenceAttemptObservation {
             turn_id: context.codex_turn_id.clone(),
             status,
             transport: self.transport,
-            configured_provider: context.provider_name.clone(),
-            configured_model: context.model.clone(),
+            configured_provider: context.configured_provider.clone(),
+            configured_model: context.configured_model.clone(),
             configured_service_tier: context.configured_service_tier.clone(),
             requested_model: self.requested_model.clone(),
             requested_service_tier: self.requested_service_tier.clone(),
