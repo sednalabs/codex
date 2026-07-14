@@ -1,8 +1,10 @@
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
+use crate::context::CompletionProviderReceipt;
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentCompletionMessage;
 use crate::context::SubagentNotification;
@@ -29,6 +31,15 @@ pub(crate) fn format_inter_agent_completion_message(
     sender: AgentPath,
     status: &AgentStatus,
 ) -> Option<String> {
+    format_inter_agent_completion_message_with_receipt(task_name, sender, status, None)
+}
+
+pub(crate) fn format_inter_agent_completion_message_with_receipt(
+    task_name: AgentPath,
+    sender: AgentPath,
+    status: &AgentStatus,
+    turn_complete: Option<&TurnCompleteEvent>,
+) -> Option<String> {
     let payload = match status {
         AgentStatus::Completed(Some(message)) => message.clone(),
         AgentStatus::Completed(None) => String::new(),
@@ -40,7 +51,23 @@ pub(crate) fn format_inter_agent_completion_message(
         AgentStatus::NotFound => "Agent was not found.".to_string(),
         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
     };
-    Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
+    let provider_receipt = turn_complete.and_then(|event| {
+        CompletionProviderReceipt::new(
+            event.final_model.clone(),
+            event.model_snapshot.clone(),
+            event.provider_usage.clone(),
+        )
+    });
+    let message = match provider_receipt {
+        Some(provider_receipt) => InterAgentCompletionMessage::with_provider_receipt(
+            task_name,
+            sender,
+            provider_receipt,
+            payload,
+        ),
+        None => InterAgentCompletionMessage::new(task_name, sender, payload),
+    };
+    Some(message.render())
 }
 
 #[cfg(test)]
