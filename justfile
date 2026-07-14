@@ -272,8 +272,8 @@ core-multi-agent-orchestration-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
-    cargo nextest run -p codex-protocol --lib -- protocol::tests::turn_complete_without_provider_usage_remains_compatible --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::safety_check_downgrade::openai_model_header_mismatch_only_emits_one_warning_per_turn suite::compact_remote::remote_compact_v2_reuses_compaction_trigger_for_followups --exact
+    cargo nextest run -p codex-protocol --lib --no-tests=fail -- protocol::tests::turn_complete_without_provider_usage_remains_compatible --exact
+    RUST_MIN_STACK=8388608 CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all --no-tests=fail -- suite::safety_check_downgrade::openai_model_header_mismatch_only_emits_one_warning_per_turn suite::safety_check_downgrade::nonterminal_response_identity_is_not_reported_when_follow_up_fails suite::compact_remote::remote_compact_replaces_history_for_followups suite::compact_remote::remote_compact_v2_reuses_compaction_trigger_for_followups --exact
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
