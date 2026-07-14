@@ -20,14 +20,12 @@ on:
         options:
           - all
           - core-compile-smoke
-          - codex.inference-observation-contract-targeted
-          - codex.inference-observation-core-targeted
-          - codex.inference-observation-integration-targeted
           - core-carry-core-smoke
           - codex.nextest-archive-core-carry-pilot
           - core-carry-ui-smoke
           - core-ledger-smoke
           - core-runtime-surface-smoke
+          - codex.skill-loader-fixture-hermeticity-targeted
           - codex.core-startup-sync-targeted
           - codex.core-subagent-surface-targeted
           - codex.core-subagent-inspect-tree-fallback-targeted
