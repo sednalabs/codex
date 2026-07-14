@@ -8,6 +8,7 @@ import io
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -927,7 +928,7 @@ class RouteSelectionTests(unittest.TestCase):
                     expected_lanes,
                 )
 
-    def test_inference_observation_lanes_require_nextest_and_nonempty_selectors(self) -> None:
+    def test_inference_observation_lanes_use_guarded_exact_selector_inventory(self) -> None:
         lanes = {
             lane["lane_id"]: lane
             for lane in self.catalog["lanes"]
@@ -941,11 +942,55 @@ class RouteSelectionTests(unittest.TestCase):
                 "codex.inference-observation-integration-targeted",
             },
         )
-        for lane in lanes.values():
+        expected_selectors = {
+            "codex.inference-observation-contract-targeted": {
+                "protocol::tests::inference_call_event_round_trips_legacy_wire_shape_and_typescript_contract",
+                "protocol::tests::inference_call_event_bounds_strings_and_noncompleted_evidence",
+                "inference::tests::enabled_attempt_adds_inference_request_header",
+                "inference::tests::observations_use_configured_provider_id_in_both_trace_modes",
+                "inference::tests::enabled_context_records_replayable_inference_attempt",
+                "inference::tests::raw_trace_toggle_preserves_configured_and_requested_identity",
+                "inference::tests::observations_keep_exact_usage_and_distinct_retry_boundaries",
+                "inference_tests::duplicate_terminal_records_return_exactly_one_observation",
+                "inference_tests::concurrent_terminal_race_returns_exactly_one_observation",
+                "policy::tests::inference_call_events_persist_in_legacy_and_paginated_rollouts",
+            },
+            "codex.inference-observation-core-targeted": {
+                "sse::responses::tests::parses_items_and_completed",
+                "session::tests::turn_inference_identity_captures_final_request_service_tier",
+                "session::tests::real_turn_construction_publishes_configured_and_request_identity",
+                "session::tests::configured_inference_identity_preserves_original_model_alias_and_fallback",
+                "client_tests::pending_setup_delivers_started_then_cancelled_while_sink_is_blocked",
+                "client_tests::websocket_fallback_records_distinct_attempts_and_http_completion_evidence",
+                "client_tests::websocket_completion_records_observed_identity_and_exact_usage",
+                "client_tests::dropping_pending_websocket_setup_records_cancellation",
+                "client_tests::websocket_trace_uses_concrete_request_except_after_untraced_warmup",
+            },
+            "codex.inference-observation-integration-targeted": {
+                "suite::inference_observations::http_retry_emits_distinct_failed_and_completed_attempts",
+                "suite::inference_observations::websocket_retry_emits_distinct_failed_and_completed_attempts",
+                "suite::inference_observations::interrupting_pending_http_response_emits_cancelled_without_completion_evidence",
+                "suite::client::http_401_auth_recovery_records_distinct_attempts",
+                "suite::client::websocket_401_auth_recovery_records_distinct_attempts",
+                "suite::inference_observation_persistence::detached_delivery_persists_whole_event_pairs_in_both_history_modes",
+                "suite::inference_observation_persistence::cancelling_real_http_setup_persists_started_then_cancelled",
+            },
+        }
+        invocation_pattern = re.compile(r"^run_(?:lib|test) [^']*'([^']+)'$")
+        for lane_id, lane in lanes.items():
             self.assertTrue(lane["needs_nextest"])
             script = (REPO_ROOT / lane["script_path"]).read_text()
             self.assertIn("cargo nextest run", script)
             self.assertIn("--no-tests=fail", script)
+            self.assertIn('-E "test(=${selector})"', script)
+            self.assertNotIn("test(/", script)
+            selectors = [
+                match.group(1)
+                for line in script.splitlines()
+                if (match := invocation_pattern.fullmatch(line))
+            ]
+            self.assertEqual(len(selectors), len(set(selectors)))
+            self.assertEqual(set(selectors), expected_selectors[lane_id])
 
     def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
