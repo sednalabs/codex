@@ -33,7 +33,7 @@ fn restore_persisted_agent_model_selection(
     thread_id: ThreadId,
 ) -> CodexResult<()> {
     let persisted = history.iter().find_map(|item| match item {
-        RolloutItem::EventMsg(event) => match &event.msg {
+        RolloutItem::EventMsg(event) => match event {
             EventMsg::SessionConfigured(configured) => Some(configured),
             _ => None,
         },
