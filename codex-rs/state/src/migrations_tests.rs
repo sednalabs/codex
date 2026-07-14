@@ -50,7 +50,7 @@ fn state_migration_versions_are_unique() {
 }
 
 #[tokio::test]
-async fn service_tier_migration_preserves_legacy_rows_as_null() {
+async fn inference_identity_migration_preserves_legacy_rows_as_null() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -88,13 +88,18 @@ INSERT INTO threads (
         .await
         .expect("service-tier migration should apply");
 
-    let service_tier =
-        sqlx::query_scalar::<_, Option<String>>("SELECT service_tier FROM threads WHERE id = ?")
-            .bind("00000000-0000-0000-0000-000000000045")
-            .fetch_one(&pool)
-            .await
-            .expect("migrated row should load");
-    assert_eq!(service_tier, None);
+    let row = sqlx::query(
+        "SELECT configured_service_tier, latest_turn_request_identity FROM threads WHERE id = ?",
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .fetch_one(&pool)
+    .await
+    .expect("migrated row should load");
+    assert_eq!(row.try_get::<Option<String>, _>(0).expect("tier"), None);
+    assert_eq!(
+        row.try_get::<Option<String>, _>(1).expect("turn identity"),
+        None
+    );
 }
 
 #[tokio::test]

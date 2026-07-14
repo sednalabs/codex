@@ -12,6 +12,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::TurnRequestIdentity;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::strip_user_message_prefix;
 use codex_protocol::protocol::user_message_preview;
@@ -239,29 +240,50 @@ impl ThreadMetadataSync {
                         self.cwd_seen = true;
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
-                    update.model = Some(turn_ctx.model.clone());
-                    if let Some(reasoning_effort) = turn_ctx.reasoning_effort_update.clone() {
+                    if let Some(configured) = turn_ctx.configured_inference_identity.as_ref() {
+                        update.model = Some(configured.configured_model.clone());
+                        update.model_provider =
+                            Some(configured.configured_model_provider_id.clone());
                         update.reasoning_effort = None;
-                        update.reasoning_effort_update = Some(reasoning_effort);
-                    } else if turn_ctx.effort.is_some() {
-                        update.reasoning_effort = turn_ctx.effort.clone();
-                        update.reasoning_effort_update = None;
+                        update.reasoning_effort_update =
+                            Some(configured.configured_reasoning_effort.clone());
+                        update.configured_service_tier =
+                            Some(configured.configured_service_tier.clone());
+                    } else {
+                        update.model = Some(turn_ctx.model.clone());
+                        if let Some(reasoning_effort) = turn_ctx.reasoning_effort_update.clone() {
+                            update.reasoning_effort = None;
+                            update.reasoning_effort_update = Some(reasoning_effort);
+                        } else if turn_ctx.effort.is_some() {
+                            update.reasoning_effort = turn_ctx.effort.clone();
+                            update.reasoning_effort_update = None;
+                        }
                     }
-                    if let Some(service_tier) = turn_ctx.service_tier.clone() {
-                        update.service_tier = Some(service_tier);
-                    }
+                    update.latest_turn_request_identity = Some(Some(
+                        turn_ctx
+                            .request_inference_identity
+                            .clone()
+                            .unwrap_or_else(|| TurnRequestIdentity {
+                                turn_id: turn_ctx.turn_id.clone(),
+                                request_model: turn_ctx.model.clone(),
+                                model_provider_id: None,
+                                requested_reasoning_effort: turn_ctx
+                                    .reasoning_effort_update
+                                    .clone()
+                                    .unwrap_or_else(|| turn_ctx.effort.clone()),
+                                request_service_tier: None,
+                            }),
+                    ));
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
                     let settings = &event.thread_settings;
                     update.model = Some(settings.model.clone());
-                    if !settings.model_provider_id.is_empty() {
-                        update.model_provider = Some(settings.model_provider_id.clone());
-                    }
+                    update.model_provider = Some(settings.model_provider_id.clone());
                     update.reasoning_effort = None;
                     update.reasoning_effort_update = Some(settings.reasoning_effort.clone());
-                    update.service_tier = Some(settings.service_tier.clone());
+                    update.configured_service_tier = Some(settings.service_tier.clone());
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
                     self.observe_user_message(user, &mut update);
@@ -365,7 +387,8 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.model.is_some()
         || update.reasoning_effort.is_some()
         || update.reasoning_effort_update.is_some()
-        || update.service_tier.is_some()
+        || update.configured_service_tier.is_some()
+        || update.latest_turn_request_identity.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
         || update.source.is_some()
@@ -506,118 +529,74 @@ mod tests {
     }
 
     #[test]
-    fn inference_identity_items_emit_complete_metadata_patches() {
+    fn inference_identity_receipts_remain_separate_and_preserve_clears() {
         let thread_id = ThreadId::new();
         let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));
         let turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "turn_id": "turn-1",
             "cwd": "/tmp",
             "approval_policy": "never",
             "sandbox_policy": { "type": "danger-full-access" },
-            "model": "gpt-turn",
-            "service_tier": "priority",
-            "effort": "high",
-            "reasoning_effort_update": "high",
-            "summary": "auto",
+            "model": "request-model",
+            "configured_inference_identity": {
+                "configured_model": "configured-model",
+                "configured_model_provider_id": "configured-provider",
+                "configured_reasoning_effort": "high",
+                "configured_service_tier": "priority"
+            },
+            "request_inference_identity": {
+                "turn_id": "turn-1",
+                "request_model": "request-model",
+                "model_provider_id": "request-provider",
+                "requested_reasoning_effort": "medium",
+                "request_service_tier": "flex"
+            },
+            "effort": "medium",
+            "reasoning_effort_update": "medium",
+            "summary": "auto"
         }))
         .expect("turn context should deserialize");
-
-        let turn_update = sync
+        let update = sync
             .observe_appended_items(&[RolloutItem::TurnContext(turn_context)])
-            .expect("turn context metadata update");
-        sync.mark_pending_update_applied(&turn_update);
+            .expect("turn identity metadata update");
         assert_eq!(
-            (
-                turn_update.patch.model,
-                turn_update.patch.reasoning_effort,
-                turn_update.patch.reasoning_effort_update,
-                turn_update.patch.service_tier,
-            ),
-            (
-                Some("gpt-turn".to_string()),
-                None,
-                Some(Some(ReasoningEffort::High)),
-                Some(Some("priority".to_string())),
-            )
+            update.patch,
+            ThreadMetadataPatch {
+                model: Some("configured-model".to_string()),
+                model_provider: Some("configured-provider".to_string()),
+                reasoning_effort_update: Some(Some(
+                    codex_protocol::openai_models::ReasoningEffort::High,
+                )),
+                configured_service_tier: Some(Some("priority".to_string())),
+                latest_turn_request_identity: Some(Some(TurnRequestIdentity {
+                    turn_id: Some("turn-1".to_string()),
+                    request_model: "request-model".to_string(),
+                    model_provider_id: Some("request-provider".to_string()),
+                    requested_reasoning_effort: Some(ReasoningEffort::Medium),
+                    request_service_tier: Some("flex".to_string()),
+                })),
+                approval_mode: Some(AskForApproval::Never),
+                permission_profile: Some(PermissionProfile::Disabled),
+                updated_at: update.patch.updated_at,
+                ..Default::default()
+            }
         );
+        sync.mark_pending_update_applied(&update);
 
-        let settings_update = sync
-            .observe_appended_items(&[RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
-                ThreadSettingsAppliedEvent {
-                    thread_settings: ThreadSettingsSnapshot {
-                        model: "gpt-settings".to_string(),
-                        model_provider_id: "settings-provider".to_string(),
-                        service_tier: Some("flex".to_string()),
-                        approval_policy: AskForApproval::Never,
-                        approvals_reviewer: ApprovalsReviewer::User,
-                        permission_profile: PermissionProfile::Disabled,
-                        active_permission_profile: None,
-                        cwd: serde_json::from_value(serde_json::json!("/tmp"))
-                            .expect("absolute cwd"),
-                        reasoning_effort: Some(ReasoningEffort::Medium),
-                        reasoning_summary: None,
-                        personality: None,
-                        collaboration_mode: CollaborationMode {
-                            mode: ModeKind::Default,
-                            settings: Settings {
-                                model: "gpt-settings".to_string(),
-                                reasoning_effort: Some(ReasoningEffort::Medium),
-                                developer_instructions: None,
-                            },
-                        },
-                    },
-                },
-            ))])
-            .expect("thread settings metadata update");
+        let cleared = sync
+            .observe_appended_items(&[thread_settings_item("next-model", "next-provider", None)])
+            .expect("settings clear update");
         assert_eq!(
-            (
-                settings_update.patch.model,
-                settings_update.patch.model_provider,
-                settings_update.patch.reasoning_effort,
-                settings_update.patch.reasoning_effort_update,
-                settings_update.patch.service_tier,
-            ),
-            (
-                Some("gpt-settings".to_string()),
-                Some("settings-provider".to_string()),
-                None,
-                Some(Some(ReasoningEffort::Medium)),
-                Some(Some("flex".to_string())),
-            )
+            cleared.patch,
+            ThreadMetadataPatch {
+                model: Some("next-model".to_string()),
+                model_provider: Some("next-provider".to_string()),
+                reasoning_effort_update: Some(None),
+                configured_service_tier: Some(None),
+                updated_at: cleared.patch.updated_at,
+                ..Default::default()
+            }
         );
-
-        sync.mark_pending_update_applied(&settings_update);
-        let legacy_turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
-            "cwd": "/tmp",
-            "approval_policy": "never",
-            "sandbox_policy": { "type": "danger-full-access" },
-            "model": "gpt-legacy",
-            "summary": "auto",
-        }))
-        .expect("legacy turn context should deserialize");
-        let legacy_update = sync
-            .observe_appended_items(&[RolloutItem::TurnContext(legacy_turn_context)])
-            .expect("legacy turn context metadata update");
-        assert_eq!(legacy_update.patch.reasoning_effort, None);
-        assert_eq!(legacy_update.patch.reasoning_effort_update, None);
-        assert_eq!(legacy_update.patch.service_tier, None);
-
-        sync.mark_pending_update_applied(&legacy_update);
-        let clear_turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
-            "cwd": "/tmp",
-            "approval_policy": "never",
-            "sandbox_policy": { "type": "danger-full-access" },
-            "model": "gpt-current",
-            "service_tier": null,
-            "reasoning_effort_update": null,
-            "summary": "auto",
-        }))
-        .expect("current turn context should deserialize");
-        let clear_update = sync
-            .observe_appended_items(&[RolloutItem::TurnContext(clear_turn_context)])
-            .expect("current turn context metadata update");
-        assert_eq!(clear_update.patch.reasoning_effort, None);
-        assert_eq!(clear_update.patch.reasoning_effort_update, Some(None));
-        assert_eq!(clear_update.patch.service_tier, Some(None));
     }
 
     #[test]
@@ -744,6 +723,43 @@ mod tests {
             text_elements: Vec::new(),
             ..Default::default()
         }
+    }
+
+    fn thread_settings_item(
+        model: &str,
+        provider: &str,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) -> RolloutItem {
+        use codex_protocol::config_types::CollaborationMode;
+        use codex_protocol::config_types::ModeKind;
+        use codex_protocol::config_types::Settings;
+        use codex_protocol::models::PermissionProfile;
+
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: model.to_string(),
+                    model_provider_id: provider.to_string(),
+                    service_tier: None,
+                    approval_policy: Default::default(),
+                    approvals_reviewer: Default::default(),
+                    permission_profile: PermissionProfile::Disabled,
+                    active_permission_profile: None,
+                    cwd: serde_json::from_value(serde_json::json!("/tmp")).expect("absolute cwd"),
+                    reasoning_effort: reasoning_effort.clone(),
+                    reasoning_summary: None,
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: model.to_string(),
+                            reasoning_effort,
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ))
     }
 
     fn session_meta(thread_id: ThreadId) -> SessionMetaLine {

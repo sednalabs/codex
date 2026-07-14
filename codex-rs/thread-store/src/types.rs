@@ -19,6 +19,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode as MemoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnRequestIdentity;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -433,9 +434,12 @@ pub struct StoredThread {
     pub model: Option<String>,
     /// Latest observed reasoning effort, if known.
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// Latest observed service tier, if known.
+    /// Configured service tier before per-turn request normalization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
+    pub configured_service_tier: Option<String>,
+    /// Latest model request identity after per-turn normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_turn_request_identity: Option<TurnRequestIdentity>,
     /// Thread creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Thread last-update timestamp.
@@ -526,7 +530,7 @@ impl GitInfoPatch {
 /// Every field is literal: `None` leaves that field unchanged, while `Some`
 /// applies the supplied value. Fields whose value may itself be cleared use an
 /// inner `Option`, where `Some(None)` clears the field.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadMetadataPatch {
     /// Replacement user-facing thread name.
     #[serde(
@@ -556,13 +560,20 @@ pub struct ThreadMetadataPatch {
         with = "optional_option"
     )]
     pub reasoning_effort_update: ClearableField<ReasoningEffort>,
-    /// Latest observed service tier. `Some(None)` clears the persisted tier.
+    /// Configured service tier. `Some(None)` clears the persisted setting.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "optional_option"
     )]
-    pub service_tier: ClearableField<String>,
+    pub configured_service_tier: ClearableField<String>,
+    /// Latest normalized request identity. `Some(None)` clears the receipt.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub latest_turn_request_identity: ClearableField<TurnRequestIdentity>,
     /// Creation timestamp when known.
     pub created_at: Option<DateTime<Utc>>,
     /// Last update timestamp for this metadata observation.
@@ -649,8 +660,11 @@ impl ThreadMetadataPatch {
             self.reasoning_effort = next.reasoning_effort;
             self.reasoning_effort_update = None;
         }
-        if next.service_tier.is_some() {
-            self.service_tier = next.service_tier;
+        if next.configured_service_tier.is_some() {
+            self.configured_service_tier = next.configured_service_tier;
+        }
+        if next.latest_turn_request_identity.is_some() {
+            self.latest_turn_request_identity = next.latest_turn_request_identity;
         }
         if next.created_at.is_some() {
             self.created_at = next.created_at;
@@ -713,7 +727,8 @@ impl ThreadMetadataPatch {
             && self.model.is_none()
             && self.reasoning_effort.is_none()
             && self.reasoning_effort_update.is_none()
-            && self.service_tier.is_none()
+            && self.configured_service_tier.is_none()
+            && self.latest_turn_request_identity.is_none()
             && self.created_at.is_none()
             && self.updated_at.is_none()
             && self.advance_recency_at.is_none()
@@ -780,7 +795,8 @@ mod tests {
             agent_role: Some(None),
             agent_path: Some(None),
             reasoning_effort_update: Some(None),
-            service_tier: Some(None),
+            configured_service_tier: Some(None),
+            latest_turn_request_identity: Some(None),
             ..Default::default()
         };
 
@@ -791,7 +807,8 @@ mod tests {
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
         assert_eq!(value["reasoning_effort_update"], json!(null));
-        assert_eq!(value["service_tier"], json!(null));
+        assert_eq!(value["configured_service_tier"], json!(null));
+        assert_eq!(value["latest_turn_request_identity"], json!(null));
 
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
@@ -801,7 +818,9 @@ mod tests {
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
         assert_eq!(decoded.reasoning_effort_update, Some(None));
-        assert_eq!(decoded.service_tier, Some(None));
+        assert_eq!(decoded.configured_service_tier, Some(None));
+        assert_eq!(decoded.latest_turn_request_identity, Some(None));
+        assert_eq!(decoded.resolved_reasoning_effort(), Some(None));
     }
 
     #[test]

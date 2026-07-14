@@ -607,17 +607,15 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
             .and_then(|schema| schema.description.as_deref()),
         Some("Task-path prefix filter without a trailing slash. Omit to list all live agents.")
     );
+    let output_schema = output_schema.expect("list_agents output schema");
+    assert_eq!(output_schema["properties"]["agents"]["maxItems"], 50);
     assert_eq!(
-        output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
+        output_schema["properties"]["agents"]["items"]["required"],
         json!([
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source",
+            "identity",
             "has_active_subagents",
             "active_subagent_count"
         ])
@@ -664,11 +662,7 @@ fn list_agents_tool_omits_active_descendants_without_capability_provider() {
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
 }
@@ -691,6 +685,22 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
     assert!(properties.contains_key("scope"));
     assert!(properties.contains_key("agent_roots"));
     let output_schema = output_schema.expect("inspect_agent_tree output schema");
+    assert_eq!(output_schema["properties"]["agents"]["maxItems"], 100);
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "root_agent_name",
+            "scope_applied",
+            "agent_roots_applied",
+            "max_depth_applied",
+            "max_agents_applied",
+            "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted",
+            "summary",
+            "agents"
+        ])
+    );
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],
         json!([
@@ -703,15 +713,12 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "direct_child_count",
             "descendant_count",
             "last_task_message_preview",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
     assert_eq!(
-        output_schema["properties"]["agents"]["items"]["properties"]["identity_source"]["enum"],
-        json!(["thread_config_snapshot", "stored_thread_metadata"])
+        output_schema["properties"]["agents"]["items"]["properties"]["identity"]["properties"]["configured_identity"]
+            ["anyOf"][0]["properties"]["source"]["enum"],
+        json!(["live_thread_config", "stored_thread_metadata"])
     );
 }
