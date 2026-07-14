@@ -555,8 +555,7 @@ mod tests {
                 thread_settings: ThreadSettingsSnapshot {
                     model: model.to_string(),
                     model_provider_id: "configured-provider".to_string(),
-                    configured_service_tier: None,
-                    latest_turn_request_identity: None,
+                    service_tier: None,
                     approval_policy: AskForApproval::OnRequest,
                     approvals_reviewer: Default::default(),
                     permission_profile: PermissionProfile::Disabled,
