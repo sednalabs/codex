@@ -1136,6 +1136,11 @@ impl ThreadManager {
             .and_then(|ops_log| ops_log.lock().ok().map(|log| log.clone()))
             .unwrap_or_default()
     }
+
+    #[cfg(test)]
+    pub(crate) async fn list_live_thread_spawn_edges(&self) -> Vec<(ThreadId, ThreadId)> {
+        self.state.list_live_thread_spawn_edges().await
+    }
 }
 
 impl ThreadManagerState {
