@@ -768,6 +768,72 @@ mod tests {
     }
 
     #[test]
+    fn raw_trace_toggle_preserves_configured_and_requested_identity() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let configured_provider = "configured-provider";
+        let configured_model = "configured-model-alias";
+        let requested_model = "resolved-request-model";
+        let requested_service_tier = Some("priority".to_string());
+
+        let disabled = InferenceTraceContext::disabled()
+            .with_observations(
+                thread_id,
+                "turn-identity".to_string(),
+                configured_provider.to_string(),
+                configured_model.to_string(),
+                /*configured_service_tier*/ None,
+            )
+            .start_observed_attempt(
+                InferenceCallTransport::ResponsesHttp,
+                requested_model.to_string(),
+                requested_service_tier.clone(),
+            )
+            .started_observation()
+            .expect("disabled raw trace still records an observation");
+
+        let temp = TempDir::new()?;
+        let writer = Arc::new(TraceWriter::create(
+            temp.path(),
+            "trace-identity".to_string(),
+            "rollout-identity".to_string(),
+            thread_id.to_string(),
+        )?);
+        let enabled = InferenceTraceContext::enabled(
+            writer,
+            thread_id.to_string(),
+            "turn-identity".to_string(),
+            "raw-trace-model".to_string(),
+            "raw-trace-provider".to_string(),
+        )
+        .with_observations(
+            thread_id,
+            "turn-identity".to_string(),
+            configured_provider.to_string(),
+            configured_model.to_string(),
+            /*configured_service_tier*/ None,
+        )
+        .start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            requested_model.to_string(),
+            requested_service_tier,
+        )
+        .started_observation()
+        .expect("enabled raw trace records an observation");
+
+        assert_eq!(enabled.configured_provider, configured_provider);
+        assert_eq!(enabled.configured_model, configured_model);
+        assert_eq!(enabled.requested_model, requested_model);
+
+        let normalize = |mut event: InferenceCallEvent| {
+            event.inference_call_id.clear();
+            event.request_started_at_ms = 0;
+            event
+        };
+        assert_eq!(normalize(enabled), normalize(disabled));
+        Ok(())
+    }
+
+    #[test]
     fn observations_keep_exact_usage_and_distinct_retry_boundaries() {
         let thread_id = ThreadId::new();
         let context = InferenceTraceContext::disabled().with_observations(
