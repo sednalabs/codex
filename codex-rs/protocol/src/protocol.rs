@@ -4822,7 +4822,7 @@ mod tests {
             event
         );
 
-        let declaration = InferenceCallEvent::decl();
+        let declaration = InferenceCallEvent::decl(&ts_rs::Config::default());
         assert!(declaration.contains("truncated_fields"));
         assert!(declaration.contains("omitted_fields"));
         Ok(())
