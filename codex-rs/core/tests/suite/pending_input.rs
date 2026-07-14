@@ -1,4 +1,6 @@
 use core_test_support::test_codex::local_selections;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use codex_core::CodexThread;
@@ -10,6 +12,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -18,6 +21,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
+use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
@@ -55,6 +59,39 @@ fn ev_message_item_done(id: &str, text: &str) -> Value {
 
 fn sse_event(event: Value) -> String {
     responses::sse(vec![event])
+}
+
+fn write_blocking_stop_hook(home: &Path) {
+    let script_path = home.join("blocking_stop_hook.py");
+    let started_path = home.join("started_stop_hook");
+    let release_path = home.join("release_stop_hook");
+    let script = format!(
+        r#"from pathlib import Path
+import time
+
+Path(r"{}").touch()
+release_path = Path(r"{}")
+while not release_path.exists():
+    time.sleep(0.01)
+print("{{}}")
+"#,
+        started_path.display(),
+        release_path.display(),
+    );
+    fs::write(&script_path, script).expect("write blocking stop hook");
+    fs::write(
+        home.join("hooks.json"),
+        json!({
+            "hooks": {
+                "Stop": [{"hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}", script_path.display()),
+                }]}]
+            }
+        })
+        .to_string(),
+    )
+    .expect("write stop hook config");
 }
 
 fn message_input_texts(body: &Value, role: &str) -> Vec<String> {
@@ -886,59 +923,92 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         )),
     ];
 
-    let (server, _completions) =
-        start_streaming_sse_server(vec![first_chunks, compact_chunks, steered_follow_up_chunks])
-            .await;
+    let outer_reentry_chunks = vec![
+        chunk(ev_response_created("resp-outer-reentry")),
+        chunk(ev_message_item_done("msg-outer-reentry", "outer reentry")),
+        chunk(ev_completed_with_tokens(
+            "resp-outer-reentry",
+            /*total_tokens*/ 30,
+        )),
+    ];
 
-    let codex = test_codex()
+    let (server, _completions) = start_streaming_sse_server(vec![
+        first_chunks,
+        compact_chunks,
+        steered_follow_up_chunks,
+        outer_reentry_chunks,
+    ])
+    .await;
+
+    let test = test_codex()
         .with_model("gpt-5.4")
+        .with_pre_build_hook(write_blocking_stop_hook)
         .with_config(|config| {
             config.model_provider.name = "OpenAI (test)".to_string();
             config.model_provider.supports_websockets = false;
             config.model_auto_compact_token_limit = Some(200);
         })
+        .with_config(trust_discovered_hooks)
         .build_with_streaming_server(&server)
         .await
-        .expect("build streaming Codex test session")
-        .codex;
+        .expect("build streaming Codex test session");
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, "first prompt").await;
-    let mut turn_started_count = 0;
-    loop {
-        match wait_for_event(&codex, |_| true).await {
-            EventMsg::TurnStarted(_) => turn_started_count += 1,
-            EventMsg::AgentMessage(message) if message.message == "first answer" => break,
-            EventMsg::TurnComplete(_) => panic!("turn completed before steering"),
-            _ => {}
-        }
-    }
+    wait_for_agent_message(&codex, "first answer").await;
     steer_user_input(&codex, "second prompt").await;
     let _ = gate_first_completed_tx.send(());
 
+    wait_for_agent_message(&codex, "processed steered prompt").await;
+    wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::HookStarted(started) if started.run.event_name == HookEventName::Stop
+        )
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !test.codex_home_path().join("started_stop_hook").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stop hook command did not start");
+    steer_user_input(&codex, "third prompt").await;
+    fs::write(test.codex_home_path().join("release_stop_hook"), b"release")
+        .expect("release blocking stop hook");
+
+    let mut stop_hook_starts = 1;
     let turn_complete = loop {
         match wait_for_event(&codex, |_| true).await {
-            EventMsg::TurnStarted(_) => turn_started_count += 1,
+            EventMsg::HookStarted(started)
+                if started.run.event_name == HookEventName::Stop =>
+            {
+                stop_hook_starts += 1;
+            }
             EventMsg::TurnComplete(event) => break event,
             _ => {}
         }
     };
-    assert_eq!(turn_started_count, 1);
+    assert_eq!(stop_hook_starts, 2, "steer should enter run_turn twice");
     assert_eq!(
         turn_complete.provider_usage,
         Some(TokenUsage {
-            input_tokens: 620,
+            input_tokens: 650,
             cached_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
-            total_tokens: 620,
+            total_tokens: 650,
         })
     );
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
 
     let compact_body: Value = from_slice(&requests[1]).expect("parse compact request");
     let steered_body: Value = from_slice(&requests[2]).expect("parse steered request");
+    let outer_reentry_body: Value =
+        from_slice(&requests[3]).expect("parse outer reentry request");
 
     let compact_user_texts = message_input_texts(&compact_body, "user");
     assert!(
@@ -954,6 +1024,14 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
             .iter()
             .any(|text| text == "second prompt"),
         "steered input should follow compaction without an empty resume request when the model was already done"
+    );
+
+    let outer_reentry_user_texts = message_input_texts(&outer_reentry_body, "user");
+    assert!(
+        outer_reentry_user_texts
+            .iter()
+            .any(|text| text == "third prompt"),
+        "steer queued behind the stop hook should run after outer task-loop re-entry"
     );
 
     server.shutdown().await;
