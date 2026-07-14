@@ -58,6 +58,32 @@ use tokio::sync::watch;
 
 use codex_rollout::state_db::StateDbHandle;
 
+/// Current thread-level inference settings before per-turn model normalization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConfiguredInferenceIdentity {
+    pub(crate) configured_model: String,
+    pub(crate) configured_model_provider_id: String,
+    pub(crate) configured_reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) configured_service_tier: Option<String>,
+}
+
+/// Request identity captured for a real turn after per-turn normalization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TurnInferenceIdentity {
+    pub(crate) turn_id: String,
+    pub(crate) request_model: String,
+    pub(crate) model_provider_id: String,
+    pub(crate) requested_reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) request_service_tier: Option<String>,
+}
+
+/// Atomic configured and latest-turn inference identity snapshot for a live thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThreadInferenceIdentitySnapshot {
+    pub(crate) configured: ConfiguredInferenceIdentity,
+    pub(crate) latest_turn: Option<TurnInferenceIdentity>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
     pub model: String,
@@ -435,6 +461,10 @@ impl CodexThread {
 
     pub async fn agent_status(&self) -> AgentStatus {
         self.codex.agent_status().await
+    }
+
+    pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
+        self.codex.inference_identity_snapshot().await
     }
 
     pub async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {
