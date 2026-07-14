@@ -142,6 +142,7 @@ pub(super) async fn spawn_review_thread(
         sub_id: review_turn_id.clone(),
         trace_id: current_span_trace_id(),
         realtime_active: parent_turn_context.realtime_active,
+        configured_inference_identity: parent_turn_context.configured_inference_identity.clone(),
         config: per_turn_config,
         auth_manager: auth_manager_for_context,
         model_info: model_info.clone(),
