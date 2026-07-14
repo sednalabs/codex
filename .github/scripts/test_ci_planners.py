@@ -2576,6 +2576,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
             body,
         )
+        self.assertIn(
+            "identity_receipt_survives_settings_update_eviction_and_reload",
+            body,
+        )
+        self.assertIn(
+            "list_agents_returns_model_visible_identity_receipts",
+            body,
+        )
 
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
