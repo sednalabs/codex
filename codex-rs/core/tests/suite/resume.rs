@@ -358,18 +358,13 @@ async fn aborted_provider_usage_is_durable_isolated_and_legacy_compatible() -> R
             .filter(|line| line.contains("\"turn_aborted\""))
             .all(|line| !line.contains("\"provider_usage\""))
     );
-    let legacy = resume_until_initial_messages(
-        &mut builder,
-        &server,
-        home,
-        rollout_path,
-        |messages| {
+    let legacy =
+        resume_until_initial_messages(&mut builder, &server, home, rollout_path, |messages| {
             messages.iter().any(|event| {
                 matches!(event, EventMsg::TurnAborted(aborted) if aborted.provider_usage.is_none())
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     let legacy_aborted = legacy
         .session_configured
         .initial_messages
