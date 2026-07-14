@@ -66,6 +66,8 @@ const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
 const SUBAGENT_STOP_CONTINUATION: &str = "continue only the child";
 const INTERNAL_SUBAGENT_PROMPT: &str = "internal subagent: review";
+const INVENTORY_PROMPT: &str = "report the worker identity";
+const LIST_AGENTS_CALL_ID: &str = "list-agents-call-1";
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     decoded_body(req)
@@ -497,6 +499,139 @@ async fn spawn_child_and_capture_snapshot(
         .await?
         .config_snapshot()
         .await)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_agents_returns_model_visible_identity_receipts() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-inventory-spawn"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-inventory-spawn"),
+        ]),
+    )
+    .await;
+    let child_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-inventory-child"),
+            ev_assistant_message("msg-inventory-child", "child done"),
+            ev_completed("resp-inventory-child"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-inventory-parent"),
+            ev_assistant_message("msg-inventory-parent", "parent done"),
+            ev_completed("resp-inventory-parent"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, INVENTORY_PROMPT) && !body_contains(req, LIST_AGENTS_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-inventory-list"),
+            ev_function_call_with_namespace(
+                LIST_AGENTS_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "list_agents",
+                "{}",
+            ),
+            ev_completed("resp-inventory-list"),
+        ]),
+    )
+    .await;
+    let list_result = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, LIST_AGENTS_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-inventory-complete"),
+            ev_assistant_message("msg-inventory-complete", "inventory done"),
+            ev_completed("resp-inventory-complete"),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    test.submit_turn(INVENTORY_PROMPT).await?;
+
+    let request = list_result.single_request();
+    let output = request
+        .function_call_output_text(LIST_AGENTS_CALL_ID)
+        .expect("list_agents output should be model-visible");
+    let output: Value = serde_json::from_str(&output)?;
+    let worker = output["agents"]
+        .as_array()
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent["agent_name"] == "/root/worker")
+        })
+        .expect("worker inventory row");
+    let configured = &worker["identity"]["configured_identity"];
+    assert_eq!(configured["model"], INHERITED_MODEL);
+    assert_eq!(
+        configured["model_provider_id"],
+        test.config.model_provider_id
+    );
+    assert_eq!(configured["reasoning_effort"], "xhigh");
+    assert_eq!(configured["source"], "live_thread_config");
+    let request_identity = &worker["identity"]["latest_turn_request_identity"];
+    assert_eq!(request_identity["model"], INHERITED_MODEL);
+    assert_eq!(
+        request_identity["model_provider_id"],
+        test.config.model_provider_id
+    );
+    assert_eq!(request_identity["reasoning_effort"], "xhigh");
+    assert_eq!(request_identity["source"], "turn_request");
+    assert!(
+        request_identity["turn_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert_eq!(worker["identity"]["identity_truncated"], false);
+    assert_eq!(output["truncated"], false);
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
