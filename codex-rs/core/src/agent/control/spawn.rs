@@ -5,6 +5,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -379,6 +380,18 @@ impl AgentControl {
             },
         )) = notification_source.as_ref()
         {
+            let turn_context = new_thread
+                .thread
+                .codex
+                .session
+                .new_default_preview_turn()
+                .await;
+            new_thread
+                .thread
+                .codex
+                .session
+                .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+                .await;
             let client_metadata = match state.get_thread(*parent_thread_id).await {
                 Ok(parent_thread) => {
                     parent_thread

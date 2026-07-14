@@ -1,4 +1,5 @@
 use super::*;
+use crate::codex_thread::TurnInferenceIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_skills::HostSkillsSnapshot;
@@ -154,12 +155,31 @@ pub struct TurnContext {
     pub(crate) model_verification_emitted: AtomicBool,
 }
 
+#[derive(Clone, Copy)]
 enum TurnMultiAgentRuntime {
     ResolveAndStore,
     Preview,
 }
 
 impl TurnContext {
+    pub(crate) fn inference_identity(&self) -> TurnInferenceIdentity {
+        TurnInferenceIdentity {
+            turn_id: self.sub_id.clone(),
+            request_model: self.model_info.slug.clone(),
+            model_provider_id: self.config.model_provider_id.clone(),
+            requested_reasoning_effort: self.reasoning_effort.clone(),
+            request_service_tier: self
+                .config
+                .features
+                .enabled(Feature::FastMode)
+                .then(|| {
+                    self.model_info
+                        .service_tier_for_request(self.config.service_tier.clone())
+                })
+                .flatten(),
+        }
+    }
+
     pub(crate) fn item_ids_enabled(&self) -> bool {
         self.config.features.enabled(Feature::ItemIds)
             || matches!(self.history_mode, ThreadHistoryMode::Paginated)
@@ -810,6 +830,12 @@ impl Session {
         if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
         }
+        if matches!(multi_agent_runtime, TurnMultiAgentRuntime::ResolveAndStore) {
+            self.state
+                .lock()
+                .await
+                .set_latest_turn_inference_identity(turn_context.inference_identity());
+        }
         let turn_context = Arc::new(turn_context);
         if turn_context
             .environments
@@ -845,6 +871,11 @@ impl Session {
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
         self.new_default_turn_with_sub_id(self.next_internal_sub_id())
+            .await
+    }
+
+    pub(crate) async fn new_default_preview_turn(&self) -> Arc<TurnContext> {
+        self.new_startup_prewarm_turn_with_sub_id(self.next_internal_sub_id())
             .await
     }
 
