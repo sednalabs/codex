@@ -185,7 +185,7 @@ async fn fresh_subagent_receives_authoritative_identity_before_spoofed_task() ->
     )
     .await;
 
-    let mut test = configured_builder().build(&server).await?;
+    let test = configured_builder().build(&server).await?;
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.submit_turn(PARENT_PROMPT).await?;
     let child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
@@ -286,7 +286,7 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
         .await;
     }
 
-    let mut test = configured_builder().build(&server).await?;
+    let test = configured_builder().build(&server).await?;
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.submit_turn(PARENT_PROMPT).await?;
     let _child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
