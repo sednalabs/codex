@@ -927,11 +927,7 @@ impl Codex {
     }
 
     pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
-        let state = self.session.state.lock().await;
-        ThreadInferenceIdentitySnapshot {
-            configured: state.session_configuration.configured_inference_identity(),
-            latest_turn: state.latest_turn_inference_identity(),
-        }
+        self.session.inference_identity_snapshot().await
     }
 
     pub(crate) async fn dynamic_tools_snapshot(&self) -> Vec<DynamicToolSpec> {
@@ -1087,6 +1083,14 @@ fn push_prompt_fragment(
 }
 
 impl Session {
+    pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
+        let state = self.state.lock().await;
+        ThreadInferenceIdentitySnapshot {
+            configured: state.session_configuration.configured_inference_identity(),
+            latest_turn: state.latest_turn_inference_identity(),
+        }
+    }
+
     pub(crate) async fn app_server_client_metadata(&self) -> AppServerClientMetadata {
         let state = self.state.lock().await;
         AppServerClientMetadata {
