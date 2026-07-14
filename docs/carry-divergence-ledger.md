@@ -270,14 +270,13 @@ docs-only refresh commit that records this snapshot.
 
 ### Parent-Visible Completion Provider Receipt
 
-- MultiAgentV2 child completion forwards a bounded runtime-authored
+- Successful MultiAgentV2 child completion forwards a bounded runtime-authored
   `<completion_provider_receipt>` before the child-controlled `Payload`. The
   receipt carries terminal provider model and snapshot identity plus the exact
   turn usage persisted by `TurnCompleteEvent`.
-- If no provider identity or usage evidence exists, the completion envelope
-  renders exactly as it did before this carry. Provider identity is XML-escaped
-  and length-bounded, and receipt-shaped child payload text remains after the
-  runtime-authored receipt boundary.
+- Error and interruption outcomes never attach a receipt. Provider identity is
+  XML-escaped within an encoded-byte budget, truncation is explicit, and the
+  receipt and payload share a hard sub-1,000-token completion-item ceiling.
 - Primary files:
   - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/session_prefix.rs`
