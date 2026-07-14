@@ -6242,7 +6242,7 @@ mod tests {
 
     #[test]
     fn turn_context_item_typescript_preserves_presence_aware_updates() {
-        let declaration = TurnContextItem::decl();
+        let declaration = TurnContextItem::decl(&ts_rs::Config::default());
 
         assert!(
             declaration.contains("configured_inference_identity?: ConfiguredInferenceIdentity")

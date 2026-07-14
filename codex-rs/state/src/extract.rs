@@ -212,6 +212,7 @@ mod tests {
     use codex_protocol::protocol::ThreadSettingsAppliedEvent;
     use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnContextItem;
+    use codex_protocol::protocol::TurnRequestIdentity;
     use codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::user_input::UserInput;

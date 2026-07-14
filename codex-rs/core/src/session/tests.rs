@@ -4497,8 +4497,12 @@ async fn real_turn_construction_publishes_configured_and_request_identity() {
         )
         .await
         .expect("turn should build");
-    let snapshot = session.inference_identity_snapshot().await;
-    let configured = session.thread_config_snapshot().await;
+    let state = session.state.lock().await;
+    let snapshot = ThreadInferenceIdentitySnapshot {
+        configured: state.session_configuration.configured_inference_identity(),
+        latest_turn: state.latest_turn_inference_identity(),
+    };
+    let configured = state.session_configuration.thread_config_snapshot();
 
     assert_eq!(snapshot.latest_turn, Some(turn.inference_identity()));
     assert_eq!(
