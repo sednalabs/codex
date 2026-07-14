@@ -1,5 +1,6 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::context::SubagentRuntimeIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -583,6 +584,11 @@ impl AgentControl {
                             &multi_agent_v2_usage_hint_texts_to_filter,
                         )
                 )
+                && !matches!(
+                    item,
+                    RolloutItem::ResponseItem(response_item)
+                        if SubagentRuntimeIdentity::matches_response_item(response_item)
+                )
         });
         for item in &mut forked_rollout_items {
             if let RolloutItem::Compacted(compacted) = item
@@ -592,7 +598,7 @@ impl AgentControl {
                     !is_multi_agent_v2_usage_hint_message(
                         response_item,
                         &multi_agent_v2_usage_hint_texts_to_filter,
-                    )
+                    ) && !SubagentRuntimeIdentity::matches_response_item(response_item)
                 });
             }
         }

@@ -8663,7 +8663,50 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
 }
 
 #[tokio::test]
-async fn runtime_identity_is_injected_once_only_for_thread_spawn_children() {
+async fn build_initial_context_adds_one_runtime_identity_only_for_thread_spawn_children() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path should parse")),
+        agent_nickname: Some("worker".to_string()),
+        agent_role: None,
+    });
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = thread_spawn_source.clone();
+    turn_context.session_source = thread_spawn_source;
+    let turn_context = Arc::new(turn_context);
+
+    let initial_context = build_initial_context(&session, &turn_context).await;
+    let runtime_identity_count = developer_message_texts(&initial_context)
+        .iter()
+        .flatten()
+        .filter(|text| SubagentRuntimeIdentity::matches_text(text))
+        .count();
+    assert_eq!(runtime_identity_count, 1);
+
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = SessionSource::SubAgent(SubAgentSource::Review);
+    let review_context = build_initial_context(&session, &turn_context).await;
+    assert!(
+        developer_message_texts(&review_context)
+            .iter()
+            .flatten()
+            .all(|text| !SubagentRuntimeIdentity::matches_text(text)),
+        "review sessions must not receive thread-spawn runtime identity context"
+    );
+}
+
+#[tokio::test]
+async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() {
     let (session, mut turn_context) = make_session_and_context().await;
     let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: ThreadId::new(),
@@ -8687,34 +8730,46 @@ async fn runtime_identity_is_injected_once_only_for_thread_spawn_children() {
     session
         .ensure_subagent_runtime_identity_context(turn_context.as_ref())
         .await;
-    let runtime_identity_count = session
+    let first_identity_count = session
         .clone_history()
         .await
         .raw_items()
         .iter()
         .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
         .count();
-    assert_eq!(runtime_identity_count, 1);
+    assert_eq!(
+        first_identity_count, 1,
+        "unchanged identity should deduplicate"
+    );
 
-    let (review_session, mut review_turn_context) = make_session_and_context().await;
-    review_session
-        .state
-        .lock()
-        .await
-        .session_configuration
-        .session_source = SessionSource::SubAgent(SubAgentSource::Review);
-    review_turn_context.session_source = SessionSource::SubAgent(SubAgentSource::Review);
-    review_session
-        .ensure_subagent_runtime_identity_context(&review_turn_context)
-        .await;
-    let review_identity_count = review_session
-        .clone_history()
-        .await
-        .raw_items()
-        .iter()
-        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
-        .count();
-    assert_eq!(review_identity_count, 0);
+    for (service_tier, expected_count) in [(Some("priority".to_string()), 2), (None, 3)] {
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration = state
+                .session_configuration
+                .apply(&SessionSettingsUpdate {
+                    service_tier: Some(service_tier),
+                    ..Default::default()
+                })
+                .expect("service tier update should apply");
+        }
+        session
+            .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+            .await;
+
+        let state = session.state.lock().await;
+        let current_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(
+            &state.session_configuration.thread_config_snapshot(),
+        )
+        .expect("thread-spawn identity");
+        let items = state.history.raw_items();
+        let identity_count = items
+            .iter()
+            .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+            .count();
+        assert_eq!(identity_count, expected_count);
+        assert!(current_identity.matches_latest_response_item(items));
+    }
 }
 
 #[tokio::test]
