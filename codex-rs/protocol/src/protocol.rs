@@ -3335,6 +3335,7 @@ pub struct TurnContextItem {
         skip_serializing_if = "Option::is_none",
         with = "optional_option"
     )]
+    #[ts(type = "string | null", optional)]
     pub service_tier: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp_hash: Option<String>,
@@ -3360,6 +3361,7 @@ pub struct TurnContextItem {
         skip_serializing_if = "Option::is_none",
         with = "optional_option"
     )]
+    #[ts(type = "ReasoningEffortConfig | null", optional)]
     pub reasoning_effort_update: Option<Option<ReasoningEffortConfig>>,
     // Compatibility-only field written with a default value so older Codex
     // versions can deserialize turn-context rollout items. It is no longer
@@ -6196,6 +6198,14 @@ mod tests {
         );
         assert_eq!(value["summary"], json!("auto"));
         Ok(())
+    }
+
+    #[test]
+    fn turn_context_item_typescript_preserves_presence_aware_updates() {
+        let declaration = TurnContextItem::decl();
+
+        assert!(declaration.contains("service_tier?: string | null"));
+        assert!(declaration.contains("reasoning_effort_update?: ReasoningEffortConfig | null"));
     }
 
     /// Serialize Event to verify that its JSON representation has the expected
