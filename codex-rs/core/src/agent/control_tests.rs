@@ -342,6 +342,11 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         .await
         .expect("child thread should be live");
     child_thread
+        .codex
+        .session
+        .ensure_rollout_materialized()
+        .await;
+    child_thread
         .submit(Op::ThreadSettings {
             thread_settings: ThreadSettingsOverrides {
                 model: Some("gpt-5.4".to_string()),
