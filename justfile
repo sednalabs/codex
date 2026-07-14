@@ -336,20 +336,36 @@ mcp-device-login-targeted:
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models session::tests::turn_inference_identity_captures_final_request_service_tier session::tests::real_turn_construction_publishes_configured_and_request_identity agent::identity::tests::projection_caps_json_and_xml_after_escaping agent::identity::tests::configured_and_turn_request_provenance_stay_separate agent::control::tests::identity_receipt_survives_settings_update_eviction_and_reload agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::subagent_notifications::list_agents_returns_model_visible_identity_receipts --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- session::tests::turn_inference_identity_captures_final_request_service_tier --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- session::tests::real_turn_construction_publishes_configured_and_request_identity --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::identity::tests::projection_caps_json_and_xml_after_escaping --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::identity::tests::configured_and_turn_request_provenance_stay_separate --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::identity_receipt_survives_settings_update_eviction_and_reload --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::list_agents_returns_model_visible_identity_receipts --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::review::review_uses_custom_review_model_from_config --exact
     cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort --exact
     cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay --exact
     cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- local::read_thread::tests::read_thread_keeps_complete_indexed_identity_for_malformed_rollout --exact
     cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- thread_metadata_sync::tests::inference_identity_receipts_remain_separate_and_preserve_clears --exact
+    cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- thread_metadata_sync::tests::legacy_turn_context_after_settings_keeps_configured_identity --exact
     cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- types::tests::thread_metadata_patch_round_trips_optional_clears --exact
     cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- types::tests::legacy_reasoning_effort_null_remains_a_noop --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
-    cargo nextest run -p codex-state --lib --no-tests=fail -- thread_spawn_edges_track_directional_status
-    cargo nextest run -p codex-state --lib --no-tests=fail -- inference_identity_migration_preserves_legacy_rows_as_null thread_inference_tiers_round_trip_through_state extract::tests::turn_context_keeps_configured_and_request_identity_separate extract::tests::legacy_turn_context_does_not_replace_known_configured_identity extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort
-    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- thread_metadata_sync::tests::inference_identity_receipts_remain_separate_and_preserve_clears types::tests::legacy_reasoning_effort_null_remains_a_noop
+    cargo nextest run -p codex-state --lib --no-tests=fail -- thread_spawn_edges_track_directional_status --exact
+    cargo nextest run -p codex-state --lib --no-tests=fail -- inference_identity_migration_preserves_legacy_rows_as_null --exact
+    cargo nextest run -p codex-state --lib --no-tests=fail -- thread_inference_tiers_round_trip_through_state --exact
+    cargo nextest run -p codex-state --lib --no-tests=fail -- extract::tests::turn_context_keeps_configured_and_request_identity_separate --exact
+    cargo nextest run -p codex-state --lib --no-tests=fail -- extract::tests::legacy_turn_context_does_not_replace_known_configured_identity --exact
+    cargo nextest run -p codex-state --lib --no-tests=fail -- extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort --exact
+    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- thread_metadata_sync::tests::inference_identity_receipts_remain_separate_and_preserve_clears --exact
+    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- thread_metadata_sync::tests::legacy_turn_context_after_settings_keeps_configured_identity --exact
+    cargo nextest run -p codex-thread-store --lib --no-tests=fail -- types::tests::legacy_reasoning_effort_null_remains_a_noop --exact
 
 # Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:

@@ -610,6 +610,50 @@ mod tests {
     }
 
     #[test]
+    fn legacy_turn_context_after_settings_keeps_configured_identity() {
+        let thread_id = ThreadId::new();
+        let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));
+        let legacy_turn: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "turn_id": "legacy-turn",
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "legacy-request-model",
+            "effort": "low",
+            "summary": "auto"
+        }))
+        .expect("legacy turn context should deserialize");
+        let reasoning_effort = Some(ReasoningEffort::High);
+        let update = sync
+            .observe_appended_items(&[
+                thread_settings_item("configured-model", "configured-provider", reasoning_effort),
+                RolloutItem::TurnContext(legacy_turn),
+            ])
+            .expect("settings and legacy turn should update metadata");
+
+        assert_eq!(update.patch.model.as_deref(), Some("configured-model"));
+        assert_eq!(
+            update.patch.model_provider.as_deref(),
+            Some("configured-provider")
+        );
+        assert_eq!(
+            update.patch.reasoning_effort_update,
+            Some(Some(ReasoningEffort::High))
+        );
+        let request = update
+            .patch
+            .latest_turn_request_identity
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("legacy request identity should remain informational");
+        assert_eq!(request.request_model, "legacy-request-model");
+        assert_eq!(
+            request.requested_reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+    }
+
+    #[test]
     fn completed_user_message_items_emit_metadata_fields() {
         let thread_id = ThreadId::new();
         let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));

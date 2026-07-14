@@ -936,6 +936,42 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         ),
         (None, None)
     );
+    let restored_reasoning_effort = original_config.reasoning_effort.clone();
+    child_thread
+        .codex
+        .session
+        .persist_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: original_config.model.clone(),
+                    model_provider_id: original_config.model_provider_id.clone(),
+                    service_tier: original_config.service_tier.clone(),
+                    approval_policy: original_config.approval_policy,
+                    approvals_reviewer: original_config.approvals_reviewer,
+                    permission_profile: original_config.permission_profile.clone(),
+                    active_permission_profile: original_config.active_permission_profile.clone(),
+                    cwd: original_config.cwd().clone(),
+                    reasoning_effort: restored_reasoning_effort.clone(),
+                    reasoning_summary: original_config.reasoning_summary,
+                    personality: original_config.personality,
+                    collaboration_mode: original_config.collaboration_mode.clone(),
+                },
+            },
+        ))])
+        .await;
+    let stored_child = child_thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ false,
+        )
+        .await
+        .expect("restored child metadata should be readable");
+    assert_eq!(
+        (
+            stored_child.reasoning_effort.clone(),
+            stored_child.configured_service_tier.as_deref(),
+        ),
+        (restored_reasoning_effort.clone(), Some("priority"))
+    );
     let stored_request_identity = stored_child
         .latest_turn_request_identity
         .as_ref()
@@ -1010,13 +1046,14 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .configured_identity
         .as_ref()
         .expect("stored configured identity should remain visible");
-    assert_eq!(stale_configured.reasoning_effort, None);
-    assert_eq!(stale_configured.service_tier, None);
+    assert_eq!(stale_configured.reasoning_effort, restored_reasoning_effort);
+    assert_eq!(stale_configured.service_tier.as_deref(), Some("priority"));
     let stale_request = stale_child
         .identity
         .latest_turn_request_identity
         .as_ref()
-        .expect("stored request identity should remain visible");
+        .expect("stored request identity should remain visible")
+        .clone();
     assert_eq!(
         stale_request.service_tier.as_deref(),
         persisted_request_identity.request_service_tier.as_deref()
@@ -1026,6 +1063,35 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     conflicting_resume_config.model = Some("different-caller-model".to_string());
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
     conflicting_resume_config.service_tier = Some("flex".to_string());
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be configured");
+    let mut persisted_metadata = state_db
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("persisted child metadata should be readable")
+        .expect("persisted child metadata should exist");
+    let persisted_model = persisted_metadata.model.take();
+    state_db
+        .upsert_thread(&persisted_metadata)
+        .await
+        .expect("missing-model metadata should persist");
+    let err = harness
+        .control
+        .ensure_v2_agent_loaded(conflicting_resume_config.clone(), spawned_agent.thread_id)
+        .await
+        .expect_err("reload should fail closed without a persisted model");
+    assert!(
+        err.to_string()
+            .contains("persisted model identity is unavailable")
+    );
+    assert_thread_not_loaded(&harness.manager, spawned_agent.thread_id).await;
+    persisted_metadata.model = persisted_model;
+    state_db
+        .upsert_thread(&persisted_metadata)
+        .await
+        .expect("restored-model metadata should persist");
     let mut missing_provider_config = conflicting_resume_config.clone();
     missing_provider_config
         .model_providers
@@ -1041,7 +1107,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     )));
     harness
         .control
-        .ensure_v2_agent_loaded(conflicting_resume_config, spawned_agent.thread_id)
+        .ensure_v2_agent_loaded(conflicting_resume_config.clone(), spawned_agent.thread_id)
         .await
         .expect("known v2 agent should reload");
     let reloaded_thread = harness
@@ -1060,9 +1126,30 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         (
             original_config.model,
             original_config.model_provider_id,
-            None,
-            None,
+            restored_reasoning_effort,
+            Some("priority".to_string()),
         )
+    );
+    let reloaded_identity = reloaded_thread.inference_identity_snapshot().await;
+    assert_eq!(
+        reloaded_identity.latest_turn,
+        Some(persisted_request_identity.clone())
+    );
+    assert_eq!(
+        ModelVisibleAgentIdentity::from_live(
+            &reloaded_identity,
+            ModelVisibleIdentityEncoding::Json,
+        )
+        .latest_turn_request_identity,
+        Some(stale_request)
+    );
+    let next_turn = reloaded_thread.codex.session.new_default_turn().await;
+    assert_eq!(
+        reloaded_thread
+            .inference_identity_snapshot()
+            .await
+            .latest_turn,
+        Some(next_turn.inference_identity())
     );
     let communication = InterAgentCommunication::new(
         AgentPath::root(),
@@ -1090,6 +1177,41 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .into_iter()
         .find(|entry| *entry == expected);
     assert_eq!(captured, Some(expected));
+
+    reloaded_thread
+        .shutdown_and_wait()
+        .await
+        .expect("reloaded child should shut down");
+    assert!(
+        harness
+            .manager
+            .remove_thread(&spawned_agent.thread_id)
+            .await
+            .is_some()
+    );
+    let mut pre_0045_metadata = state_db
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("persisted child metadata should be readable")
+        .expect("persisted child metadata should exist");
+    pre_0045_metadata.configured_service_tier = None;
+    state_db
+        .upsert_thread(&pre_0045_metadata)
+        .await
+        .expect("pre-0045-style metadata should persist");
+    harness
+        .control
+        .ensure_v2_agent_loaded(conflicting_resume_config, spawned_agent.thread_id)
+        .await
+        .expect("rollout settings receipt should backfill the unobserved tier");
+    let backfilled = harness
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("backfilled child should reload")
+        .config_snapshot()
+        .await;
+    assert_eq!(backfilled.service_tier.as_deref(), Some("priority"));
 }
 
 #[tokio::test]
