@@ -931,7 +931,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -1841,6 +1841,13 @@
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/agent/role_tests.rs",
         "codex-rs/tools/src/spawn_agent.rs",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs",
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
         "docs/downstream-regression-matrix.md",
         "justfile"
       ]
