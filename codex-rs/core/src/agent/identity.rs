@@ -91,7 +91,7 @@ impl ModelVisibleAgentIdentity {
                 .as_ref()
                 .map(|turn| ModelVisibleTurnRequestIdentity {
                     turn_id: bounded_optional(
-                        Some(turn.turn_id.as_str()),
+                        non_empty(turn.turn_id.as_str()),
                         encoding,
                         &mut truncated,
                     ),
