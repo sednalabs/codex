@@ -2,6 +2,7 @@ use super::input_queue::InputQueue;
 use super::*;
 use crate::SkillsService;
 use crate::agents_md_manager::AgentsMdManager;
+use crate::codex_thread::ConfiguredInferenceIdentity;
 use crate::config::ConstraintError;
 use crate::current_time::TimeProvider;
 use crate::environment_selection::ThreadEnvironments;
@@ -202,6 +203,22 @@ impl SessionConfiguration {
             parent_thread_id: self.parent_thread_id,
             thread_source: self.thread_source.clone(),
             originator: self.originator.clone(),
+        }
+    }
+
+    pub(super) fn configured_inference_identity(&self) -> ConfiguredInferenceIdentity {
+        let configured_model = self
+            .original_config_do_not_use
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| self.collaboration_mode.model())
+            .to_string();
+        ConfiguredInferenceIdentity {
+            configured_model,
+            configured_model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
+            configured_reasoning_effort: self.collaboration_mode.reasoning_effort(),
+            configured_service_tier: self.original_config_do_not_use.service_tier.clone(),
         }
     }
 
