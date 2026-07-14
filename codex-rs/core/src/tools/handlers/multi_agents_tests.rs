@@ -208,6 +208,38 @@ model_reasoning_effort = "low"
     role_name
 }
 
+async fn install_role_with_reasoning_override(turn: &mut TurnContext) -> String {
+    let role_name = "reasoning-override-role".to_string();
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("codex home should be created");
+    let role_config_path = turn
+        .config
+        .codex_home
+        .as_path()
+        .join("reasoning-override-role.toml");
+    tokio::fs::write(
+        &role_config_path,
+        r#"model_reasoning_effort = "low"
+"#,
+    )
+    .await
+    .expect("role config should be written");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        role_name.clone(),
+        AgentRoleConfig {
+            description: Some("Role with a reasoning effort override".to_string()),
+            config_file: Some(role_config_path),
+            nickname_candidates: None,
+        },
+    );
+    turn.config = Arc::new(config);
+
+    role_name
+}
+
 fn set_turn_config(turn: &mut TurnContext, config: crate::config::Config) {
     turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
@@ -533,6 +565,91 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
         err,
             FunctionCallError::RespondToModel(
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "unspecified_backend_model",
+                "model": "gpt-5.4",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("a model without an explicit backend assignment should remain eligible");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "incompatible_model",
+                "model": "gpt-5.6-luna",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("model from a different multi-agent backend should be rejected");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "Unknown model `gpt-5.6-luna` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.5, gpt-5.4, gpt-5.4-mini".to_string()
         )
     );
 }
@@ -1087,6 +1204,134 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_expected_model_mismatch_rejects_before_creation_and_prompt_delivery()
+{
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not be delivered",
+                "task_name": "model_mismatch",
+                "agent_type": role_name,
+                "model": "gpt-5.6-terra",
+                "expected_model": "gpt-5.6-terra",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("the exact model assertion should reject the role override");
+
+    let FunctionCallError::RespondToModel(receipt) = err else {
+        panic!("a model mismatch should surface as a model-facing error");
+    };
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).expect("model mismatch receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "error": "spawn_agent_model_mismatch",
+            "requested_model": "gpt-5.6-terra",
+            "expected_model": "gpt-5.6-terra",
+            "effective_model": "gpt-5-role-override"
+        })
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert_eq!(manager.list_live_thread_spawn_edges().await, Vec::new());
+    assert!(!manager.captured_ops().iter().any(|(_, op)| {
+        matches!(
+            op,
+            Op::InterAgentCommunication { communication }
+                if communication.encrypted_content.as_deref() == Some("must not be delivered")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_expected_reasoning_effort_mismatch_rejects_before_creation_and_prompt_delivery()
+ {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_reasoning_override(&mut turn).await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not reach the reasoning-mismatched child",
+                "task_name": "reasoning_mismatch",
+                "agent_type": role_name,
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "xhigh",
+                "expected_reasoning_effort": "xhigh",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("the exact reasoning effort assertion should reject the role override");
+
+    let FunctionCallError::RespondToModel(receipt) = err else {
+        panic!("a reasoning effort mismatch should surface as a model-facing error");
+    };
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).expect("reasoning effort mismatch receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "error": "spawn_agent_reasoning_effort_mismatch",
+            "requested_reasoning_effort": "xhigh",
+            "expected_reasoning_effort": "xhigh",
+            "effective_reasoning_effort": "low"
+        })
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert_eq!(manager.list_live_thread_spawn_edges().await, Vec::new());
+    assert!(!manager.captured_ops().iter().any(|(_, op)| {
+        matches!(
+            op,
+            Op::InterAgentCommunication { communication }
+                if communication.encrypted_content.as_deref()
+                    == Some("must not reach the reasoning-mismatched child")
+        )
+    }));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
     #[derive(Debug, Deserialize, PartialEq)]
     struct SpawnAgentResult {
@@ -1131,6 +1376,9 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
                 "message": "monitor this wait",
                 "task_name": "terminal_babysitter_v2",
                 "agent_type": "terminal-babysitter",
+                "model": "gpt-5.6-terra",
+                "expected_model": "gpt-5.4-mini",
+                "expected_reasoning_effort": "low",
                 "fork_turns": "none"
             })),
         ))
@@ -1147,10 +1395,10 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
             agent_id: agent_id.clone(),
             task_name: "/root/terminal_babysitter_v2".to_string(),
             nickname: result.nickname.clone(),
-            requested_model: None,
+            requested_model: Some("gpt-5.6-terra".to_string()),
             requested_reasoning_effort: None,
             effective_model: Some("gpt-5.4-mini".to_string()),
-            requested_model_honored: None,
+            requested_model_honored: Some(false),
             effective_reasoning_effort: Some(ReasoningEffort::Low),
         }
     );

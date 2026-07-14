@@ -37,7 +37,10 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
         RolloutItem::EventMsg(
-            EventMsg::TokenCount(_) | EventMsg::UserMessage(_) | EventMsg::ThreadGoalUpdated(_),
+            EventMsg::TokenCount(_)
+            | EventMsg::UserMessage(_)
+            | EventMsg::ThreadGoalUpdated(_)
+            | EventMsg::ThreadSettingsApplied(_),
         ) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
             if matches!(event.item, TurnItem::UserMessage(_)) =>
@@ -114,6 +117,12 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
                 set_preview_if_empty(metadata, Some(objective.to_string()));
             }
         }
+        EventMsg::ThreadSettingsApplied(event) => {
+            let settings = &event.thread_settings;
+            metadata.model = Some(settings.model.clone());
+            metadata.model_provider = settings.model_provider_id.clone();
+            metadata.reasoning_effort = settings.reasoning_effort.clone();
+        }
         _ => {}
     }
 }
@@ -173,6 +182,8 @@ mod tests {
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use codex_protocol::protocol::UserMessageEvent;
@@ -528,6 +539,53 @@ mod tests {
 
         assert_eq!(metadata.model.as_deref(), Some("gpt-5"));
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn thread_settings_replace_complete_configured_identity_and_clear_effort() {
+        use codex_protocol::config_types::CollaborationMode;
+        use codex_protocol::config_types::ModeKind;
+        use codex_protocol::config_types::Settings;
+
+        let mut metadata = metadata_for_test();
+        metadata.reasoning_effort = Some(ReasoningEffort::High);
+        let model = "configured-model";
+        let item = RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: model.to_string(),
+                    model_provider_id: "configured-provider".to_string(),
+                    service_tier: None,
+                    approval_policy: AskForApproval::OnRequest,
+                    approvals_reviewer: Default::default(),
+                    permission_profile: PermissionProfile::Disabled,
+                    active_permission_profile: None,
+                    cwd: serde_json::from_value(serde_json::json!("/tmp")).expect("absolute cwd"),
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: model.to_string(),
+                            reasoning_effort: None,
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ));
+
+        apply_rollout_item(&mut metadata, &item, "ambient-provider");
+
+        assert_eq!(
+            (
+                metadata.model.as_deref(),
+                metadata.model_provider.as_str(),
+                metadata.reasoning_effort,
+            ),
+            (Some(model), "configured-provider", None)
+        );
     }
 
     #[test]
