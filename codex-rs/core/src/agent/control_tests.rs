@@ -683,13 +683,11 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             reloaded_config.model,
             reloaded_config.model_provider_id,
             reloaded_config.reasoning_effort,
-            reloaded_config.service_tier,
         ),
         (
             original_config.model,
             original_config.model_provider_id,
             original_config.reasoning_effort,
-            original_config.service_tier,
         )
     );
 

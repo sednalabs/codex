@@ -4,7 +4,6 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::EventMsg;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -24,36 +23,32 @@ enum SpawnInitialInput {
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
-/// Restore the agent's original effective model selection before reopening an evicted V2
-/// runtime. The caller's config is still the source of current runtime policy such as
-/// permissions and cwd, but it must not silently replace the child model or price tier.
+/// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
+/// The caller's config is still the source of current runtime policy such as permissions and cwd,
+/// but it must not silently replace the child's model, provider, or reasoning effort.
 fn restore_persisted_agent_model_selection(
     config: &mut Config,
-    history: &[RolloutItem],
+    model: Option<&str>,
+    provider_id: &str,
+    reasoning_effort: Option<ReasoningEffort>,
     thread_id: ThreadId,
 ) -> CodexResult<()> {
-    let persisted = history.iter().find_map(|item| match item {
-        RolloutItem::EventMsg(EventMsg::SessionConfigured(configured)) => Some(configured),
-        _ => None,
-    });
-    let Some(persisted) = persisted else {
+    let Some(model) = model else {
         return Err(CodexErr::UnsupportedOperation(format!(
             "cannot safely reload agent {thread_id}: persisted model identity is unavailable"
         )));
     };
 
-    let provider_id = persisted.model_provider_id.as_str();
     let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
         CodexErr::UnsupportedOperation(format!(
             "cannot safely reload agent {thread_id}: persisted model provider `{provider_id}` is not configured"
         ))
     })?;
 
-    config.model = Some(persisted.model.clone());
-    config.model_provider_id = persisted.model_provider_id.clone();
+    config.model = Some(model.to_string());
+    config.model_provider_id = provider_id.to_string();
     config.model_provider = provider;
-    config.model_reasoning_effort = persisted.reasoning_effort.clone();
-    config.service_tier = persisted.service_tier.clone();
+    config.model_reasoning_effort = reasoning_effort;
     Ok(())
 }
 
@@ -207,11 +202,17 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
+        restore_persisted_agent_model_selection(
+            &mut config,
+            stored_thread.model.as_deref(),
+            &stored_thread.model_provider,
+            stored_thread.reasoning_effort.clone(),
+            thread_id,
+        )?;
         let history = stored_thread
             .history
             .ok_or(CodexErr::ThreadNotFound(thread_id))?
             .items;
-        restore_persisted_agent_model_selection(&mut config, &history, thread_id)?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
