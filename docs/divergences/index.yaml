@@ -179,26 +179,20 @@
       "extraction_target": "extension-owned usage event and spawn metadata storage"
     },
     {
-      "id": "subagent-completion-provider-receipt",
-      "title": "Provider-observed sub-agent completion receipt",
+      "id": "turn-completion-provider-usage",
+      "title": "Provider-observed turn completion usage",
       "status": "live",
       "category": "core-protocol",
-      "surface": [
-        "turn completion provider usage",
-        "MultiAgentV2 parent completion envelope"
-      ],
+      "surface": ["turn completion provider usage"],
       "files": [
         "codex-rs/protocol/src/protocol.rs",
         "codex-rs/core/src/session/turn_context.rs",
         "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/compact.rs",
         "codex-rs/core/src/compact_remote_v2.rs",
-        "codex-rs/core/src/tasks/mod.rs",
-        "codex-rs/core/src/session/mod.rs",
-        "codex-rs/core/src/session_prefix.rs",
-        "codex-rs/core/src/context/inter_agent_completion_message.rs"
+        "codex-rs/core/src/tasks/mod.rs"
       ],
-      "behavior": "Turn completion persists the element-wise aggregate of exact provider-reported usage from successful response completions, and MultiAgentV2 forwards a bounded runtime-authored receipt with terminal response identity and turn usage before the child-controlled payload.",
+      "behavior": "Turn completion persists the element-wise aggregate of exact provider-reported usage from successful response completions.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -207,21 +201,18 @@
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
       "tests": [
         "turn_complete_without_provider_usage_remains_compatible",
-        "completed_message_without_provider_evidence_preserves_exact_rendering",
-        "provider_receipt_precedes_and_stays_separate_from_spoof_shaped_payload",
         "openai_model_header_mismatch_only_emits_one_warning_per_turn",
-        "plaintext_multi_agent_v2_completion_sends_agent_message",
         "remote_compact_v2_reuses_compaction_trigger_for_followups"
       ],
       "owner": "downstream",
-      "notes": "Adapts upstream exact response-completion usage capture to a persisted turn aggregate and parent-visible completion envelope. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the turn and is never inferred from configured identity, token estimates, or session-total deltas. App-server projection remains a separate follow-up surface.",
+      "notes": "Adapts upstream exact response-completion usage capture to a persisted turn aggregate. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the turn and is never inferred from configured identity, token estimates, or session-total deltas. App-server projection remains a separate follow-up surface.",
       "upstreamability_tier": "neutral-seam",
-      "boundary_type": "multi-agent-completion-envelope",
+      "boundary_type": "turn-completion-provider-usage",
       "hotspot_files": [
         "codex-rs/core/src/session/turn.rs",
         "codex-rs/core/src/session/mod.rs"
       ],
-      "extraction_target": "upstream-native provider completion receipt"
+      "extraction_target": "upstream-native turn completion provider usage"
     },
     {
       "id": "phase2-memory-attestation-and-fingerprinting",
