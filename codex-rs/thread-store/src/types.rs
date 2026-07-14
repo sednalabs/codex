@@ -526,7 +526,7 @@ impl GitInfoPatch {
 /// Every field is literal: `None` leaves that field unchanged, while `Some`
 /// applies the supplied value. Fields whose value may itself be cleared use an
 /// inner `Option`, where `Some(None)` clears the field.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadMetadataPatch {
     /// Replacement user-facing thread name.
     #[serde(
@@ -802,6 +802,7 @@ mod tests {
         assert_eq!(decoded.agent_path, Some(None));
         assert_eq!(decoded.reasoning_effort_update, Some(None));
         assert_eq!(decoded.service_tier, Some(None));
+        assert_eq!(decoded.resolved_reasoning_effort(), Some(None));
     }
 
     #[test]

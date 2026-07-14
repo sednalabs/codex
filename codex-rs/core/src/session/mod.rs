@@ -181,6 +181,7 @@ use uuid::Uuid;
 
 use crate::client::ModelClient;
 use crate::codex_thread::ThreadConfigSnapshot;
+use crate::codex_thread::ThreadInferenceIdentitySnapshot;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::Constrained;
@@ -920,6 +921,14 @@ impl Codex {
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         let state = self.session.state.lock().await;
         state.session_configuration.thread_config_snapshot()
+    }
+
+    pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
+        let state = self.session.state.lock().await;
+        ThreadInferenceIdentitySnapshot {
+            configured: state.session_configuration.configured_inference_identity(),
+            latest_turn: state.latest_turn_inference_identity(),
+        }
     }
 
     pub(crate) async fn dynamic_tools_snapshot(&self) -> Vec<DynamicToolSpec> {
