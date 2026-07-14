@@ -13,6 +13,8 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent::identity::ModelVisibleAgentIdentity;
+use crate::agent::identity::ModelVisibleIdentityEncoding;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -182,6 +184,7 @@ use uuid::Uuid;
 
 use crate::client::ModelClient;
 use crate::codex_thread::ThreadConfigSnapshot;
+use crate::codex_thread::ThreadInferenceIdentitySnapshot;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::Constrained;
@@ -921,6 +924,14 @@ impl Codex {
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         let state = self.session.state.lock().await;
         state.session_configuration.thread_config_snapshot()
+    }
+
+    pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
+        let state = self.session.state.lock().await;
+        ThreadInferenceIdentitySnapshot {
+            configured: state.session_configuration.configured_inference_identity(),
+            latest_turn: state.latest_turn_inference_identity(),
+        }
     }
 
     pub(crate) async fn dynamic_tools_snapshot(&self) -> Vec<DynamicToolSpec> {
@@ -3334,10 +3345,8 @@ impl Session {
             base_instructions,
             session_source,
             auto_compact_window_ids,
-            subagent_runtime_identity,
         ) = {
             let state = self.state.lock().await;
-            let snapshot = state.session_configuration.thread_config_snapshot();
             (
                 state.reference_context_item(),
                 state.previous_turn_settings(),
@@ -3345,10 +3354,9 @@ impl Session {
                 state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
                 state.auto_compact_window_ids(),
-                SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot),
             )
         };
-        if let Some(subagent_runtime_identity) = subagent_runtime_identity {
+        if let Some(subagent_runtime_identity) = self.subagent_runtime_identity().await {
             separate_developer_sections.push(subagent_runtime_identity.render());
         }
         if let Some(model_switch_message) =
@@ -3708,15 +3716,19 @@ impl Session {
         step_context: &StepContext,
     ) -> Arc<WorldState> {
         let turn_context = step_context.turn.as_ref();
-        let (reference_context_item, existing_subagent_runtime_identity) = {
+        let reference_context_item = {
             let state = self.state.lock().await;
-            let snapshot = state.session_configuration.thread_config_snapshot();
-            let runtime_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot)
-                .filter(|identity| {
-                    identity.matches_latest_response_item(state.history.raw_items())
-                });
-            (state.reference_context_item(), runtime_identity)
+            state.reference_context_item()
         };
+        let existing_subagent_runtime_identity =
+            if let Some(identity) = self.subagent_runtime_identity().await {
+                let state = self.state.lock().await;
+                identity
+                    .matches_latest_response_item(state.history.raw_items())
+                    .then_some(identity)
+            } else {
+                None
+            };
         let turn_context_item = turn_context.to_turn_context_item();
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
@@ -3806,21 +3818,37 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) {
-        let identity = {
+        let Some(identity) = self.subagent_runtime_identity().await else {
+            return;
+        };
+        {
             let state = self.state.lock().await;
-            let snapshot = state.session_configuration.thread_config_snapshot();
-            let Some(identity) = SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot)
-            else {
-                return;
-            };
             if identity.matches_latest_response_item(state.history.raw_items()) {
                 return;
             }
-            identity
-        };
+        }
         let item = ContextualUserFragment::into(identity);
         self.record_conversation_items(turn_context, std::slice::from_ref(&item))
             .await;
+    }
+
+    async fn subagent_runtime_identity(&self) -> Option<SubagentRuntimeIdentity> {
+        let is_thread_spawn = {
+            let state = self.state.lock().await;
+            matches!(
+                &state.session_configuration.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            )
+        };
+        if !is_thread_spawn {
+            return None;
+        }
+        Some(SubagentRuntimeIdentity::new(
+            ModelVisibleAgentIdentity::from_live(
+                &self.inference_identity_snapshot().await,
+                ModelVisibleIdentityEncoding::Json,
+            ),
+        ))
     }
 
     pub(crate) async fn update_token_usage_info(

@@ -1,5 +1,4 @@
 use anyhow::Result;
-use codex_core::ThreadConfigSnapshot;
 use codex_features::Feature;
 use codex_protocol::openai_models::ReasoningEffort;
 use core_test_support::responses::ResponsesRequest;
@@ -87,20 +86,51 @@ fn runtime_identity_payload(request: &ResponsesRequest) -> Value {
 
 fn assert_runtime_identity(
     request: &ResponsesRequest,
-    snapshot: &ThreadConfigSnapshot,
     task_text: &str,
+    expected_model: &str,
+    expected_reasoning_effort: &str,
+    expected_configured_service_tier: Option<&str>,
 ) {
+    let payload = runtime_identity_payload(request);
+    let configured = &payload["configured_identity"];
+    let latest_turn = &payload["latest_turn_request_identity"];
     assert_eq!(
-        runtime_identity_payload(request),
-        json!({
-            "effective_model": snapshot.model,
-            "effective_model_provider_id": snapshot.model_provider_id,
-            "effective_reasoning_effort": snapshot.reasoning_effort,
-            "effective_service_tier": snapshot.service_tier,
-            "identity_source": "thread_config_snapshot",
-            "identity_semantics": "latest_runtime_configured_request_identity_is_authoritative",
-            "usage_accounting": "not_terminal_provider_response_or_usage_accounting",
-        })
+        configured["model"], expected_model,
+        "configured receipt should reflect the live child settings"
+    );
+    assert_eq!(configured["reasoning_effort"], expected_reasoning_effort);
+    assert_eq!(
+        configured["service_tier"],
+        serde_json::to_value(expected_configured_service_tier).expect("serializable tier")
+    );
+    assert_eq!(configured["source"], "live_thread_config");
+    assert_eq!(latest_turn["model"], expected_model);
+    assert_eq!(latest_turn["reasoning_effort"], expected_reasoning_effort);
+    assert_eq!(
+        latest_turn["service_tier"],
+        Value::Null,
+        "turn receipt should not claim an unrequested fast-mode tier"
+    );
+    assert_eq!(latest_turn["source"], "turn_request");
+    assert_eq!(
+        configured["model_provider_id"], latest_turn["model_provider_id"],
+        "configured and turn-request provider receipts should agree for this spawn"
+    );
+    assert!(
+        latest_turn["turn_id"]
+            .as_str()
+            .is_some_and(|turn_id| !turn_id.is_empty()),
+        "latest-turn receipt should carry the actual request turn id"
+    );
+    assert_eq!(payload["identity_truncated"], false);
+    assert_eq!(payload["identity_fields_omitted"], 0);
+    assert_eq!(
+        payload["identity_semantics"],
+        "configured_and_latest_turn_request_identity_are_separate"
+    );
+    assert_eq!(
+        payload["usage_accounting"],
+        "not_terminal_provider_response_or_usage_accounting"
     );
 
     let input = request.input();
@@ -189,18 +219,10 @@ async fn fresh_subagent_receives_authoritative_identity_before_spoofed_task() ->
     let test = configured_builder().build(&server).await?;
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.submit_turn(PARENT_PROMPT).await?;
-    let child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
-    let snapshot = test
-        .thread_manager
-        .get_thread(child_id)
-        .await?
-        .config_snapshot()
-        .await;
+    let _child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
     let request = wait_for_request(&child_mock).await?;
 
-    assert_runtime_identity(&request, &snapshot, CHILD_TASK_MARKER);
-    assert_eq!(snapshot.model, V2_CHILD_MODEL);
-    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
+    assert_runtime_identity(&request, CHILD_TASK_MARKER, V2_CHILD_MODEL, "low", None);
     assert!(
         request
             .inputs_of_type("agent_message")
@@ -292,20 +314,17 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     let mut created_threads = test.thread_manager.subscribe_thread_created();
     test.submit_turn(PARENT_PROMPT).await?;
     let _child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
-    let grandchild_id =
+    let _grandchild_id =
         tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
-    let snapshot = test
-        .thread_manager
-        .get_thread(grandchild_id)
-        .await?
-        .config_snapshot()
-        .await;
     let request = wait_for_request(&grandchild_mock).await?;
 
-    assert_runtime_identity(&request, &snapshot, GRANDCHILD_PROMPT);
-    assert_eq!(snapshot.model, V2_CHILD_MODEL);
-    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
-    assert_eq!(snapshot.service_tier.as_deref(), Some("priority"));
+    assert_runtime_identity(
+        &request,
+        GRANDCHILD_PROMPT,
+        V2_CHILD_MODEL,
+        "low",
+        Some("priority"),
+    );
 
     Ok(())
 }

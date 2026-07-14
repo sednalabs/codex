@@ -1,6 +1,5 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
-use crate::agent::control::EffectiveAgentIdentity;
 use crate::agent::status::is_final;
 use crate::session::input_queue::InputQueueActivity;
 use crate::session::session::Session;
@@ -144,7 +143,6 @@ impl Handler {
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut agent_identities = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
@@ -156,17 +154,6 @@ impl Handler {
                 agent_nickname: agent_metadata.agent_nickname,
                 agent_role: agent_metadata.agent_role,
             });
-            if let Some(identity) = session
-                .services
-                .agent_control
-                .get_agent_identity(*receiver_thread_id)
-                .await
-            {
-                agent_identities.push(WaitAgentIdentity {
-                    agent_id: *receiver_thread_id,
-                    identity,
-                });
-            }
         }
 
         let timeout_ms = resolve_wait_timeout_ms(
@@ -280,12 +267,11 @@ impl Handler {
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
         let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
-        let mut result = WaitAgentResult::new(
+        let result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
             pending_thread_ids,
             completion_reason,
         );
-        result.agent_identities = agent_identities;
 
         emit_wait_completion(
             session.as_ref(),
@@ -333,14 +319,6 @@ pub(crate) struct WaitAgentResult {
     pub(crate) pending_ids: Vec<ThreadId>,
     pub(crate) completion_reason: CollabWaitingCompletionReason,
     pub(crate) timed_out: bool,
-    pub(crate) agent_identities: Vec<WaitAgentIdentity>,
-}
-
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct WaitAgentIdentity {
-    pub(crate) agent_id: ThreadId,
-    #[serde(flatten)]
-    pub(crate) identity: EffectiveAgentIdentity,
 }
 
 async fn ready_wake_source(
@@ -383,7 +361,6 @@ impl WaitAgentResult {
             pending_ids,
             completion_reason,
             timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
-            agent_identities: Vec::new(),
         }
     }
 
@@ -393,7 +370,6 @@ impl WaitAgentResult {
             ("message".to_string(), json!(self.message)),
             ("requested_ids".to_string(), json!(self.requested_ids)),
             ("timed_out".to_string(), json!(self.timed_out)),
-            ("agent_identities".to_string(), json!(self.agent_identities)),
         ]);
         if wait_capability.is_some_and(|capability| capability.pending_ids) {
             output.insert("pending_ids".to_string(), json!(self.pending_ids));
@@ -680,7 +656,6 @@ mod tests {
         assert_eq!(output["message"], json!("Wait timed out."));
         assert_eq!(output["requested_ids"], json!([requested_id]));
         assert_eq!(output["timed_out"], json!(true));
-        assert_eq!(output["agent_identities"], json!([]));
         assert!(
             !output
                 .as_object()

@@ -35,6 +35,7 @@ pub(crate) fn model_supports_multi_agent_backend(
     multi_agent_version: MultiAgentVersion,
 ) -> bool {
     multi_agent_version != MultiAgentVersion::V2
+        || model.multi_agent_version.is_none()
         || model.multi_agent_version == Some(multi_agent_version)
 }
 
