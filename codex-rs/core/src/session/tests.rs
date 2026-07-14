@@ -4473,7 +4473,7 @@ async fn configured_inference_identity_preserves_original_model_alias_and_fallba
     unsupported_model.service_tiers.clear();
     assert_eq!(
         get_service_tier(
-            configured.configured_service_tier.clone(),
+            configured.configured_service_tier,
             /*fast_mode_enabled*/ true,
             &unsupported_model,
         ),
@@ -4499,6 +4499,34 @@ async fn configured_inference_identity_preserves_original_model_alias_and_fallba
             .configured_inference_identity()
             .configured_model,
         "resolved-model-slug"
+    );
+
+    let updated_mode = session_configuration.collaboration_mode.with_updates(
+        Some("settings-model".to_string()),
+        Some(Some(ReasoningEffort::Low)),
+        /*developer_instructions*/ None,
+    );
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            collaboration_mode: Some(updated_mode),
+            ..Default::default()
+        })
+        .expect("configured identity settings should apply");
+    assert_eq!(
+        updated.configured_inference_identity(),
+        ConfiguredInferenceIdentity {
+            configured_model: "settings-model".to_string(),
+            configured_model_provider_id: session_configuration
+                .original_config_do_not_use
+                .model_provider_id
+                .clone(),
+            configured_reasoning_effort: Some(ReasoningEffort::Low),
+            configured_service_tier: session_configuration
+                .original_config_do_not_use
+                .service_tier
+                .clone(),
+        },
+        "latest explicit settings must replace the launch alias as one configured identity"
     );
 }
 
