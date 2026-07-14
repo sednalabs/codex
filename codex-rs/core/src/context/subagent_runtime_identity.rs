@@ -86,6 +86,14 @@ impl SubagentRuntimeIdentity {
         text == &self.render()
     }
 
+    pub(crate) fn matches_latest_response_item(&self, items: &[ResponseItem]) -> bool {
+        items
+            .iter()
+            .rev()
+            .find(|item| Self::matches_response_item(item))
+            .is_some_and(|item| self.matches_current_response_item(item))
+    }
+
     fn payload(&self) -> SubagentRuntimeIdentityPayload<'_> {
         let mut omitted_identity_fields = Vec::new();
         SubagentRuntimeIdentityPayload {

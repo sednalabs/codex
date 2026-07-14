@@ -3713,11 +3713,7 @@ impl Session {
             let snapshot = state.session_configuration.thread_config_snapshot();
             let runtime_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot)
                 .filter(|identity| {
-                    state
-                        .history
-                        .raw_items()
-                        .iter()
-                        .any(|item| identity.matches_current_response_item(item))
+                    identity.matches_latest_response_item(state.history.raw_items())
                 });
             (state.reference_context_item(), runtime_identity)
         };
@@ -3817,12 +3813,7 @@ impl Session {
             else {
                 return;
             };
-            if state
-                .history
-                .raw_items()
-                .iter()
-                .any(|item| identity.matches_current_response_item(item))
-            {
+            if identity.matches_latest_response_item(state.history.raw_items()) {
                 return;
             }
             identity
