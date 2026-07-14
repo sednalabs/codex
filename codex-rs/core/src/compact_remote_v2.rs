@@ -827,6 +827,7 @@ mod tests {
                     reasoning_output_tokens: 5,
                     total_tokens: 123_498,
                 }),
+                service_tier: None,
                 end_turn: Some(true),
             }),
         ]);

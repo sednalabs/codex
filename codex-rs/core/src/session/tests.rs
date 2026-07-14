@@ -2332,7 +2332,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
 
 #[tokio::test]
 async fn recompute_token_usage_uses_session_base_instructions() {
-    let (session, turn_context) = make_session_and_context().await;
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
 
     let override_instructions = "SESSION_OVERRIDE_INSTRUCTIONS_ONLY".repeat(120);
     {
@@ -2368,6 +2368,18 @@ async fn recompute_token_usage_uses_session_base_instructions() {
         .last_token_usage
         .total_tokens;
     assert_eq!(actual_tokens, expected_tokens.max(0));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.msg, EventMsg::TokenCount(_)))
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event.msg, EventMsg::InferenceCall(_)))
+    );
 }
 
 #[tokio::test]

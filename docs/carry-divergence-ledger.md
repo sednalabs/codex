@@ -225,6 +225,14 @@ docs-only refresh commit that records this snapshot.
   captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
   TUI, and usage-ledger consumers receive provider-confirmed identity instead
   of falling back to `None`.
+- Each concrete HTTP or WebSocket sampling attempt emits a durable, payload-free
+  rollout lifecycle with a stable local id, configured/requested identity,
+  provider-supplied terminal identity, and exact per-response usage only on
+  completed observations. Authentication retries, transport fallback, outer
+  retries, failures, and cancellations remain separate client-observed attempts;
+  they do not claim a provider physical or billable call count.
+- These events do not contain prompts, outputs, secret-bearing headers, or
+  inferred prices. SQLite projection/query support and pricing are follow-ups.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -232,6 +240,8 @@ docs-only refresh commit that records this snapshot.
   parent/session model.
 - Primary files:
   - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/client.rs`
+  - `codex-rs/rollout-trace/src/inference.rs`
   - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/tasks/mod.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`

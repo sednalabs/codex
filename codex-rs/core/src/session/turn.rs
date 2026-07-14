@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use crate::SkillInjections;
 use crate::build_skill_injections;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
+use crate::client::InferenceObservationEmitter;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -2051,11 +2052,34 @@ async fn try_run_sampling_request(
         auth_mode = sess.services.auth_manager.auth_mode(),
         features = sess.features.enabled_features(),
     );
-    let inference_trace = sess.services.rollout_thread_trace.inference_trace_context(
-        turn_context.sub_id.as_str(),
-        turn_context.model_info.slug.as_str(),
-        turn_context.provider.info().name.as_str(),
-    );
+    let inference_trace = sess
+        .services
+        .rollout_thread_trace
+        .inference_trace_context(
+            turn_context.sub_id.as_str(),
+            turn_context.model_info.slug.as_str(),
+            turn_context.provider.info().name.as_str(),
+        )
+        .with_observations(
+            sess.thread_id,
+            turn_context.sub_id.clone(),
+            turn_context.provider.info().name.clone(),
+            turn_context.model_info.slug.clone(),
+            turn_context.config.service_tier.clone(),
+        );
+    let inference_observations = InferenceObservationEmitter::new({
+        let sess = Arc::clone(&sess);
+        let turn_context = Arc::clone(&turn_context);
+        move |event| {
+            let sess = Arc::clone(&sess);
+            let turn_context = Arc::clone(&turn_context);
+            async move {
+                sess.send_event(&turn_context, EventMsg::InferenceCall(event))
+                    .await;
+            }
+        }
+    });
+    client_session.set_inference_observation_emitter(inference_observations);
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let uses_sequential_cutoff_reasoning_summaries = turn_context
         .config

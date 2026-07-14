@@ -88,10 +88,14 @@
       ],
       "files": [
         "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/codex-api/src/sse/responses.rs",
         "codex-rs/core/src/state/service.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/ext/extension-api/src/state.rs",
         "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/rollout-trace/src/inference.rs",
+        "codex-rs/rollout/src/policy.rs",
         "codex-rs/state/src/lib.rs",
         "codex-rs/state/src/migrations.rs",
         "codex-rs/state/src/runtime.rs",
@@ -102,7 +106,7 @@
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata for downstream audit workflows. Client-observed inference attempts also emit durable rollout events with configured/requested identity, provider-supplied terminal identity, exact completed-response usage, and distinct retry/fallback lifecycle ids.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -113,10 +117,12 @@
         "extension_storage_migrations_use_namespace_versions",
         "usage_logger_* focused table-contract tests",
         "usage_logger_records_provider_final_model_identity",
+        "observations_keep_exact_usage_and_distinct_retry_boundaries",
+        "recompute_token_usage_uses_session_base_instructions",
         "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None.",
+      "notes": "Extends event-level auditing while keeping client-observed attempts distinct from provider physical or billable calls. The first capture slice persists low-cardinality rollout events only; SQLite query projection and pricing remain separate follow-ups.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
