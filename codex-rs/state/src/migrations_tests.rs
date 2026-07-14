@@ -285,3 +285,72 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
 }
+
+#[tokio::test]
+async fn inference_identity_authority_migration_preserves_0044_legacy_row() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(/*version*/ 44)
+        .run(&pool)
+        .await
+        .expect("0044 schema should apply");
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider,
+    model, reasoning_effort, cwd, title, sandbox_policy, approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .bind("/tmp/legacy-0044.jsonl")
+    .bind(1_700_000_000_i64)
+    .bind(1_700_000_100_i64)
+    .bind("cli")
+    .bind("legacy-provider")
+    .bind("legacy-model")
+    .bind("high")
+    .bind("/tmp")
+    .bind("Legacy row")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(&pool)
+    .await
+    .expect("0044 legacy row should insert");
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("identity authority migration should apply");
+    let row = sqlx::query(
+        r#"
+SELECT model_provider, model, reasoning_effort,
+       configured_inference_identity_authority,
+       latest_request_inference_identity_authority
+FROM threads WHERE id = ?
+        "#,
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .fetch_one(&pool)
+    .await
+    .expect("upgraded legacy row should load");
+    assert_eq!(
+        (
+            row.get::<String, _>("model_provider"),
+            row.get::<Option<String>, _>("model"),
+            row.get::<Option<String>, _>("reasoning_effort"),
+            row.get::<Option<String>, _>("configured_inference_identity_authority"),
+            row.get::<Option<String>, _>("latest_request_inference_identity_authority"),
+        ),
+        (
+            "legacy-provider".to_string(),
+            Some("legacy-model".to_string()),
+            Some("high".to_string()),
+            None,
+            None,
+        )
+    );
+}

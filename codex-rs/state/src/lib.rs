@@ -11,6 +11,7 @@ const _: () = assert!(
 
 mod audit;
 mod extract;
+mod inference_identity;
 pub mod log_db;
 mod migrations;
 mod model;
@@ -33,6 +34,10 @@ pub use audit::read_thread_state_audit_rows;
 /// Most consumers should prefer [`StateRuntime`].
 pub use extract::apply_rollout_item;
 pub use extract::rollout_item_affects_thread_metadata;
+pub use inference_identity::THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION;
+pub use inference_identity::ThreadInferenceIdentityAuthorityEncodeError;
+pub use inference_identity::decode_thread_inference_identity_authority;
+pub use inference_identity::encode_thread_inference_identity_authority;
 pub use model::AgentJob;
 pub use model::AgentJobCreateParams;
 pub use model::AgentJobItem;

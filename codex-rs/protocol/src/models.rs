@@ -9,6 +9,7 @@ use codex_utils_image::load_for_prompt_bytes;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as _;
 use serde::ser::Serializer;
 use ts_rs::TS;
 
@@ -28,6 +29,103 @@ use schemars::JsonSchema;
 
 use crate::ResponseItemId;
 use crate::mcp::CallToolResult;
+use crate::openai_models::ReasoningEffort;
+
+/// Complete model-selection identity for configured settings or a real request.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct ThreadInferenceIdentity {
+    model: String,
+    model_provider_id: String,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+#[derive(Deserialize)]
+struct ThreadInferenceIdentityFields {
+    model: String,
+    model_provider_id: String,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Semantic validation failure for a thread inference identity.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+pub enum ThreadInferenceIdentityValidationError {
+    #[error("model must contain a non-whitespace character")]
+    EmptyModel,
+    #[error("model provider id must contain a non-whitespace character")]
+    EmptyModelProviderId,
+}
+
+impl ThreadInferenceIdentity {
+    pub fn new(
+        model: impl Into<String>,
+        model_provider_id: impl Into<String>,
+        reasoning_effort: Option<ReasoningEffort>,
+    ) -> Result<Self, ThreadInferenceIdentityValidationError> {
+        let identity = Self {
+            model: model.into(),
+            model_provider_id: model_provider_id.into(),
+            reasoning_effort,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn model_provider_id(&self) -> &str {
+        &self.model_provider_id
+    }
+
+    pub fn reasoning_effort(&self) -> Option<&ReasoningEffort> {
+        self.reasoning_effort.as_ref()
+    }
+
+    pub fn validate(&self) -> Result<(), ThreadInferenceIdentityValidationError> {
+        if self.model.trim().is_empty() {
+            return Err(ThreadInferenceIdentityValidationError::EmptyModel);
+        }
+        if self.model_provider_id.trim().is_empty() {
+            return Err(ThreadInferenceIdentityValidationError::EmptyModelProviderId);
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for ThreadInferenceIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = ThreadInferenceIdentityFields::deserialize(deserializer)?;
+        Self::new(
+            fields.model,
+            fields.model_provider_id,
+            fields.reasoning_effort,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+/// Durable presence and validity of a thread inference identity.
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum ThreadInferenceIdentityAuthority {
+    #[default]
+    LegacyMissing,
+    Valid(ThreadInferenceIdentity),
+    Cleared,
+    Malformed {
+        raw: String,
+    },
+}
+
+impl From<Option<ThreadInferenceIdentity>> for ThreadInferenceIdentityAuthority {
+    fn from(value: Option<ThreadInferenceIdentity>) -> Self {
+        value.map_or(Self::Cleared, Self::Valid)
+    }
+}
 
 /// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(
@@ -2209,6 +2307,55 @@ mod tests {
         0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0,
         1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    #[test]
+    fn thread_inference_identity_validates_construction_and_deserialization() -> Result<()> {
+        let identity = ThreadInferenceIdentity::new(
+            "configured-alias",
+            "test-provider",
+            Some(ReasoningEffort::High),
+        )?;
+        assert_eq!(
+            (
+                identity.model(),
+                identity.model_provider_id(),
+                identity.reasoning_effort(),
+            ),
+            (
+                "configured-alias",
+                "test-provider",
+                Some(&ReasoningEffort::High),
+            )
+        );
+        assert_eq!(
+            serde_json::from_value::<ThreadInferenceIdentity>(serde_json::to_value(&identity)?)?,
+            identity
+        );
+
+        assert_eq!(
+            ThreadInferenceIdentity::new("  ", "provider", None),
+            Err(ThreadInferenceIdentityValidationError::EmptyModel)
+        );
+        assert_eq!(
+            ThreadInferenceIdentity::new("model", "\t", None),
+            Err(ThreadInferenceIdentityValidationError::EmptyModelProviderId)
+        );
+        for raw in [
+            serde_json::json!({
+                "model": " ",
+                "model_provider_id": "provider",
+                "reasoning_effort": null,
+            }),
+            serde_json::json!({
+                "model": "model",
+                "model_provider_id": "\n",
+                "reasoning_effort": null,
+            }),
+        ] {
+            assert!(serde_json::from_value::<ThreadInferenceIdentity>(raw).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn plaintext_agent_message_content_rejects_mixed_encrypted_content() {
