@@ -914,7 +914,22 @@ class RouteSelectionTests(unittest.TestCase):
                 ["codex.inference-observation-core-targeted"],
             ),
             (
+                ["codex-rs/core/src/session/session.rs"],
+                ["codex.inference-observation-core-targeted"],
+            ),
+            (
                 ["codex-rs/core/tests/suite/inference_observations.rs"],
+                ["codex.inference-observation-integration-targeted"],
+            ),
+            (
+                [
+                    "codex-rs/core/tests/common/responses.rs",
+                    "codex-rs/core/tests/suite/inference_auth_recovery.rs",
+                ],
+                ["codex.inference-observation-integration-targeted"],
+            ),
+            (
+                ["codex-rs/core/tests/suite/inference_observation_persistence.rs"],
                 ["codex.inference-observation-integration-targeted"],
             ),
         ]
@@ -970,8 +985,8 @@ class RouteSelectionTests(unittest.TestCase):
                 "suite::inference_observations::http_retry_emits_distinct_failed_and_completed_attempts",
                 "suite::inference_observations::websocket_retry_emits_distinct_failed_and_completed_attempts",
                 "suite::inference_observations::interrupting_pending_http_response_emits_cancelled_without_completion_evidence",
-                "suite::client::http_401_auth_recovery_records_distinct_attempts",
-                "suite::client::websocket_401_auth_recovery_records_distinct_attempts",
+                "suite::inference_auth_recovery::http_401_auth_recovery_records_distinct_attempts",
+                "suite::inference_auth_recovery::websocket_401_auth_recovery_records_distinct_attempts",
                 "suite::inference_observation_persistence::detached_delivery_persists_whole_event_pairs_in_both_history_modes",
                 "suite::inference_observation_persistence::cancelling_real_http_setup_persists_started_then_cancelled",
             },

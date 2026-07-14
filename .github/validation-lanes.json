@@ -1935,14 +1935,13 @@
         "codex-rs/core/tests/common/responses.rs",
         "codex-rs/core/tests/common/test_codex.rs",
         "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/core/tests/suite/inference_auth_recovery.rs",
         "codex-rs/core/tests/suite/inference_observation_persistence.rs",
         "codex-rs/core/tests/suite/inference_observations.rs",
         "codex-rs/core/tests/suite/mod.rs"
       ],
       "required_any_paths": [
-        "codex-rs/core/tests/common/responses.rs",
-        "codex-rs/core/tests/common/test_codex.rs",
-        "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/core/tests/suite/inference_auth_recovery.rs",
         "codex-rs/core/tests/suite/inference_observation_persistence.rs",
         "codex-rs/core/tests/suite/inference_observations.rs"
       ]
