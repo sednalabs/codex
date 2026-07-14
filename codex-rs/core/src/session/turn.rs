@@ -158,7 +158,6 @@ pub(crate) async fn run_turn(
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
     turn_context.reset_terminal_response_model_identity().await;
-    turn_context.reset_provider_usage().await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
