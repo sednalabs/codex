@@ -587,6 +587,8 @@ async fn list_agents_returns_model_visible_identity_receipts() -> Result<()> {
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+            config.model_catalog =
+                Some(bundled_models_response().expect("bundled model catalog should parse"));
         })
         .build(&server)
         .await?;
