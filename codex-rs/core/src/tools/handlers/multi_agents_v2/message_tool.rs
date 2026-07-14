@@ -8,8 +8,10 @@ use super::*;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageDeliveryMode {
@@ -49,6 +51,16 @@ pub(crate) struct SendMessageArgs {
 pub(crate) struct AssignTaskArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    pub(crate) expected_model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FollowupTaskResult {
+    task_name: String,
+    effective_model: String,
+    effective_model_provider_id: String,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_service_tier: Option<String>,
 }
 
 pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
@@ -66,6 +78,7 @@ pub(crate) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    expected_model: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     handle_message_submission(
         invocation,
@@ -73,6 +86,7 @@ pub(crate) async fn handle_message_string_tool(
         target,
         message_content(message)?,
         /*interrupt*/ false,
+        expected_model,
     )
     .await
 }
@@ -112,6 +126,7 @@ async fn handle_message_submission(
     target: String,
     message: String,
     interrupt: bool,
+    expected_model: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -155,6 +170,24 @@ async fn handle_message_submission(
         .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let receiver_config = session
+        .services
+        .agent_control
+        .get_agent_config_snapshot(receiver_thread_id)
+        .await
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(format!(
+                "agent with id {receiver_thread_id} has no runtime config snapshot"
+            ))
+        })?;
+    if let Some(expected_model) = expected_model
+        && receiver_config.model != expected_model
+    {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "follow-up task was not sent: target {receiver_agent_path} uses model `{}`, not expected model `{expected_model}`",
+            receiver_config.model
+        )));
+    }
     let author = turn
         .session_source
         .get_agent_path()
@@ -179,13 +212,26 @@ async fn handle_message_submission(
         SubAgentActivityItem {
             id: call_id,
             agent_thread_id: receiver_thread_id,
-            agent_path: receiver_agent_path,
+            agent_path: receiver_agent_path.clone(),
             kind: SubAgentActivityKind::Interacted,
         },
     )
     .await;
 
-    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+    let output = match mode {
+        MessageDeliveryMode::QueueOnly => String::new(),
+        MessageDeliveryMode::TriggerTurn => tool_output_json_text(
+            &FollowupTaskResult {
+                task_name: receiver_agent_path.to_string(),
+                effective_model: receiver_config.model,
+                effective_model_provider_id: receiver_config.model_provider_id,
+                effective_reasoning_effort: receiver_config.reasoning_effort,
+                effective_service_tier: receiver_config.service_tier,
+            },
+            "followup_task",
+        ),
+    };
+    Ok(FunctionToolOutput::from_text(output, Some(true)))
 }
 
 pub(crate) async fn handle_message_items_tool(
@@ -197,5 +243,8 @@ pub(crate) async fn handle_message_items_tool(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let tool_name = invocation.tool_name.clone();
     let prompt = message_content_from_items(tool_name.name.as_str(), items)?;
-    handle_message_submission(invocation, mode, target, prompt, interrupt).await
+    handle_message_submission(
+        invocation, mode, target, prompt, interrupt, /*expected_model*/ None,
+    )
+    .await
 }

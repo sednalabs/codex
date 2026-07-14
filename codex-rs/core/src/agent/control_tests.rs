@@ -624,6 +624,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("child thread should exist");
+    let original_config = child_thread.config_snapshot().await;
     child_thread
         .inject_response_items(vec![assistant_message(
             "child persisted",
@@ -649,16 +650,46 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         Ok(_) => panic!("expected thread to be removed"),
     }
 
+    let mut conflicting_resume_config = harness.config.clone();
+    conflicting_resume_config.model = Some("different-caller-model".to_string());
+    conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
+    conflicting_resume_config.service_tier = Some("priority".to_string());
+    let mut missing_provider_config = conflicting_resume_config.clone();
+    missing_provider_config
+        .model_providers
+        .remove(&original_config.model_provider_id);
+    let err = harness
+        .control
+        .ensure_v2_agent_loaded(missing_provider_config, spawned_agent.thread_id)
+        .await
+        .expect_err("reload should fail closed when the persisted provider is unavailable");
+    assert!(err.to_string().contains(&format!(
+        "persisted model provider `{}` is not configured",
+        original_config.model_provider_id
+    )));
     harness
         .control
-        .ensure_v2_agent_loaded(harness.config.clone(), spawned_agent.thread_id)
+        .ensure_v2_agent_loaded(conflicting_resume_config, spawned_agent.thread_id)
         .await
         .expect("known v2 agent should reload");
-    let _ = harness
+    let reloaded_thread = harness
         .manager
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("reloaded child thread should exist");
+    let reloaded_config = reloaded_thread.config_snapshot().await;
+    assert_eq!(
+        (
+            reloaded_config.model,
+            reloaded_config.model_provider_id,
+            reloaded_config.reasoning_effort,
+        ),
+        (
+            original_config.model,
+            original_config.model_provider_id,
+            original_config.reasoning_effort,
+        )
+    );
 
     let communication = InterAgentCommunication::new(
         AgentPath::root(),
