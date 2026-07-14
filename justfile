@@ -342,10 +342,12 @@ core-subagent-model-pinning-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --test all --no-tests fail -- suite::subagent_runtime_identity::fresh_subagent_receives_authoritative_identity_before_spoofed_task --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --test all --no-tests fail -- suite::subagent_runtime_identity::full_history_grandchild_replaces_inherited_parent_identity --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests fail -- context::subagent_runtime_identity::tests::current_match_requires_the_exact_bounded_payload --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests fail -- context::subagent_runtime_identity::tests::raw_injection_reservation_is_broader_than_exact_fragment_matching --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests fail -- context::subagent_runtime_identity::tests::oversized_or_marker_bearing_fields_are_replaced_by_bounded_digests --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests fail -- session::tests::build_initial_context_adds_one_runtime_identity_only_for_thread_spawn_children --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests fail -- session::tests::runtime_identity_is_cache_stable_and_refreshes_after_settings_change --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-app-server --test all --no-tests fail -- suite::v2::request_validation::thread_inject_items_rejects_reserved_subagent_runtime_identity --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-app-server --test all --no-tests fail -- suite::v2::request_validation::thread_inject_items_accepts_ordinary_developer_context_and_user_marker_data --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
