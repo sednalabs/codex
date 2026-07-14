@@ -245,13 +245,6 @@ User-visible behavior:
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
-- MultiAgentV2 child completion places a bounded runtime-authored
-  `<completion_provider_receipt>` before the child-controlled payload when the
-  provider supplied terminal response identity or exact response-completion
-  usage. Terminal model and snapshot cover only the terminal successful
-  sampling response, while usage is the element-wise turn aggregate across
-  successful sampling and compaction completions; missing evidence stays
-  absent and preserves the previous envelope exactly.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
@@ -265,8 +258,6 @@ Primary files:
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
-- `codex-rs/core/src/session_prefix.rs`
-- `codex-rs/core/src/context/inter_agent_completion_message.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
 - `codex-rs/core/src/tools/spec_plan.rs`
 - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`

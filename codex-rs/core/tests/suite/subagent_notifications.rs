@@ -84,22 +84,6 @@ fn request_has_input_type(req: &wiremock::Request, ty: &str) -> bool {
         })
 }
 
-fn ev_completed_with_provider_usage(id: &str) -> Value {
-    json!({
-        "type": "response.completed",
-        "response": {
-            "id": id,
-            "usage": {
-                "input_tokens": 11,
-                "input_tokens_details": {"cached_tokens": 3},
-                "output_tokens": 7,
-                "output_tokens_details": {"reasoning_tokens": 2},
-                "total_tokens": 18
-            }
-        }
-    })
-}
-
 fn decoded_body(req: &wiremock::Request) -> Option<Vec<u8>> {
     let is_zstd = req
         .headers
@@ -1321,21 +1305,14 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         CompletionScenario::Completed => vec![
             ev_response_created("resp-child-1"),
             ev_assistant_message("msg-child-1", "child done"),
-            ev_completed_with_provider_usage("resp-child-1"),
+            ev_completed("resp-child-1"),
         ],
         CompletionScenario::TerminalError => vec![ev_response_created("resp-child-1")],
     };
-    let child_response = match scenario {
-        CompletionScenario::Completed => sse_response(sse(child_events))
-            .insert_header("OpenAI-Model", "provider-child-model")
-            .insert_header("OpenAI-Model-Snapshot", "provider-child-snapshot"),
-        CompletionScenario::TerminalError => sse_response(sse(child_events)),
-    }
-    .set_delay(Duration::from_secs(1));
     let child_request = mount_response_once_match(
         &server,
         |req: &wiremock::Request| request_has_input_type(req, "agent_message"),
-        child_response,
+        sse_response(sse(child_events)).set_delay(Duration::from_secs(1)),
     )
     .await;
     mount_sse_once_match(
@@ -1360,14 +1337,8 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             error,
         ),
     };
-    let receipt = match scenario {
-        CompletionScenario::Completed => {
-            "\n<completion_provider_receipt>\n  <terminal_response_model>provider-child-model</terminal_response_model>\n  <terminal_response_snapshot>provider-child-snapshot</terminal_response_snapshot>\n  <turn_provider_usage input_tokens=\"11\" cached_input_tokens=\"3\" output_tokens=\"7\" reasoning_output_tokens=\"2\" total_tokens=\"18\" />\n</completion_provider_receipt>"
-        }
-        CompletionScenario::TerminalError => "",
-    };
     let notification = format!(
-        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker{receipt}\nPayload:\n{payload}"
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n{payload}"
     );
     // If the child is still running when the parent turn starts, wait_agent blocks
     // until mailbox delivery. The follow-up request must then contain that delivery.
@@ -1422,11 +1393,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         .await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
-    let child_requests = wait_for_requests(&child_request).await?;
-    assert_eq!(
-        child_requests.last().expect("child request").body_json()["model"].as_str(),
-        Some("koffing")
-    );
+    let _ = wait_for_requests(&child_request).await?;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
     let request = wait_for_requests(&agent_request)
