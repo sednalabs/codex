@@ -27,84 +27,6 @@
       "needs_sccache": true
     },
     {
-      "lane_id": "codex.inference-observation-contract-targeted",
-      "groups": [
-        "core"
-      ],
-      "lane_sets": [
-        "all",
-        "core-carry"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "core-carry"
-      ],
-      "summary_family": "inference-observation",
-      "cost_class": "low",
-      "setup_class": "rust_integration",
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/inference-observation-contract-targeted.sh",
-      "script_args": [],
-      "needs_just": false,
-      "needs_node": false,
-      "needs_nextest": true,
-      "needs_linux_build_deps": true,
-      "needs_dotslash": false,
-      "needs_sccache": true
-    },
-    {
-      "lane_id": "codex.inference-observation-core-targeted",
-      "groups": [
-        "core"
-      ],
-      "lane_sets": [
-        "all",
-        "core-carry"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "core-carry"
-      ],
-      "summary_family": "inference-observation",
-      "cost_class": "medium",
-      "setup_class": "rust_integration",
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/inference-observation-core-targeted.sh",
-      "script_args": [],
-      "needs_just": false,
-      "needs_node": false,
-      "needs_nextest": true,
-      "needs_linux_build_deps": true,
-      "needs_dotslash": false,
-      "needs_sccache": true
-    },
-    {
-      "lane_id": "codex.inference-observation-integration-targeted",
-      "groups": [
-        "core"
-      ],
-      "lane_sets": [
-        "all",
-        "core-carry"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "core-carry"
-      ],
-      "summary_family": "inference-observation",
-      "cost_class": "medium",
-      "setup_class": "rust_integration",
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/inference-observation-integration-targeted.sh",
-      "script_args": [],
-      "needs_just": false,
-      "needs_node": false,
-      "needs_nextest": true,
-      "needs_linux_build_deps": true,
-      "needs_dotslash": false,
-      "needs_sccache": true
-    },
-    {
       "lane_id": "core-carry-core-smoke",
       "groups": [
         "core"
@@ -1796,9 +1718,6 @@
       ],
       "allowed_paths": [
         ".github/validation-lanes.json",
-        ".github/scripts/validation-lanes/inference-observation-contract-targeted.sh",
-        ".github/scripts/validation-lanes/inference-observation-core-targeted.sh",
-        ".github/scripts/validation-lanes/inference-observation-integration-targeted.sh",
         ".github/workflows/_validation-lane-node.yml",
         ".github/workflows/_validation-lane-release.yml",
         ".github/workflows/_validation-lane-rust-integration.yml",
@@ -1836,9 +1755,6 @@
       ],
       "required_any_paths": [
         ".github/validation-lanes.json",
-        ".github/scripts/validation-lanes/inference-observation-contract-targeted.sh",
-        ".github/scripts/validation-lanes/inference-observation-core-targeted.sh",
-        ".github/scripts/validation-lanes/inference-observation-integration-targeted.sh",
         ".github/workflows/_validation-lane-node.yml",
         ".github/workflows/_validation-lane-release.yml",
         ".github/workflows/_validation-lane-rust-integration.yml",
@@ -1864,69 +1780,6 @@
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "scripts/downstream-divergence-audit.py",
         "scripts/resolve_sedna_release_version"
-      ]
-    },
-    {
-      "route_id": "inference-observation-contract",
-      "lane_ids": [
-        "codex.inference-observation-contract-targeted"
-      ],
-      "allowed_paths": [
-        "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/rollout/src/policy.rs",
-        "codex-rs/rollout-trace/src/inference.rs",
-        "codex-rs/rollout-trace/src/inference_tests.rs",
-        "codex-rs/rollout-trace/src/lib.rs"
-      ],
-      "required_any_paths": [
-        "codex-rs/protocol/src/protocol.rs",
-        "codex-rs/rollout/src/policy.rs",
-        "codex-rs/rollout-trace/src/inference.rs",
-        "codex-rs/rollout-trace/src/inference_tests.rs",
-        "codex-rs/rollout-trace/src/lib.rs"
-      ]
-    },
-    {
-      "route_id": "inference-observation-runtime",
-      "lane_ids": [
-        "codex.inference-observation-core-targeted"
-      ],
-      "allowed_paths": [
-        "codex-rs/codex-api/src/common.rs",
-        "codex-rs/codex-api/src/sse/responses.rs",
-        "codex-rs/codex-api/tests/sse_end_to_end.rs",
-        "codex-rs/core/src/client.rs",
-        "codex-rs/core/src/client_tests.rs",
-        "codex-rs/core/src/compact_remote_v2.rs",
-        "codex-rs/core/src/session/tests.rs",
-        "codex-rs/core/src/session/turn.rs",
-        "codex-rs/rollout-trace/src/inference.rs",
-        "docs/carry-divergence-ledger.md",
-        "docs/divergences/index.yaml",
-        "docs/downstream-regression-matrix.md"
-      ],
-      "required_any_paths": [
-        "codex-rs/codex-api/src/common.rs",
-        "codex-rs/codex-api/src/sse/responses.rs",
-        "codex-rs/codex-api/tests/sse_end_to_end.rs",
-        "codex-rs/core/src/client.rs",
-        "codex-rs/core/src/client_tests.rs",
-        "codex-rs/core/src/compact_remote_v2.rs",
-        "codex-rs/core/src/session/tests.rs",
-        "codex-rs/core/src/session/turn.rs"
-      ]
-    },
-    {
-      "route_id": "inference-observation-integration",
-      "lane_ids": [
-        "codex.inference-observation-integration-targeted"
-      ],
-      "allowed_paths": [
-        "codex-rs/core/tests/suite/inference_observations.rs",
-        "codex-rs/core/tests/suite/mod.rs"
-      ],
-      "required_any_paths": [
-        "codex-rs/core/tests/suite/inference_observations.rs"
       ]
     },
     {
