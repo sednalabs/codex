@@ -594,6 +594,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         api_stream,
         test_session_telemetry(),
         attempt,
+        super::InferenceObservationEmitter::disabled(),
         test_model_provider(),
     );
 
@@ -636,6 +637,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         Ok(ResponseEvent::Completed {
             response_id: "resp-123".to_string(),
             token_usage: None,
+            service_tier: None,
             end_turn: Some(true),
         }),
     ]);
@@ -644,6 +646,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
+        super::InferenceObservationEmitter::disabled(),
         test_model_provider(),
     );
 
@@ -719,6 +722,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         api_stream,
         test_session_telemetry(),
         attempt,
+        super::InferenceObservationEmitter::disabled(),
         test_model_provider(),
     );
 

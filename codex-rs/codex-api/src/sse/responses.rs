@@ -135,6 +135,8 @@ struct ResponseCompleted {
     #[serde(default)]
     usage: Option<ResponseCompletedUsage>,
     #[serde(default)]
+    service_tier: Option<String>,
+    #[serde(default)]
     end_turn: Option<bool>,
 }
 
@@ -476,6 +478,7 @@ pub fn process_responses_event(
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,
                             token_usage: resp.usage.map(Into::into),
+                            service_tier: resp.service_tier,
                             end_turn: resp.end_turn,
                         }));
                     }
@@ -821,7 +824,7 @@ mod tests {
 
         let completed = json!({
             "type": "response.completed",
-            "response": { "id": "resp1" }
+            "response": { "id": "resp1", "service_tier": "priority" }
         })
         .to_string();
 
@@ -853,10 +856,12 @@ mod tests {
                 response_id,
                 token_usage,
                 end_turn,
+                service_tier,
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
                 assert!(end_turn.is_none());
+                assert_eq!(service_tier.as_deref(), Some("priority"));
             }
             other => panic!("unexpected third event: {other:?}"),
         }
@@ -1020,6 +1025,7 @@ mod tests {
                 response_id,
                 token_usage,
                 end_turn,
+                ..
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
@@ -1410,6 +1416,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                service_tier: None,
             } if response_id == "resp-1"
         );
     }
@@ -1456,6 +1463,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                service_tier: None,
             } if response_id == "resp-1"
         );
     }
@@ -1491,6 +1499,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                service_tier: None,
             } if response_id == "resp-1"
         );
     }
@@ -1526,6 +1535,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                service_tier: None,
             } if response_id == "resp-1"
         );
     }
