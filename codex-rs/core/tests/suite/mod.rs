@@ -64,6 +64,7 @@ mod hooks;
 #[cfg(not(target_os = "windows"))]
 mod hooks_mcp;
 mod image_rollout;
+mod inference_auth_recovery;
 mod inference_observation_persistence;
 mod inference_observations;
 mod items;
