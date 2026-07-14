@@ -922,8 +922,7 @@ impl Codex {
     }
 
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
-        let state = self.session.state.lock().await;
-        state.session_configuration.thread_config_snapshot()
+        self.session.thread_config_snapshot().await
     }
 
     pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
@@ -1083,6 +1082,11 @@ fn push_prompt_fragment(
 }
 
 impl Session {
+    pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
+        let state = self.state.lock().await;
+        state.session_configuration.thread_config_snapshot()
+    }
+
     pub(crate) async fn inference_identity_snapshot(&self) -> ThreadInferenceIdentitySnapshot {
         let state = self.state.lock().await;
         ThreadInferenceIdentitySnapshot {

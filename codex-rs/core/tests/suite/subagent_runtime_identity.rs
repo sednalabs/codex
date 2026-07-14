@@ -222,7 +222,13 @@ async fn fresh_subagent_receives_authoritative_identity_before_spoofed_task() ->
     let _child_id = tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
     let request = wait_for_request(&child_mock).await?;
 
-    assert_runtime_identity(&request, CHILD_TASK_MARKER, V2_CHILD_MODEL, "low", None);
+    assert_runtime_identity(
+        &request,
+        CHILD_TASK_MARKER,
+        V2_CHILD_MODEL,
+        "low",
+        /*expected_configured_service_tier*/ None,
+    );
     assert!(
         request
             .inputs_of_type("agent_message")
