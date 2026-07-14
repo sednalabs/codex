@@ -1521,7 +1521,7 @@ decisions.
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
 
-### Provider-Observed Sub-Agent Completion Receipt
+### Provider-Observed Turn Usage
 
 - `TurnCompleteEvent.provider_usage` is optional for rollout compatibility and
   contains only the element-wise aggregate of exact provider-reported usage
@@ -1532,19 +1532,13 @@ decisions.
   same turn-scoped aggregate. The terminal `final_model` and `model_snapshot`
   continue to describe only the terminal successful sampling response rather
   than every response included in the usage aggregate.
-- MultiAgentV2 child completion forwards a bounded runtime-authored
-  `<completion_provider_receipt>` before the child-controlled `Payload`. If no
-  provider identity or usage evidence exists, the completion envelope renders
-  exactly as it did before this carry.
 - Primary files:
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/session/turn_context.rs`
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/compact.rs`
   - `codex-rs/core/src/compact_remote_v2.rs`
-  - `codex-rs/core/src/session/mod.rs`
-  - `codex-rs/core/src/session_prefix.rs`
-  - `codex-rs/core/src/context/inter_agent_completion_message.rs`
+  - `codex-rs/core/src/tasks/mod.rs`
 
 ### Side Chat Persistence And Usage Ledger Tracking
 
