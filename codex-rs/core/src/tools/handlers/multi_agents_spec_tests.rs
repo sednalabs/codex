@@ -52,6 +52,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
+        output_schema,
         ..
     }) = tool
     else {
@@ -266,7 +267,6 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
-        output_schema,
         ..
     }) = tool
     else {
