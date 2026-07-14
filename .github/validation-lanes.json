@@ -1897,9 +1897,14 @@
         "codex-rs/codex-api/tests/sse_end_to_end.rs",
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
         "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/core/src/session/tests.rs",
         "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/state/session.rs",
         "codex-rs/rollout-trace/src/inference.rs",
         "docs/carry-divergence-ledger.md",
         "docs/divergences/index.yaml",
@@ -1911,9 +1916,14 @@
         "codex-rs/codex-api/tests/sse_end_to_end.rs",
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
         "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
         "codex-rs/core/src/session/tests.rs",
-        "codex-rs/core/src/session/turn.rs"
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/state/session.rs"
       ]
     },
     {
@@ -1922,10 +1932,18 @@
         "codex.inference-observation-integration-targeted"
       ],
       "allowed_paths": [
+        "codex-rs/core/tests/common/responses.rs",
+        "codex-rs/core/tests/common/test_codex.rs",
+        "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/core/tests/suite/inference_observation_persistence.rs",
         "codex-rs/core/tests/suite/inference_observations.rs",
         "codex-rs/core/tests/suite/mod.rs"
       ],
       "required_any_paths": [
+        "codex-rs/core/tests/common/responses.rs",
+        "codex-rs/core/tests/common/test_codex.rs",
+        "codex-rs/core/tests/suite/client.rs",
+        "codex-rs/core/tests/suite/inference_observation_persistence.rs",
         "codex-rs/core/tests/suite/inference_observations.rs"
       ]
     },
