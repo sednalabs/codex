@@ -380,7 +380,12 @@ impl AgentControl {
             },
         )) = notification_source.as_ref()
         {
-            let turn_context = new_thread.thread.codex.session.new_default_turn().await;
+            let turn_context = new_thread
+                .thread
+                .codex
+                .session
+                .new_default_preview_turn()
+                .await;
             new_thread
                 .thread
                 .codex
