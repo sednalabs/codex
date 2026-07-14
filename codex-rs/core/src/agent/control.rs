@@ -536,19 +536,18 @@ impl AgentControl {
             return String::new();
         };
 
-        let mut lines = Vec::with_capacity(agents.len());
-        for (thread_id, metadata) in agents {
-            let reference = metadata
-                .agent_path
-                .as_ref()
-                .map(|agent_path| agent_path.name().to_string())
-                .unwrap_or_else(|| thread_id.to_string());
-            let Some(agent) = self.get_live_agent_inventory_info(thread_id).await else {
-                continue;
-            };
-            lines.push(format_subagent_context_line(reference.as_str(), &agent));
-        }
-        lines.join("\n")
+        agents
+            .into_iter()
+            .map(|(thread_id, metadata)| {
+                let reference = metadata
+                    .agent_path
+                    .as_ref()
+                    .map(|agent_path| agent_path.name().to_string())
+                    .unwrap_or_else(|| thread_id.to_string());
+                format_subagent_context_line(reference.as_str(), metadata.agent_nickname.as_deref())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub(crate) async fn list_agents(
