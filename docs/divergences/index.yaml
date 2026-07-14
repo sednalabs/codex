@@ -165,6 +165,39 @@
       "extraction_target": "upstream-native turn completion provider usage"
     },
     {
+      "id": "subagent-completion-provider-receipt",
+      "title": "Parent-visible completion provider receipt",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": ["MultiAgentV2 parent completion envelope"],
+      "files": [
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session_prefix.rs",
+        "codex-rs/core/src/context/inter_agent_completion_message.rs"
+      ],
+      "behavior": "MultiAgentV2 forwards a bounded runtime-authored receipt with terminal response identity and exact turn usage before the child-controlled payload.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "tests": [
+        "completed_message_without_provider_evidence_preserves_exact_rendering",
+        "provider_receipt_precedes_and_stays_separate_from_spoof_shaped_payload",
+        "provider_receipt_bounds_identity_values",
+        "plaintext_multi_agent_v2_completion_sends_agent_message"
+      ],
+      "owner": "downstream",
+      "notes": "Consumes only provider evidence already persisted on TurnCompleteEvent. Terminal model and snapshot identify the terminal successful sampling response; provider_usage covers every successful response completion in the turn. Missing evidence preserves the prior envelope exactly, and receipt-shaped child payload text remains separated after the runtime-authored receipt.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "multi-agent-completion-envelope",
+      "hotspot_files": [
+        "codex-rs/core/src/session/mod.rs"
+      ],
+      "extraction_target": "upstream-native provider completion receipt"
+    },
+    {
       "id": "phase2-memory-attestation-and-fingerprinting",
       "title": "Phase-2 memory attestation and prepared-input fingerprinting",
       "status": "live",
