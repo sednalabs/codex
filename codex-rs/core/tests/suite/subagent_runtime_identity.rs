@@ -85,22 +85,13 @@ fn runtime_identity_payload(request: &ResponsesRequest) -> Value {
 fn assert_runtime_identity(request: &ResponsesRequest, task_text: &str) {
     let payload = runtime_identity_payload(request);
     let configured = &payload["configured_identity"];
-    let latest_turn = &payload["latest_turn_request_identity"];
     assert_eq!(configured["model"], V2_CHILD_MODEL);
     assert_eq!(configured["reasoning_effort"], "low");
     assert_eq!(configured["source"], "live_thread_config");
-    assert_eq!(latest_turn["model"], V2_CHILD_MODEL);
-    assert_eq!(latest_turn["reasoning_effort"], "low");
-    assert_eq!(latest_turn["source"], "turn_request");
     assert_eq!(
-        configured["model_provider_id"], latest_turn["model_provider_id"],
-        "configured and turn-request provider receipts should agree for this spawn"
-    );
-    assert!(
-        latest_turn["turn_id"]
-            .as_str()
-            .is_some_and(|turn_id| !turn_id.is_empty()),
-        "latest-turn receipt should carry the actual request turn id"
+        payload["latest_turn_request_identity"],
+        Value::Null,
+        "pre-task injection must not manufacture a turn-request receipt"
     );
     assert_eq!(payload["identity_truncated"], false);
     assert_eq!(payload["identity_fields_omitted"], 0);
