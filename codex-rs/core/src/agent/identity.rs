@@ -149,15 +149,35 @@ impl ModelVisibleAgentIdentity {
     }
 
     fn enforce_total_bound(mut self, encoding: ModelVisibleIdentityEncoding) -> Self {
-        while self.encoded_len(encoding) > MODEL_VISIBLE_IDENTITY_TOTAL_BYTES {
-            let omitted = self.omit_lowest_priority_field();
-            if !omitted {
-                break;
+        loop {
+            match self.try_encoded_len(encoding) {
+                Some(encoded_len) if encoded_len <= MODEL_VISIBLE_IDENTITY_TOTAL_BYTES => break,
+                Some(_) => {
+                    if self.omit_lowest_priority_field() {
+                        self.identity_truncated = true;
+                        self.identity_fields_omitted += 1;
+                        continue;
+                    }
+                    self.fail_closed();
+                    break;
+                }
+                None => {
+                    self.fail_closed();
+                    break;
+                }
             }
-            self.identity_truncated = true;
-            self.identity_fields_omitted += 1;
         }
         self
+    }
+
+    fn fail_closed(&mut self) {
+        while self.omit_lowest_priority_field() {
+            self.identity_fields_omitted += 1;
+        }
+        self.identity_fields_omitted +=
+            usize::from(self.latest_turn_request_identity.take().is_some());
+        self.identity_fields_omitted += usize::from(self.configured_identity.take().is_some());
+        self.identity_truncated = true;
     }
 
     fn omit_lowest_priority_field(&mut self) -> bool {
@@ -183,19 +203,23 @@ impl ModelVisibleAgentIdentity {
     }
 
     pub(crate) fn encoded_len(&self, encoding: ModelVisibleIdentityEncoding) -> usize {
+        self.try_encoded_len(encoding).unwrap_or(usize::MAX)
+    }
+
+    fn try_encoded_len(&self, encoding: ModelVisibleIdentityEncoding) -> Option<usize> {
         match encoding {
-            ModelVisibleIdentityEncoding::Json => serde_json::to_vec(self)
-                .expect("model-visible identity should serialize")
-                .len(),
-            ModelVisibleIdentityEncoding::Xml => {
+            ModelVisibleIdentityEncoding::Json => {
+                serde_json::to_vec(self).ok().map(|encoded| encoded.len())
+            }
+            ModelVisibleIdentityEncoding::Xml => Some(
                 XML_FRAGMENT_FIXED_OVERHEAD_BYTES
                     + self
                         .string_fields()
                         .into_iter()
                         .flatten()
                         .map(xml_encoded_len)
-                        .sum::<usize>()
-            }
+                        .sum::<usize>(),
+            ),
         }
     }
 
@@ -271,10 +295,9 @@ fn char_boundary_at_or_before(value: &str, byte_limit: usize) -> usize {
 
 fn encoded_string_len(value: &str, encoding: ModelVisibleIdentityEncoding) -> usize {
     match encoding {
-        ModelVisibleIdentityEncoding::Json => serde_json::to_vec(value)
-            .expect("identity field should serialize")
-            .len()
-            .saturating_sub(2),
+        ModelVisibleIdentityEncoding::Json => {
+            serde_json::to_vec(value).map_or(usize::MAX, |value| value.len().saturating_sub(2))
+        }
         ModelVisibleIdentityEncoding::Xml => xml_encoded_len(value),
     }
 }
