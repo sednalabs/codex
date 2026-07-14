@@ -373,8 +373,9 @@ docs-only refresh commit that records this snapshot.
   model, provider, reasoning effort, or service tier.
 - Turn-context and thread-settings rollout items update the same nullable
   service-tier metadata used by SQLite, local stores, in-memory stores, and
-  stale inventory. Legacy rows and rollout items without the field remain
-  compatible and resolve to no explicit tier.
+  stale inventory. Current rollout items carry presence-aware service-tier and
+  reasoning updates, while legacy omissions leave already recovered metadata
+  unchanged instead of being reinterpreted as clear operations.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.
 - `inspect_agent_tree` now surfaces the richer tree inspection contract: it can toggle `live` vs `stale` descendant visibility, focus on selected `agent_roots`, and returns compact depth/row-limited tree rows so downstream observability stays explicit without replaying bulky historical snapshots.
 - `wait_agent` adds `return_when=any|all` plus `requested_ids`, `pending_ids`,

@@ -240,8 +240,16 @@ impl ThreadMetadataSync {
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
                     update.model = Some(turn_ctx.model.clone());
-                    update.reasoning_effort = Some(turn_ctx.effort.clone());
-                    update.service_tier = Some(turn_ctx.service_tier.clone());
+                    if let Some(reasoning_effort) = turn_ctx.reasoning_effort_update.clone() {
+                        update.reasoning_effort = None;
+                        update.reasoning_effort_update = Some(reasoning_effort);
+                    } else if turn_ctx.effort.is_some() {
+                        update.reasoning_effort = turn_ctx.effort.clone();
+                        update.reasoning_effort_update = None;
+                    }
+                    if let Some(service_tier) = turn_ctx.service_tier.clone() {
+                        update.service_tier = Some(service_tier);
+                    }
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
@@ -251,7 +259,8 @@ impl ThreadMetadataSync {
                     if !settings.model_provider_id.is_empty() {
                         update.model_provider = Some(settings.model_provider_id.clone());
                     }
-                    update.reasoning_effort = Some(settings.reasoning_effort.clone());
+                    update.reasoning_effort = None;
+                    update.reasoning_effort_update = Some(settings.reasoning_effort.clone());
                     update.service_tier = Some(settings.service_tier.clone());
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
@@ -355,6 +364,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.model_provider.is_some()
         || update.model.is_some()
         || update.reasoning_effort.is_some()
+        || update.reasoning_effort_update.is_some()
         || update.service_tier.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
@@ -506,6 +516,7 @@ mod tests {
             "model": "gpt-turn",
             "service_tier": "priority",
             "effort": "high",
+            "reasoning_effort_update": "high",
             "summary": "auto",
         }))
         .expect("turn context should deserialize");
@@ -518,10 +529,12 @@ mod tests {
             (
                 turn_update.patch.model,
                 turn_update.patch.reasoning_effort,
+                turn_update.patch.reasoning_effort_update,
                 turn_update.patch.service_tier,
             ),
             (
                 Some("gpt-turn".to_string()),
+                None,
                 Some(Some(ReasoningEffort::High)),
                 Some(Some("priority".to_string())),
             )
@@ -560,15 +573,51 @@ mod tests {
                 settings_update.patch.model,
                 settings_update.patch.model_provider,
                 settings_update.patch.reasoning_effort,
+                settings_update.patch.reasoning_effort_update,
                 settings_update.patch.service_tier,
             ),
             (
                 Some("gpt-settings".to_string()),
                 Some("settings-provider".to_string()),
+                None,
                 Some(Some(ReasoningEffort::Medium)),
                 Some(Some("flex".to_string())),
             )
         );
+
+        sync.mark_pending_update_applied(&settings_update);
+        let legacy_turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "gpt-legacy",
+            "summary": "auto",
+        }))
+        .expect("legacy turn context should deserialize");
+        let legacy_update = sync
+            .observe_appended_items(&[RolloutItem::TurnContext(legacy_turn_context)])
+            .expect("legacy turn context metadata update");
+        assert_eq!(legacy_update.patch.reasoning_effort, None);
+        assert_eq!(legacy_update.patch.reasoning_effort_update, None);
+        assert_eq!(legacy_update.patch.service_tier, None);
+
+        sync.mark_pending_update_applied(&legacy_update);
+        let clear_turn_context: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "gpt-current",
+            "service_tier": null,
+            "reasoning_effort_update": null,
+            "summary": "auto",
+        }))
+        .expect("current turn context should deserialize");
+        let clear_update = sync
+            .observe_appended_items(&[RolloutItem::TurnContext(clear_turn_context)])
+            .expect("current turn context metadata update");
+        assert_eq!(clear_update.patch.reasoning_effort, None);
+        assert_eq!(clear_update.patch.reasoning_effort_update, Some(None));
+        assert_eq!(clear_update.patch.service_tier, Some(None));
     }
 
     #[test]

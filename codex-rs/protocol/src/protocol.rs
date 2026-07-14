@@ -64,12 +64,36 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 use serde::de::Error as _;
 use serde_json::Value;
 use serde_with::serde_as;
 use strum_macros::Display;
 use tracing::error;
 use ts_rs::TS;
+
+mod optional_option {
+    use super::*;
+
+    pub fn serialize<T, S>(value: &Option<Option<T>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        match value {
+            Some(value) => value.serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Some)
+    }
+}
 
 pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
@@ -3302,9 +3326,16 @@ pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_system_sandbox_policy: Option<FileSystemSandboxPolicy>,
     pub model: String,
-    /// Effective service tier selected for this turn, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
+    /// Presence-aware effective service tier update for this turn.
+    ///
+    /// Missing values from legacy rollouts leave recovered metadata unchanged, while an explicit
+    /// `null` clears the tier.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub service_tier: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3320,6 +3351,16 @@ pub struct TurnContextItem {
     pub realtime_active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
+    /// Presence-aware reasoning-effort update written by current rollouts.
+    ///
+    /// The legacy `effort` field remains set-only so a legacy `null` is not reinterpreted as a
+    /// clear operation.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub reasoning_effort_update: Option<Option<ReasoningEffortConfig>>,
     // Compatibility-only field written with a default value so older Codex
     // versions can deserialize turn-context rollout items. It is no longer
     // read by context reconstruction and should be removed in a future schema
@@ -5996,6 +6037,7 @@ mod tests {
         assert_eq!(item.file_system_sandbox_policy, None);
         assert_eq!(item.comp_hash, None);
         assert_eq!(item.service_tier, None);
+        assert_eq!(item.reasoning_effort_update, None);
         Ok(())
     }
 
@@ -6117,7 +6159,7 @@ mod tests {
                 },
             ])),
             model: "gpt-5".to_string(),
-            service_tier: Some("priority".to_string()),
+            service_tier: Some(Some("priority".to_string())),
             comp_hash: None,
             personality: None,
             collaboration_mode: None,
@@ -6125,11 +6167,13 @@ mod tests {
             multi_agent_mode: None,
             realtime_active: None,
             effort: None,
+            reasoning_effort_update: Some(Some(ReasoningEffortConfig::High)),
             summary: ReasoningSummaryConfig::Auto,
         };
 
         let value = serde_json::to_value(item)?;
         assert_eq!(value["service_tier"], "priority");
+        assert_eq!(value["reasoning_effort_update"], "high");
         assert_eq!(
             value["network"],
             json!({

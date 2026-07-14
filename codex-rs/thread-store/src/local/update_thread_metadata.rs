@@ -204,6 +204,7 @@ async fn apply_metadata_update(
     include_archived: bool,
     require_sqlite_write: bool,
 ) -> ThreadStoreResult<StoredThread> {
+    let reasoning_effort_update = patch.resolved_reasoning_effort();
     let live_rollout_path = live_writer::rollout_path(store, thread_id).await.ok();
     let mut rollout_path = patch.rollout_path.clone().or(live_rollout_path);
     let mut rollout_path_archived = rollout_path
@@ -265,7 +266,7 @@ async fn apply_metadata_update(
             if let Some(model) = patch.model {
                 metadata.model = Some(model);
             }
-            if let Some(reasoning_effort) = patch.reasoning_effort {
+            if let Some(reasoning_effort) = reasoning_effort_update {
                 metadata.reasoning_effort = reasoning_effort;
             }
             if let Some(service_tier) = patch.service_tier {
@@ -488,6 +489,7 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.model_provider.is_some()
         || patch.model.is_some()
         || patch.reasoning_effort.is_some()
+        || patch.reasoning_effort_update.is_some()
         || patch.service_tier.is_some()
         || patch.created_at.is_some()
         || patch.source.is_some()

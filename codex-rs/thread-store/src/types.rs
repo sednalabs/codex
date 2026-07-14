@@ -545,13 +545,17 @@ pub struct ThreadMetadataPatch {
     pub model_provider: Option<String>,
     /// Latest observed model.
     pub model: Option<String>,
-    /// Latest observed reasoning effort. `Some(None)` clears the persisted effort.
+    /// Latest observed reasoning effort from the legacy set-only patch field.
+    ///
+    /// A serialized `null` remains equivalent to omission for compatibility.
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Presence-aware reasoning effort update. `Some(None)` clears the persisted effort.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "optional_option"
     )]
-    pub reasoning_effort: ClearableField<ReasoningEffort>,
+    pub reasoning_effort_update: ClearableField<ReasoningEffort>,
     /// Latest observed service tier. `Some(None)` clears the persisted tier.
     #[serde(
         default,
@@ -638,8 +642,12 @@ impl ThreadMetadataPatch {
         if next.model.is_some() {
             self.model = next.model;
         }
-        if next.reasoning_effort.is_some() {
+        if next.reasoning_effort_update.is_some() {
+            self.reasoning_effort = None;
+            self.reasoning_effort_update = next.reasoning_effort_update;
+        } else if next.reasoning_effort.is_some() {
             self.reasoning_effort = next.reasoning_effort;
+            self.reasoning_effort_update = None;
         }
         if next.service_tier.is_some() {
             self.service_tier = next.service_tier;
@@ -704,6 +712,7 @@ impl ThreadMetadataPatch {
             && self.model_provider.is_none()
             && self.model.is_none()
             && self.reasoning_effort.is_none()
+            && self.reasoning_effort_update.is_none()
             && self.service_tier.is_none()
             && self.created_at.is_none()
             && self.updated_at.is_none()
@@ -721,6 +730,12 @@ impl ThreadMetadataPatch {
             && self.first_user_message.is_none()
             && self.git_info.is_none()
             && self.memory_mode.is_none()
+    }
+
+    pub(crate) fn resolved_reasoning_effort(&self) -> ClearableField<ReasoningEffort> {
+        self.reasoning_effort_update
+            .clone()
+            .or_else(|| self.reasoning_effort.clone().map(Some))
     }
 }
 
@@ -764,7 +779,7 @@ mod tests {
             agent_nickname: Some(None),
             agent_role: Some(None),
             agent_path: Some(None),
-            reasoning_effort: Some(None),
+            reasoning_effort_update: Some(None),
             service_tier: Some(None),
             ..Default::default()
         };
@@ -775,7 +790,7 @@ mod tests {
         assert_eq!(value["agent_nickname"], json!(null));
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
-        assert_eq!(value["reasoning_effort"], json!(null));
+        assert_eq!(value["reasoning_effort_update"], json!(null));
         assert_eq!(value["service_tier"], json!(null));
 
         let decoded: ThreadMetadataPatch =
@@ -785,8 +800,20 @@ mod tests {
         assert_eq!(decoded.agent_nickname, Some(None));
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
-        assert_eq!(decoded.reasoning_effort, Some(None));
+        assert_eq!(decoded.reasoning_effort_update, Some(None));
         assert_eq!(decoded.service_tier, Some(None));
+    }
+
+    #[test]
+    fn legacy_reasoning_effort_null_remains_a_noop() {
+        let decoded: ThreadMetadataPatch = serde_json::from_value(json!({
+            "reasoning_effort": null,
+        }))
+        .expect("deserialize legacy null patch");
+
+        assert_eq!(decoded.reasoning_effort, None);
+        assert_eq!(decoded.reasoning_effort_update, None);
+        assert_eq!(decoded.resolved_reasoning_effort(), None);
     }
 
     #[test]
