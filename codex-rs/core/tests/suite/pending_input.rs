@@ -1175,9 +1175,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
     let mut stop_hook_starts = 1;
     let turn_complete = loop {
         match wait_for_event(&codex, |_| true).await {
-            EventMsg::HookStarted(started)
-                if started.run.event_name == HookEventName::Stop =>
-            {
+            EventMsg::HookStarted(started) if started.run.event_name == HookEventName::Stop => {
                 stop_hook_starts += 1;
             }
             EventMsg::TurnComplete(event) => break event,
@@ -1201,8 +1199,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
 
     let compact_body: Value = from_slice(&requests[1]).expect("parse compact request");
     let steered_body: Value = from_slice(&requests[2]).expect("parse steered request");
-    let outer_reentry_body: Value =
-        from_slice(&requests[3]).expect("parse outer reentry request");
+    let outer_reentry_body: Value = from_slice(&requests[3]).expect("parse outer reentry request");
 
     let compact_user_texts = message_input_texts(&compact_body, "user");
     assert!(
