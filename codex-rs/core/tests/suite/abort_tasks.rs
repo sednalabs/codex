@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -28,7 +30,7 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
     .to_string();
     let body = sse(vec![
         ev_function_call("call_sleep", "shell_command", &args),
-        ev_completed("done"),
+        ev_completed_with_tokens("done", 23),
     ]);
 
     let server = start_mock_server().await;
@@ -61,8 +63,21 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
 
     codex.submit(Op::Interrupt).await.unwrap();
 
-    // Expect TurnAborted soon after.
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
+    // Exact provider usage observed before the tool started survives interruption.
+    let aborted = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
+    let EventMsg::TurnAborted(aborted) = aborted else {
+        unreachable!("wait predicate only accepts aborted turns");
+    };
+    assert_eq!(
+        aborted.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 23,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 23,
+        })
+    );
 }
 
 /// After an interrupt we expect the next request to the model to include both

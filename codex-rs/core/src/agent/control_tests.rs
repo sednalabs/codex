@@ -475,6 +475,7 @@ async fn on_event_updates_status_from_turn_aborted() {
         turn_id: Some("turn-1".to_string()),
         started_at: None,
         reason: TurnAbortReason::Interrupted,
+        provider_usage: None,
         completed_at: None,
         duration_ms: None,
     }));
