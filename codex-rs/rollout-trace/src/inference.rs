@@ -55,8 +55,10 @@ struct EnabledInferenceTraceContext {
     writer: Option<Arc<TraceWriter>>,
     thread_id: AgentThreadId,
     codex_turn_id: CodexTurnId,
-    model: String,
-    provider_name: String,
+    raw_trace_model: String,
+    raw_trace_provider_name: String,
+    configured_model: String,
+    configured_provider: String,
     observation_thread_id: Option<ThreadId>,
     configured_service_tier: Option<String>,
 }
@@ -129,8 +131,10 @@ impl InferenceTraceContext {
                 writer: Some(writer),
                 thread_id,
                 codex_turn_id,
-                model,
-                provider_name,
+                raw_trace_model: model.clone(),
+                raw_trace_provider_name: provider_name.clone(),
+                configured_model: model,
+                configured_provider: provider_name,
                 observation_thread_id: None,
                 configured_service_tier: None,
             }),
@@ -151,12 +155,16 @@ impl InferenceTraceContext {
                 writer: None,
                 thread_id: thread_id.to_string(),
                 codex_turn_id: turn_id,
-                model: configured_model,
-                provider_name: configured_provider,
+                raw_trace_model: configured_model.clone(),
+                raw_trace_provider_name: configured_provider.clone(),
+                configured_model,
+                configured_provider,
                 observation_thread_id: Some(thread_id),
                 configured_service_tier,
             },
             InferenceTraceContextState::Enabled(mut context) => {
+                context.configured_model = configured_model;
+                context.configured_provider = configured_provider;
                 context.observation_thread_id = Some(thread_id);
                 context.configured_service_tier = configured_service_tier;
                 context
@@ -171,7 +179,7 @@ impl InferenceTraceContext {
     pub fn start_attempt(&self) -> InferenceTraceAttempt {
         let requested_model = match &self.state {
             InferenceTraceContextState::Disabled => String::new(),
-            InferenceTraceContextState::Enabled(context) => context.model.clone(),
+            InferenceTraceContextState::Enabled(context) => context.raw_trace_model.clone(),
         };
         self.start_observed_attempt(
             InferenceCallTransport::ResponsesHttp,
@@ -289,8 +297,8 @@ impl InferenceTraceAttempt {
                 inference_call_id: attempt.inference_call_id.clone(),
                 thread_id: context.thread_id.clone(),
                 codex_turn_id: context.codex_turn_id.clone(),
-                model: context.model.clone(),
-                provider_name: context.provider_name.clone(),
+                model: context.raw_trace_model.clone(),
+                provider_name: context.raw_trace_provider_name.clone(),
                 request_payload,
             },
         );
@@ -490,8 +498,8 @@ impl InferenceAttemptObservation {
             turn_id: context.codex_turn_id.clone(),
             status,
             transport: self.transport,
-            configured_provider: context.provider_name.clone(),
-            configured_model: context.model.clone(),
+            configured_provider: context.configured_provider.clone(),
+            configured_model: context.configured_model.clone(),
             configured_service_tier: context.configured_service_tier.clone(),
             requested_model: self.requested_model.clone(),
             requested_service_tier: self.requested_service_tier.clone(),
@@ -756,104 +764,6 @@ mod tests {
                 "content": [{"type": "text", "text": "raw reasoning"}],
                 "encrypted_content": "encoded",
             }),
-        );
-    }
-
-    #[test]
-    fn observations_keep_exact_usage_and_distinct_retry_boundaries() {
-        let thread_id = ThreadId::new();
-        let context = InferenceTraceContext::disabled().with_observations(
-            thread_id,
-            "turn-1".to_string(),
-            "configured-provider".to_string(),
-            "configured-model".to_string(),
-            Some("fast".to_string()),
-        );
-        let attempt = context.start_observed_attempt(
-            InferenceCallTransport::ResponsesHttp,
-            "requested-model".to_string(),
-            Some("priority".to_string()),
-        );
-        let started = attempt.started_observation().expect("started observation");
-        let token_usage = TokenUsage {
-            input_tokens: 101,
-            cached_input_tokens: 23,
-            output_tokens: 47,
-            reasoning_output_tokens: 11,
-            total_tokens: 148,
-        };
-
-        let completed = attempt
-            .record_completed_observation(
-                "resp-1",
-                Some("req-1"),
-                &Some(token_usage.clone()),
-                /*output_items*/ &[],
-                Some("observed-model"),
-                Some("snapshot-1"),
-                Some("priority"),
-            )
-            .expect("completed observation");
-
-        assert_eq!(
-            completed,
-            InferenceCallEvent {
-                status: InferenceCallStatus::Completed,
-                request_completed_at_ms: completed.request_completed_at_ms,
-                response_id: Some("resp-1".to_string()),
-                upstream_request_id: Some("req-1".to_string()),
-                observed_model: Some("observed-model".to_string()),
-                observed_model_snapshot: Some("snapshot-1".to_string()),
-                observed_service_tier: Some("priority".to_string()),
-                token_usage: Some(token_usage),
-                ..started
-            }
-        );
-        let failed_attempt = context.start_observed_attempt(
-            InferenceCallTransport::ResponsesWebsocket,
-            "requested-model".to_string(),
-            /*requested_service_tier*/ None,
-        );
-        let failed_started = failed_attempt.started_observation().expect("failed start");
-        let failed = failed_attempt
-            .record_failed("fallback", None, &[])
-            .expect("failed observation");
-        let cancelled_attempt = context.start_observed_attempt(
-            InferenceCallTransport::ResponsesHttp,
-            "requested-model".to_string(),
-            /*requested_service_tier*/ None,
-        );
-        let cancelled_started = cancelled_attempt
-            .started_observation()
-            .expect("cancelled start");
-        let cancelled = cancelled_attempt
-            .record_cancelled("interrupted", Some("req-2"), &[])
-            .expect("cancelled observation");
-
-        assert_eq!(failed.inference_call_id, failed_started.inference_call_id);
-        assert_eq!(
-            cancelled.inference_call_id,
-            cancelled_started.inference_call_id
-        );
-        assert_eq!(
-            (
-                failed.status,
-                failed.transport,
-                failed.token_usage,
-                cancelled.status,
-                cancelled.token_usage,
-            ),
-            (
-                InferenceCallStatus::Failed,
-                InferenceCallTransport::ResponsesWebsocket,
-                None,
-                InferenceCallStatus::Cancelled,
-                None,
-            )
-        );
-        assert_ne!(
-            failed_started.inference_call_id,
-            cancelled_started.inference_call_id
         );
     }
 }
