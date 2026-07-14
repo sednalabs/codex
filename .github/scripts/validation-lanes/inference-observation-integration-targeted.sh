@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd codex-rs
 
-cargo nextest run --locked \
+RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}" cargo nextest run --locked \
   -p codex-core \
   --test all \
   --no-tests=fail \
