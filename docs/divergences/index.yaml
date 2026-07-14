@@ -161,7 +161,7 @@
         "summarize_context_three_requests_and_instructions",
         "manual_compaction_keeps_the_creation_time_global_instructions",
         "resume_includes_initial_messages_from_rollout_events",
-        "resume_accepts_persisted_turn_complete_without_provider_usage"
+        "aborted_provider_usage_is_durable_isolated_and_legacy_compatible"
       ],
       "owner": "downstream",
       "notes": "Adapts upstream exact response-completion usage capture to a persisted terminal-turn aggregate. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the logical turn, including sampling re-entry after steering or local compaction, resets once per ordinary or compaction task, survives completed, interrupted, replaced, and budget-limited terminal paths, and is never inferred from configured identity, token estimates, or session-total deltas. The optional field remains compatible with legacy rollouts and never seeds a resumed turn. App-server projection remains a separate follow-up surface.",
