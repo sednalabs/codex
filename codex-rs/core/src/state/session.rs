@@ -11,6 +11,7 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::codex_thread::TurnInferenceIdentity;
 use crate::context_manager::ContextManager;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
@@ -30,6 +31,8 @@ pub(crate) struct SessionState {
     pub(crate) server_reasoning_included: bool,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
     pub(crate) additional_context: AdditionalContextStore,
+    /// Request identity for the latest real turn, captured after normalization.
+    latest_turn_inference_identity: Option<TurnInferenceIdentity>,
     /// Settings used by the latest regular user turn, used for turn-to-turn
     /// model/realtime handling on subsequent regular turns (including full-context
     /// reinjection after resume or `/compact`).
@@ -67,6 +70,7 @@ impl SessionState {
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             additional_context: AdditionalContextStore::default(),
+            latest_turn_inference_identity: None,
             previous_turn_settings: None,
             auto_compact_window: AutoCompactWindow::new_with_ids(auto_compact_window_ids),
             startup_prewarm: None,
@@ -89,6 +93,14 @@ impl SessionState {
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
         self.previous_turn_settings.clone()
+    }
+
+    pub(crate) fn latest_turn_inference_identity(&self) -> Option<TurnInferenceIdentity> {
+        self.latest_turn_inference_identity.clone()
+    }
+
+    pub(crate) fn set_latest_turn_inference_identity(&mut self, identity: TurnInferenceIdentity) {
+        self.latest_turn_inference_identity = Some(identity);
     }
     pub(crate) fn set_previous_turn_settings(
         &mut self,
