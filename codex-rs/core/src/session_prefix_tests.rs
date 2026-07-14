@@ -1,9 +1,12 @@
+use crate::agent::control::EffectiveAgentIdentity;
+use crate::agent::control::SubAgentInventoryInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::SubagentNotificationItem;
 use codex_protocol::items::parse_subagent_notification_response_item;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_utils_output_truncation::approx_token_count;
 use pretty_assertions::assert_eq;
@@ -11,6 +14,7 @@ use pretty_assertions::assert_eq;
 use super::COMPLETION_MESSAGE_MAX_TOKENS;
 use super::ERROR_NEXT_ACTION;
 use super::format_inter_agent_completion_message;
+use super::format_subagent_context_line;
 use super::format_subagent_notification_message;
 
 #[test]
@@ -45,5 +49,26 @@ fn format_subagent_notification_message_round_trips_completed_status() {
             agent_id: "agent-123".to_string(),
             status,
         })
+    );
+}
+
+#[test]
+fn format_subagent_context_line_includes_effective_identity() {
+    let agent = SubAgentInventoryInfo {
+        nickname: Some("Ada".to_string()),
+        role: Some("worker".to_string()),
+        status: AgentStatus::Running,
+        identity: EffectiveAgentIdentity {
+            effective_model: Some("gpt-test".to_string()),
+            effective_model_provider_id: Some("provider-test".to_string()),
+            effective_reasoning_effort: Some(ReasoningEffort::High),
+            effective_service_tier: Some("priority".to_string()),
+            identity_source: "thread_config_snapshot".to_string(),
+        },
+    };
+
+    assert_eq!(
+        format_subagent_context_line("worker", &agent),
+        "- worker: Ada [effective_model=gpt-test effective_model_provider_id=provider-test effective_reasoning_effort=high effective_service_tier=priority identity_source=thread_config_snapshot]"
     );
 }

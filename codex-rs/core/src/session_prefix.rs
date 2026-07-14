@@ -1,3 +1,4 @@
+use crate::agent::control::SubAgentInventoryInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::AgentStatus;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -49,10 +50,37 @@ mod tests;
 
 pub(crate) fn format_subagent_context_line(
     agent_reference: &str,
-    agent_nickname: Option<&str>,
+    agent: &SubAgentInventoryInfo,
 ) -> String {
-    match agent_nickname.filter(|nickname| !nickname.is_empty()) {
-        Some(agent_nickname) => format!("- {agent_reference}: {agent_nickname}"),
-        None => format!("- {agent_reference}"),
-    }
+    let nickname = agent
+        .nickname
+        .as_deref()
+        .filter(|nickname| !nickname.is_empty())
+        .map(|nickname| format!(": {nickname}"))
+        .unwrap_or_default();
+    let reasoning_effort = agent
+        .identity
+        .effective_reasoning_effort
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<not-set>".to_string());
+    format!(
+        "- {agent_reference}{nickname} [effective_model={} effective_model_provider_id={} effective_reasoning_effort={reasoning_effort} effective_service_tier={} identity_source={}]",
+        agent
+            .identity
+            .effective_model
+            .as_deref()
+            .unwrap_or("<unavailable>"),
+        agent
+            .identity
+            .effective_model_provider_id
+            .as_deref()
+            .unwrap_or("<unavailable>"),
+        agent
+            .identity
+            .effective_service_tier
+            .as_deref()
+            .unwrap_or("<not-set>"),
+        agent.identity.identity_source,
+    )
 }

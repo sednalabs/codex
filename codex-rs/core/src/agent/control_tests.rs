@@ -300,6 +300,135 @@ async fn wait_for_live_thread_spawn_children(
     .expect("expected persisted child tree");
 }
 
+#[tokio::test]
+async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow multi-agent v2");
+    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+
+    let mut child_config = config;
+    child_config.model_reasoning_effort = Some(ReasoningEffort::High);
+    child_config.service_tier = Some("priority".to_string());
+    let child_path = AgentPath::try_from("/root/worker").expect("valid child path");
+    let child_thread_id = harness
+        .control
+        .spawn_agent_with_metadata(
+            child_config,
+            text_input("inspect identity"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(child_path.clone()),
+                agent_nickname: Some("Ada".to_string()),
+                agent_role: Some("worker".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be live");
+    let child_snapshot = child_thread.config_snapshot().await;
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .persist_rollout_items(&[RolloutItem::TurnContext(child_turn.to_turn_context_item())])
+        .await;
+    persist_thread_for_tree_resume(&child_thread, "identity persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
+
+    let live_tree = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("live tree inspection should succeed");
+    let live_child = live_tree
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == child_path.as_str())
+        .expect("live child should be listed");
+    assert_eq!(
+        live_child.identity,
+        EffectiveAgentIdentity {
+            effective_model: Some(child_snapshot.model.clone()),
+            effective_model_provider_id: Some(child_snapshot.model_provider_id.clone()),
+            effective_reasoning_effort: child_snapshot.reasoning_effort.clone(),
+            effective_service_tier: child_snapshot.service_tier.clone(),
+            identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
+        }
+    );
+
+    let stored_child = child_thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ false,
+        )
+        .await
+        .expect("stored child metadata should be readable");
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("child close should succeed");
+
+    let stored_identity = harness
+        .control
+        .get_agent_identity(child_thread_id)
+        .await
+        .expect("closed child identity should resolve from storage");
+    assert_eq!(
+        stored_identity,
+        EffectiveAgentIdentity {
+            effective_model: stored_child.model.clone(),
+            effective_model_provider_id: Some(stored_child.model_provider.clone()),
+            effective_reasoning_effort: stored_child.reasoning_effort.clone(),
+            effective_service_tier: None,
+            identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
+        }
+    );
+
+    let all_tree = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("combined tree inspection should succeed");
+    let stale_child = all_tree
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == child_path.as_str())
+        .expect("stale child should be listed");
+    assert_eq!(stale_child.session_state, AgentSessionState::Stale);
+    assert_eq!(stale_child.agent_status, None);
+    assert_eq!(stale_child.identity, stored_identity);
+}
+
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
     match manager.get_thread(thread_id).await {
         Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, thread_id),

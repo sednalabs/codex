@@ -324,7 +324,7 @@ fn create_list_agents_tool_with_capabilities(capabilities: ToolRuntimeCapabiliti
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
         description:
-            "List live agents in the current root thread tree. Optionally filter by task-path prefix."
+            "List live agents and their effective model identities in the current root thread tree. Optionally filter by task-path prefix."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -377,7 +377,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "inspect_agent_tree".to_string(),
-        description: "Inspect a compact nested agent tree for the current subtree or a target task path. Returns tree rows, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
+        description: "Inspect a compact nested agent tree for the current subtree or a target task path. Returns tree rows with authoritative effective model identity, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -603,6 +603,60 @@ fn send_input_output_schema() -> Value {
     })
 }
 
+fn effective_agent_identity_output_properties() -> serde_json::Map<String, Value> {
+    serde_json::Map::from_iter([
+        (
+            "effective_model".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Effective model resolved for the agent, when available."
+            }),
+        ),
+        (
+            "effective_model_provider_id".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Effective model provider resolved for the agent, when available."
+            }),
+        ),
+        (
+            "effective_reasoning_effort".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Effective reasoning effort resolved for the agent, when available."
+            }),
+        ),
+        (
+            "effective_service_tier".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "description": "Effective service tier resolved for the agent, when available."
+            }),
+        ),
+        (
+            "identity_source".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["thread_config_snapshot", "stored_thread_metadata"],
+                "description": "Authoritative source used to resolve the effective identity."
+            }),
+        ),
+    ])
+}
+
+fn effective_agent_identity_required_fields() -> Vec<String> {
+    [
+        "effective_model",
+        "effective_model_provider_id",
+        "effective_reasoning_effort",
+        "effective_service_tier",
+        "identity_source",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
     let include_active_descendants = capabilities
         .subagent_inventory
@@ -635,6 +689,8 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
         "agent_status".to_string(),
         "last_task_message".to_string(),
     ];
+    agent_properties.extend(effective_agent_identity_output_properties());
+    agent_required.extend(effective_agent_identity_required_fields());
     if include_active_descendants {
         agent_properties.insert(
             "has_active_subagents".to_string(),
@@ -674,6 +730,51 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
 }
 
 fn inspect_agent_tree_output_schema() -> Value {
+    let mut agent_properties = serde_json::Map::from_iter([
+        ("agent_name".to_string(), json!({ "type": "string" })),
+        ("depth".to_string(), json!({ "type": "number" })),
+        ("session_state".to_string(), json!({ "type": "string" })),
+        (
+            "agent_status".to_string(),
+            json!({
+                "anyOf": [
+                    agent_status_output_schema(),
+                    { "type": "null" }
+                ]
+            }),
+        ),
+        (
+            "nickname".to_string(),
+            json!({ "type": ["string", "null"] }),
+        ),
+        ("role".to_string(), json!({ "type": ["string", "null"] })),
+        (
+            "direct_child_count".to_string(),
+            json!({ "type": "number" }),
+        ),
+        ("descendant_count".to_string(), json!({ "type": "number" })),
+        (
+            "last_task_message_preview".to_string(),
+            json!({ "type": ["string", "null"] }),
+        ),
+    ]);
+    agent_properties.extend(effective_agent_identity_output_properties());
+    let mut agent_required = [
+        "agent_name",
+        "depth",
+        "session_state",
+        "agent_status",
+        "nickname",
+        "role",
+        "direct_child_count",
+        "descendant_count",
+        "last_task_message_preview",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    agent_required.extend(effective_agent_identity_required_fields());
+
     json!({
         "type": "object",
         "properties": {
@@ -734,28 +835,8 @@ fn inspect_agent_tree_output_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "agent_name": { "type": "string" },
-                        "depth": { "type": "number" },
-                        "session_state": { "type": "string" },
-                        "agent_status": { "type": "string" },
-                        "nickname": { "type": ["string", "null"] },
-                        "role": { "type": ["string", "null"] },
-                        "direct_child_count": { "type": "number" },
-                        "descendant_count": { "type": "number" },
-                        "last_task_message_preview": { "type": ["string", "null"] }
-                    },
-                    "required": [
-                        "agent_name",
-                        "depth",
-                        "session_state",
-                        "agent_status",
-                        "nickname",
-                        "role",
-                        "direct_child_count",
-                        "descendant_count",
-                        "last_task_message_preview"
-                    ],
+                    "properties": agent_properties,
+                    "required": agent_required,
                     "additionalProperties": false
                 }
             }
@@ -809,6 +890,16 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
     let include_pending_ids = wait_capability.is_some_and(|capability| capability.pending_ids);
     let include_completion_reason =
         wait_capability.is_some_and(|capability| capability.completion_reason);
+    let mut identity_properties = serde_json::Map::from_iter([(
+        "agent_id".to_string(),
+        json!({
+            "type": "string",
+            "description": "Thread identifier for the agent whose identity was resolved."
+        }),
+    )]);
+    identity_properties.extend(effective_agent_identity_output_properties());
+    let mut identity_required = vec!["agent_id".to_string()];
+    identity_required.extend(effective_agent_identity_required_fields());
     let mut properties = serde_json::Map::from_iter([
         (
             "message".to_string(),
@@ -834,11 +925,25 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
                 "description": "Whether the wait call returned because it hit the timeout."
             }),
         ),
+        (
+            "agent_identities".to_string(),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": identity_properties,
+                    "required": identity_required,
+                    "additionalProperties": false
+                },
+                "description": "Authoritative effective identities resolved for requested agents. Missing agents are omitted."
+            }),
+        ),
     ]);
     let mut required = vec![
         "message".to_string(),
         "requested_ids".to_string(),
         "timed_out".to_string(),
+        "agent_identities".to_string(),
     ];
     if include_pending_ids {
         properties.insert(
