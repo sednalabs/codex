@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::control::ListedAgent;
+use crate::agent::control::ListedAgents;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
 
@@ -36,14 +36,14 @@ impl Handler {
             .services
             .agent_control
             .register_session_root(session.thread_id, turn.parent_thread_id);
-        let agents = session
+        let result = session
             .services
             .agent_control
             .list_agents(&turn.session_source, args.path_prefix.as_deref())
             .await
             .map_err(collab_spawn_error)?;
 
-        Ok(boxed_tool_output(ListAgentsResult { agents }))
+        Ok(boxed_tool_output(result))
     }
 }
 
@@ -58,12 +58,7 @@ struct ListAgentsArgs {
     path_prefix: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct ListAgentsResult {
-    agents: Vec<ListedAgent>,
-}
-
-impl ToolOutput for ListAgentsResult {
+impl ToolOutput for ListedAgents {
     fn log_preview(&self) -> String {
         tool_output_json_text(self, "list_agents")
     }

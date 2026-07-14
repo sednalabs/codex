@@ -4434,6 +4434,85 @@ fn get_service_tier_ignores_configured_tier_when_fast_mode_disabled() {
 }
 
 #[tokio::test]
+async fn turn_inference_identity_captures_final_request_service_tier() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.enable(Feature::FastMode);
+    config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    turn_context.config = Arc::new(config);
+    turn_context.model_info = model_with_default_service_tier(/*default_service_tier*/ None);
+
+    let supported = turn_context.inference_identity();
+    assert_eq!(
+        (
+            supported.turn_id.as_str(),
+            supported.request_model.as_str(),
+            supported.model_provider_id.as_str(),
+            supported.request_service_tier.as_deref(),
+        ),
+        (
+            "turn_id",
+            turn_context.model_info.slug.as_str(),
+            turn_context.config.model_provider_id.as_str(),
+            Some(ServiceTier::Fast.request_value()),
+        )
+    );
+
+    turn_context.model_info.service_tiers.clear();
+    assert_eq!(
+        turn_context.inference_identity().request_service_tier,
+        None,
+        "a model change invalidates a tier the new model does not support"
+    );
+
+    turn_context.model_info = model_with_default_service_tier(/*default_service_tier*/ None);
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.disable(Feature::FastMode);
+    turn_context.config = Arc::new(config);
+    assert_eq!(turn_context.inference_identity().request_service_tier, None);
+
+    let mut config = (*turn_context.config).clone();
+    let _ = config.features.enable(Feature::FastMode);
+    config.service_tier = Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string());
+    turn_context.config = Arc::new(config);
+    assert_eq!(
+        turn_context.inference_identity().request_service_tier,
+        None,
+        "an explicit clear is omitted from the request"
+    );
+}
+
+#[tokio::test]
+async fn real_turn_construction_publishes_configured_and_request_identity() {
+    let (session, _initial_context) = make_session_and_context().await;
+    let turn = session
+        .new_turn_with_sub_id(
+            "identity-turn".to_string(),
+            SessionSettingsUpdate::default(),
+        )
+        .await
+        .expect("turn should build");
+    let snapshot = session.inference_identity_snapshot().await;
+    let configured = session.thread_config_snapshot().await;
+
+    assert_eq!(snapshot.latest_turn, Some(turn.inference_identity()));
+    assert_eq!(
+        (
+            snapshot.configured.configured_model.as_str(),
+            snapshot.configured.configured_model_provider_id.as_str(),
+            snapshot.configured.configured_reasoning_effort,
+            snapshot.configured.configured_service_tier.as_deref(),
+        ),
+        (
+            configured.model.as_str(),
+            configured.model_provider_id.as_str(),
+            configured.reasoning_effort,
+            configured.service_tier.as_deref(),
+        )
+    );
+}
+
+#[tokio::test]
 async fn session_settings_null_service_tier_update_uses_default_service_tier() {
     let session_configuration = make_session_configuration_for_tests().await;
 
@@ -8724,6 +8803,22 @@ async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() 
     turn_context.session_source = thread_spawn_source;
     let turn_context = Arc::new(turn_context);
 
+    {
+        let mut state = session.state.lock().await;
+        state.session_configuration = state
+            .session_configuration
+            .apply(&SessionSettingsUpdate {
+                service_tier: Some(None),
+                ..Default::default()
+            })
+            .expect("baseline service tier clear should apply");
+    }
+    let initial_identity = session
+        .subagent_runtime_identity()
+        .await
+        .expect("thread-spawn identity");
+    let initial_render = initial_identity.render();
+
     session
         .ensure_subagent_runtime_identity_context(turn_context.as_ref())
         .await;
@@ -8757,11 +8852,11 @@ async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() 
             .ensure_subagent_runtime_identity_context(turn_context.as_ref())
             .await;
 
+        let current_identity = session
+            .subagent_runtime_identity()
+            .await
+            .expect("thread-spawn identity");
         let state = session.state.lock().await;
-        let current_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(
-            &state.session_configuration.thread_config_snapshot(),
-        )
-        .expect("thread-spawn identity");
         let items = state.history.raw_items();
         let identity_count = items
             .iter()
@@ -8769,6 +8864,13 @@ async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() 
             .count();
         assert_eq!(identity_count, expected_count);
         assert!(current_identity.matches_latest_response_item(items));
+        if expected_count == 3 {
+            assert_eq!(
+                current_identity.render(),
+                initial_render,
+                "explicit clear should restore the original authoritative identity"
+            );
+        }
     }
 }
 
