@@ -472,25 +472,20 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
     assert_eq!(stale_child.agent_status, None);
     assert_eq!(stale_child.identity, stored_identity);
 
-    let rollout_path = stored_child
-        .rollout_path
-        .clone()
-        .expect("stored child rollout path");
     let mut conflicting_resume_config = config;
     conflicting_resume_config.model = Some("gpt-5.2".to_string());
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::Medium);
-    let resumed = harness
-        .manager
-        .resume_thread_from_rollout(
-            conflicting_resume_config,
-            rollout_path,
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
-            /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
-        )
+    harness
+        .control
+        .ensure_v2_agent_loaded(conflicting_resume_config, child_thread_id)
         .await
-        .expect("stored child should reload");
-    let resumed_identity = resumed.thread.inference_identity_snapshot().await;
+        .expect("stored child should reload through agent control");
+    let resumed_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("reloaded child should be live");
+    let resumed_identity = resumed_thread.inference_identity_snapshot().await;
     assert_eq!(resumed_identity.configured.configured_model, "gpt-5.4");
     assert_eq!(
         resumed_identity.configured.configured_model_provider_id,
