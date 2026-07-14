@@ -60,6 +60,12 @@ pub(super) async fn read_thread(
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
+            rollout_thread.model = thread.model.clone().or(rollout_thread.model);
+            rollout_thread.reasoning_effort = thread
+                .reasoning_effort
+                .clone()
+                .or(rollout_thread.reasoning_effort);
+            rollout_thread.agent_path = thread.agent_path.clone().or(rollout_thread.agent_path);
             rollout_thread.git_info = thread.git_info;
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
                 &metadata_sandbox_policy,
@@ -333,12 +339,13 @@ async fn stored_thread_from_sqlite_metadata(
             None
         }
         Err(err) => {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to read session metadata {}: {err}",
-                    metadata.rollout_path.display()
-                ),
-            });
+            tracing::warn!(
+                thread_id = %metadata.id,
+                rollout_path = %metadata.rollout_path.display(),
+                %err,
+                "using indexed thread metadata because rollout session metadata is unreadable"
+            );
+            None
         }
     };
     let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
@@ -493,6 +500,7 @@ mod tests {
 
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
@@ -928,6 +936,93 @@ mod tests {
                 rollout_cwd.as_path()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn read_thread_keeps_indexed_identity_when_rollout_overlay_lacks_it() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(227);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let mut builder =
+            ThreadMetadataBuilder::new(thread_id, rollout_path, Utc::now(), SessionSource::Cli);
+        builder.model_provider = Some("indexed-provider".to_string());
+        builder.agent_path = Some("/root/worker".to_string());
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.model = Some("indexed-model".to_string());
+        metadata.reasoning_effort = Some(ReasoningEffort::High);
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        let thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read thread");
+
+        assert_eq!(thread.preview, "Hello from user");
+        assert_eq!(thread.model.as_deref(), Some("indexed-model"));
+        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(thread.agent_path.as_deref(), Some("/root/worker"));
+    }
+
+    #[tokio::test]
+    async fn read_thread_uses_indexed_identity_when_rollout_is_malformed() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(228);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let day_dir = home.path().join("sessions/2025/01/03");
+        std::fs::create_dir_all(&day_dir).expect("sessions dir");
+        let rollout_path = day_dir.join(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"));
+        std::fs::write(&rollout_path, "{malformed rollout\n").expect("malformed rollout");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let mut builder =
+            ThreadMetadataBuilder::new(thread_id, rollout_path, Utc::now(), SessionSource::Cli);
+        builder.model_provider = Some("indexed-provider".to_string());
+        builder.agent_path = Some("/root/worker".to_string());
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.preview = Some("indexed preview".to_string());
+        metadata.model = Some("indexed-model".to_string());
+        metadata.reasoning_effort = Some(ReasoningEffort::Medium);
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        let thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("indexed metadata should survive malformed rollout");
+
+        assert_eq!(thread.preview, "indexed preview");
+        assert_eq!(thread.model.as_deref(), Some("indexed-model"));
+        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(thread.agent_path.as_deref(), Some("/root/worker"));
     }
 
     #[tokio::test]
