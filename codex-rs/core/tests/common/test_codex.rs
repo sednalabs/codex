@@ -47,6 +47,7 @@ use codex_protocol::protocol::RealtimeConversationVersion as RealtimeWsVersion;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
@@ -307,6 +308,7 @@ pub struct TestCodexBuilder {
     supports_openai_form_elicitation: bool,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
+    history_mode: Option<ThreadHistoryMode>,
 }
 
 impl TestCodexBuilder {
@@ -315,6 +317,11 @@ impl TestCodexBuilder {
         T: FnOnce(&mut Config) + Send + 'static,
     {
         self.config_mutators.push(Box::new(mutator));
+        self
+    }
+
+    pub fn with_history_mode(mut self, history_mode: ThreadHistoryMode) -> Self {
+        self.history_mode = Some(history_mode);
         self
     }
 
@@ -696,7 +703,7 @@ impl TestCodexBuilder {
                         config: config.clone(),
                         allow_provider_model_fallback: false,
                         initial_history: InitialHistory::New,
-                        history_mode: None,
+                        history_mode: self.history_mode,
                         session_source: None,
                         thread_source: None,
                         dynamic_tools: Vec::new(),
@@ -1259,6 +1266,7 @@ pub fn test_codex() -> TestCodexBuilder {
         supports_openai_form_elicitation: false,
         external_time_provider: None,
         code_mode_host_program: None,
+        history_mode: None,
     }
 }
 
