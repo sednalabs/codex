@@ -584,7 +584,11 @@ mod tests {
         sync.mark_pending_update_applied(&update);
 
         let cleared = sync
-            .observe_appended_items(&[thread_settings_item("next-model", "next-provider", None)])
+            .observe_appended_items(&[thread_settings_item(
+                "next-model",
+                "next-provider",
+                /* reasoning_effort */ None,
+            )])
             .expect("settings clear update");
         assert_eq!(
             cleared.patch,
