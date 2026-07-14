@@ -1,4 +1,5 @@
 use super::*;
+use crate::codex_thread::ConfiguredInferenceIdentity;
 use crate::codex_thread::TurnInferenceIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
@@ -113,6 +114,7 @@ pub struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) trace_id: Option<String>,
     pub(crate) realtime_active: bool,
+    pub(crate) configured_inference_identity: ConfiguredInferenceIdentity,
     pub config: Arc<Config>,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
     pub(crate) model_info: ModelInfo,
@@ -162,6 +164,10 @@ enum TurnMultiAgentRuntime {
 }
 
 impl TurnContext {
+    pub(crate) fn configured_inference_identity(&self) -> &ConfiguredInferenceIdentity {
+        &self.configured_inference_identity
+    }
+
     pub(crate) fn inference_identity(&self) -> TurnInferenceIdentity {
         TurnInferenceIdentity {
             turn_id: self.sub_id.clone(),
@@ -540,6 +546,7 @@ impl Session {
         sub_id: String,
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
+        let configured_inference_identity = session_configuration.configured_inference_identity();
         let reasoning_effort = session_configuration.collaboration_mode.reasoning_effort();
         let reasoning_summary = session_configuration
             .model_reasoning_summary
@@ -587,6 +594,7 @@ impl Session {
             sub_id,
             trace_id: current_span_trace_id(),
             realtime_active: false,
+            configured_inference_identity,
             config: per_turn_config,
             auth_manager: auth_manager_for_context,
             model_info,
