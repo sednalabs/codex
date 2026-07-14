@@ -418,6 +418,7 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
         .expect("followup_task should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("expected_model"));
     assert_eq!(
         properties
             .get("message")
@@ -450,13 +451,18 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
                 "effective_reasoning_effort": {
                     "type": ["string", "null"],
                     "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+                },
+                "effective_service_tier": {
+                    "type": ["string", "null"],
+                    "description": "Effective service tier retained by the agent for the follow-up turn, when configured."
                 }
             },
             "required": [
                 "task_name",
                 "effective_model",
                 "effective_model_provider_id",
-                "effective_reasoning_effort"
+                "effective_reasoning_effort",
+                "effective_service_tier"
             ],
             "additionalProperties": false
         })

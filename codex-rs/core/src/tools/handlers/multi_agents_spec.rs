@@ -213,6 +213,13 @@ pub fn create_followup_task_tool() -> ToolSpec {
             ))
             .with_encrypted(),
         ),
+        (
+            "expected_model".to_string(),
+            JsonSchema::string(Some(
+                "Optional exact model assertion. The follow-up is rejected without sending the task if the target agent uses a different model."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
@@ -546,13 +553,18 @@ fn followup_task_output_schema() -> Value {
             "effective_reasoning_effort": {
                 "type": ["string", "null"],
                 "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+            },
+            "effective_service_tier": {
+                "type": ["string", "null"],
+                "description": "Effective service tier retained by the agent for the follow-up turn, when configured."
             }
         },
         "required": [
             "task_name",
             "effective_model",
             "effective_model_provider_id",
-            "effective_reasoning_effort"
+            "effective_reasoning_effort",
+            "effective_service_tier"
         ],
         "additionalProperties": false
     })
