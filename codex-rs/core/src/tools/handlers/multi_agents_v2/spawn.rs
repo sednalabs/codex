@@ -5,6 +5,7 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::config::Config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
@@ -88,6 +89,16 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    validate_spawn_agent_expected_model(
+        &config,
+        args.model.as_deref(),
+        args.expected_model.as_deref(),
+    )?;
+    validate_spawn_agent_expected_reasoning_effort(
+        &config,
+        args.reasoning_effort.as_ref(),
+        args.expected_reasoning_effort.as_ref(),
+    )?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -208,7 +219,9 @@ struct SpawnAgentArgs {
     task_name: String,
     agent_type: Option<String>,
     model: Option<String>,
+    expected_model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    expected_reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
@@ -249,6 +262,70 @@ impl SpawnAgentArgs {
 
         Ok(Some(SpawnAgentForkMode::LastNTurns(last_n_turns)))
     }
+}
+
+#[derive(Debug, Serialize)]
+struct SpawnAgentModelMismatch<'a> {
+    error: &'static str,
+    requested_model: Option<&'a str>,
+    expected_model: &'a str,
+    effective_model: Option<&'a str>,
+}
+
+fn validate_spawn_agent_expected_model(
+    config: &Config,
+    requested_model: Option<&str>,
+    expected_model: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let Some(expected_model) = expected_model else {
+        return Ok(());
+    };
+    let effective_model = config.model.as_deref();
+    if effective_model == Some(expected_model) {
+        return Ok(());
+    }
+
+    Err(FunctionCallError::RespondToModel(tool_output_json_text(
+        &SpawnAgentModelMismatch {
+            error: "spawn_agent_model_mismatch",
+            requested_model,
+            expected_model,
+            effective_model,
+        },
+        "spawn_agent model mismatch",
+    )))
+}
+
+#[derive(Debug, Serialize)]
+struct SpawnAgentReasoningEffortMismatch<'a> {
+    error: &'static str,
+    requested_reasoning_effort: Option<&'a ReasoningEffort>,
+    expected_reasoning_effort: &'a ReasoningEffort,
+    effective_reasoning_effort: Option<&'a ReasoningEffort>,
+}
+
+fn validate_spawn_agent_expected_reasoning_effort(
+    config: &Config,
+    requested_reasoning_effort: Option<&ReasoningEffort>,
+    expected_reasoning_effort: Option<&ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    let Some(expected_reasoning_effort) = expected_reasoning_effort else {
+        return Ok(());
+    };
+    let effective_reasoning_effort = config.model_reasoning_effort.as_ref();
+    if effective_reasoning_effort == Some(expected_reasoning_effort) {
+        return Ok(());
+    }
+
+    Err(FunctionCallError::RespondToModel(tool_output_json_text(
+        &SpawnAgentReasoningEffortMismatch {
+            error: "spawn_agent_reasoning_effort_mismatch",
+            requested_reasoning_effort,
+            expected_reasoning_effort,
+            effective_reasoning_effort,
+        },
+        "spawn_agent reasoning effort mismatch",
+    )))
 }
 
 #[derive(Debug, Serialize)]
