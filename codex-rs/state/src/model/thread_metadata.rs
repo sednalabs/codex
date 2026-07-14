@@ -8,6 +8,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
+use codex_protocol::protocol::TurnRequestIdentity;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use std::collections::HashMap;
@@ -104,8 +105,10 @@ pub struct ThreadMetadata {
     pub model: Option<String>,
     /// The latest observed reasoning effort for the thread.
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// The latest observed service tier for the thread.
-    pub service_tier: Option<String>,
+    /// Configured service tier before per-turn request normalization.
+    pub configured_service_tier: Option<String>,
+    /// Latest model request identity after per-turn normalization.
+    pub latest_turn_request_identity: Option<TurnRequestIdentity>,
     /// The working directory for the thread.
     pub cwd: PathBuf,
     /// Version of the CLI that created the thread.
@@ -244,7 +247,8 @@ impl ThreadMetadataBuilder {
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
             reasoning_effort: None,
-            service_tier: None,
+            configured_service_tier: None,
+            latest_turn_request_identity: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
             title: String::new(),
@@ -326,8 +330,11 @@ impl ThreadMetadata {
         if self.reasoning_effort != other.reasoning_effort {
             diffs.push("reasoning_effort");
         }
-        if self.service_tier != other.service_tier {
-            diffs.push("service_tier");
+        if self.configured_service_tier != other.configured_service_tier {
+            diffs.push("configured_service_tier");
+        }
+        if self.latest_turn_request_identity != other.latest_turn_request_identity {
+            diffs.push("latest_turn_request_identity");
         }
         if self.cwd != other.cwd {
             diffs.push("cwd");
@@ -389,7 +396,8 @@ pub(crate) struct ThreadRow {
     model_provider: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
-    service_tier: Option<String>,
+    configured_service_tier: Option<String>,
+    latest_turn_request_identity: Option<String>,
     cwd: String,
     cli_version: String,
     title: String,
@@ -421,7 +429,8 @@ impl ThreadRow {
             model_provider: row.try_get("model_provider")?,
             model: row.try_get("model")?,
             reasoning_effort: row.try_get("reasoning_effort")?,
-            service_tier: row.try_get("service_tier")?,
+            configured_service_tier: row.try_get("configured_service_tier")?,
+            latest_turn_request_identity: row.try_get("latest_turn_request_identity")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
             title: row.try_get("title")?,
@@ -457,7 +466,8 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model_provider,
             model,
             reasoning_effort,
-            service_tier,
+            configured_service_tier,
+            latest_turn_request_identity,
             cwd,
             cli_version,
             title,
@@ -492,7 +502,10 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model,
             reasoning_effort: reasoning_effort
                 .and_then(|value| value.parse::<ReasoningEffort>().ok()),
-            service_tier,
+            configured_service_tier,
+            latest_turn_request_identity: latest_turn_request_identity
+                .map(|identity| serde_json::from_str(identity.as_str()))
+                .transpose()?,
             cwd: PathBuf::from(cwd),
             cli_version,
             title,
@@ -590,7 +603,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
-            service_tier: Some("priority".to_string()),
+            configured_service_tier: Some("priority".to_string()),
+            latest_turn_request_identity: None,
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
@@ -623,7 +637,8 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort,
-            service_tier: Some("priority".to_string()),
+            configured_service_tier: Some("priority".to_string()),
+            latest_turn_request_identity: None,
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

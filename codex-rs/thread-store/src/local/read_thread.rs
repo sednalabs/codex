@@ -60,11 +60,14 @@ pub(super) async fn read_thread(
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
+            rollout_thread.model_provider = thread.model_provider.clone();
             rollout_thread.model = thread.model.clone().or(rollout_thread.model);
-            rollout_thread.reasoning_effort = thread
-                .reasoning_effort
-                .clone()
-                .or(rollout_thread.reasoning_effort);
+            // Indexed presence semantics are authoritative here: `None` is a
+            // persisted clear and must not revive an older rollout effort.
+            rollout_thread.reasoning_effort = thread.reasoning_effort.clone();
+            rollout_thread.configured_service_tier = thread.configured_service_tier.clone();
+            rollout_thread.latest_turn_request_identity =
+                thread.latest_turn_request_identity.clone();
             rollout_thread.agent_path = thread.agent_path.clone().or(rollout_thread.agent_path);
             rollout_thread.git_info = thread.git_info;
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
@@ -370,14 +373,13 @@ async fn stored_thread_from_sqlite_metadata(
         parent_thread_id,
         preview,
         name,
-        model_provider: if metadata.model_provider.is_empty() {
-            store.config.default_model_provider_id.clone()
-        } else {
-            metadata.model_provider
-        },
+        // An empty indexed provider means unknown. Do not relabel it with the
+        // operator's current default while presenting stored metadata.
+        model_provider: metadata.model_provider,
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
-        service_tier: metadata.service_tier,
+        configured_service_tier: metadata.configured_service_tier,
+        latest_turn_request_identity: metadata.latest_turn_request_identity,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
         recency_at: metadata.recency_at,
@@ -452,7 +454,8 @@ fn stored_thread_from_meta_line(
             .unwrap_or_else(|| store.config.default_model_provider_id.clone()),
         model: None,
         reasoning_effort: None,
-        service_tier: None,
+        configured_service_tier: None,
+        latest_turn_request_identity: None,
         created_at,
         updated_at,
         recency_at: updated_at,
@@ -502,10 +505,14 @@ mod tests {
 
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::RolloutLine;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -923,7 +930,10 @@ mod tests {
         assert_eq!(thread.rollout_path, Some(rollout_path));
         assert_eq!(thread.preview, "Hello from rollout");
         assert_eq!(thread.name, Some("Saved title".to_string()));
-        assert_eq!(thread.model_provider, "rollout-provider");
+        assert_eq!(
+            thread.model_provider, config.default_model_provider_id,
+            "indexed provider remains authoritative during a rollout preview overlay"
+        );
         assert_eq!(thread.cwd, rollout_cwd);
         let legacy_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
@@ -941,13 +951,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_thread_keeps_indexed_identity_when_rollout_overlay_lacks_it() {
+    async fn read_thread_keeps_complete_indexed_identity_during_rollout_overlay() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let uuid = Uuid::from_u128(227);
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let rollout_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout_path)
+            .expect("open rollout");
+        let rollout_line = RolloutLine {
+            timestamp: "2025-01-03T12:00:01Z".to_string(),
+            ordinal: None,
+            item: RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                cwd: serde_json::from_value(serde_json::json!(home.path())).expect("absolute cwd"),
+                workspace_roots: None,
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: None,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "rollout-model".to_string(),
+                configured_inference_identity: None,
+                request_inference_identity: None,
+                comp_hash: None,
+                personality: None,
+                collaboration_mode: None,
+                multi_agent_version: None,
+                multi_agent_mode: None,
+                realtime_active: None,
+                effort: Some(ReasoningEffort::Medium),
+                reasoning_effort_update: None,
+                summary: ReasoningSummary::Auto,
+            }),
+        };
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&rollout_line).expect("serialize turn")
+        )
+        .expect("write turn context");
         let runtime = codex_state::StateRuntime::init(
             config.sqlite_home.clone(),
             config.default_model_provider_id.clone(),
@@ -977,13 +1026,42 @@ mod tests {
             .expect("read thread");
 
         assert_eq!(thread.preview, "Hello from user");
-        assert_eq!(thread.model.as_deref(), Some("indexed-model"));
-        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::High));
-        assert_eq!(thread.agent_path.as_deref(), Some("/root/worker"));
+        assert_eq!(
+            (
+                thread.model.as_deref(),
+                thread.model_provider.as_str(),
+                thread.reasoning_effort,
+                thread.agent_path.as_deref(),
+            ),
+            (
+                Some("indexed-model"),
+                "indexed-provider",
+                Some(ReasoningEffort::High),
+                Some("/root/worker"),
+            )
+        );
+
+        metadata.reasoning_effort = None;
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db clear should succeed");
+        let cleared = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read cleared identity");
+        assert_eq!(
+            cleared.reasoning_effort, None,
+            "an indexed clear must not revive the rollout effort"
+        );
     }
 
     #[tokio::test]
-    async fn read_thread_uses_indexed_identity_when_rollout_is_malformed() {
+    async fn read_thread_keeps_complete_indexed_identity_for_malformed_rollout() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let uuid = Uuid::from_u128(228);
@@ -1022,9 +1100,20 @@ mod tests {
             .expect("indexed metadata should survive malformed rollout");
 
         assert_eq!(thread.preview, "indexed preview");
-        assert_eq!(thread.model.as_deref(), Some("indexed-model"));
-        assert_eq!(thread.reasoning_effort, Some(ReasoningEffort::Medium));
-        assert_eq!(thread.agent_path.as_deref(), Some("/root/worker"));
+        assert_eq!(
+            (
+                thread.model.as_deref(),
+                thread.model_provider.as_str(),
+                thread.reasoning_effort,
+                thread.agent_path.as_deref(),
+            ),
+            (
+                Some("indexed-model"),
+                "indexed-provider",
+                Some(ReasoningEffort::Medium),
+                Some("/root/worker"),
+            )
+        );
     }
 
     #[tokio::test]

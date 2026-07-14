@@ -1,5 +1,8 @@
 use super::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
 use super::multi_agents_common::model_supports_multi_agent_backend;
+use crate::agent::control::MAX_INSPECT_AGENT_ROOTS;
+use crate::agent::control::MAX_INSPECT_AGENT_ROWS;
+use crate::agent::control::MAX_LIST_AGENT_ROWS;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -324,7 +327,7 @@ fn create_list_agents_tool_with_capabilities(capabilities: ToolRuntimeCapabiliti
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
         description:
-            "List live agents and their effective model identities in the current root thread tree. Optionally filter by task-path prefix."
+            "List a bounded snapshot of live agents and their inference identity receipts in the current root thread tree. Optionally filter by task-path prefix."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -346,10 +349,9 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
             "agent_roots".to_string(),
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
-                Some(
-                    "Optional task-path roots to keep in the returned tree. Matching rows include the named agent and its descendants."
-                        .to_string(),
-                ),
+                Some(format!(
+                    "Optional task-path roots to keep in the returned tree, up to {MAX_INSPECT_AGENT_ROOTS} entries. Matching rows include the named agent and its descendants."
+                )),
             ),
         ),
         (
@@ -377,7 +379,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "inspect_agent_tree".to_string(),
-        description: "Inspect a compact nested agent tree for the current subtree or a target task path. Returns tree rows with authoritative effective model identity, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
+        description: "Inspect a bounded nested agent tree for the current subtree or a target task path. Returns identity receipts, live-or-stale session state, optional branch-filter context, and summary counts without dumping full transcripts."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -603,58 +605,76 @@ fn send_input_output_schema() -> Value {
     })
 }
 
-fn effective_agent_identity_output_properties() -> serde_json::Map<String, Value> {
-    serde_json::Map::from_iter([
-        (
-            "effective_model".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective model resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_model_provider_id".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective model provider resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_reasoning_effort".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective reasoning effort resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_service_tier".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective service tier resolved for the agent, when available."
-            }),
-        ),
-        (
-            "identity_source".to_string(),
-            json!({
+fn model_visible_agent_identity_output_schema() -> Value {
+    let configured_receipt = json!({
+        "type": "object",
+        "properties": {
+            "model": { "type": ["string", "null"] },
+            "model_provider_id": { "type": ["string", "null"] },
+            "reasoning_effort": { "type": ["string", "null"] },
+            "service_tier": { "type": ["string", "null"] },
+            "source": {
                 "type": "string",
-                "enum": ["thread_config_snapshot", "stored_thread_metadata"],
-                "description": "Authoritative source used to resolve the effective identity."
-            }),
-        ),
-    ])
-}
-
-fn effective_agent_identity_required_fields() -> Vec<String> {
-    [
-        "effective_model",
-        "effective_model_provider_id",
-        "effective_reasoning_effort",
-        "effective_service_tier",
-        "identity_source",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+                "enum": ["live_thread_config", "stored_thread_metadata"]
+            }
+        },
+        "required": [
+            "model",
+            "model_provider_id",
+            "reasoning_effort",
+            "service_tier",
+            "source"
+        ],
+        "additionalProperties": false
+    });
+    let turn_request_receipt = json!({
+        "type": "object",
+        "properties": {
+            "turn_id": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] },
+            "model_provider_id": { "type": ["string", "null"] },
+            "reasoning_effort": { "type": ["string", "null"] },
+            "service_tier": { "type": ["string", "null"] },
+            "source": { "type": "string", "enum": ["turn_request"] }
+        },
+        "required": [
+            "turn_id",
+            "model",
+            "model_provider_id",
+            "reasoning_effort",
+            "service_tier",
+            "source"
+        ],
+        "additionalProperties": false
+    });
+    json!({
+        "type": "object",
+        "properties": {
+            "configured_identity": {
+                "anyOf": [configured_receipt, { "type": "null" }],
+                "description": "Configured thread inference settings and their provenance."
+            },
+            "latest_turn_request_identity": {
+                "anyOf": [turn_request_receipt, { "type": "null" }],
+                "description": "Latest real turn request identity after request normalization."
+            },
+            "identity_truncated": {
+                "type": "boolean",
+                "description": "Whether identity text was truncated or fields were omitted."
+            },
+            "identity_fields_omitted": {
+                "type": "number",
+                "description": "Number of identity fields omitted to enforce the output bound."
+            }
+        },
+        "required": [
+            "configured_identity",
+            "latest_turn_request_identity",
+            "identity_truncated",
+            "identity_fields_omitted"
+        ],
+        "additionalProperties": false
+    })
 }
 
 fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
@@ -689,8 +709,11 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
         "agent_status".to_string(),
         "last_task_message".to_string(),
     ];
-    agent_properties.extend(effective_agent_identity_output_properties());
-    agent_required.extend(effective_agent_identity_required_fields());
+    agent_properties.insert(
+        "identity".to_string(),
+        model_visible_agent_identity_output_schema(),
+    );
+    agent_required.push("identity".to_string());
     if include_active_descendants {
         agent_properties.insert(
             "has_active_subagents".to_string(),
@@ -715,6 +738,7 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
         "properties": {
             "agents": {
                 "type": "array",
+                "maxItems": MAX_LIST_AGENT_ROWS,
                 "items": {
                     "type": "object",
                     "properties": agent_properties,
@@ -722,9 +746,26 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
+            },
+            "truncated": {
+                "type": "boolean",
+                "description": "Whether candidates or matching rows were omitted by an inventory bound."
+            },
+            "scan_limit_reached": {
+                "type": "boolean",
+                "description": "Whether the live-agent scan stopped at its fixed candidate limit."
+            },
+            "candidate_agents_omitted": {
+                "type": "number",
+                "description": "Candidate agents not scanned or matching rows omitted by the row limit."
             }
         },
-        "required": ["agents"],
+        "required": [
+            "agents",
+            "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted"
+        ],
         "additionalProperties": false
     })
 }
@@ -758,7 +799,10 @@ fn inspect_agent_tree_output_schema() -> Value {
             json!({ "type": ["string", "null"] }),
         ),
     ]);
-    agent_properties.extend(effective_agent_identity_output_properties());
+    agent_properties.insert(
+        "identity".to_string(),
+        model_visible_agent_identity_output_schema(),
+    );
     let mut agent_required = [
         "agent_name",
         "depth",
@@ -773,7 +817,7 @@ fn inspect_agent_tree_output_schema() -> Value {
     .into_iter()
     .map(str::to_string)
     .collect::<Vec<_>>();
-    agent_required.extend(effective_agent_identity_required_fields());
+    agent_required.push("identity".to_string());
 
     json!({
         "type": "object",
@@ -802,6 +846,14 @@ fn inspect_agent_tree_output_schema() -> Value {
             "truncated": {
                 "type": "boolean",
                 "description": "Whether the returned tree rows were truncated."
+            },
+            "scan_limit_reached": {
+                "type": "boolean",
+                "description": "Whether traversal reached its fixed candidate scan limit."
+            },
+            "candidate_agents_omitted": {
+                "type": "number",
+                "description": "Candidate or matching agents omitted by scan, depth, or row bounds."
             },
             "summary": {
                 "type": "object",
@@ -833,6 +885,7 @@ fn inspect_agent_tree_output_schema() -> Value {
             },
             "agents": {
                 "type": "array",
+                "maxItems": MAX_INSPECT_AGENT_ROWS,
                 "items": {
                     "type": "object",
                     "properties": agent_properties,
@@ -848,6 +901,8 @@ fn inspect_agent_tree_output_schema() -> Value {
             "max_depth_applied",
             "max_agents_applied",
             "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted",
             "summary",
             "agents"
         ],

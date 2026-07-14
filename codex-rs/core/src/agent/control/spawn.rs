@@ -4,6 +4,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -209,7 +210,7 @@ impl AgentControl {
             stored_thread.model.as_deref(),
             &stored_thread.model_provider,
             stored_thread.reasoning_effort.clone(),
-            stored_thread.service_tier.as_deref(),
+            stored_thread.configured_service_tier.as_deref(),
             thread_id,
         )?;
         let history = stored_thread
