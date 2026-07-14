@@ -589,7 +589,10 @@ mod tests {
             "test-provider",
         );
         assert_eq!(
-            (metadata.reasoning_effort, metadata.service_tier.as_deref(),),
+            (
+                metadata.reasoning_effort.clone(),
+                metadata.service_tier.as_deref(),
+            ),
             (Some(ReasoningEffort::High), Some("priority"))
         );
 
