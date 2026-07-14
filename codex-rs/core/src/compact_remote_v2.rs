@@ -272,6 +272,7 @@ async fn run_remote_compact_task_inner_impl(
         owned_client_session: _owned_client_session,
     } = attempt;
     if let Some(token_usage) = token_usage {
+        turn_context.record_provider_usage(&token_usage).await;
         sess.record_rollout_budget_usage(&token_usage)?;
         analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
         analytics_details.compaction_summary_tokens = Some(token_usage.output_tokens);

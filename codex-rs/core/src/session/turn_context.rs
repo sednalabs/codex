@@ -13,6 +13,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
@@ -150,6 +151,7 @@ pub struct TurnContext {
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) terminal_response_model_identity: Arc<Mutex<TurnResponseModelIdentity>>,
+    pub(crate) provider_usage: Arc<Mutex<Option<TokenUsage>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
 }
@@ -182,6 +184,23 @@ impl TurnContext {
 
     pub(crate) async fn terminal_response_model_identity(&self) -> TurnResponseModelIdentity {
         self.terminal_response_model_identity.lock().await.clone()
+    }
+
+    pub(crate) async fn reset_provider_usage(&self) {
+        *self.provider_usage.lock().await = None;
+    }
+
+    /// Records exact provider-reported usage from one successful response completion.
+    pub(crate) async fn record_provider_usage(&self, usage: &TokenUsage) {
+        let mut aggregate = self.provider_usage.lock().await;
+        match aggregate.as_mut() {
+            Some(aggregate) => aggregate.add_assign(usage),
+            None => *aggregate = Some(usage.clone()),
+        }
+    }
+
+    pub(crate) async fn provider_usage(&self) -> Option<TokenUsage> {
+        self.provider_usage.lock().await.clone()
     }
 
     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
@@ -321,6 +340,7 @@ impl TurnContext {
             terminal_response_model_identity: Arc::new(Mutex::new(
                 TurnResponseModelIdentity::default(),
             )),
+            provider_usage: Arc::clone(&self.provider_usage),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
             ),
@@ -604,6 +624,7 @@ impl Session {
             terminal_response_model_identity: Arc::new(Mutex::new(
                 TurnResponseModelIdentity::default(),
             )),
+            provider_usage: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
         }

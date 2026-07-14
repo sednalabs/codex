@@ -172,6 +172,7 @@ pub(super) async fn spawn_review_thread(
         terminal_response_model_identity: Arc::new(
             Mutex::new(TurnResponseModelIdentity::default()),
         ),
+        provider_usage: Arc::new(Mutex::new(None)),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),
     };
