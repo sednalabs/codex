@@ -2560,6 +2560,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_subagent_model_pinning_recipe_uses_strict_real_nextest_selectors(self) -> None:
+        body = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")["core-subagent-model-pinning-targeted"]
+        )
+        commands = [line for line in body.splitlines() if "cargo nextest run" in line]
+
+        self.assertTrue(commands)
+        self.assertTrue(all("--no-tests=fail" in command for command in commands))
+        self.assertIn(
+            "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
+            body,
+        )
+        self.assertIn(
+            "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+            body,
+        )
+
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
     ) -> None:
