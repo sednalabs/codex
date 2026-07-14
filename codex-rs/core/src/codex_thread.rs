@@ -487,7 +487,7 @@ impl CodexThread {
         }
         if items
             .iter()
-            .any(SubagentRuntimeIdentity::matches_response_item)
+            .any(SubagentRuntimeIdentity::contains_reserved_marker_in_raw_injection)
         {
             return Err(CodexErr::InvalidRequest(
                 "items must not contain reserved subagent runtime identity context".to_string(),

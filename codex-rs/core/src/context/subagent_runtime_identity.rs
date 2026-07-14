@@ -14,6 +14,8 @@ const USAGE_ACCOUNTING_SEMANTICS: &str = "not_terminal_provider_response_or_usag
 const MAX_IDENTITY_FIELD_BYTES: usize = 256;
 const START_MARKER: &str = "<subagent_runtime_identity>";
 const END_MARKER: &str = "</subagent_runtime_identity>";
+const RESERVED_MARKER_PREFIXES: [&str; 2] =
+    ["<subagent_runtime_identity", "</subagent_runtime_identity"];
 
 /// Runtime-owned inference identity supplied to a spawned agent before sampling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,31 @@ impl SubagentRuntimeIdentity {
         };
 
         Self::matches_text(text)
+    }
+
+    /// Returns whether a raw developer-message injection contains the reserved marker namespace.
+    ///
+    /// This is deliberately broader than [`Self::matches_response_item`], which recognizes only
+    /// complete runtime-authored fragments for history filtering and deduplication. Raw injection
+    /// must also reject embedded, mixed-case, multi-content, and attribute-like marker variants.
+    pub(crate) fn contains_reserved_marker_in_raw_injection(item: &ResponseItem) -> bool {
+        let ResponseItem::Message { role, content, .. } = item else {
+            return false;
+        };
+        if role != "developer" {
+            return false;
+        }
+
+        content.iter().any(|content_item| {
+            let ContentItem::InputText { text } = content_item else {
+                return false;
+            };
+            RESERVED_MARKER_PREFIXES.iter().any(|prefix| {
+                text.as_bytes()
+                    .windows(prefix.len())
+                    .any(|window| window.eq_ignore_ascii_case(prefix.as_bytes()))
+            })
+        })
     }
 
     pub(crate) fn matches_current_response_item(&self, item: &ResponseItem) -> bool {
@@ -197,6 +224,65 @@ mod tests {
         assert!(SubagentRuntimeIdentity::matches_response_item(&stale));
         assert!(!current.matches_current_response_item(&stale));
         assert!(current.matches_current_response_item(&matching));
+    }
+
+    #[test]
+    fn raw_injection_reservation_is_broader_than_exact_fragment_matching() {
+        let embedded = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("prefix {START_MARKER}{{}}{END_MARKER} suffix"),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let multi_content_mixed_case = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "ordinary context".to_string(),
+                },
+                ContentItem::InputText {
+                    text: "later <SuBaGeNt_RuNtImE_IdEnTiTy source=\"raw\">".to_string(),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let ordinary_developer = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "ordinary developer context".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let user_data = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("user data may quote {START_MARKER}"),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        assert!(!SubagentRuntimeIdentity::matches_response_item(&embedded));
+        assert!(SubagentRuntimeIdentity::contains_reserved_marker_in_raw_injection(&embedded));
+        assert!(
+            SubagentRuntimeIdentity::contains_reserved_marker_in_raw_injection(
+                &multi_content_mixed_case
+            )
+        );
+        assert!(
+            !SubagentRuntimeIdentity::contains_reserved_marker_in_raw_injection(
+                &ordinary_developer
+            )
+        );
+        assert!(!SubagentRuntimeIdentity::contains_reserved_marker_in_raw_injection(&user_data));
     }
 
     #[test]

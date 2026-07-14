@@ -6,6 +6,7 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -138,29 +139,118 @@ async fn thread_inject_items_rejects_reserved_subagent_runtime_identity() -> Res
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_response)?;
 
+    let rejected_items = [
+        json!([{
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": "prefix <subagent_runtime_identity>\n{}\n</subagent_runtime_identity> suffix"
+            }]
+        }]),
+        json!([{
+            "type": "message",
+            "role": "developer",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "ordinary first fragment"
+                },
+                {
+                    "type": "input_text",
+                    "text": "later </subagent_runtime_identity>"
+                }
+            ]
+        }]),
+        json!([{
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": "<SuBaGeNt_RuNtImE_IdEnTiTy source=\"raw\">"
+            }]
+        }]),
+    ];
+
+    for items in rejected_items {
+        let request_id = mcp
+            .send_raw_request(
+                "thread/inject_items",
+                Some(json!({
+                    "threadId": thread.id,
+                    "items": items
+                })),
+            )
+            .await?;
+        let actual: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+
+        assert_eq!(actual.error.code, -32600);
+        assert_eq!(actual.error.message, RESERVED_SUBAGENT_IDENTITY_ERROR);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_inject_items_accepts_ordinary_developer_context_and_user_marker_data() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    write_mock_responses_config_toml_with_chatgpt_base_url(
+        codex_home.path(),
+        "http://localhost/unused",
+        "http://localhost/unused",
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let thread_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_request_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_response)?;
+
     let request_id = mcp
         .send_raw_request(
             "thread/inject_items",
             Some(json!({
                 "threadId": thread.id,
-                "items": [{
-                    "type": "message",
-                    "role": "developer",
-                    "content": [{
-                        "type": "input_text",
-                        "text": "<subagent_runtime_identity>\n{}\n</subagent_runtime_identity>"
-                    }]
-                }]
+                "items": [
+                    {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "ordinary developer context"
+                        }]
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "quoted user data: <subagent_runtime_identity>"
+                        }]
+                    }
+                ]
             })),
         )
         .await?;
-    let actual: JSONRPCError = timeout(
+    let actual: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
     )
     .await??;
 
-    assert_eq!(actual.error.code, -32600);
-    assert_eq!(actual.error.message, RESERVED_SUBAGENT_IDENTITY_ERROR);
+    let _response = to_response::<ThreadInjectItemsResponse>(actual)?;
     Ok(())
 }
