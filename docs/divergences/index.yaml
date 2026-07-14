@@ -257,12 +257,13 @@
         "inspect_agent_tree_uses_live_and_stored_effective_identity_sources",
         "thread_service_tier_round_trips_through_state",
         "service_tier_migration_preserves_legacy_rows_as_null",
+        "turn_context_preserves_legacy_identity_and_applies_explicit_clears",
         "inference_identity_items_emit_complete_metadata_patches",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Durable metadata is authoritative for an evicted child's model, provider, reasoning effort, and service tier; ambient caller config must not replace that identity on reload. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Durable metadata is authoritative for an evicted child's model, provider, reasoning effort, and service tier; ambient caller config must not replace that identity on reload. Presence-aware update fields permit current rollouts to clear nullable identity fields without reinterpreting legacy nulls or omissions as clear operations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [

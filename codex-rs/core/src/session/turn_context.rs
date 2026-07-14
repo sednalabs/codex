@@ -401,7 +401,7 @@ impl TurnContext {
             network: self.turn_context_network_item(),
             file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
             model: self.model_info.slug.clone(),
-            service_tier: self.config.service_tier.clone(),
+            service_tier: Some(self.config.service_tier.clone()),
             comp_hash: self.model_info.comp_hash.clone(),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
@@ -409,6 +409,7 @@ impl TurnContext {
             multi_agent_mode: super::multi_agents::effective_multi_agent_mode(self),
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort.clone(),
+            reasoning_effort_update: Some(self.reasoning_effort.clone()),
             summary: ReasoningSummaryConfig::Auto,
         }
     }

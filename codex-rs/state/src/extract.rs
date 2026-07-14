@@ -90,8 +90,14 @@ fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem)
         metadata.cwd = turn_ctx.cwd.clone().into_path_buf();
     }
     metadata.model = Some(turn_ctx.model.clone());
-    metadata.reasoning_effort = turn_ctx.effort.clone();
-    metadata.service_tier = turn_ctx.service_tier.clone();
+    if let Some(reasoning_effort) = turn_ctx.reasoning_effort_update.clone() {
+        metadata.reasoning_effort = reasoning_effort;
+    } else if turn_ctx.effort.is_some() {
+        metadata.reasoning_effort = turn_ctx.effort.clone();
+    }
+    if let Some(service_tier) = turn_ctx.service_tier.clone() {
+        metadata.service_tier = service_tier;
+    }
     metadata.sandbox_policy =
         serde_json::to_string(&turn_ctx.permission_profile()).unwrap_or_default();
     metadata.approval_mode = enum_to_string(&turn_ctx.approval_policy);
@@ -414,6 +420,7 @@ mod tests {
                 multi_agent_mode: None,
                 realtime_active: None,
                 effort: None,
+                reasoning_effort_update: None,
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
@@ -461,6 +468,7 @@ mod tests {
                 multi_agent_mode: None,
                 realtime_active: None,
                 effort: None,
+                reasoning_effort_update: None,
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
@@ -504,6 +512,7 @@ mod tests {
                 multi_agent_mode: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),
+                reasoning_effort_update: None,
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
@@ -536,7 +545,7 @@ mod tests {
                 network: None,
                 file_system_sandbox_policy: None,
                 model: "gpt-5".to_string(),
-                service_tier: Some("priority".to_string()),
+                service_tier: Some(Some("priority".to_string())),
                 comp_hash: None,
                 personality: None,
                 collaboration_mode: None,
@@ -544,6 +553,7 @@ mod tests {
                 multi_agent_mode: None,
                 realtime_active: None,
                 effort: Some(ReasoningEffort::High),
+                reasoning_effort_update: Some(Some(ReasoningEffort::High)),
                 summary: codex_protocol::config_types::ReasoningSummary::Auto,
             }),
             "test-provider",
@@ -556,6 +566,51 @@ mod tests {
                 metadata.service_tier.as_deref(),
             ),
             (Some("gpt-5"), Some(ReasoningEffort::High), Some("priority"),)
+        );
+    }
+
+    #[test]
+    fn turn_context_preserves_legacy_identity_and_applies_explicit_clears() {
+        let mut metadata = metadata_for_test();
+        metadata.reasoning_effort = Some(ReasoningEffort::High);
+        metadata.service_tier = Some("priority".to_string());
+
+        let legacy: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "gpt-legacy",
+            "summary": "auto",
+        }))
+        .expect("legacy turn context");
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(legacy),
+            "test-provider",
+        );
+        assert_eq!(
+            (metadata.reasoning_effort, metadata.service_tier.as_deref(),),
+            (Some(ReasoningEffort::High), Some("priority"))
+        );
+
+        let clear: TurnContextItem = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "danger-full-access" },
+            "model": "gpt-current",
+            "service_tier": null,
+            "reasoning_effort_update": null,
+            "summary": "auto",
+        }))
+        .expect("current turn context clear");
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(clear),
+            "test-provider",
+        );
+        assert_eq!(
+            (metadata.reasoning_effort, metadata.service_tier),
+            (None, None)
         );
     }
 
