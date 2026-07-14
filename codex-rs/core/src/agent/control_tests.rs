@@ -421,11 +421,17 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         )
         .await
         .expect("stored child metadata should be readable");
-    harness
-        .control
-        .close_agent(child_thread_id)
+    child_thread
+        .shutdown_and_wait()
         .await
-        .expect("child close should succeed");
+        .expect("child shutdown should succeed");
+    assert!(
+        harness
+            .manager
+            .remove_thread(&child_thread_id)
+            .await
+            .is_some()
+    );
 
     let stored_identity = harness
         .control
