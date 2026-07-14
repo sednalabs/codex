@@ -23,6 +23,35 @@ enum SpawnInitialInput {
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
+/// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
+/// The caller's config is still the source of current runtime policy such as permissions and cwd,
+/// but it must not silently replace the child's model, provider, or reasoning effort.
+fn restore_persisted_agent_model_selection(
+    config: &mut Config,
+    model: Option<&str>,
+    provider_id: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+    thread_id: ThreadId,
+) -> CodexResult<()> {
+    let Some(model) = model else {
+        return Err(CodexErr::UnsupportedOperation(format!(
+            "cannot safely reload agent {thread_id}: persisted model identity is unavailable"
+        )));
+    };
+
+    let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
+        CodexErr::UnsupportedOperation(format!(
+            "cannot safely reload agent {thread_id}: persisted model provider `{provider_id}` is not configured"
+        ))
+    })?;
+
+    config.model = Some(model.to_string());
+    config.model_provider_id = provider_id.to_string();
+    config.model_provider = provider;
+    config.model_reasoning_effort = reasoning_effort;
+    Ok(())
+}
+
 fn default_agent_nickname_list() -> Vec<&'static str> {
     AGENT_NAMES
         .lines()
@@ -152,7 +181,7 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
@@ -173,6 +202,13 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
+        restore_persisted_agent_model_selection(
+            &mut config,
+            stored_thread.model.as_deref(),
+            &stored_thread.model_provider,
+            stored_thread.reasoning_effort.clone(),
+            thread_id,
+        )?;
         let history = stored_thread
             .history
             .ok_or(CodexErr::ThreadNotFound(thread_id))?

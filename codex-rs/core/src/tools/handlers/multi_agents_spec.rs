@@ -27,6 +27,7 @@ pub struct SpawnAgentToolOptions {
     pub available_models: Vec<ModelPreset>,
     pub agent_type_description: String,
     pub hide_agent_type_model_reasoning: bool,
+    pub expose_spawn_agent_model_overrides: bool,
     pub usage_hint_text: Option<String>,
 }
 
@@ -79,13 +80,20 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
 }
 
 pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
-    let available_models_description = (!options.hide_agent_type_model_reasoning)
+    let available_models_description = options
+        .expose_spawn_agent_model_overrides
         .then(|| spawn_agent_models_description(&options.available_models));
-    let inherited_model_guidance =
-        (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
+    let inherited_model_guidance = (options.expose_spawn_agent_model_overrides
+        && !options.hide_agent_type_model_reasoning)
+        .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
     if options.hide_agent_type_model_reasoning {
-        hide_spawn_agent_metadata_options(&mut properties);
+        properties.remove("agent_type");
+        properties.remove("service_tier");
+    }
+    if !options.expose_spawn_agent_model_overrides {
+        properties.remove("model");
+        properties.remove("reasoning_effort");
     }
     properties.insert(
         "task_name".to_string(),
@@ -205,6 +213,13 @@ pub fn create_followup_task_tool() -> ToolSpec {
             ))
             .with_encrypted(),
         ),
+        (
+            "expected_model".to_string(),
+            JsonSchema::string(Some(
+                "Optional exact model assertion. The follow-up is rejected without sending the task if the target agent uses a different model."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
@@ -214,7 +229,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
-        output_schema: None,
+        output_schema: Some(followup_task_output_schema()),
     })
 }
 
@@ -515,6 +530,42 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
         "type": "object",
         "properties": properties,
         "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn followup_task_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task_name": {
+                "type": "string",
+                "description": "Canonical task name of the agent receiving the follow-up."
+            },
+            "effective_model": {
+                "type": "string",
+                "description": "Effective model retained by the agent for the follow-up turn."
+            },
+            "effective_model_provider_id": {
+                "type": "string",
+                "description": "Effective model provider retained by the agent for the follow-up turn."
+            },
+            "effective_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+            },
+            "effective_service_tier": {
+                "type": ["string", "null"],
+                "description": "Effective service tier retained by the agent for the follow-up turn, when configured."
+            }
+        },
+        "required": [
+            "task_name",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort",
+            "effective_service_tier"
+        ],
         "additionalProperties": false
     })
 }

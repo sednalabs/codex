@@ -95,7 +95,7 @@ use super::analytics::wait_for_analytics_event;
 #[cfg(windows)]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const TEST_ORIGINATOR: &str = "codex_vscode";
 const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;

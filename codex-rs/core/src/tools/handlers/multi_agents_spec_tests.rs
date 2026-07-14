@@ -45,6 +45,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        expose_spawn_agent_model_overrides: true,
         usage_hint_text: None,
     });
 
@@ -101,6 +102,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert_eq!(
         properties
+            .get("reasoning_effort")
+            .and_then(|schema| schema.description.as_deref()),
+        Some("Reasoning effort override for the new agent. Omit to inherit the parent effort.")
+    );
+    assert_eq!(
+        properties
             .get("service_tier")
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
@@ -152,6 +159,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         available_models: Vec::new(),
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        expose_spawn_agent_model_overrides: true,
         usage_hint_text: None,
     });
 
@@ -208,6 +216,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        expose_spawn_agent_model_overrides: true,
         usage_hint_text: None,
     });
 
@@ -246,11 +255,43 @@ fn spawn_agent_tool_caps_reasoning_effort_value_length() {
 }
 
 #[test]
-fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
+fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: true,
+        expose_spawn_agent_model_overrides: true,
+        usage_hint_text: None,
+    });
+
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        ..
+    }) = tool
+    else {
+        panic!("spawn_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("spawn_agent should use object params");
+
+    assert!(!properties.contains_key("agent_type"));
+    assert!(properties.contains_key("model"));
+    assert!(properties.contains_key("reasoning_effort"));
+    assert!(!properties.contains_key("service_tier"));
+    assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
+    assert!(description.contains("Available model overrides"));
+}
+
+#[test]
+fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+        available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
+        agent_type_description: "role help".to_string(),
+        hide_agent_type_model_reasoning: true,
+        expose_spawn_agent_model_overrides: false,
         usage_hint_text: None,
     });
 
@@ -268,10 +309,9 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         .as_ref()
         .expect("spawn_agent should use object params");
 
-    assert!(!properties.contains_key("agent_type"));
-    assert!(!properties.contains_key("model"));
-    assert!(!properties.contains_key("reasoning_effort"));
-    assert!(!properties.contains_key("service_tier"));
+    for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
+        assert!(!properties.contains_key(property));
+    }
     assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(!description.contains("Available model overrides"));
     let output_schema = output_schema.expect("spawn_agent output schema");
@@ -352,7 +392,7 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
 }
 
 #[test]
-fn followup_task_tool_requires_message_and_has_no_output_schema() {
+fn followup_task_tool_requires_message_and_describes_model_receipt() {
     let ToolSpec::Function(ResponsesApiTool {
         name,
         description,
@@ -378,6 +418,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         .expect("followup_task should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("expected_model"));
     assert_eq!(
         properties
             .get("message")
@@ -389,7 +430,43 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         parameters.required.as_ref(),
         Some(&vec!["target".to_string(), "message".to_string()])
     );
-    assert_eq!(output_schema, None);
+    let output_schema = output_schema.expect("followup_task should describe its receipt");
+    assert_eq!(
+        output_schema,
+        json!({
+            "type": "object",
+            "properties": {
+                "task_name": {
+                    "type": "string",
+                    "description": "Canonical task name of the agent receiving the follow-up."
+                },
+                "effective_model": {
+                    "type": "string",
+                    "description": "Effective model retained by the agent for the follow-up turn."
+                },
+                "effective_model_provider_id": {
+                    "type": "string",
+                    "description": "Effective model provider retained by the agent for the follow-up turn."
+                },
+                "effective_reasoning_effort": {
+                    "type": ["string", "null"],
+                    "description": "Effective reasoning effort retained by the agent for the follow-up turn, when configured."
+                },
+                "effective_service_tier": {
+                    "type": ["string", "null"],
+                    "description": "Effective service tier retained by the agent for the follow-up turn, when configured."
+                }
+            },
+            "required": [
+                "task_name",
+                "effective_model",
+                "effective_model_provider_id",
+                "effective_reasoning_effort",
+                "effective_service_tier"
+            ],
+            "additionalProperties": false
+        })
+    );
 }
 
 #[test]
