@@ -182,6 +182,7 @@ use uuid::Uuid;
 use crate::client::ModelClient;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::codex_thread::ThreadInferenceIdentitySnapshot;
+use crate::codex_thread::TurnInferenceIdentity;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::Constrained;
@@ -929,6 +930,20 @@ impl Codex {
             configured: state.session_configuration.configured_inference_identity(),
             latest_turn: state.latest_turn_inference_identity(),
         }
+    }
+
+    pub(crate) async fn seed_latest_turn_request_identity(
+        &self,
+        identity: codex_protocol::protocol::TurnRequestIdentity,
+    ) {
+        let mut state = self.session.state.lock().await;
+        state.set_latest_turn_inference_identity(TurnInferenceIdentity {
+            turn_id: identity.turn_id.unwrap_or_default(),
+            request_model: identity.request_model,
+            model_provider_id: identity.model_provider_id.unwrap_or_default(),
+            requested_reasoning_effort: identity.requested_reasoning_effort,
+            request_service_tier: identity.request_service_tier,
+        });
     }
 
     pub(crate) async fn dynamic_tools_snapshot(&self) -> Vec<DynamicToolSpec> {

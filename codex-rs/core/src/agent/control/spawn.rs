@@ -32,7 +32,7 @@ fn restore_persisted_agent_inference_identity(
     model: Option<&str>,
     provider_id: &str,
     reasoning_effort: Option<ReasoningEffort>,
-    service_tier: Option<&str>,
+    service_tier: Option<String>,
     thread_id: ThreadId,
 ) -> CodexResult<()> {
     let Some(model) = model else {
@@ -51,8 +51,40 @@ fn restore_persisted_agent_inference_identity(
     config.model_provider_id = provider_id.to_string();
     config.model_provider = provider;
     config.model_reasoning_effort = reasoning_effort;
-    config.service_tier = service_tier.map(str::to_string);
+    config.service_tier = service_tier;
     Ok(())
+}
+
+/// Resolve the configured service tier across the 0045 migration boundary.
+///
+/// A non-null indexed value is authoritative. A null value may be either an explicit clear or an
+/// older row for which 0045 added the column without an observation, so it is authoritative only
+/// when the rollout contains a presence-aware configured-identity receipt. Unknown values fail
+/// closed instead of inheriting the caller's ambient tier.
+fn restore_persisted_configured_service_tier(
+    indexed_service_tier: Option<&str>,
+    history: &[RolloutItem],
+    thread_id: ThreadId,
+) -> CodexResult<Option<String>> {
+    if let Some(service_tier) = indexed_service_tier {
+        return Ok(Some(service_tier.to_string()));
+    }
+    for item in history.iter().rev() {
+        match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                return Ok(event.thread_settings.service_tier.clone());
+            }
+            RolloutItem::TurnContext(turn_context) => {
+                if let Some(configured) = turn_context.configured_inference_identity.as_ref() {
+                    return Ok(configured.configured_service_tier.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(CodexErr::UnsupportedOperation(format!(
+        "cannot safely reload agent {thread_id}: persisted service tier observation is unavailable"
+    )))
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -205,14 +237,24 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
+        let history = stored_thread
+            .history
+            .as_ref()
+            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let restored_service_tier = restore_persisted_configured_service_tier(
+            stored_thread.configured_service_tier.as_deref(),
+            &history.items,
+            thread_id,
+        )?;
         restore_persisted_agent_inference_identity(
             &mut config,
             stored_thread.model.as_deref(),
             &stored_thread.model_provider,
             stored_thread.reasoning_effort.clone(),
-            stored_thread.configured_service_tier.as_deref(),
+            restored_service_tier,
             thread_id,
         )?;
+        let latest_turn_request_identity = stored_thread.latest_turn_request_identity.clone();
         let history = stored_thread
             .history
             .ok_or(CodexErr::ThreadNotFound(thread_id))?
@@ -255,6 +297,13 @@ impl AgentControl {
             .await
         {
             Ok(reloaded_thread) => {
+                if let Some(identity) = latest_turn_request_identity {
+                    reloaded_thread
+                        .thread
+                        .codex
+                        .seed_latest_turn_request_identity(identity)
+                        .await;
+                }
                 residency_slot.commit(reloaded_thread.thread_id);
                 state.notify_thread_created(reloaded_thread.thread_id);
                 Ok(())
