@@ -142,16 +142,19 @@ async fn thread_settings_update(
         personality,
     } = thread_settings;
     let collaboration_mode = match collaboration_mode {
-        Some(collaboration_mode) => collaboration_mode,
-        None => {
+        Some(collaboration_mode) => Some(collaboration_mode),
+        None if model.is_some() || effort.is_some() => {
             let state = sess.state.lock().await;
             // Model and reasoning effort live in CollaborationMode settings today, so
             // partial thread-settings updates refresh those fields on the active mode.
-            state
-                .session_configuration
-                .collaboration_mode
-                .with_updates(model, effort, /*developer_instructions*/ None)
+            Some(
+                state
+                    .session_configuration
+                    .collaboration_mode
+                    .with_updates(model, effort, /*developer_instructions*/ None),
+            )
         }
+        None => None,
     };
     SessionSettingsUpdate {
         environments,
@@ -163,7 +166,7 @@ async fn thread_settings_update(
         permission_profile,
         active_permission_profile,
         windows_sandbox_level,
-        collaboration_mode: Some(collaboration_mode),
+        collaboration_mode,
         reasoning_summary: summary,
         service_tier,
         personality,
