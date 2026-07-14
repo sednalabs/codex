@@ -494,6 +494,10 @@ core-runtime-surface-smoke:
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
 
+# Focused skill-loader fixture hermeticity slice.
+skill-loader-fixture-hermeticity-targeted:
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core-skills --lib --no-tests=fail -- loader::tests::non_git_repo_skills_search_does_not_walk_parents loader::tests::skill_roots_include_admin_with_lowest_priority --exact
+
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
     cargo test -p codex-state usage_spawn_lineage_matches_persisted_state_edge_for_child_thread -- --test-threads=1

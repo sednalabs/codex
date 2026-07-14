@@ -159,6 +159,32 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.skill-loader-fixture-hermeticity-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "skill-loader-fixture-hermeticity-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
       "lane_id": "codex.core-startup-sync-targeted",
       "groups": [
         "core"
@@ -1754,6 +1780,25 @@
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "scripts/downstream-divergence-audit.py",
         "scripts/resolve_sedna_release_version"
+      ]
+    },
+    {
+      "route_id": "skill-loader-fixture-hermeticity",
+      "lane_ids": [
+        "codex.skill-loader-fixture-hermeticity-targeted"
+      ],
+      "allowed_paths": [
+        ".github/validation-lanes.json",
+        ".github/scripts/test_ci_planners.py",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/core-skills/src/loader_tests.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core-skills/src/loader_tests.rs"
       ]
     },
     {
