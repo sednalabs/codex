@@ -592,7 +592,37 @@ async fn list_agents_returns_model_visible_identity_receipts() -> Result<()> {
         })
         .build(&server)
         .await?;
-    test.submit_turn(TURN_1_PROMPT).await?;
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: TURN_1_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                model: Some(INHERITED_MODEL.to_string()),
+                effort: Some(Some(INHERITED_REASONING_EFFORT)),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(()),
+        _ => None,
+    })
+    .await;
     let _ = wait_for_requests(&child_request).await?;
     test.submit_turn(INVENTORY_PROMPT).await?;
 
