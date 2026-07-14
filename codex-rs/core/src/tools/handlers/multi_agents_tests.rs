@@ -283,6 +283,11 @@ struct ListedAgentResult {
     last_task_message: Option<String>,
     has_active_subagents: bool,
     active_subagent_count: usize,
+    effective_model: Option<String>,
+    effective_model_provider_id: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_service_tier: Option<String>,
+    identity_source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1898,6 +1903,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
         .get_thread(agent_id)
         .await
         .expect("child thread should exist");
+    let child_snapshot = child_thread.config_snapshot().await;
     let child_turn = child_thread.codex.session.new_default_turn().await;
     child_thread
         .codex
@@ -1951,6 +1957,20 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
     assert_eq!(worker.last_task_message, None);
+    assert_eq!(
+        worker.effective_model.as_deref(),
+        Some(child_snapshot.model.as_str())
+    );
+    assert_eq!(
+        worker.effective_model_provider_id.as_deref(),
+        Some(child_snapshot.model_provider_id.as_str())
+    );
+    assert_eq!(
+        worker.effective_reasoning_effort,
+        child_snapshot.reasoning_effort
+    );
+    assert_eq!(worker.effective_service_tier, child_snapshot.service_tier);
+    assert_eq!(worker.identity_source, "thread_config_snapshot");
     assert_eq!(success, Some(true));
 }
 
@@ -4010,6 +4030,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             pending_ids: Vec::new(),
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
+            agent_identities: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -4059,6 +4080,12 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         .expect("worker metadata")
         .agent_path
         .expect("worker path");
+    let expected_identity = session
+        .services
+        .agent_control
+        .get_agent_identity(agent_id)
+        .await
+        .expect("worker identity should resolve");
 
     session
         .input_queue
@@ -4097,6 +4124,12 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
+            agent_identities: vec![
+                crate::tools::handlers::multi_agents_v2::wait::WaitAgentIdentity {
+                    agent_id,
+                    identity: expected_identity,
+                },
+            ],
         }
     );
     assert_eq!(success, None);
