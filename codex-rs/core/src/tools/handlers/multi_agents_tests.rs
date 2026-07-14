@@ -575,6 +575,57 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "unspecified_backend_model",
+                "model": "gpt-5.4",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("a model without an explicit backend assignment should remain eligible");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -592,7 +643,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_name": "incompatible_model",
-                "model": "gpt-5.4",
+                "model": "gpt-5.6-luna",
                 "fork_turns": "none"
             })),
         ))
@@ -603,8 +654,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Unknown model `gpt-5.4` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra"
-                .to_string()
+            "Unknown model `gpt-5.6-luna` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.5, gpt-5.4, gpt-5.4-mini".to_string()
         )
     );
 }
@@ -3658,120 +3708,6 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     assert_eq!(success, None);
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_reports_identity_at_completion_time() {
-    let (_session, _turn, target_id, root, target, _manager) =
-        multi_agent_v2_wait_context(|config| {
-            config.multi_agent_v2.min_wait_timeout_ms = 1;
-            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
-            config.multi_agent_v2.default_wait_timeout_ms = 10_000;
-        })
-        .await;
-    let root_session = root.thread.codex.session.clone();
-    let root_turn = root_session.new_default_turn().await;
-    let wait_task = tokio::spawn({
-        let root_session = root_session.clone();
-        async move {
-            WaitAgentHandlerV2::default()
-                .handle(invocation(
-                    root_session,
-                    root_turn,
-                    "wait_agent",
-                    function_payload(json!({
-                        "targets": [target_id.to_string()],
-                        "timeout_ms": 10_000
-                    })),
-                ))
-                .await
-        }
-    });
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let event = root.thread.next_event().await.expect("root event");
-            if matches!(
-                event.msg,
-                EventMsg::ItemStarted(event)
-                    if matches!(
-                        event.item,
-                        codex_protocol::items::TurnItem::CollabAgentToolCall(item)
-                            if item.tool == codex_protocol::items::CollabAgentTool::Wait
-                    )
-            ) {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("wait_agent should enter its blocking phase");
-
-    let settings_submission_id = target
-        .thread
-        .submit(Op::ThreadSettings {
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                service_tier: Some(Some("priority-after-wait-start".to_string())),
-                ..Default::default()
-            },
-        })
-        .await
-        .expect("thread settings should submit");
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let event = target.thread.next_event().await.expect("target event");
-            if event.id != settings_submission_id {
-                continue;
-            }
-            match event.msg {
-                EventMsg::ThreadSettingsApplied(_) => break,
-                EventMsg::Error(error) => panic!("thread settings failed: {}", error.message),
-                other => panic!("unexpected thread-settings event: {other:?}"),
-            }
-        }
-    })
-    .await
-    .expect("thread settings should be applied");
-
-    let target_turn = target.thread.codex.session.new_default_turn().await;
-    target
-        .thread
-        .codex
-        .session
-        .send_event(
-            target_turn.as_ref(),
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: target_turn.sub_id.clone(),
-                started_at: None,
-                last_agent_message: Some("done".to_string()),
-                final_model: None,
-                model_snapshot: None,
-                error: None,
-                completed_at: None,
-                duration_ms: None,
-            }),
-        )
-        .await;
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result.completion_reason,
-        CollabWaitingCompletionReason::Terminal
-    );
-    assert_eq!(
-        result.agent_identities[0]
-            .identity
-            .effective_service_tier
-            .as_deref(),
-        Some("priority-after-wait-start")
-    );
-    assert_eq!(success, None);
-}
-
 #[test]
 fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     assert_eq!(
@@ -4144,7 +4080,6 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             pending_ids: Vec::new(),
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
-            agent_identities: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -4194,12 +4129,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         .expect("worker metadata")
         .agent_path
         .expect("worker path");
-    let expected_identity = session
-        .services
-        .agent_control
-        .get_agent_identity(agent_id)
-        .await
-        .expect("worker identity should resolve");
 
     session
         .input_queue
@@ -4238,12 +4167,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
-            agent_identities: vec![
-                crate::tools::handlers::multi_agents_v2::wait::WaitAgentIdentity {
-                    agent_id,
-                    identity: expected_identity,
-                },
-            ],
         }
     );
     assert_eq!(success, None);

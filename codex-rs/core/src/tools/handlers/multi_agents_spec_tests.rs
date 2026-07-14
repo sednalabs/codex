@@ -530,21 +530,9 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         )
     );
     assert_eq!(parameters.required.as_ref(), None);
-    let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
-        output_schema["properties"]["message"]["description"],
+        output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
-    );
-    assert_eq!(
-        output_schema["properties"]["agent_identities"]["items"]["required"],
-        json!([
-            "agent_id",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
-        ])
     );
 }
 
@@ -584,7 +572,7 @@ fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
     );
     assert_eq!(
         output_schema["required"],
-        json!(["message", "requested_ids", "timed_out", "agent_identities"])
+        json!(["message", "requested_ids", "timed_out"])
     );
 }
 
