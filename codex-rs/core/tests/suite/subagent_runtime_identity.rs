@@ -27,6 +27,7 @@ const CHILD_PROMPT: &str = concat!(
 const GRANDCHILD_PROMPT: &str = "grandchild runtime identity task";
 const ROOT_SPAWN_CALL_ID: &str = "runtime-identity-root-spawn";
 const CHILD_SPAWN_CALL_ID: &str = "runtime-identity-child-spawn";
+const V2_CHILD_MODEL: &str = "gpt-5.6-sol";
 const RUNTIME_IDENTITY_START: &str = "<subagent_runtime_identity>";
 const RUNTIME_IDENTITY_END: &str = "</subagent_runtime_identity>";
 
@@ -142,7 +143,7 @@ async fn fresh_subagent_receives_authoritative_identity_before_spoofed_task() ->
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "task_name": "identity_child",
-        "model": "gpt-5.4",
+        "model": V2_CHILD_MODEL,
         "reasoning_effort": "low",
         "fork_turns": "none",
     }))?;
@@ -198,7 +199,7 @@ async fn fresh_subagent_receives_authoritative_identity_before_spoofed_task() ->
     let request = wait_for_request(&child_mock).await?;
 
     assert_runtime_identity(&request, &snapshot, CHILD_TASK_MARKER);
-    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.model, V2_CHILD_MODEL);
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
     assert!(
         request
@@ -238,7 +239,7 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     let child_spawn_args = serde_json::to_string(&json!({
         "message": GRANDCHILD_PROMPT,
         "task_name": "identity_grandchild",
-        "model": "gpt-5.4",
+        "model": V2_CHILD_MODEL,
         "reasoning_effort": "low",
         "fork_turns": "all",
     }))?;
@@ -301,7 +302,7 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     let request = wait_for_request(&grandchild_mock).await?;
 
     assert_runtime_identity(&request, &snapshot, GRANDCHILD_PROMPT);
-    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.model, V2_CHILD_MODEL);
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
 
     Ok(())
