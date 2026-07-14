@@ -874,6 +874,11 @@ impl Session {
             .await
     }
 
+    pub(crate) async fn new_default_preview_turn(&self) -> Arc<TurnContext> {
+        self.new_startup_prewarm_turn_with_sub_id(self.next_internal_sub_id())
+            .await
+    }
+
     pub(crate) async fn new_default_turn_with_sub_id(&self, sub_id: String) -> Arc<TurnContext> {
         let session_configuration = self.default_turn_configuration().await;
         self.services
