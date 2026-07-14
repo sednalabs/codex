@@ -1473,6 +1473,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             network: None,
             file_system_sandbox_policy: None,
             model: "test-model".to_string(),
+            service_tier: None,
             comp_hash: None,
             personality: None,
             collaboration_mode: None,
@@ -1480,6 +1481,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             multi_agent_mode: None,
             realtime_active: None,
             effort: None,
+            reasoning_effort_update: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         }),
     };

@@ -40,6 +40,7 @@ fn resume_history(
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: None,
         collaboration_mode: None,
@@ -47,6 +48,7 @@ fn resume_history(
         multi_agent_mode: None,
         realtime_active: None,
         effort: config.model_reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: config
             .model_reasoning_summary
             .unwrap_or(ReasoningSummary::Auto),

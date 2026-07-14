@@ -183,6 +183,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -190,6 +191,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let rollout_items = vec![RolloutItem::TurnContext(previous_context_item)];
@@ -230,6 +232,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: Some("comp-hash-a".to_string()),
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -237,6 +240,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let turn_id = previous_context_item
@@ -1335,6 +1339,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1342,6 +1347,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1427,6 +1433,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             network: None,
             file_system_sandbox_policy: None,
             model: previous_model.to_string(),
+            service_tier: None,
             comp_hash: None,
             personality: turn_context.personality,
             collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1434,6 +1441,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             multi_agent_mode: None,
             realtime_active: Some(turn_context.realtime_active),
             effort: turn_context.reasoning_effort.clone(),
+            reasoning_effort_update: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         }))
         .expect("serialize expected reference context item")
@@ -1459,6 +1467,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1466,6 +1475,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1592,6 +1602,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         network: None,
         file_system_sandbox_policy: None,
         model: current_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1599,6 +1610,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
 
@@ -1725,6 +1737,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1732,6 +1745,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1898,6 +1912,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
@@ -1905,6 +1920,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort.clone(),
+        reasoning_effort_update: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
