@@ -511,7 +511,7 @@ mod tests {
             .observe_appended_items(&[thread_settings_item(
                 "next-model",
                 "next-provider",
-                /* reasoning_effort */ None,
+                /*reasoning_effort*/ None,
             )])
             .expect("settings clear update");
         let expected = ThreadMetadataPatch {
@@ -670,7 +670,12 @@ mod tests {
                     approvals_reviewer: Default::default(),
                     permission_profile: PermissionProfile::Disabled,
                     active_permission_profile: None,
-                    cwd: serde_json::from_value(serde_json::json!("/tmp")).expect("absolute cwd"),
+                    cwd: serde_json::from_value(serde_json::json!(
+                        std::env::current_dir()
+                            .expect("current directory")
+                            .join("thread-settings")
+                    ))
+                    .expect("absolute cwd"),
                     reasoning_effort: reasoning_effort.clone(),
                     reasoning_summary: None,
                     personality: None,
