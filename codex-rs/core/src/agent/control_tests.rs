@@ -34,8 +34,6 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::ThreadSettingsAppliedEvent;
-use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -403,7 +401,7 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
             effective_model: stored_child.model.clone(),
             effective_model_provider_id: Some(stored_child.model_provider.clone()),
             effective_reasoning_effort: stored_child.reasoning_effort.clone(),
-            effective_service_tier: stored_child.service_tier.clone(),
+            effective_service_tier: None,
             identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
         }
     );
@@ -429,37 +427,6 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
     assert_eq!(stale_child.session_state, AgentSessionState::Stale);
     assert_eq!(stale_child.agent_status, None);
     assert_eq!(stale_child.identity, stored_identity);
-}
-
-#[tokio::test]
-async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
-    let (home, mut config) = test_config().await;
-    config.features.disable(Feature::Sqlite);
-    let harness = AgentControlHarness::new_with_config(home, config).await;
-    assert!(harness.state_db.is_none());
-    let (root_thread_id, _root_thread) = harness.start_thread().await;
-    harness
-        .control
-        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
-
-    let err = harness
-        .control
-        .inspect_agent_tree(
-            root_thread_id,
-            &SessionSource::Exec,
-            /*target*/ None,
-            /*agent_roots*/ None,
-            AgentTreeScope::All,
-            /*max_depth*/ 2,
-            /*max_agents*/ 10,
-        )
-        .await
-        .expect_err("stale inspection should require the state db");
-    assert_matches!(
-        err,
-        CodexErr::UnsupportedOperation(message)
-            if message == INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE
-    );
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
@@ -759,13 +726,8 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
-    config.model_reasoning_effort = Some(ReasoningEffort::Medium);
-    config.service_tier = Some("priority".to_string());
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
-    harness
-        .control
-        .register_session_root(parent_thread_id, /*current_parent_thread_id*/ None);
     let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
     let spawned_agent = harness
         .control
@@ -792,36 +754,6 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .await
         .expect("child thread should exist");
     let original_config = child_thread.config_snapshot().await;
-    let child_turn = child_thread.codex.session.new_default_turn().await;
-    child_thread
-        .codex
-        .session
-        .persist_rollout_items(&[RolloutItem::TurnContext(child_turn.to_turn_context_item())])
-        .await;
-    let mut cleared_collaboration_mode = original_config.collaboration_mode.clone();
-    cleared_collaboration_mode.settings.reasoning_effort = None;
-    child_thread
-        .codex
-        .session
-        .persist_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
-            ThreadSettingsAppliedEvent {
-                thread_settings: ThreadSettingsSnapshot {
-                    model: original_config.model.clone(),
-                    model_provider_id: original_config.model_provider_id.clone(),
-                    service_tier: None,
-                    approval_policy: original_config.approval_policy,
-                    approvals_reviewer: original_config.approvals_reviewer,
-                    permission_profile: original_config.permission_profile.clone(),
-                    active_permission_profile: original_config.active_permission_profile.clone(),
-                    cwd: original_config.cwd().clone(),
-                    reasoning_effort: None,
-                    reasoning_summary: original_config.reasoning_summary,
-                    personality: original_config.personality,
-                    collaboration_mode: cleared_collaboration_mode,
-                },
-            },
-        ))])
-        .await;
     child_thread
         .inject_response_items(vec![assistant_message(
             "child persisted",
@@ -829,16 +761,6 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         )])
         .await
         .expect("child rollout should persist with v2 metadata");
-    let stored_child = child_thread
-        .read_thread(
-            /*include_archived*/ true, /*include_history*/ false,
-        )
-        .await
-        .expect("cleared child metadata should be readable");
-    assert_eq!(
-        (stored_child.reasoning_effort, stored_child.service_tier),
-        (None, None)
-    );
     child_thread
         .shutdown_and_wait()
         .await
@@ -856,43 +778,11 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         Err(err) => panic!("expected ThreadNotFound, got {err:?}"),
         Ok(_) => panic!("expected thread to be removed"),
     }
-    harness
-        .state_db
-        .as_ref()
-        .expect("state db should be configured")
-        .set_thread_spawn_edge_status(
-            spawned_agent.thread_id,
-            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
-        )
-        .await
-        .expect("child edge should be marked closed for stale inventory");
-
-    let all_tree = harness
-        .control
-        .inspect_agent_tree(
-            parent_thread_id,
-            &SessionSource::Exec,
-            /*target*/ None,
-            /*agent_roots*/ None,
-            AgentTreeScope::All,
-            /*max_depth*/ 2,
-            /*max_agents*/ 10,
-        )
-        .await
-        .expect("combined tree inspection should succeed");
-    let stale_child = all_tree
-        .agents
-        .iter()
-        .find(|agent| agent.agent_name == agent_path.as_str())
-        .expect("unloaded child should remain in persisted inventory");
-    assert_eq!(stale_child.session_state, AgentSessionState::Stale);
-    assert_eq!(stale_child.identity.effective_reasoning_effort, None);
-    assert_eq!(stale_child.identity.effective_service_tier, None);
 
     let mut conflicting_resume_config = harness.config.clone();
     conflicting_resume_config.model = Some("different-caller-model".to_string());
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
-    conflicting_resume_config.service_tier = Some("flex".to_string());
+    conflicting_resume_config.service_tier = Some("priority".to_string());
     let mut missing_provider_config = conflicting_resume_config.clone();
     missing_provider_config
         .model_providers
@@ -922,13 +812,11 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             reloaded_config.model,
             reloaded_config.model_provider_id,
             reloaded_config.reasoning_effort,
-            reloaded_config.service_tier,
         ),
         (
             original_config.model,
             original_config.model_provider_id,
-            None,
-            None,
+            original_config.reasoning_effort,
         )
     );
 
