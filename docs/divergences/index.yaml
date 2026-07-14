@@ -963,6 +963,38 @@
       "extraction_target": "operator-owned agent workflow skills"
     },
     {
+      "id": "skill-loader-fixture-hermeticity",
+      "title": "Skill-loader fixture hermeticity",
+      "status": "live",
+      "category": "build-validation",
+      "surface": [
+        "skill-loader test fixture construction",
+        "hosted test isolation from parent project layers"
+      ],
+      "files": [
+        "codex-rs/core-skills/src/loader_tests.rs"
+      ],
+      "behavior": "Downstream test fixtures explicitly isolate project-layer inputs and ignore ambient repository scope when asserting skill-root order. This changes only test setup and expectations; runtime skill loading remains upstream-owned.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "d2075153cf8f73c25e108b762b95861fd5757e6c",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.skill-loader-fixture-hermeticity-targeted",
+      "tests": [
+        "non_git_repo_skills_search_does_not_walk_parents",
+        "skill_roots_include_admin_with_lowest_priority"
+      ],
+      "owner": "downstream",
+      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "test-fixture-hermeticity",
+      "hotspot_files": [
+        "codex-rs/core-skills/src/loader_tests.rs"
+      ],
+      "extraction_target": "upstreamable explicit project-layer fixture isolation for skill-loader tests"
+    },
+    {
       "id": "ci-workflow-automation",
       "title": "CI/workflow automation and validation lanes",
       "status": "live",
@@ -981,7 +1013,6 @@
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
-        "codex-rs/core-skills/src/loader_tests.rs",
         "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
@@ -1000,8 +1031,6 @@
       "tests": [
         "validation-lab and Sedna job orchestration smoke",
         "workflow sync job exports expected metadata",
-        "non_git_repo_skills_search_does_not_walk_parents",
-        "skill_roots_include_admin_with_lowest_priority",
         "test_validation_lab_plan_fingerprint_reads_selection_stdin",
         "test_validation_lab_plan_fingerprint_reports_missing_selection_stdin",
         "test_validation_lab_exposes_exact_plan_dedupe_metadata",
@@ -1011,7 +1040,7 @@
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build default-feature ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. Default features keep the shared archive aligned with the non-sandbox V8 release artifact, while v8-canary owns explicit sandbox and non-sandbox runtime proof. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure. Remote replay excludes host-only compact/resume and hook fixtures; Guardian local-proxy fixtures use host-native cwd selections; the large-output summary remains host-only until exec-server replay preserves bounded head, tail, and omission metadata before core subscribes. Skill-loader fixtures isolate non-Git assertions from ambient parent project layers so repository configuration present in hosted checkouts cannot change the expected result. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build default-feature ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. Default features keep the shared archive aligned with the non-sandbox V8 release artifact, while v8-canary owns explicit sandbox and non-sandbox runtime proof. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure. Remote replay excludes host-only compact/resume and hook fixtures; Guardian local-proxy fixtures use host-native cwd selections; the large-output summary remains host-only until exec-server replay preserves bounded head, tail, and omission metadata before core subscribes. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
