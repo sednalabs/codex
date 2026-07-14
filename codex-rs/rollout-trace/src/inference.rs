@@ -189,26 +189,6 @@ impl InferenceTraceContext {
         )
     }
 
-    /// Starts a raw-trace-only attempt without emitting a durable observation.
-    ///
-    /// This keeps transports that have not adopted the observation contract on
-    /// the existing raw replay path while another transport is wired first.
-    pub fn start_raw_attempt(&self) -> InferenceTraceAttempt {
-        let InferenceTraceContextState::Enabled(context) = &self.state else {
-            return InferenceTraceAttempt::disabled();
-        };
-
-        InferenceTraceAttempt {
-            state: InferenceTraceAttemptState::Enabled(EnabledInferenceTraceAttempt {
-                context: context.clone(),
-                observation: None,
-                inference_call_id: next_inference_call_id(),
-                raw_started: AtomicBool::new(false),
-                terminal_recorded: AtomicBool::new(false),
-            }),
-        }
-    }
-
     /// Starts an attempt with the configured/requested observation boundary.
     pub fn start_observed_attempt(
         &self,
