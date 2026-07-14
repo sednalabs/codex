@@ -249,6 +249,10 @@ impl SessionConfiguration {
                         )
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            config.model = Some(collaboration_mode.model().to_string());
+            config.model_reasoning_effort = collaboration_mode.reasoning_effort();
+            next_configuration.original_config_do_not_use = Arc::new(config);
             next_configuration.collaboration_mode = collaboration_mode;
         }
         if let Some(summary) = updates.reasoning_summary {
