@@ -3658,6 +3658,120 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     assert_eq!(success, None);
 }
 
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_reports_identity_at_completion_time() {
+    let (_session, _turn, target_id, root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 10_000;
+        })
+        .await;
+    let root_session = root.thread.codex.session.clone();
+    let root_turn = root_session.new_default_turn().await;
+    let wait_task = tokio::spawn({
+        let root_session = root_session.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    root_session,
+                    root_turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": 10_000
+                    })),
+                ))
+                .await
+        }
+    });
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = root.thread.next_event().await.expect("root event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(event)
+                    if matches!(
+                        event.item,
+                        codex_protocol::items::TurnItem::CollabAgentToolCall(item)
+                            if item.tool == codex_protocol::items::CollabAgentTool::Wait
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait_agent should enter its blocking phase");
+
+    let settings_submission_id = target
+        .thread
+        .submit(Op::ThreadSettings {
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                service_tier: Some(Some("priority-after-wait-start".to_string())),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("thread settings should submit");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = target.thread.next_event().await.expect("target event");
+            if event.id != settings_submission_id {
+                continue;
+            }
+            match event.msg {
+                EventMsg::ThreadSettingsApplied(_) => break,
+                EventMsg::Error(error) => panic!("thread settings failed: {}", error.message),
+                other => panic!("unexpected thread-settings event: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("thread settings should be applied");
+
+    let target_turn = target.thread.codex.session.new_default_turn().await;
+    target
+        .thread
+        .codex
+        .session
+        .send_event(
+            target_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: target_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("done".to_string()),
+                final_model: None,
+                model_snapshot: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        )
+        .await;
+
+    let output = wait_task
+        .await
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert_eq!(
+        result.agent_identities[0]
+            .identity
+            .effective_service_tier
+            .as_deref(),
+        Some("priority-after-wait-start")
+    );
+    assert_eq!(success, None);
+}
+
 #[test]
 fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     assert_eq!(

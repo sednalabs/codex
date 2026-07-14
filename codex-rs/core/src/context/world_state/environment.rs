@@ -11,6 +11,241 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+pub(crate) const SUBAGENT_CONTEXT_MAX_ROWS: usize = 16;
+pub(crate) const SUBAGENT_CONTEXT_MAX_RENDERED_BYTES: usize = 4 * 1024;
+const SUBAGENT_CONTEXT_FIELD_SCAN_CHARS: usize = 1_024;
+const SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES: usize = 192;
+const SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES: usize = 96;
+const SUBAGENT_MODEL_MAX_ESCAPED_BYTES: usize = 128;
+const SUBAGENT_PROVIDER_MAX_ESCAPED_BYTES: usize = 96;
+const SUBAGENT_REASONING_MAX_ESCAPED_BYTES: usize = 32;
+const SUBAGENT_SERVICE_TIER_MAX_ESCAPED_BYTES: usize = 64;
+const SUBAGENT_IDENTITY_SOURCE_MAX_ESCAPED_BYTES: usize = 64;
+const SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES: usize =
+    "  <subagents>\n".len() + "  </subagents>\n".len();
+const SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES: usize = 5;
+const SUBAGENT_CONTEXT_OMITTED_LINE_MAX_BYTES: usize = SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES
+    + "<omitted count=\"\" />".len()
+    + std::mem::size_of::<usize>() * 3;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SubagentContextRow {
+    rendered: String,
+}
+
+impl SubagentContextRow {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        reference: &str,
+        nickname: Option<&str>,
+        effective_model: Option<&str>,
+        effective_model_provider_id: Option<&str>,
+        effective_reasoning_effort: Option<&str>,
+        effective_service_tier: Option<&str>,
+        identity_source: &str,
+    ) -> Self {
+        let mut rendered = "<agent name=\"".to_string();
+        rendered.push_str(&bounded_xml_attribute(
+            reference,
+            SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES,
+        ));
+        rendered.push('"');
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "nickname",
+            nickname,
+            SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES,
+        );
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "model",
+            effective_model,
+            SUBAGENT_MODEL_MAX_ESCAPED_BYTES,
+        );
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "provider",
+            effective_model_provider_id,
+            SUBAGENT_PROVIDER_MAX_ESCAPED_BYTES,
+        );
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "effort",
+            effective_reasoning_effort,
+            SUBAGENT_REASONING_MAX_ESCAPED_BYTES,
+        );
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "service_tier",
+            effective_service_tier,
+            SUBAGENT_SERVICE_TIER_MAX_ESCAPED_BYTES,
+        );
+        push_bounded_optional_attribute(
+            &mut rendered,
+            "source",
+            Some(identity_source),
+            SUBAGENT_IDENTITY_SOURCE_MAX_ESCAPED_BYTES,
+        );
+        rendered.push_str(" />");
+        Self { rendered }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SubagentContextBuilder {
+    rows: Vec<SubagentContextRow>,
+    rendered_bytes: usize,
+    omitted_count: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SubagentContext {
+    rendered: String,
+}
+
+impl SubagentContext {
+    #[cfg(test)]
+    pub(crate) fn as_str(&self) -> &str {
+        self.rendered.as_str()
+    }
+}
+
+impl Default for SubagentContextBuilder {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            rendered_bytes: SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES,
+            omitted_count: 0,
+        }
+    }
+}
+
+impl SubagentContextBuilder {
+    pub(crate) fn has_row_capacity(&self) -> bool {
+        self.rows.len() < SUBAGENT_CONTEXT_MAX_ROWS
+    }
+
+    pub(crate) fn push(&mut self, row: SubagentContextRow) -> bool {
+        if !self.has_row_capacity() {
+            return false;
+        }
+        let row_bytes = SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES + row.rendered.len();
+        if self
+            .rendered_bytes
+            .saturating_add(row_bytes)
+            .saturating_add(SUBAGENT_CONTEXT_OMITTED_LINE_MAX_BYTES)
+            > SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+        {
+            return false;
+        }
+        self.rendered_bytes += row_bytes;
+        self.rows.push(row);
+        true
+    }
+
+    pub(crate) fn note_omitted(&mut self, count: usize) {
+        self.omitted_count = self.omitted_count.saturating_add(count);
+    }
+
+    pub(crate) fn finish(self) -> SubagentContext {
+        if self.rows.is_empty() && self.omitted_count == 0 {
+            return SubagentContext::default();
+        }
+        let mut rendered = self
+            .rows
+            .into_iter()
+            .map(|row| row.rendered)
+            .collect::<Vec<_>>();
+        if self.omitted_count > 0 {
+            rendered.push(format!("<omitted count=\"{}\" />", self.omitted_count));
+        }
+        let rendered = rendered.join("\n");
+        debug_assert!(
+            subagent_context_rendered_bytes(rendered.as_str())
+                <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+        );
+        SubagentContext { rendered }
+    }
+}
+
+fn subagent_context_rendered_bytes(rendered: &str) -> usize {
+    SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES
+        + rendered
+            .lines()
+            .map(|line| SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES + line.len())
+            .sum::<usize>()
+}
+
+fn push_bounded_optional_attribute(
+    rendered: &mut String,
+    name: &str,
+    value: Option<&str>,
+    max_escaped_bytes: usize,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    rendered.push(' ');
+    rendered.push_str(name);
+    rendered.push_str("=\"");
+    rendered.push_str(&bounded_xml_attribute(value, max_escaped_bytes));
+    rendered.push('"');
+}
+
+fn bounded_xml_attribute(value: &str, max_escaped_bytes: usize) -> String {
+    const ELLIPSIS: &str = "...";
+    let content_limit = max_escaped_bytes.saturating_sub(ELLIPSIS.len());
+    let mut rendered = String::new();
+    let mut pending_space = false;
+    let mut truncated = false;
+    let mut chars = value.chars();
+
+    for _ in 0..SUBAGENT_CONTEXT_FIELD_SCAN_CHARS {
+        let Some(ch) = chars.next() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            pending_space = !rendered.is_empty();
+            continue;
+        }
+        let escaped = escaped_xml_char(ch);
+        let separator_bytes = if pending_space { 1 } else { 0 };
+        if rendered
+            .len()
+            .saturating_add(separator_bytes)
+            .saturating_add(escaped.len())
+            > content_limit
+        {
+            truncated = true;
+            break;
+        }
+        if pending_space {
+            rendered.push(' ');
+        }
+        rendered.push_str(escaped.as_ref());
+        pending_space = false;
+    }
+    if !truncated && chars.next().is_some() {
+        truncated = true;
+    }
+    if truncated {
+        rendered.push_str(ELLIPSIS);
+    }
+    rendered
+}
+
+fn escaped_xml_char(ch: char) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
+    match ch {
+        '&' => Cow::Borrowed("&amp;"),
+        '<' => Cow::Borrowed("&lt;"),
+        '>' => Cow::Borrowed("&gt;"),
+        '"' => Cow::Borrowed("&quot;"),
+        '\'' => Cow::Borrowed("&apos;"),
+        _ => Cow::Owned(ch.to_string()),
+    }
+}
+
 /// Environment values visible to the model.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnvironmentsState {
@@ -40,9 +275,9 @@ impl EnvironmentsState {
         }
     }
 
-    pub(crate) fn with_subagents(mut self, subagents: String) -> Self {
-        if !subagents.is_empty() {
-            self.subagents = Some(subagents);
+    pub(crate) fn with_subagents(mut self, subagents: SubagentContext) -> Self {
+        if !subagents.rendered.is_empty() {
+            self.subagents = Some(subagents.rendered);
         }
         self
     }
@@ -61,7 +296,7 @@ impl EnvironmentsState {
             timezone: self.timezone.clone(),
             network: self.network.clone(),
             filesystem: self.filesystem.clone(),
-            subagents: self.subagents.clone(),
+            subagents: self.subagents.clone().map(SubagentsUpdate::Current),
         }
     }
 }
@@ -108,6 +343,14 @@ impl WorldStateSection for EnvironmentsState {
             || current.timezone != previous.timezone
             || current.network != previous.network
             || current.filesystem != previous.filesystem;
+        let subagents = if current.subagents != previous.subagents {
+            Some(match self.subagents.clone() {
+                Some(subagents) => SubagentsUpdate::Current(subagents),
+                None => SubagentsUpdate::Unavailable,
+            })
+        } else {
+            None
+        };
         let mut updates = self
             .environments
             .iter()
@@ -131,7 +374,7 @@ impl WorldStateSection for EnvironmentsState {
             && updates
                 .values()
                 .all(|update| matches!(update, EnvironmentUpdate::Current(_)));
-        (!updates.is_empty() || turn_context_values_changed).then(|| {
+        (!updates.is_empty() || turn_context_values_changed || subagents.is_some()).then(|| {
             Box::new(RenderedEnvironments {
                 updates,
                 legacy_single,
@@ -139,7 +382,7 @@ impl WorldStateSection for EnvironmentsState {
                 timezone: self.timezone.clone(),
                 network: self.network.clone(),
                 filesystem: self.filesystem.clone(),
-                subagents: self.subagents.clone(),
+                subagents,
             }) as Box<dyn ContextualUserFragment>
         })
     }
@@ -170,11 +413,16 @@ struct RenderedEnvironments {
     timezone: Option<String>,
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
-    subagents: Option<String>,
+    subagents: Option<SubagentsUpdate>,
 }
 
 enum EnvironmentUpdate {
     Current(EnvironmentState),
+    Unavailable,
+}
+
+enum SubagentsUpdate {
+    Current(String),
     Unavailable,
 }
 
@@ -231,13 +479,20 @@ impl ContextualUserFragment for RenderedEnvironments {
             rendered.push('\n');
         }
         if let Some(subagents) = &self.subagents {
-            rendered.push_str("  <subagents>\n");
-            for line in subagents.lines() {
-                rendered.push_str("    ");
-                rendered.push_str(line);
-                rendered.push('\n');
+            match subagents {
+                SubagentsUpdate::Current(subagents) => {
+                    rendered.push_str("  <subagents>\n");
+                    for line in subagents.lines() {
+                        rendered.push_str("    ");
+                        rendered.push_str(line);
+                        rendered.push('\n');
+                    }
+                    rendered.push_str("  </subagents>\n");
+                }
+                SubagentsUpdate::Unavailable => {
+                    rendered.push_str("  <subagents status=\"unavailable\" />\n");
+                }
             }
-            rendered.push_str("  </subagents>\n");
         }
         rendered
     }

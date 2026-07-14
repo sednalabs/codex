@@ -9,11 +9,13 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::world_state::SubagentContext;
+use crate::context::world_state::SubagentContextBuilder;
+use crate::context::world_state::SubagentContextRow;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
-use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
@@ -533,24 +535,47 @@ impl AgentControl {
     pub(crate) async fn format_environment_context_subagents(
         &self,
         parent_thread_id: ThreadId,
-    ) -> String {
+    ) -> SubagentContext {
         let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
-            return String::new();
+            return SubagentContext::default();
         };
 
-        let mut lines = Vec::with_capacity(agents.len());
-        for (thread_id, metadata) in agents {
+        let mut builder = SubagentContextBuilder::default();
+        let mut agents = agents.into_iter();
+        while let Some((thread_id, metadata)) = agents.next() {
+            if !builder.has_row_capacity() {
+                builder.note_omitted(1 + agents.count());
+                break;
+            }
             let reference = metadata
                 .agent_path
                 .as_ref()
                 .map(|agent_path| agent_path.name().to_string())
                 .unwrap_or_else(|| thread_id.to_string());
             let Some(agent) = self.get_live_agent_inventory_info(thread_id).await else {
+                builder.note_omitted(1);
                 continue;
             };
-            lines.push(format_subagent_context_line(reference.as_str(), &agent));
+            let reasoning_effort = agent
+                .identity
+                .effective_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string);
+            let row = SubagentContextRow::new(
+                reference.as_str(),
+                agent.nickname.as_deref(),
+                agent.identity.effective_model.as_deref(),
+                agent.identity.effective_model_provider_id.as_deref(),
+                reasoning_effort.as_deref(),
+                agent.identity.effective_service_tier.as_deref(),
+                agent.identity.identity_source.as_str(),
+            );
+            if !builder.push(row) {
+                builder.note_omitted(1 + agents.count());
+                break;
+            }
         }
-        lines.join("\n")
+        builder.finish()
     }
 
     pub(crate) async fn list_agents(

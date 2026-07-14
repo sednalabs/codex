@@ -144,7 +144,6 @@ impl Handler {
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut agent_identities = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
@@ -156,17 +155,6 @@ impl Handler {
                 agent_nickname: agent_metadata.agent_nickname,
                 agent_role: agent_metadata.agent_role,
             });
-            if let Some(identity) = session
-                .services
-                .agent_control
-                .get_agent_identity(*receiver_thread_id)
-                .await
-            {
-                agent_identities.push(WaitAgentIdentity {
-                    agent_id: *receiver_thread_id,
-                    identity,
-                });
-            }
         }
 
         let timeout_ms = resolve_wait_timeout_ms(
@@ -280,6 +268,20 @@ impl Handler {
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
         let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
+        let mut agent_identities = Vec::with_capacity(receiver_thread_ids.len());
+        for receiver_thread_id in &receiver_thread_ids {
+            if let Some(identity) = session
+                .services
+                .agent_control
+                .get_agent_identity(*receiver_thread_id)
+                .await
+            {
+                agent_identities.push(WaitAgentIdentity {
+                    agent_id: *receiver_thread_id,
+                    identity,
+                });
+            }
+        }
         let mut result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
             pending_thread_ids,
