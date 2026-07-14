@@ -10,6 +10,8 @@ mod bundle;
 mod code_cell;
 mod compaction;
 mod inference;
+#[cfg(test)]
+mod inference_tests;
 mod mcp;
 mod model;
 mod payload;
