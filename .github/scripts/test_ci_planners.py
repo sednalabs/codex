@@ -736,6 +736,48 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_skill_loader_fixture_route_stays_exact(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/core-skills/src/loader_tests.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            ["codex.skill-loader-fixture-hermeticity-targeted"],
+        )
+
+    def test_skill_loader_fixture_lane_pins_both_hermeticity_tests(self) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.skill-loader-fixture-hermeticity-targeted"
+        )
+        self.assertEqual(lane["setup_class"], "rust_minimal")
+        self.assertEqual(
+            lane["script_args"],
+            ["skill-loader-fixture-hermeticity-targeted"],
+        )
+        self.assertTrue(lane["needs_nextest"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "skill-loader-fixture-hermeticity-targeted"
+            ]
+        )
+        self.assertIn("RUST_MIN_STACK=", recipe)
+        self.assertIn("cargo nextest run -p codex-core-skills --lib", recipe)
+        self.assertIn("--no-tests=fail", recipe)
+        self.assertIn(
+            "loader::tests::non_git_repo_skills_search_does_not_walk_parents",
+            recipe,
+        )
+        self.assertIn(
+            "loader::tests::skill_roots_include_admin_with_lowest_priority",
+            recipe,
+        )
+        self.assertEqual(recipe.count("loader::tests::"), 2)
+        self.assertIn("--exact", recipe)
+
     def test_downstream_docs_route_includes_registry_and_tracking_docs(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
@@ -4077,7 +4119,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "21")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "22")
         self.assertEqual(payload["rust_integration_max_parallel"], "23")
         self.assertEqual(payload["release_max_parallel"], "1")
 
@@ -4109,7 +4151,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "23")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "24")
         self.assertEqual(payload["rust_integration_max_parallel"], "24")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
