@@ -35,6 +35,7 @@ pub(crate) struct ThreadMetadataSync {
     preview_seen: bool,
     first_user_message_seen: bool,
     title_seen: bool,
+    configured_inference_identity_seen: bool,
     pending_update: Option<ThreadMetadataPatch>,
     pending_update_generation: u64,
     last_touch_persisted_at: Option<Instant>,
@@ -81,6 +82,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            configured_inference_identity_seen: false,
             pending_update: Some(update),
             pending_update_generation: 1,
             last_touch_persisted_at: None,
@@ -100,6 +102,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            configured_inference_identity_seen: false,
             pending_update: None,
             pending_update_generation: 0,
             last_touch_persisted_at: None,
@@ -241,6 +244,7 @@ impl ThreadMetadataSync {
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
                     if let Some(configured) = turn_ctx.configured_inference_identity.as_ref() {
+                        self.configured_inference_identity_seen = true;
                         update.model = Some(configured.configured_model.clone());
                         update.model_provider =
                             Some(configured.configured_model_provider_id.clone());
@@ -249,7 +253,7 @@ impl ThreadMetadataSync {
                             Some(configured.configured_reasoning_effort.clone());
                         update.configured_service_tier =
                             Some(configured.configured_service_tier.clone());
-                    } else {
+                    } else if !self.configured_inference_identity_seen {
                         update.model = Some(turn_ctx.model.clone());
                         if let Some(reasoning_effort) = turn_ctx.reasoning_effort_update.clone() {
                             update.reasoning_effort = None;
@@ -278,6 +282,7 @@ impl ThreadMetadataSync {
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    self.configured_inference_identity_seen = true;
                     let settings = &event.thread_settings;
                     update.model = Some(settings.model.clone());
                     update.model_provider = Some(settings.model_provider_id.clone());
@@ -583,11 +588,12 @@ mod tests {
         );
         sync.mark_pending_update_applied(&update);
 
+        let reasoning_effort = None;
         let cleared = sync
             .observe_appended_items(&[thread_settings_item(
                 "next-model",
                 "next-provider",
-                /* reasoning_effort: */ None,
+                reasoning_effort,
             )])
             .expect("settings clear update");
         assert_eq!(
