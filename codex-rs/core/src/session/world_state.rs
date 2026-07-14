@@ -5,6 +5,7 @@ use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
 use crate::context::world_state::PluginsInstructionsState;
+use crate::context::world_state::SubagentContext;
 use crate::context::world_state::WorldState;
 use codex_extension_api::WorldStateContributionInput;
 
@@ -25,7 +26,7 @@ impl Session {
                 .format_environment_context_subagents(self.thread_id)
                 .await
         } else {
-            String::new()
+            SubagentContext::default()
         };
 
         let mut world_state = WorldState::default();

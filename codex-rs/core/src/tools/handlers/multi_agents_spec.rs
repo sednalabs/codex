@@ -890,6 +890,16 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
     let include_pending_ids = wait_capability.is_some_and(|capability| capability.pending_ids);
     let include_completion_reason =
         wait_capability.is_some_and(|capability| capability.completion_reason);
+    let mut identity_properties = serde_json::Map::from_iter([(
+        "agent_id".to_string(),
+        json!({
+            "type": "string",
+            "description": "Thread identifier for the agent whose identity was resolved."
+        }),
+    )]);
+    identity_properties.extend(effective_agent_identity_output_properties());
+    let mut identity_required = vec!["agent_id".to_string()];
+    identity_required.extend(effective_agent_identity_required_fields());
     let mut properties = serde_json::Map::from_iter([
         (
             "message".to_string(),
@@ -915,11 +925,25 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
                 "description": "Whether the wait call returned because it hit the timeout."
             }),
         ),
+        (
+            "agent_identities".to_string(),
+            json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": identity_properties,
+                    "required": identity_required,
+                    "additionalProperties": false
+                },
+                "description": "Authoritative effective identities resolved for requested agents. Missing agents are omitted."
+            }),
+        ),
     ]);
     let mut required = vec![
         "message".to_string(),
         "requested_ids".to_string(),
         "timed_out".to_string(),
+        "agent_identities".to_string(),
     ];
     if include_pending_ids {
         properties.insert(
