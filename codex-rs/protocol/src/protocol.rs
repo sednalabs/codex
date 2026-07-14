@@ -3298,6 +3298,31 @@ pub struct TurnContextNetworkItem {
     pub denied_domains: Vec<String>,
 }
 
+/// Durable thread-level inference settings before per-turn request normalization.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct ConfiguredInferenceIdentity {
+    pub configured_model: String,
+    pub configured_model_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_reasoning_effort: Option<ReasoningEffortConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_service_tier: Option<String>,
+}
+
+/// Durable identity of the latest model request after per-turn normalization.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct TurnRequestIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub request_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_reasoning_effort: Option<ReasoningEffortConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_service_tier: Option<String>,
+}
+
 /// Persist once per real user turn after computing that turn's model-visible
 /// context updates, and again after mid-turn compaction when replacement
 /// history re-establishes full context, so resume/fork replay can recover the
@@ -3326,18 +3351,11 @@ pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_system_sandbox_policy: Option<FileSystemSandboxPolicy>,
     pub model: String,
-    /// Presence-aware effective service tier update for this turn.
-    ///
-    /// Missing values from legacy rollouts leave recovered metadata unchanged, while an explicit
-    /// `null` clears the tier.
-    #[serde(
-        default,
-        deserialize_with = "optional_option::deserialize",
-        serialize_with = "optional_option::serialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[ts(type = "string | null", optional)]
-    pub service_tier: Option<Option<String>>,
+    /// Configured identity and latest normalized request identity are separate receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_inference_identity: Option<ConfiguredInferenceIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_inference_identity: Option<TurnRequestIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6040,7 +6058,8 @@ mod tests {
         assert_eq!(item.network, None);
         assert_eq!(item.file_system_sandbox_policy, None);
         assert_eq!(item.comp_hash, None);
-        assert_eq!(item.service_tier, None);
+        assert_eq!(item.configured_inference_identity, None);
+        assert_eq!(item.request_inference_identity, None);
         assert_eq!(item.reasoning_effort_update, None);
         Ok(())
     }
@@ -6163,7 +6182,19 @@ mod tests {
                 },
             ])),
             model: "gpt-5".to_string(),
-            service_tier: Some(Some("priority".to_string())),
+            configured_inference_identity: Some(ConfiguredInferenceIdentity {
+                configured_model: "configured-model".to_string(),
+                configured_model_provider_id: "configured-provider".to_string(),
+                configured_reasoning_effort: Some(ReasoningEffortConfig::High),
+                configured_service_tier: Some("priority".to_string()),
+            }),
+            request_inference_identity: Some(TurnRequestIdentity {
+                turn_id: Some("turn-1".to_string()),
+                request_model: "gpt-5".to_string(),
+                model_provider_id: Some("request-provider".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                request_service_tier: Some("flex".to_string()),
+            }),
             comp_hash: None,
             personality: None,
             collaboration_mode: None,
@@ -6176,7 +6207,14 @@ mod tests {
         };
 
         let value = serde_json::to_value(item)?;
-        assert_eq!(value["service_tier"], "priority");
+        assert_eq!(
+            value["configured_inference_identity"]["configured_service_tier"],
+            "priority"
+        );
+        assert_eq!(
+            value["request_inference_identity"]["request_service_tier"],
+            "flex"
+        );
         assert_eq!(value["reasoning_effort_update"], "high");
         assert_eq!(
             value["network"],
@@ -6206,7 +6244,10 @@ mod tests {
     fn turn_context_item_typescript_preserves_presence_aware_updates() {
         let declaration = TurnContextItem::decl();
 
-        assert!(declaration.contains("service_tier?: string | null"));
+        assert!(
+            declaration.contains("configured_inference_identity?: ConfiguredInferenceIdentity")
+        );
+        assert!(declaration.contains("request_inference_identity?: TurnRequestIdentity"));
         assert!(declaration.contains("reasoning_effort_update?: ReasoningEffortConfig | null"));
     }
 

@@ -274,6 +274,9 @@ where
 #[derive(Debug, Deserialize)]
 struct ListAgentsResult {
     agents: Vec<ListedAgentResult>,
+    truncated: bool,
+    scan_limit_reached: bool,
+    candidate_agents_omitted: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,11 +286,24 @@ struct ListedAgentResult {
     last_task_message: Option<String>,
     has_active_subagents: bool,
     active_subagent_count: usize,
-    effective_model: Option<String>,
-    effective_model_provider_id: Option<String>,
-    effective_reasoning_effort: Option<ReasoningEffort>,
-    effective_service_tier: Option<String>,
-    identity_source: String,
+    identity: ModelVisibleIdentityResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelVisibleIdentityResult {
+    configured_identity: Option<ConfiguredIdentityResult>,
+    latest_turn_request_identity: Option<serde_json::Value>,
+    identity_truncated: bool,
+    identity_fields_omitted: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfiguredIdentityResult {
+    model: Option<String>,
+    model_provider_id: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
+    source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2007,20 +2023,34 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
     assert_eq!(worker.last_task_message, None);
+    let configured_identity = worker
+        .identity
+        .configured_identity
+        .as_ref()
+        .expect("worker configured identity");
     assert_eq!(
-        worker.effective_model.as_deref(),
+        configured_identity.model.as_deref(),
         Some(child_snapshot.model.as_str())
     );
     assert_eq!(
-        worker.effective_model_provider_id.as_deref(),
+        configured_identity.model_provider_id.as_deref(),
         Some(child_snapshot.model_provider_id.as_str())
     );
     assert_eq!(
-        worker.effective_reasoning_effort,
+        configured_identity.reasoning_effort,
         child_snapshot.reasoning_effort
     );
-    assert_eq!(worker.effective_service_tier, child_snapshot.service_tier);
-    assert_eq!(worker.identity_source, "thread_config_snapshot");
+    assert_eq!(
+        configured_identity.service_tier,
+        child_snapshot.service_tier
+    );
+    assert_eq!(configured_identity.source, "live_thread_config");
+    assert_eq!(worker.identity.latest_turn_request_identity, None);
+    assert!(!worker.identity.identity_truncated);
+    assert_eq!(worker.identity.identity_fields_omitted, 0);
+    assert!(!result.truncated);
+    assert!(!result.scan_limit_reached);
+    assert_eq!(result.candidate_agents_omitted, 0);
     assert_eq!(success, Some(true));
 }
 

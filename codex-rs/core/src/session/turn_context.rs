@@ -1,4 +1,6 @@
 use super::*;
+use crate::codex_thread::ConfiguredInferenceIdentity;
+use crate::codex_thread::TurnInferenceIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_skills::HostSkillsSnapshot;
@@ -10,10 +12,12 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::protocol::ConfiguredInferenceIdentity as ProtocolConfiguredInferenceIdentity;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::protocol::TurnRequestIdentity;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
@@ -117,6 +121,7 @@ pub struct TurnContext {
     pub(crate) model_info: ModelInfo,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
+    pub(crate) configured_inference_identity: ConfiguredInferenceIdentity,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) session_source: SessionSource,
@@ -154,12 +159,31 @@ pub struct TurnContext {
     pub(crate) model_verification_emitted: AtomicBool,
 }
 
+#[derive(Clone, Copy)]
 enum TurnMultiAgentRuntime {
     ResolveAndStore,
     Preview,
 }
 
 impl TurnContext {
+    pub(crate) fn inference_identity(&self) -> TurnInferenceIdentity {
+        TurnInferenceIdentity {
+            turn_id: self.sub_id.clone(),
+            request_model: self.model_info.slug.clone(),
+            model_provider_id: self.config.model_provider_id.clone(),
+            requested_reasoning_effort: self.reasoning_effort.clone(),
+            request_service_tier: self
+                .config
+                .features
+                .enabled(Feature::FastMode)
+                .then(|| {
+                    self.model_info
+                        .service_tier_for_request(self.config.service_tier.clone())
+                })
+                .flatten(),
+        }
+    }
+
     pub(crate) fn item_ids_enabled(&self) -> bool {
         self.config.features.enabled(Feature::ItemIds)
             || matches!(self.history_mode, ThreadHistoryMode::Paginated)
@@ -289,6 +313,7 @@ impl TurnContext {
                 .clone()
                 .with_model(model.as_str(), model_info.slug.as_str()),
             provider: self.provider.clone(),
+            configured_inference_identity: self.configured_inference_identity.clone(),
             reasoning_effort,
             reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
@@ -386,6 +411,7 @@ impl TurnContext {
 
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         let workspace_roots = self.config.effective_workspace_roots();
+        let request_identity = self.inference_identity();
         #[allow(deprecated)]
         let cwd = self.cwd.clone();
         TurnContextItem {
@@ -401,7 +427,29 @@ impl TurnContext {
             network: self.turn_context_network_item(),
             file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
             model: self.model_info.slug.clone(),
-            service_tier: Some(self.config.service_tier.clone()),
+            configured_inference_identity: Some(ProtocolConfiguredInferenceIdentity {
+                configured_model: self.configured_inference_identity.configured_model.clone(),
+                configured_model_provider_id: self
+                    .configured_inference_identity
+                    .configured_model_provider_id
+                    .clone(),
+                configured_reasoning_effort: self
+                    .configured_inference_identity
+                    .configured_reasoning_effort
+                    .clone(),
+                configured_service_tier: self
+                    .configured_inference_identity
+                    .configured_service_tier
+                    .clone(),
+            }),
+            request_inference_identity: Some(TurnRequestIdentity {
+                turn_id: Some(request_identity.turn_id),
+                request_model: request_identity.request_model,
+                model_provider_id: (!request_identity.model_provider_id.is_empty())
+                    .then_some(request_identity.model_provider_id),
+                requested_reasoning_effort: request_identity.requested_reasoning_effort,
+                request_service_tier: request_identity.request_service_tier,
+            }),
             comp_hash: self.model_info.comp_hash.clone(),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
@@ -574,6 +622,7 @@ impl Session {
             model_info,
             session_telemetry: session_telemetry_for_context,
             provider: provider_for_context,
+            configured_inference_identity: session_configuration.configured_inference_identity(),
             reasoning_effort,
             reasoning_summary,
             session_source,
@@ -811,6 +860,12 @@ impl Session {
 
         if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
+        }
+        if matches!(multi_agent_runtime, TurnMultiAgentRuntime::ResolveAndStore) {
+            self.state
+                .lock()
+                .await
+                .set_latest_turn_inference_identity(turn_context.inference_identity());
         }
         let turn_context = Arc::new(turn_context);
         if turn_context
