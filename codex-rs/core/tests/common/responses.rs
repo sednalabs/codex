@@ -20,6 +20,7 @@ use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::extensions::ExtensionsConfig;
 use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+use tokio_tungstenite::tungstenite::handshake::server::ErrorResponse;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
 use tokio_tungstenite::tungstenite::handshake::server::Response;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -1271,6 +1272,17 @@ pub async fn start_websocket_server(connections: Vec<Vec<Vec<Value>>>) -> WebSoc
 pub async fn start_websocket_server_with_headers(
     connections: Vec<WebSocketConnectionConfig>,
 ) -> WebSocketTestServer {
+    start_websocket_server_with_rejections(connections, Vec::new()).await
+}
+
+/// Starts a WebSocket server that rejects initial handshakes before accepting requests.
+///
+/// Rejections do not consume a scripted connection, which lets authentication
+/// recovery retry the same logical request against the eventual accepted socket.
+pub async fn start_websocket_server_with_rejections(
+    connections: Vec<WebSocketConnectionConfig>,
+    handshake_rejections: Vec<Option<u16>>,
+) -> WebSocketTestServer {
     let start = std::time::Instant::now();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1284,6 +1296,7 @@ pub async fn start_websocket_server_with_headers(
     let handshakes = Arc::clone(&handshakes_log);
     let request_log = Arc::clone(&request_log_updated);
     let connections = Arc::new(Mutex::new(VecDeque::from(connections)));
+    let handshake_rejections = Arc::new(Mutex::new(VecDeque::from(handshake_rejections)));
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     let task = tokio::spawn(async move {
@@ -1312,6 +1325,7 @@ pub async fn start_websocket_server_with_headers(
             }
 
             let response_headers = connection.response_headers.clone();
+            let handshake_rejections = Arc::clone(&handshake_rejections);
             let handshake_log = Arc::clone(&handshakes);
             let callback = move |req: &Request, mut response: Response| {
                 let headers = req
@@ -1328,6 +1342,14 @@ pub async fn start_websocket_server_with_headers(
                     uri: req.uri().to_string(),
                     headers,
                 });
+
+                let rejection_status = handshake_rejections.lock().unwrap().pop_front().flatten();
+                if let Some(status) = rejection_status {
+                    return Err(ErrorResponse::builder()
+                        .status(status)
+                        .body(Some("scripted websocket handshake rejection".to_string()))
+                        .expect("valid websocket rejection response"));
+                }
 
                 let headers_mut = response.headers_mut();
                 for (name, value) in &response_headers {

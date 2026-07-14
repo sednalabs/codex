@@ -1,5 +1,6 @@
 use codex_config::ConfigLayerStack;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_core::CodexThread;
 use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
@@ -44,6 +45,9 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InferenceCallEvent;
+use codex_protocol::protocol::InferenceCallStatus;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
@@ -56,6 +60,7 @@ use core_test_support::TestCodexResponsesRequestKind;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ResponsesRequest;
+use core_test_support::responses::WebSocketConnectionConfig;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
@@ -69,6 +74,7 @@ use core_test_support::responses::mount_sse_repeating;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
+use core_test_support::responses::start_websocket_server_with_rejections;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::responses_metadata as test_responses_metadata;
 use core_test_support::skip_if_no_network;
@@ -1281,6 +1287,168 @@ async fn provider_auth_command_refreshes_after_401() {
         .await;
 
     send_provider_auth_request(&server, auth_fixture.auth()).await;
+}
+
+async fn submit_and_collect_auth_recovery_lifecycle(
+    codex: &CodexThread,
+) -> Vec<InferenceCallEvent> {
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit inference turn");
+
+    let mut inference_calls = Vec::new();
+    let mut turn_completed = false;
+    while !turn_completed || inference_calls.len() < 4 {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), codex.next_event())
+            .await
+            .expect("auth-recovery turn timed out")
+            .expect("event stream ended")
+            .msg;
+        match event {
+            EventMsg::InferenceCall(event) => inference_calls.push(event),
+            EventMsg::TurnComplete(_) => turn_completed = true,
+            EventMsg::Error(error) => panic!("auth-recovery turn failed: {}", error.message),
+            _ => {}
+        }
+    }
+    inference_calls
+}
+
+fn assert_auth_recovery_lifecycle(
+    events: &[InferenceCallEvent],
+    transport: InferenceCallTransport,
+) {
+    assert_eq!(events.len(), 4);
+    assert_eq!(
+        events.iter().map(|event| event.status).collect::<Vec<_>>(),
+        vec![
+            InferenceCallStatus::Started,
+            InferenceCallStatus::Failed,
+            InferenceCallStatus::Started,
+            InferenceCallStatus::Completed,
+        ]
+    );
+    assert!(events.iter().all(|event| event.transport == transport));
+    assert_eq!(events[0].inference_call_id, events[1].inference_call_id);
+    assert_eq!(events[2].inference_call_id, events[3].inference_call_id);
+    assert_ne!(events[0].inference_call_id, events[2].inference_call_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_401_auth_recovery_records_distinct_attempts() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"])?;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header_regex("Authorization", "Bearer first-token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header_regex("Authorization", "Bearer second-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    sse(vec![
+                        ev_response_created("response-complete"),
+                        ev_completed("response-complete"),
+                    ]),
+                    "text/event-stream",
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider_auth = auth_fixture.auth();
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model_provider_id = "provider-id".to_string();
+            config.model_provider.name = "provider-display-name".to_string();
+            config.model_provider.auth = Some(provider_auth);
+            config.model_provider.supports_websockets = false;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+
+    let events = submit_and_collect_auth_recovery_lifecycle(&test.codex).await;
+    assert_auth_recovery_lifecycle(&events, InferenceCallTransport::ResponsesHttp);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_401_auth_recovery_records_distinct_attempts() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_websocket_server_with_rejections(
+        vec![
+            WebSocketConnectionConfig {
+                requests: vec![vec![
+                    ev_response_created("response-prewarm"),
+                    ev_completed("response-prewarm"),
+                ]],
+                response_headers: Vec::new(),
+                accept_delay: None,
+                close_after_requests: true,
+            },
+            WebSocketConnectionConfig {
+                requests: vec![vec![
+                    ev_response_created("response-complete"),
+                    ev_completed("response-complete"),
+                ]],
+                response_headers: Vec::new(),
+                accept_delay: None,
+                close_after_requests: true,
+            },
+        ],
+        vec![None, Some(401)],
+    )
+    .await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"])?;
+    let provider_auth = auth_fixture.auth();
+    let mut builder = test_codex().with_config(move |config| {
+        config.model_provider_id = "provider-id".to_string();
+        config.model_provider.name = "provider-display-name".to_string();
+        config.model_provider.auth = Some(provider_auth);
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(0);
+    });
+    let test = builder.build_with_websocket_server(&server).await?;
+
+    let events = submit_and_collect_auth_recovery_lifecycle(&test.codex).await;
+    assert_auth_recovery_lifecycle(&events, InferenceCallTransport::ResponsesWebsocket);
+    let handshakes = server.handshakes();
+    assert_eq!(handshakes.len(), 3);
+    assert_eq!(
+        handshakes[0].header("authorization").as_deref(),
+        Some("Bearer first-token")
+    );
+    assert_eq!(
+        handshakes[1].header("authorization").as_deref(),
+        Some("Bearer first-token")
+    );
+    assert_eq!(
+        handshakes[2].header("authorization").as_deref(),
+        Some("Bearer second-token")
+    );
+    server.shutdown().await;
+    Ok(())
 }
 
 /// Issues one streamed Responses request through a provider configured with command-backed auth.
