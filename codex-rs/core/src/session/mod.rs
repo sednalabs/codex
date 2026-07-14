@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent::control::EffectiveAgentIdentity;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -31,6 +32,7 @@ use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
+use crate::context::SubagentRuntimeIdentity;
 use crate::context::world_state::WorldState;
 use crate::current_time::TimeProvider;
 use crate::default_skill_metadata_budget;
@@ -3780,6 +3782,33 @@ impl Session {
         let mut state = self.state.lock().await;
         state.set_reference_context_item(Some(turn_context_item));
         world_state
+    }
+
+    /// Ensures a spawned agent receives one runtime-authored inference identity fragment.
+    ///
+    /// Only developer-role fragments produced by this runtime satisfy the deduplication check;
+    /// user task text containing the same markers cannot suppress authoritative context.
+    pub(crate) async fn ensure_subagent_runtime_identity_context(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        let identity = {
+            let state = self.state.lock().await;
+            let snapshot = state.session_configuration.thread_config_snapshot();
+            if !snapshot.session_source.is_non_root_agent()
+                || state
+                    .history
+                    .raw_items()
+                    .iter()
+                    .any(SubagentRuntimeIdentity::matches_response_item)
+            {
+                return;
+            }
+            EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot)
+        };
+        let item = SubagentRuntimeIdentity::new(identity).into();
+        self.record_conversation_items(turn_context, std::slice::from_ref(&item))
+            .await;
     }
 
     pub(crate) async fn update_token_usage_info(
