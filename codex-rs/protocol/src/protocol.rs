@@ -4321,6 +4321,10 @@ pub struct Chunk {
 pub struct TurnAbortedEvent {
     pub turn_id: Option<String>,
     pub reason: TurnAbortReason,
+    /// Exact provider-reported usage observed before the turn was aborted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_usage: Option<TokenUsage>,
     /// Unix timestamp (in seconds) when the turn started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]
@@ -6461,6 +6465,22 @@ mod tests {
                 time_to_first_token_ms: None,
             }
         );
+        assert_eq!(serde_json::to_value(event)?, legacy);
+        Ok(())
+    }
+
+    #[test]
+    fn turn_aborted_without_provider_usage_remains_compatible() -> Result<()> {
+        let legacy = json!({
+            "turn_id": "turn-1",
+            "reason": "interrupted",
+        });
+
+        let event: TurnAbortedEvent = serde_json::from_value(legacy.clone())?;
+
+        assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(event.reason, TurnAbortReason::Interrupted);
+        assert_eq!(event.provider_usage, None);
         assert_eq!(serde_json::to_value(event)?, legacy);
         Ok(())
     }

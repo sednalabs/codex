@@ -1,11 +1,16 @@
 use anyhow::Result;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_completed_with_tokens;
+use core_test_support::responses::ev_completed_without_usage;
 use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -18,6 +23,7 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,6 +63,25 @@ async fn resume_until_initial_messages(
     }
 }
 
+fn remove_provider_usage_from_persisted_turn_complete(path: &PathBuf) -> Result<()> {
+    let contents = fs::read_to_string(path)?;
+    let mut found = false;
+    let lines = contents
+        .lines()
+        .map(|line| -> Result<String> {
+            let mut line: RolloutLine = serde_json::from_str(line)?;
+            if let RolloutItem::EventMsg(EventMsg::TurnComplete(completed)) = &mut line.item {
+                completed.provider_usage = None;
+                found = true;
+            }
+            Ok(serde_json::to_string(&line)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert!(found, "expected a persisted turn completion event");
+    fs::write(path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -75,7 +100,7 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
     let initial_sse = sse(vec![
         ev_response_created("resp-initial"),
         ev_assistant_message("msg-1", "Completed first turn"),
-        ev_completed("resp-initial"),
+        ev_completed_with_tokens("resp-initial", 17),
     ]);
     mount_sse_once(&server, initial_sse).await;
 
@@ -121,6 +146,7 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
     let initial_messages = resumed
         .session_configured
         .initial_messages
+        .as_ref()
         .expect("expected initial messages to be present for resumed session");
     match initial_messages.as_slice() {
         [
@@ -138,10 +164,116 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
                 completed.last_agent_message.as_deref(),
                 Some("Completed first turn")
             );
+            assert_eq!(
+                completed.provider_usage,
+                Some(TokenUsage {
+                    input_tokens: 17,
+                    cached_input_tokens: 0,
+                    output_tokens: 0,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 17,
+                })
+            );
         }
         other => panic!("unexpected initial messages after resume: {other:#?}"),
     }
 
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resumed"),
+            ev_assistant_message("msg-2", "Completed resumed turn"),
+            ev_completed_without_usage("resp-resumed"),
+        ]),
+    )
+    .await;
+    resumed
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Start a fresh resumed turn".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let resumed_complete = wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let EventMsg::TurnComplete(resumed_complete) = resumed_complete else {
+        unreachable!("wait predicate only accepts turn completion events");
+    };
+    assert_eq!(resumed_complete.provider_usage, None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_accepts_persisted_turn_complete_without_provider_usage() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let initial = builder.build(&server).await?;
+    let home = Arc::clone(&initial.home);
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-legacy"),
+            ev_assistant_message("msg-legacy", "Legacy-compatible turn"),
+            ev_completed_with_tokens("resp-legacy", 19),
+        ]),
+    )
+    .await;
+    initial
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Persist a turn receipt".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    initial.codex.flush_rollout().await?;
+    drop(initial);
+
+    remove_provider_usage_from_persisted_turn_complete(&rollout_path)?;
+    let resumed =
+        resume_until_initial_messages(&mut builder, &server, home, rollout_path, |messages| {
+            messages
+                .iter()
+                .any(|event| matches!(event, EventMsg::TurnComplete(_)))
+        })
+        .await?;
+    let completed = resumed
+        .session_configured
+        .initial_messages
+        .as_ref()
+        .and_then(|messages| {
+            messages.iter().find_map(|event| match event {
+                EventMsg::TurnComplete(completed) => Some(completed),
+                _ => None,
+            })
+        })
+        .expect("resumed turn completion");
+    assert_eq!(completed.provider_usage, None);
     Ok(())
 }
 
