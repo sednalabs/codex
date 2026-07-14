@@ -85,6 +85,7 @@ struct EnabledInferenceTraceAttempt {
     context: EnabledInferenceTraceContext,
     observation: Option<InferenceAttemptObservation>,
     inference_call_id: InferenceCallId,
+    raw_started: AtomicBool,
     terminal_recorded: AtomicBool,
 }
 
@@ -188,6 +189,26 @@ impl InferenceTraceContext {
         )
     }
 
+    /// Starts a raw-trace-only attempt without emitting a durable observation.
+    ///
+    /// This keeps transports that have not adopted the observation contract on
+    /// the existing raw replay path while another transport is wired first.
+    pub fn start_raw_attempt(&self) -> InferenceTraceAttempt {
+        let InferenceTraceContextState::Enabled(context) = &self.state else {
+            return InferenceTraceAttempt::disabled();
+        };
+
+        InferenceTraceAttempt {
+            state: InferenceTraceAttemptState::Enabled(EnabledInferenceTraceAttempt {
+                context: context.clone(),
+                observation: None,
+                inference_call_id: next_inference_call_id(),
+                raw_started: AtomicBool::new(false),
+                terminal_recorded: AtomicBool::new(false),
+            }),
+        }
+    }
+
     /// Starts an attempt with the configured/requested observation boundary.
     pub fn start_observed_attempt(
         &self,
@@ -211,6 +232,7 @@ impl InferenceTraceContext {
                     }
                 }),
                 inference_call_id: next_inference_call_id(),
+                raw_started: AtomicBool::new(false),
                 terminal_recorded: AtomicBool::new(false),
             }),
         }
@@ -290,6 +312,7 @@ impl InferenceTraceAttempt {
         else {
             return;
         };
+        attempt.raw_started.store(true, Ordering::Release);
 
         append_with_context_best_effort(
             context,
@@ -343,13 +366,15 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if let Some(response_payload) = write_response_payload_best_effort(
-            &attempt.context,
-            Some(response_id),
-            upstream_request_id,
-            token_usage.as_ref(),
-            output_items,
-        ) {
+        if attempt.raw_started.load(Ordering::Acquire)
+            && let Some(response_payload) = write_response_payload_best_effort(
+                &attempt.context,
+                Some(response_id),
+                upstream_request_id,
+                token_usage.as_ref(),
+                output_items,
+            )
+        {
             append_with_context_best_effort(
                 &attempt.context,
                 RawTraceEventPayload::InferenceCompleted {
@@ -382,7 +407,7 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if attempt.context.writer.is_some() {
+        if attempt.context.writer.is_some() && attempt.raw_started.load(Ordering::Acquire) {
             let partial_response_payload = if output_items.is_empty() {
                 None
             } else {
@@ -429,7 +454,7 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if attempt.context.writer.is_some() {
+        if attempt.context.writer.is_some() && attempt.raw_started.load(Ordering::Acquire) {
             let partial_response_payload = if output_items.is_empty() {
                 None
             } else {
