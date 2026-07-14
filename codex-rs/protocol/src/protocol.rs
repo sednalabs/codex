@@ -1988,7 +1988,7 @@ pub struct SafetyBufferingEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
@@ -6443,16 +6443,25 @@ mod tests {
             "compaction_events_in_turn": 0,
         });
 
-        let event: TurnCompleteEvent = serde_json::from_value(legacy)?;
+        let event: TurnCompleteEvent = serde_json::from_value(legacy.clone())?;
 
-        assert_eq!(event.provider_usage, None);
         assert_eq!(
-            serde_json::to_value(event)?
-                .as_object()
-                .expect("turn complete should serialize as an object")
-                .contains_key("provider_usage"),
-            false
+            event,
+            TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: Some("done".to_string()),
+                error: None,
+                started_at: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }
         );
+        assert_eq!(serde_json::to_value(event)?, legacy);
         Ok(())
     }
 

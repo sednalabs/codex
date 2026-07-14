@@ -1531,7 +1531,9 @@ decisions.
 - Normal sampling, local compaction, and remote-v2 compaction contribute to the
   same turn-scoped aggregate. The terminal `final_model` and `model_snapshot`
   continue to describe only the terminal successful sampling response rather
-  than every response included in the usage aggregate.
+  than every response included in the usage aggregate. Each ordinary or
+  compaction turn starts with an empty aggregate; usage from a successful
+  response remains attributable to that turn even if a later follow-up fails.
 - Primary files:
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/session/turn_context.rs`
