@@ -1122,6 +1122,69 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_expected_model_mismatch_rejects_before_creation_and_prompt_delivery()
+{
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not be delivered",
+                "task_name": "model_mismatch",
+                "agent_type": role_name,
+                "model": "gpt-5.6-terra",
+                "expected_model": "gpt-5.6-terra",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("the exact model assertion should reject the role override");
+
+    let FunctionCallError::RespondToModel(receipt) = err else {
+        panic!("a model mismatch should surface as a model-facing error");
+    };
+    let receipt: serde_json::Value =
+        serde_json::from_str(&receipt).expect("model mismatch receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "error": "spawn_agent_model_mismatch",
+            "requested_model": "gpt-5.6-terra",
+            "expected_model": "gpt-5.6-terra",
+            "effective_model": "gpt-5-role-override"
+        })
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert_eq!(manager.list_live_thread_spawn_edges().await, Vec::new());
+    assert!(!manager.captured_ops().iter().any(|(_, op)| {
+        matches!(
+            op,
+            Op::InterAgentCommunication { communication }
+                if communication.encrypted_content.as_deref() == Some("must not be delivered")
+        )
+    }));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
     #[derive(Debug, Deserialize, PartialEq)]
     struct SpawnAgentResult {
@@ -1166,6 +1229,8 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
                 "message": "monitor this wait",
                 "task_name": "terminal_babysitter_v2",
                 "agent_type": "terminal-babysitter",
+                "model": "gpt-5.6-terra",
+                "expected_model": "gpt-5.4-mini",
                 "fork_turns": "none"
             })),
         ))
@@ -1182,10 +1247,10 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
             agent_id: agent_id.clone(),
             task_name: "/root/terminal_babysitter_v2".to_string(),
             nickname: result.nickname.clone(),
-            requested_model: None,
+            requested_model: Some("gpt-5.6-terra".to_string()),
             requested_reasoning_effort: None,
             effective_model: Some("gpt-5.4-mini".to_string()),
-            requested_model_honored: None,
+            requested_model_honored: Some(false),
             effective_reasoning_effort: Some(ReasoningEffort::Low),
         }
     );
