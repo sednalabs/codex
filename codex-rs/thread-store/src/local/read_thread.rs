@@ -65,6 +65,9 @@ pub(super) async fn read_thread(
             // Indexed presence semantics are authoritative here: `None` is a
             // persisted clear and must not revive an older rollout effort.
             rollout_thread.reasoning_effort = thread.reasoning_effort.clone();
+            rollout_thread.configured_service_tier = thread.configured_service_tier.clone();
+            rollout_thread.latest_turn_request_identity =
+                thread.latest_turn_request_identity.clone();
             rollout_thread.agent_path = thread.agent_path.clone().or(rollout_thread.agent_path);
             rollout_thread.git_info = thread.git_info;
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
@@ -375,7 +378,8 @@ async fn stored_thread_from_sqlite_metadata(
         model_provider: metadata.model_provider,
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
-        service_tier: metadata.service_tier,
+        configured_service_tier: metadata.configured_service_tier,
+        latest_turn_request_identity: metadata.latest_turn_request_identity,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
         recency_at: metadata.recency_at,
@@ -450,7 +454,8 @@ fn stored_thread_from_meta_line(
             .unwrap_or_else(|| store.config.default_model_provider_id.clone()),
         model: None,
         reasoning_effort: None,
-        service_tier: None,
+        configured_service_tier: None,
+        latest_turn_request_identity: None,
         created_at,
         updated_at,
         recency_at: updated_at,
