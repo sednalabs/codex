@@ -12,6 +12,8 @@ const XML_FRAGMENT_FIXED_OVERHEAD_BYTES: usize = 512;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelVisibleIdentityEncoding {
     Json,
+    // Kept for provider-facing XML projections; the current runtime surface emits JSON.
+    #[allow(dead_code)]
     Xml,
 }
 
@@ -161,15 +163,14 @@ impl ModelVisibleAgentIdentity {
     }
 
     fn omit_lowest_priority_field(&mut self) -> bool {
-        if let Some(turn) = self.latest_turn_request_identity.as_mut() {
-            if turn.service_tier.take().is_some()
+        if let Some(turn) = self.latest_turn_request_identity.as_mut()
+            && (turn.service_tier.take().is_some()
                 || turn.reasoning_effort.take().is_some()
                 || turn.model_provider_id.take().is_some()
                 || turn.model.take().is_some()
-                || turn.turn_id.take().is_some()
-            {
-                return true;
-            }
+                || turn.turn_id.take().is_some())
+        {
+            return true;
         }
         if let Some(configured) = self.configured_identity.as_mut()
             && (configured.service_tier.take().is_some()
