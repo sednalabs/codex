@@ -8663,6 +8663,126 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
 }
 
 #[tokio::test]
+async fn build_initial_context_adds_one_runtime_identity_only_for_thread_spawn_children() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path should parse")),
+        agent_nickname: Some("worker".to_string()),
+        agent_role: None,
+    });
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = thread_spawn_source.clone();
+    turn_context.session_source = thread_spawn_source;
+    let turn_context = Arc::new(turn_context);
+
+    let initial_context = build_initial_context(&session, &turn_context).await;
+    let runtime_identity_count = developer_message_texts(&initial_context)
+        .iter()
+        .flatten()
+        .filter(|text| SubagentRuntimeIdentity::matches_text(text))
+        .count();
+    assert_eq!(runtime_identity_count, 1);
+
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = SessionSource::SubAgent(SubAgentSource::Review);
+    let review_context = build_initial_context(&session, &turn_context).await;
+    assert!(
+        developer_message_texts(&review_context)
+            .iter()
+            .flatten()
+            .all(|text| !SubagentRuntimeIdentity::matches_text(text)),
+        "review sessions must not receive thread-spawn runtime identity context"
+    );
+}
+
+#[tokio::test]
+async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path should parse")),
+        agent_nickname: Some("worker".to_string()),
+        agent_role: None,
+    });
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = thread_spawn_source.clone();
+    turn_context.session_source = thread_spawn_source;
+    let turn_context = Arc::new(turn_context);
+
+    session
+        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
+    session
+        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
+    let first_identity_count = session
+        .clone_history()
+        .await
+        .raw_items()
+        .iter()
+        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+        .count();
+    assert_eq!(
+        first_identity_count, 1,
+        "unchanged identity should deduplicate"
+    );
+
+    {
+        let mut state = session.state.lock().await;
+        let updated = state
+            .session_configuration
+            .apply(&SessionSettingsUpdate {
+                service_tier: Some(Some("priority".to_string())),
+                ..Default::default()
+            })
+            .expect("service tier update should apply");
+        state.session_configuration = updated;
+    }
+    session
+        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
+
+    let history = session.clone_history().await;
+    let identities = history
+        .raw_items()
+        .iter()
+        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        identities.len(),
+        2,
+        "changed identity should append one update"
+    );
+    let current_snapshot = session.thread_config_snapshot().await;
+    let current_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(&current_snapshot)
+        .expect("thread-spawn identity");
+    assert!(
+        current_identity.matches_current_response_item(
+            identities
+                .last()
+                .copied()
+                .expect("latest identity fragment")
+        ),
+        "latest identity fragment should match the updated settings"
+    );
+}
+
+#[tokio::test]
 async fn build_initial_context_omits_multi_agent_v2_usage_hints_when_feature_disabled() {
     let (session, turn_context) =
         make_multi_agent_v2_usage_hint_test_session(/*enable_multi_agent_v2*/ false).await;
