@@ -2063,7 +2063,7 @@ async fn try_run_sampling_request(
         .with_observations(
             sess.thread_id,
             turn_context.sub_id.clone(),
-            turn_context.provider.info().name.clone(),
+            turn_context.config.model_provider_id.clone(),
             turn_context.model_info.slug.clone(),
             turn_context.config.service_tier.clone(),
         );

@@ -25,7 +25,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -1274,6 +1273,19 @@ impl ModelClientSession {
         )
     }
 
+    fn record_websocket_trace_request(
+        inference_trace_attempt: &InferenceTraceAttempt,
+        logical_request: &ResponsesApiRequest,
+        concrete_request: &ResponsesWsRequest,
+        previous_response_id_from_untraced_warmup: bool,
+    ) {
+        if previous_response_id_from_untraced_warmup {
+            inference_trace_attempt.record_started(logical_request);
+        } else {
+            inference_trace_attempt.record_started(concrete_request);
+        }
+    }
+
     /// Opportunistically preconnects a websocket for this turn-scoped client session.
     ///
     /// This performs only connection setup; it never sends prompt payloads.
@@ -1470,16 +1482,20 @@ impl ModelClientSession {
                 .prepare_response_items_for_request(&mut request.input, store);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
-            let inference_trace_attempt = inference_trace.start_observed_attempt(
-                InferenceCallTransport::ResponsesHttp,
-                request.model.clone(),
-                request.service_tier.clone(),
+            let inference_trace_attempt = PendingInferenceAttempt::new(
+                inference_trace.start_observed_attempt(
+                    InferenceCallTransport::ResponsesHttp,
+                    request.model.clone(),
+                    request.service_tier.clone(),
+                ),
+                self.inference_observations.clone(),
             );
-            inference_trace_attempt.add_request_headers(&mut options.extra_headers);
-            inference_trace_attempt.record_started(&request);
+            inference_trace_attempt
+                .attempt()
+                .add_request_headers(&mut options.extra_headers);
+            inference_trace_attempt.attempt().record_started(&request);
             self.inference_observations
-                .emit(inference_trace_attempt.started_observation())
-                .await;
+                .emit(inference_trace_attempt.attempt().started_observation());
             let client = ApiResponsesClient::new(
                 transport,
                 client_setup.api_provider,
@@ -1493,7 +1509,7 @@ impl ModelClientSession {
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
-                        inference_trace_attempt,
+                        inference_trace_attempt.into_stream(),
                         self.inference_observations.clone(),
                         Arc::clone(&self.client.state.provider),
                     );
@@ -1504,13 +1520,13 @@ impl ModelClientSession {
                 )) if status == StatusCode::UNAUTHORIZED => {
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &unauthorized_transport,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -1526,13 +1542,13 @@ impl ModelClientSession {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &err,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     return Err(err);
                 }
             }
@@ -1615,21 +1631,22 @@ impl ModelClientSession {
             let store = request.store;
             self.client
                 .prepare_response_items_for_request(&mut ws_payload.input, store);
-            let inference_trace_attempt = if warmup {
-                // Prewarm sends `generate=false`; it is connection setup, not a
-                // model inference attempt that should appear in observations.
-                InferenceTraceAttempt::disabled()
-            } else {
-                inference_trace.start_observed_attempt(
-                    InferenceCallTransport::ResponsesWebsocket,
-                    request.model.clone(),
-                    request.service_tier.clone(),
-                )
-            };
-            inference_trace_attempt.record_started(&request);
+            let inference_trace_attempt = PendingInferenceAttempt::new(
+                if warmup {
+                    // Prewarm sends `generate=false`; it is connection setup, not a
+                    // model inference attempt that should appear in observations.
+                    InferenceTraceAttempt::disabled()
+                } else {
+                    inference_trace.start_observed_attempt(
+                        InferenceCallTransport::ResponsesWebsocket,
+                        request.model.clone(),
+                        request.service_tier.clone(),
+                    )
+                },
+                self.inference_observations.clone(),
+            );
             self.inference_observations
-                .emit(inference_trace_attempt.started_observation())
-                .await;
+                .emit(inference_trace_attempt.attempt().started_observation());
 
             match self
                 .websocket_connection(WebsocketConnectParams {
@@ -1650,13 +1667,13 @@ impl ModelClientSession {
                 {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &err,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     return Ok(WebsocketStreamOutcome::FallbackToHttp);
                 }
                 Err(ApiError::Transport(
@@ -1664,13 +1681,13 @@ impl ModelClientSession {
                 )) if status == StatusCode::UNAUTHORIZED => {
                     let response_debug_context =
                         extract_response_debug_context(&unauthorized_transport);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &unauthorized_transport,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -1686,19 +1703,26 @@ impl ModelClientSession {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &err,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     return Err(err);
                 }
             }
 
-            let (mut ws_request, _) = self.prepare_websocket_request(ws_payload, &request);
+            let (mut ws_request, previous_response_id_from_untraced_warmup) =
+                self.prepare_websocket_request(ws_payload, &request);
             stamp_ws_stream_request_start_ms(&mut ws_request);
+            Self::record_websocket_trace_request(
+                inference_trace_attempt.attempt(),
+                &request,
+                &ws_request,
+                previous_response_id_from_untraced_warmup,
+            );
             self.websocket_session.last_request = Some(request);
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let websocket_connection =
@@ -1720,20 +1744,20 @@ impl ModelClientSession {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
                     let err = self.client.state.provider.map_api_error(err);
-                    self.inference_observations
-                        .emit(inference_trace_attempt.record_failed(
+                    self.inference_observations.emit(
+                        inference_trace_attempt.attempt().record_failed(
                             &err,
                             response_debug_context.request_id.as_deref(),
                             /*output_items*/ &[],
-                        ))
-                        .await;
+                        ),
+                    );
                     return Err(err);
                 }
             };
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
-                inference_trace_attempt,
+                inference_trace_attempt.into_stream(),
                 self.inference_observations.clone(),
                 Arc::clone(&self.client.state.provider),
             );
@@ -2000,36 +2024,72 @@ fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
 
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;
 const STREAM_DROPPED_REASON: &str = "response stream dropped before provider terminal event";
-
-type InferenceObservationFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-type InferenceObservationSink =
-    dyn Fn(InferenceCallEvent) -> InferenceObservationFuture + Send + Sync;
+const SETUP_DROPPED_REASON: &str = "inference setup dropped before response stream handoff";
 
 /// Ordered bridge from transport-owned inference lifecycles to the session event path.
 #[derive(Clone)]
 pub(crate) struct InferenceObservationEmitter {
-    sink: Option<Arc<InferenceObservationSink>>,
+    tx: Option<mpsc::UnboundedSender<InferenceCallEvent>>,
 }
 
 impl InferenceObservationEmitter {
     pub(crate) fn new<F, Fut>(sink: F) -> Self
     where
-        F: Fn(InferenceCallEvent) -> Fut + Send + Sync + 'static,
+        F: Fn(InferenceCallEvent) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        Self {
-            sink: Some(Arc::new(move |event| Box::pin(sink(event)))),
-        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                sink(event).await;
+            }
+        }));
+        Self { tx: Some(tx) }
     }
 
     fn disabled() -> Self {
-        Self { sink: None }
+        Self { tx: None }
     }
 
-    async fn emit(&self, event: Option<InferenceCallEvent>) {
-        if let (Some(sink), Some(event)) = (&self.sink, event) {
-            sink(event).await;
+    fn emit(&self, event: Option<InferenceCallEvent>) {
+        if let (Some(tx), Some(event)) = (&self.tx, event) {
+            let _ = tx.send(event);
         }
+    }
+}
+
+struct PendingInferenceAttempt {
+    attempt: Option<InferenceTraceAttempt>,
+    emitter: InferenceObservationEmitter,
+}
+
+impl PendingInferenceAttempt {
+    fn new(attempt: InferenceTraceAttempt, emitter: InferenceObservationEmitter) -> Self {
+        Self {
+            attempt: Some(attempt),
+            emitter,
+        }
+    }
+
+    fn attempt(&self) -> &InferenceTraceAttempt {
+        self.attempt.as_ref().expect("pending inference attempt")
+    }
+
+    fn into_stream(mut self) -> InferenceTraceAttempt {
+        self.attempt.take().expect("pending inference attempt")
+    }
+}
+
+impl Drop for PendingInferenceAttempt {
+    fn drop(&mut self) {
+        let Some(attempt) = self.attempt.take() else {
+            return;
+        };
+        self.emitter.emit(attempt.record_cancelled(
+            SETUP_DROPPED_REASON,
+            /*upstream_request_id*/ None,
+            /*output_items*/ &[],
+        ));
     }
 }
 
@@ -2098,8 +2158,7 @@ where
                             STREAM_DROPPED_REASON,
                             upstream_request_id,
                             &items_added,
-                        ))
-                        .await;
+                        ));
                     return;
                 }
                 event = api_stream.next() => event,
@@ -2115,13 +2174,11 @@ where
                         .await
                         .is_err()
                     {
-                        inference_observations
-                            .emit(inference_trace_attempt.record_cancelled(
-                                STREAM_DROPPED_REASON,
-                                upstream_request_id,
-                                &items_added,
-                            ))
-                            .await;
+                        inference_observations.emit(inference_trace_attempt.record_cancelled(
+                            STREAM_DROPPED_REASON,
+                            upstream_request_id,
+                            &items_added,
+                        ));
                         return;
                     }
                 }
@@ -2142,8 +2199,8 @@ where
                             ttft_ms,
                         );
                     }
-                    inference_observations
-                        .emit(inference_trace_attempt.record_completed_observation(
+                    inference_observations.emit(
+                        inference_trace_attempt.record_completed_observation(
                             &response_id,
                             upstream_request_id,
                             &token_usage,
@@ -2151,8 +2208,8 @@ where
                             observed_model.as_deref(),
                             observed_model_snapshot.as_deref(),
                             service_tier.as_deref(),
-                        ))
-                        .await;
+                        ),
+                    );
                     if let Some(sender) = tx_last_response.take() {
                         let _ = sender.send(LastResponse {
                             response_id: response_id.clone(),
@@ -2183,13 +2240,11 @@ where
                         );
                     }
                     if tx_event.send(Ok(event)).await.is_err() {
-                        inference_observations
-                            .emit(inference_trace_attempt.record_cancelled(
-                                STREAM_DROPPED_REASON,
-                                upstream_request_id,
-                                &items_added,
-                            ))
-                            .await;
+                        inference_observations.emit(inference_trace_attempt.record_cancelled(
+                            STREAM_DROPPED_REASON,
+                            upstream_request_id,
+                            &items_added,
+                        ));
                         return;
                     }
                 }
@@ -2202,13 +2257,11 @@ where
                         feedback_tags!(last_model_request_id = upstream_request_id);
                     }
                     let mapped = provider.map_api_error(err);
-                    inference_observations
-                        .emit(inference_trace_attempt.record_failed(
-                            &mapped,
-                            upstream_request_id,
-                            &items_added,
-                        ))
-                        .await;
+                    inference_observations.emit(inference_trace_attempt.record_failed(
+                        &mapped,
+                        upstream_request_id,
+                        &items_added,
+                    ));
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;
@@ -2219,13 +2272,11 @@ where
                 }
             }
         }
-        inference_observations
-            .emit(inference_trace_attempt.record_failed(
-                "stream closed before response.completed",
-                upstream_request_id,
-                &items_added,
-            ))
-            .await;
+        inference_observations.emit(inference_trace_attempt.record_failed(
+            "stream closed before response.completed",
+            upstream_request_id,
+            &items_added,
+        ));
     });
 
     (

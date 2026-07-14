@@ -58,6 +58,7 @@ struct EnabledInferenceTraceContext {
     model: String,
     provider_name: String,
     observation_thread_id: Option<ThreadId>,
+    observation_provider_name: Option<String>,
     configured_service_tier: Option<String>,
 }
 
@@ -83,6 +84,7 @@ struct EnabledInferenceTraceAttempt {
     context: EnabledInferenceTraceContext,
     observation: Option<InferenceAttemptObservation>,
     inference_call_id: InferenceCallId,
+    raw_started: AtomicBool,
     terminal_recorded: AtomicBool,
 }
 
@@ -132,6 +134,7 @@ impl InferenceTraceContext {
                 model,
                 provider_name,
                 observation_thread_id: None,
+                observation_provider_name: None,
                 configured_service_tier: None,
             }),
         }
@@ -152,12 +155,14 @@ impl InferenceTraceContext {
                 thread_id: thread_id.to_string(),
                 codex_turn_id: turn_id,
                 model: configured_model,
-                provider_name: configured_provider,
+                provider_name: configured_provider.clone(),
                 observation_thread_id: Some(thread_id),
+                observation_provider_name: Some(configured_provider),
                 configured_service_tier,
             },
             InferenceTraceContextState::Enabled(mut context) => {
                 context.observation_thread_id = Some(thread_id);
+                context.observation_provider_name = Some(configured_provider);
                 context.configured_service_tier = configured_service_tier;
                 context
             }
@@ -203,6 +208,7 @@ impl InferenceTraceContext {
                     }
                 }),
                 inference_call_id: next_inference_call_id(),
+                raw_started: AtomicBool::new(false),
                 terminal_recorded: AtomicBool::new(false),
             }),
         }
@@ -282,6 +288,7 @@ impl InferenceTraceAttempt {
         else {
             return;
         };
+        attempt.raw_started.store(true, Ordering::Release);
 
         append_with_context_best_effort(
             context,
@@ -335,13 +342,15 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if let Some(response_payload) = write_response_payload_best_effort(
-            &attempt.context,
-            Some(response_id),
-            upstream_request_id,
-            token_usage.as_ref(),
-            output_items,
-        ) {
+        if attempt.raw_started.load(Ordering::Acquire)
+            && let Some(response_payload) = write_response_payload_best_effort(
+                &attempt.context,
+                Some(response_id),
+                upstream_request_id,
+                token_usage.as_ref(),
+                output_items,
+            )
+        {
             append_with_context_best_effort(
                 &attempt.context,
                 RawTraceEventPayload::InferenceCompleted {
@@ -374,7 +383,7 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if attempt.context.writer.is_some() {
+        if attempt.context.writer.is_some() && attempt.raw_started.load(Ordering::Acquire) {
             let partial_response_payload = if output_items.is_empty() {
                 None
             } else {
@@ -421,7 +430,7 @@ impl InferenceTraceAttempt {
         let Some(attempt) = self.take_terminal_attempt() else {
             return None;
         };
-        if attempt.context.writer.is_some() {
+        if attempt.context.writer.is_some() && attempt.raw_started.load(Ordering::Acquire) {
             let partial_response_payload = if output_items.is_empty() {
                 None
             } else {
@@ -490,7 +499,10 @@ impl InferenceAttemptObservation {
             turn_id: context.codex_turn_id.clone(),
             status,
             transport: self.transport,
-            configured_provider: context.provider_name.clone(),
+            configured_provider: context
+                .observation_provider_name
+                .clone()
+                .expect("observation attempts have a configured provider"),
             configured_model: context.model.clone(),
             configured_service_tier: context.configured_service_tier.clone(),
             requested_model: self.requested_model.clone(),
@@ -624,6 +636,7 @@ fn append_with_context_best_effort(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Arc;
 
     use codex_protocol::ResponseItemId;
@@ -672,6 +685,72 @@ mod tests {
             .expect("inference header present");
         assert_eq!(Some(header.to_str()?), attempt.inference_call_id());
         assert!(Uuid::parse_str(header.to_str()?).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn observations_use_configured_provider_id_in_both_trace_modes() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let observation_only = InferenceTraceContext::disabled().with_observations(
+            thread_id,
+            "turn-1".to_string(),
+            "provider-id".to_string(),
+            "gpt-test".to_string(),
+            None,
+        );
+        let observation_only_started = observation_only
+            .start_observed_attempt(
+                InferenceCallTransport::ResponsesHttp,
+                "gpt-test".to_string(),
+                None,
+            )
+            .started_observation()
+            .expect("observation-only started event");
+
+        let temp = TempDir::new()?;
+        let writer = Arc::new(TraceWriter::create(
+            temp.path(),
+            "trace-1".to_string(),
+            "rollout-1".to_string(),
+            "thread-root".to_string(),
+        )?);
+        let raw_and_observed = InferenceTraceContext::enabled(
+            writer,
+            "thread-root".to_string(),
+            "turn-1".to_string(),
+            "gpt-test".to_string(),
+            "provider-display-name".to_string(),
+        )
+        .with_observations(
+            thread_id,
+            "turn-1".to_string(),
+            "provider-id".to_string(),
+            "gpt-test".to_string(),
+            None,
+        );
+        let attempt = raw_and_observed.start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            "gpt-test".to_string(),
+            None,
+        );
+        let raw_and_observed_started = attempt
+            .started_observation()
+            .expect("raw-enabled started event");
+        attempt.record_started(&json!({"model": "gpt-test"}));
+        let raw_event: RawTraceEvent = serde_json::from_str(
+            fs::read_to_string(temp.path().join("trace.jsonl"))?
+                .lines()
+                .next()
+                .expect("raw inference start event"),
+        )?;
+
+        assert_eq!(observation_only_started.configured_provider, "provider-id");
+        assert_eq!(raw_and_observed_started.configured_provider, "provider-id");
+        assert!(matches!(
+            raw_event.payload,
+            RawTraceEventPayload::InferenceStarted { provider_name, .. }
+                if provider_name == "provider-display-name"
+        ));
         Ok(())
     }
 

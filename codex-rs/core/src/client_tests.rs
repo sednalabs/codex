@@ -17,7 +17,10 @@ use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
+use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponseEvent;
+use codex_api::ResponsesApiRequest;
+use codex_api::ResponsesWsRequest;
 use codex_api::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -42,6 +45,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::InferenceCallStatus;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -61,6 +66,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -575,6 +581,128 @@ async fn summarize_memories_returns_empty_for_empty_input() {
         .await
         .expect("empty summarize request should succeed");
     assert_eq!(output.len(), 0);
+}
+
+#[tokio::test]
+async fn pending_setup_delivers_started_then_cancelled_while_sink_is_blocked() {
+    let gate = Arc::new(Notify::new());
+    let first_delivery = Arc::new(AtomicBool::new(true));
+    let (delivered_tx, mut delivered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = super::InferenceObservationEmitter::new({
+        let gate = Arc::clone(&gate);
+        let first_delivery = Arc::clone(&first_delivery);
+        move |event| {
+            let gate = Arc::clone(&gate);
+            let first_delivery = Arc::clone(&first_delivery);
+            let delivered_tx = delivered_tx.clone();
+            async move {
+                if first_delivery.swap(false, Ordering::AcqRel) {
+                    gate.notified().await;
+                }
+                let _ = delivered_tx.send(event);
+            }
+        }
+    });
+    let attempt = InferenceTraceContext::disabled()
+        .with_observations(
+            ThreadId::new(),
+            "turn-1".to_string(),
+            "configured-provider".to_string(),
+            "configured-model".to_string(),
+            None,
+        )
+        .start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            "requested-model".to_string(),
+            None,
+        );
+    let pending = super::PendingInferenceAttempt::new(attempt, emitter.clone());
+
+    emitter.emit(pending.attempt().started_observation());
+    drop(pending);
+    assert!(delivered_rx.try_recv().is_err());
+    gate.notify_one();
+
+    let started = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
+        .await
+        .expect("started observation delivery should resume")
+        .expect("started observation should be delivered");
+    let cancelled = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
+        .await
+        .expect("cancelled observation should follow")
+        .expect("cancelled observation should be delivered");
+
+    assert_eq!(started.status, InferenceCallStatus::Started);
+    assert_eq!(cancelled.status, InferenceCallStatus::Cancelled);
+    assert_eq!(cancelled.inference_call_id, started.inference_call_id);
+}
+
+#[test]
+fn websocket_trace_uses_concrete_request_except_after_untraced_warmup() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let writer = Arc::new(TraceWriter::create(
+        temp.path(),
+        "trace-1".to_string(),
+        "rollout-1".to_string(),
+        "thread-root".to_string(),
+    )?);
+    let trace = InferenceTraceContext::enabled(
+        writer,
+        "thread-root".to_string(),
+        "turn-1".to_string(),
+        "gpt-test".to_string(),
+        "provider-display-name".to_string(),
+    );
+    let logical_request = ResponsesApiRequest {
+        model: "gpt-test".to_string(),
+        instructions: "logical-full-request".to_string(),
+        input: Vec::new(),
+        tools: None,
+        tool_choice: "auto".to_string(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        store: false,
+        stream: true,
+        stream_options: None,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+    };
+    let concrete_request = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+        instructions: "concrete-incremental-request".to_string(),
+        previous_response_id: Some("response-from-traced-turn".to_string()),
+        ..ResponseCreateWsRequest::from(&logical_request)
+    });
+
+    super::ModelClientSession::record_websocket_trace_request(
+        &trace.start_attempt(),
+        &logical_request,
+        &concrete_request,
+        false,
+    );
+    super::ModelClientSession::record_websocket_trace_request(
+        &trace.start_attempt(),
+        &logical_request,
+        &concrete_request,
+        true,
+    );
+
+    let concrete: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("payloads/1.json"))?)?;
+    let logical: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("payloads/2.json"))?)?;
+    assert_eq!(concrete["type"], "response.create");
+    assert_eq!(
+        concrete["previous_response_id"],
+        "response-from-traced-turn"
+    );
+    assert_eq!(concrete["instructions"], "concrete-incremental-request");
+    assert_eq!(logical.get("type"), None);
+    assert_eq!(logical.get("previous_response_id"), None);
+    assert_eq!(logical["instructions"], "logical-full-request");
+    Ok(())
 }
 
 #[tokio::test]
