@@ -13,7 +13,6 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
-use crate::agent::control::EffectiveAgentIdentity;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -3335,8 +3334,10 @@ impl Session {
             base_instructions,
             session_source,
             auto_compact_window_ids,
+            subagent_runtime_identity,
         ) = {
             let state = self.state.lock().await;
+            let snapshot = state.session_configuration.thread_config_snapshot();
             (
                 state.reference_context_item(),
                 state.previous_turn_settings(),
@@ -3344,8 +3345,12 @@ impl Session {
                 state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
                 state.auto_compact_window_ids(),
+                SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot),
             )
         };
+        if let Some(subagent_runtime_identity) = subagent_runtime_identity {
+            separate_developer_sections.push(subagent_runtime_identity.render());
+        }
         if let Some(model_switch_message) =
             crate::context_manager::updates::build_model_instructions_update_item(
                 previous_turn_settings.as_ref(),
@@ -3703,9 +3708,18 @@ impl Session {
         step_context: &StepContext,
     ) -> Arc<WorldState> {
         let turn_context = step_context.turn.as_ref();
-        let reference_context_item = {
+        let (reference_context_item, existing_subagent_runtime_identity) = {
             let state = self.state.lock().await;
-            state.reference_context_item()
+            let snapshot = state.session_configuration.thread_config_snapshot();
+            let runtime_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot)
+                .filter(|identity| {
+                    state
+                        .history
+                        .raw_items()
+                        .iter()
+                        .any(|item| identity.matches_current_response_item(item))
+                });
+            (state.reference_context_item(), runtime_identity)
         };
         let turn_context_item = turn_context.to_turn_context_item();
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
@@ -3713,13 +3727,17 @@ impl Session {
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await);
         // Full initial context resets the baseline; later turns persist only its changes.
         let (mut context_items, world_state_item) = if should_inject_full_context {
-            let context_items = self
+            let mut context_items = self
                 .build_initial_context_with_world_state_and_mcp(
                     turn_context,
                     world_state.as_ref(),
                     step_context.mcp.as_ref(),
                 )
                 .await;
+            if let Some(existing_runtime_identity) = existing_subagent_runtime_identity.as_ref() {
+                context_items
+                    .retain(|item| !existing_runtime_identity.matches_current_response_item(item));
+            }
             let snapshot = world_state.snapshot();
             self.state
                 .lock()
@@ -3784,10 +3802,10 @@ impl Session {
         world_state
     }
 
-    /// Ensures a spawned agent receives one runtime-authored inference identity fragment.
+    /// Ensures a spawned agent receives the current runtime-authored inference identity fragment.
     ///
-    /// Only developer-role fragments produced by this runtime satisfy the deduplication check;
-    /// user task text containing the same markers cannot suppress authoritative context.
+    /// An unchanged identity is cache-stable. Changed settings append a new authoritative
+    /// fragment, whose payload explicitly defines latest-fragment-wins semantics.
     pub(crate) async fn ensure_subagent_runtime_identity_context(
         &self,
         turn_context: &TurnContext,
@@ -3795,18 +3813,21 @@ impl Session {
         let identity = {
             let state = self.state.lock().await;
             let snapshot = state.session_configuration.thread_config_snapshot();
-            if !snapshot.session_source.is_non_root_agent()
-                || state
-                    .history
-                    .raw_items()
-                    .iter()
-                    .any(SubagentRuntimeIdentity::matches_response_item)
+            let Some(identity) = SubagentRuntimeIdentity::from_thread_config_snapshot(&snapshot)
+            else {
+                return;
+            };
+            if state
+                .history
+                .raw_items()
+                .iter()
+                .any(|item| identity.matches_current_response_item(item))
             {
                 return;
             }
-            EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot)
+            identity
         };
-        let item = ContextualUserFragment::into(SubagentRuntimeIdentity::new(identity));
+        let item = ContextualUserFragment::into(identity);
         self.record_conversation_items(turn_context, std::slice::from_ref(&item))
             .await;
     }

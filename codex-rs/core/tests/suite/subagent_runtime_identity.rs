@@ -98,7 +98,7 @@ fn assert_runtime_identity(
             "effective_reasoning_effort": snapshot.reasoning_effort,
             "effective_service_tier": snapshot.service_tier,
             "identity_source": "thread_config_snapshot",
-            "identity_semantics": "runtime_configured_request_identity",
+            "identity_semantics": "latest_runtime_configured_request_identity_is_authoritative",
             "usage_accounting": "not_terminal_provider_response_or_usage_accounting",
         })
     );
@@ -219,6 +219,8 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     let root_spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "task_name": "identity_parent",
+        "model": V2_CHILD_MODEL,
+        "reasoning_effort": "low",
         "fork_turns": "none",
     }))?;
     mount_sse_once_match(
@@ -239,8 +241,7 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     let child_spawn_args = serde_json::to_string(&json!({
         "message": GRANDCHILD_PROMPT,
         "task_name": "identity_grandchild",
-        "model": V2_CHILD_MODEL,
-        "reasoning_effort": "low",
+        "service_tier": "priority",
         "fork_turns": "all",
     }))?;
     mount_sse_once_match(
@@ -304,6 +305,7 @@ async fn full_history_grandchild_replaces_inherited_parent_identity() -> Result<
     assert_runtime_identity(&request, &snapshot, GRANDCHILD_PROMPT);
     assert_eq!(snapshot.model, V2_CHILD_MODEL);
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
+    assert_eq!(snapshot.service_tier.as_deref(), Some("priority"));
 
     Ok(())
 }

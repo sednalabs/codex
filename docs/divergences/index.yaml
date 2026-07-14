@@ -235,7 +235,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, explicit spawn-agent authorization guidance, and runtime-authored configured-request identity context keep sub-agent routing observable without relying on task text or environment inference.",
+      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, explicit spawn-agent authorization guidance, and bounded refreshable runtime-authored configured-request identity context keep sub-agent routing observable without relying on task text or environment inference.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
