@@ -1,9 +1,11 @@
 use codex_core::CodexThread;
 use codex_core::REVIEW_PROMPT;
 use codex_core::config::Config;
+use codex_features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -560,6 +562,11 @@ async fn review_uses_custom_review_model_from_config() {
     let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
         cfg.model = Some("gpt-4.1".to_string());
         cfg.review_model = Some("gpt-5.4".to_string());
+        cfg.model_reasoning_effort = Some(ReasoningEffort::High);
+        cfg.service_tier = Some("priority".to_string());
+        cfg.features
+            .enable(Feature::FastMode)
+            .expect("fast mode should be configurable in tests");
     })
     .await;
 
@@ -594,6 +601,43 @@ async fn review_uses_custom_review_model_from_config() {
     assert_eq!(request.path(), "/v1/responses");
     let body = request.body_json();
     assert_eq!(body["model"].as_str().unwrap(), "gpt-5.4");
+
+    codex.flush_rollout().await.expect("flush review rollout");
+    let rollout = std::fs::read_to_string(codex.rollout_path().expect("rollout path"))
+        .expect("read review rollout");
+    let review_context = rollout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+        .find_map(|line| match line.item {
+            RolloutItem::TurnContext(context) if context.model == "gpt-5.4" => Some(context),
+            _ => None,
+        })
+        .expect("custom review turn context receipt");
+    let configured = review_context
+        .configured_inference_identity
+        .expect("configured review identity receipt");
+    let requested = review_context
+        .request_inference_identity
+        .expect("review request identity receipt");
+    assert_eq!(configured.configured_model, "gpt-5.4");
+    assert_eq!(requested.request_model, "gpt-5.4");
+    assert_eq!(
+        requested.model_provider_id.as_deref(),
+        Some(configured.configured_model_provider_id.as_str())
+    );
+    assert_eq!(
+        requested.requested_reasoning_effort,
+        configured.configured_reasoning_effort
+    );
+    assert_eq!(
+        (
+            configured.configured_service_tier.as_deref(),
+            requested.request_service_tier.as_deref(),
+        ),
+        (Some("priority"), Some("priority"))
+    );
+    assert_eq!(requested.turn_id, review_context.turn_id);
 
     let _codex_home_guard = codex_home;
     server.verify().await;
