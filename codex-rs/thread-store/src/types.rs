@@ -9,6 +9,7 @@ use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
@@ -433,6 +434,10 @@ pub struct StoredThread {
     pub model: Option<String>,
     /// Latest observed reasoning effort, if known.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Latest complete configured model-selection identity, if known.
+    pub configured_inference_identity: Option<ThreadInferenceIdentity>,
+    /// Latest complete real-request model-selection identity, if known.
+    pub latest_request_inference_identity: Option<ThreadInferenceIdentity>,
     /// Thread creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Thread last-update timestamp.
@@ -553,6 +558,20 @@ pub struct ThreadMetadataPatch {
         with = "optional_option"
     )]
     pub reasoning_effort_update: ClearableField<ReasoningEffort>,
+    /// Whole-object configured model-selection identity update.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub configured_inference_identity: ClearableField<ThreadInferenceIdentity>,
+    /// Whole-object latest real-request model-selection identity update.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub latest_request_inference_identity: ClearableField<ThreadInferenceIdentity>,
     /// Creation timestamp when known.
     pub created_at: Option<DateTime<Utc>>,
     /// Last update timestamp for this metadata observation.
@@ -639,6 +658,12 @@ impl ThreadMetadataPatch {
             self.reasoning_effort = next.reasoning_effort;
             self.reasoning_effort_update = None;
         }
+        if next.configured_inference_identity.is_some() {
+            self.configured_inference_identity = next.configured_inference_identity;
+        }
+        if next.latest_request_inference_identity.is_some() {
+            self.latest_request_inference_identity = next.latest_request_inference_identity;
+        }
         if next.created_at.is_some() {
             self.created_at = next.created_at;
         }
@@ -700,6 +725,8 @@ impl ThreadMetadataPatch {
             && self.model.is_none()
             && self.reasoning_effort.is_none()
             && self.reasoning_effort_update.is_none()
+            && self.configured_inference_identity.is_none()
+            && self.latest_request_inference_identity.is_none()
             && self.created_at.is_none()
             && self.updated_at.is_none()
             && self.advance_recency_at.is_none()
@@ -766,6 +793,8 @@ mod tests {
             agent_role: Some(None),
             agent_path: Some(None),
             reasoning_effort_update: Some(None),
+            configured_inference_identity: Some(None),
+            latest_request_inference_identity: Some(None),
             ..Default::default()
         };
 
@@ -776,6 +805,8 @@ mod tests {
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
         assert_eq!(value["reasoning_effort_update"], json!(null));
+        assert_eq!(value["configured_inference_identity"], json!(null));
+        assert_eq!(value["latest_request_inference_identity"], json!(null));
 
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
@@ -785,6 +816,8 @@ mod tests {
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
         assert_eq!(decoded.reasoning_effort_update, Some(None));
+        assert_eq!(decoded.configured_inference_identity, Some(None));
+        assert_eq!(decoded.latest_request_inference_identity, Some(None));
         assert_eq!(decoded.resolved_reasoning_effort(), Some(None));
     }
 

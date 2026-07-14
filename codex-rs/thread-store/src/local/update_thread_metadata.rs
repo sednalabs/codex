@@ -269,6 +269,13 @@ async fn apply_metadata_update(
             if let Some(reasoning_effort) = reasoning_effort_update {
                 metadata.reasoning_effort = reasoning_effort;
             }
+            if let Some(configured_inference_identity) = patch.configured_inference_identity {
+                metadata.configured_inference_identity = configured_inference_identity;
+            }
+            if let Some(latest_request_inference_identity) = patch.latest_request_inference_identity
+            {
+                metadata.latest_request_inference_identity = latest_request_inference_identity;
+            }
             if let Some(created_at) = patch.created_at {
                 metadata.created_at = created_at;
             }
@@ -487,6 +494,8 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.model.is_some()
         || patch.reasoning_effort.is_some()
         || patch.reasoning_effort_update.is_some()
+        || patch.configured_inference_identity.is_some()
+        || patch.latest_request_inference_identity.is_some()
         || patch.created_at.is_some()
         || patch.source.is_some()
         || patch.thread_source.is_some()
@@ -719,6 +728,8 @@ fn rollout_path_is_archived(store: &LocalThreadStore, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::ThreadHistoryMode;
     use pretty_assertions::assert_eq;
     use serde_json::Value;
@@ -1325,6 +1336,16 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let path =
             write_session_file(home.path(), "2025-01-03T15-30-00", uuid).expect("session file");
+        let configured = ThreadInferenceIdentity {
+            model: "configured-alias".to_string(),
+            model_provider_id: "configured-provider".to_string(),
+            reasoning_effort: None,
+        };
+        let requested = ThreadInferenceIdentity {
+            model: "normalized-request".to_string(),
+            model_provider_id: "configured-provider".to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
 
         let thread = store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -1336,6 +1357,8 @@ mod tests {
                         branch: Some(Some("combined".to_string())),
                         ..Default::default()
                     }),
+                    configured_inference_identity: Some(Some(configured.clone())),
+                    latest_request_inference_identity: Some(Some(requested.clone())),
                     ..Default::default()
                 },
                 include_archived: false,
@@ -1344,6 +1367,13 @@ mod tests {
             .expect("combined patch should apply");
 
         assert_eq!(thread.name.as_deref(), Some("Combined metadata"));
+        assert_eq!(
+            (
+                thread.configured_inference_identity.clone(),
+                thread.latest_request_inference_identity.clone(),
+            ),
+            (Some(configured), Some(requested))
+        );
         assert_eq!(
             thread.git_info.expect("git info").branch.as_deref(),
             Some("combined")
@@ -1361,6 +1391,25 @@ mod tests {
             .await
             .expect("thread memory mode should be readable");
         assert_eq!(memory_mode.as_deref(), Some("disabled"));
+        let cleared = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    configured_inference_identity: Some(None),
+                    latest_request_inference_identity: Some(None),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("identity clear should apply");
+        assert_eq!(
+            (
+                cleared.configured_inference_identity,
+                cleared.latest_request_inference_identity,
+            ),
+            (None, None)
+        );
     }
 
     #[test]

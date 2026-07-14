@@ -28,6 +28,15 @@ use schemars::JsonSchema;
 
 use crate::ResponseItemId;
 use crate::mcp::CallToolResult;
+use crate::openai_models::ReasoningEffort;
+
+/// Durable model-selection identity for configured settings or a real inference request.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadInferenceIdentity {
+    pub model: String,
+    pub model_provider_id: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
 
 /// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(

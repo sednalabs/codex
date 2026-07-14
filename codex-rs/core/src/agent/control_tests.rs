@@ -455,6 +455,13 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         stored_configured.reasoning_effort,
         Some(ReasoningEffort::Low)
     );
+    let mut legacy_observation = stored_child.clone();
+    legacy_observation.configured_inference_identity = None;
+    legacy_observation.latest_request_inference_identity = None;
+    let legacy_identity =
+        ModelVisibleAgentIdentity::from_stored(&legacy_observation, ModelVisibleIdentityEncoding::Json);
+    assert!(legacy_identity.configured_identity.is_none());
+    assert!(legacy_identity.latest_turn_request_identity.is_some());
 
     let mut conflicting_resume_config = config;
     conflicting_resume_config.model = Some("gpt-5.2".to_string());

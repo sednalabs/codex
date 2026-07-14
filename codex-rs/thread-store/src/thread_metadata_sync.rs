@@ -8,6 +8,7 @@ use codex_git_utils::collect_git_info;
 use codex_git_utils::get_git_repo_root;
 use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
@@ -34,6 +35,7 @@ pub(crate) struct ThreadMetadataSync {
     preview_seen: bool,
     first_user_message_seen: bool,
     title_seen: bool,
+    request_model_provider_id: String,
     pending_update: Option<ThreadMetadataPatch>,
     pending_update_generation: u64,
     last_touch_persisted_at: Option<Instant>,
@@ -80,6 +82,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            request_model_provider_id: params.metadata.model_provider.clone(),
             pending_update: Some(update),
             pending_update_generation: 1,
             last_touch_persisted_at: None,
@@ -99,6 +102,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            request_model_provider_id: params.metadata.model_provider.clone(),
             pending_update: None,
             pending_update_generation: 0,
             last_touch_persisted_at: None,
@@ -216,6 +220,7 @@ impl ThreadMetadataSync {
                     if let Some(model_provider) = meta_line.meta.model_provider.clone()
                         && !model_provider.is_empty()
                     {
+                        self.request_model_provider_id = model_provider.clone();
                         update.model_provider = Some(model_provider);
                     }
                     if !meta_line.meta.cli_version.is_empty() {
@@ -239,16 +244,26 @@ impl ThreadMetadataSync {
                         self.cwd_seen = true;
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
+                    let identity = ThreadInferenceIdentity {
+                        model: turn_ctx.model.clone(),
+                        model_provider_id: self.request_model_provider_id.clone(),
+                        reasoning_effort: turn_ctx.effort.clone(),
+                    };
+                    update.latest_request_inference_identity = Some(Some(identity));
                     update.model = Some(turn_ctx.model.clone());
+                    update.model_provider = Some(self.request_model_provider_id.clone());
                     update.reasoning_effort_update = Some(turn_ctx.effort.clone());
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
                     let settings = &event.thread_settings;
-                    update.model = Some(settings.model.clone());
-                    update.model_provider = Some(settings.model_provider_id.clone());
-                    update.reasoning_effort_update = Some(settings.reasoning_effort.clone());
+                    self.request_model_provider_id = settings.model_provider_id.clone();
+                    update.configured_inference_identity = Some(Some(ThreadInferenceIdentity {
+                        model: settings.model.clone(),
+                        model_provider_id: settings.model_provider_id.clone(),
+                        reasoning_effort: settings.reasoning_effort.clone(),
+                    }));
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
                     self.observe_user_message(user, &mut update);
@@ -352,6 +367,8 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.model.is_some()
         || update.reasoning_effort.is_some()
         || update.reasoning_effort_update.is_some()
+        || update.configured_inference_identity.is_some()
+        || update.latest_request_inference_identity.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
         || update.source.is_some()
@@ -496,11 +513,11 @@ mod tests {
             )])
             .expect("settings metadata update");
         let expected = ThreadMetadataPatch {
-            model: Some("configured-model".to_string()),
-            model_provider: Some("configured-provider".to_string()),
-            reasoning_effort_update: Some(Some(
-                codex_protocol::openai_models::ReasoningEffort::High,
-            )),
+            configured_inference_identity: Some(Some(ThreadInferenceIdentity {
+                model: "configured-model".to_string(),
+                model_provider_id: "configured-provider".to_string(),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            })),
             updated_at: update.patch.updated_at,
             ..Default::default()
         };
@@ -515,9 +532,11 @@ mod tests {
             )])
             .expect("settings clear update");
         let expected = ThreadMetadataPatch {
-            model: Some("next-model".to_string()),
-            model_provider: Some("next-provider".to_string()),
-            reasoning_effort_update: Some(None),
+            configured_inference_identity: Some(Some(ThreadInferenceIdentity {
+                model: "next-model".to_string(),
+                model_provider_id: "next-provider".to_string(),
+                reasoning_effort: None,
+            })),
             updated_at: cleared.patch.updated_at,
             ..Default::default()
         };

@@ -24,6 +24,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_inference_identity,
+    threads.latest_request_inference_identity,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -576,6 +578,16 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let configured_inference_identity = metadata
+            .configured_inference_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let latest_request_inference_identity = metadata
+            .latest_request_inference_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let result = sqlx::query(
             r#"
 INSERT INTO threads (
@@ -596,6 +608,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_inference_identity,
+    latest_request_inference_identity,
     cwd,
     cli_version,
     title,
@@ -610,7 +624,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -641,6 +655,8 @@ ON CONFLICT(id) DO NOTHING
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(configured_inference_identity.as_deref())
+        .bind(latest_request_inference_identity.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -827,6 +843,16 @@ WHERE id = ?
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let insert_recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let configured_inference_identity = metadata
+            .configured_inference_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let latest_request_inference_identity = metadata
+            .latest_request_inference_identity
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         // Backfill/reconcile callers merge existing git info before upserting, but that
         // read/modify/write is not atomic. Preserve non-null SQLite git fields here so
         // an explicit metadata update cannot be lost if a stale rollout upsert lands later.
@@ -850,6 +876,8 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_inference_identity,
+    latest_request_inference_identity,
     cwd,
     cli_version,
     title,
@@ -864,7 +892,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -882,6 +910,8 @@ ON CONFLICT(id) DO UPDATE SET
     model_provider = excluded.model_provider,
     model = excluded.model,
     reasoning_effort = excluded.reasoning_effort,
+    configured_inference_identity = excluded.configured_inference_identity,
+    latest_request_inference_identity = excluded.latest_request_inference_identity,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
     title = excluded.title,
@@ -924,6 +954,8 @@ ON CONFLICT(id) DO UPDATE SET
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(configured_inference_identity.as_deref())
+        .bind(latest_request_inference_identity.as_deref())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -1320,6 +1352,8 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_inference_identity,
+    threads.latest_request_inference_identity,
     threads.cwd,
     threads.cli_version,
     threads.title,
