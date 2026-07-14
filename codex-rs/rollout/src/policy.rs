@@ -177,3 +177,44 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::CollabResumeBegin(_) => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::InferenceCallEvent;
+    use codex_protocol::protocol::InferenceCallStatus;
+    use codex_protocol::protocol::InferenceCallTransport;
+
+    #[test]
+    fn inference_call_events_persist_in_legacy_and_paginated_rollouts() {
+        let event = EventMsg::InferenceCall(InferenceCallEvent {
+            inference_call_id: "call-1".to_string(),
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".to_string(),
+            status: InferenceCallStatus::Started,
+            transport: InferenceCallTransport::ResponsesHttp,
+            configured_provider: "provider".to_string(),
+            configured_model: "configured".to_string(),
+            configured_service_tier: None,
+            requested_model: "requested".to_string(),
+            requested_service_tier: None,
+            request_started_at_ms: 1,
+            request_completed_at_ms: None,
+            response_id: None,
+            upstream_request_id: None,
+            observed_model: None,
+            observed_model_snapshot: None,
+            observed_service_tier: None,
+            token_usage: None,
+            truncated_fields: Vec::new(),
+            omitted_fields: Vec::new(),
+        });
+
+        assert!(should_persist_event_msg(&event, ThreadHistoryMode::Legacy));
+        assert!(should_persist_event_msg(
+            &event,
+            ThreadHistoryMode::Paginated
+        ));
+    }
+}
