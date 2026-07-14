@@ -104,6 +104,8 @@ pub struct ThreadMetadata {
     pub model: Option<String>,
     /// The latest observed reasoning effort for the thread.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// The latest observed service tier for the thread.
+    pub service_tier: Option<String>,
     /// The working directory for the thread.
     pub cwd: PathBuf,
     /// Version of the CLI that created the thread.
@@ -242,6 +244,7 @@ impl ThreadMetadataBuilder {
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
             reasoning_effort: None,
+            service_tier: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
             title: String::new(),
@@ -323,6 +326,9 @@ impl ThreadMetadata {
         if self.reasoning_effort != other.reasoning_effort {
             diffs.push("reasoning_effort");
         }
+        if self.service_tier != other.service_tier {
+            diffs.push("service_tier");
+        }
         if self.cwd != other.cwd {
             diffs.push("cwd");
         }
@@ -383,6 +389,7 @@ pub(crate) struct ThreadRow {
     model_provider: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     cwd: String,
     cli_version: String,
     title: String,
@@ -414,6 +421,7 @@ impl ThreadRow {
             model_provider: row.try_get("model_provider")?,
             model: row.try_get("model")?,
             reasoning_effort: row.try_get("reasoning_effort")?,
+            service_tier: row.try_get("service_tier")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
             title: row.try_get("title")?,
@@ -449,6 +457,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model_provider,
             model,
             reasoning_effort,
+            service_tier,
             cwd,
             cli_version,
             title,
@@ -483,6 +492,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             model,
             reasoning_effort: reasoning_effort
                 .and_then(|value| value.parse::<ReasoningEffort>().ok()),
+            service_tier,
             cwd: PathBuf::from(cwd),
             cli_version,
             title,
@@ -580,6 +590,7 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
+            service_tier: Some("priority".to_string()),
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
@@ -612,6 +623,7 @@ mod tests {
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
             reasoning_effort,
+            service_tier: Some("priority".to_string()),
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

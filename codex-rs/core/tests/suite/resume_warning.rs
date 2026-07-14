@@ -40,6 +40,7 @@ fn resume_history(
         network: None,
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
+        service_tier: None,
         comp_hash: None,
         personality: None,
         collaboration_mode: None,

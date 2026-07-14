@@ -433,6 +433,9 @@ pub struct StoredThread {
     pub model: Option<String>,
     /// Latest observed reasoning effort, if known.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Latest observed service tier, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Thread creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Thread last-update timestamp.
@@ -542,8 +545,20 @@ pub struct ThreadMetadataPatch {
     pub model_provider: Option<String>,
     /// Latest observed model.
     pub model: Option<String>,
-    /// Latest observed reasoning effort.
-    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Latest observed reasoning effort. `Some(None)` clears the persisted effort.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub reasoning_effort: ClearableField<ReasoningEffort>,
+    /// Latest observed service tier. `Some(None)` clears the persisted tier.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub service_tier: ClearableField<String>,
     /// Creation timestamp when known.
     pub created_at: Option<DateTime<Utc>>,
     /// Last update timestamp for this metadata observation.
@@ -626,6 +641,9 @@ impl ThreadMetadataPatch {
         if next.reasoning_effort.is_some() {
             self.reasoning_effort = next.reasoning_effort;
         }
+        if next.service_tier.is_some() {
+            self.service_tier = next.service_tier;
+        }
         if next.created_at.is_some() {
             self.created_at = next.created_at;
         }
@@ -686,6 +704,7 @@ impl ThreadMetadataPatch {
             && self.model_provider.is_none()
             && self.model.is_none()
             && self.reasoning_effort.is_none()
+            && self.service_tier.is_none()
             && self.created_at.is_none()
             && self.updated_at.is_none()
             && self.advance_recency_at.is_none()
@@ -745,6 +764,8 @@ mod tests {
             agent_nickname: Some(None),
             agent_role: Some(None),
             agent_path: Some(None),
+            reasoning_effort: Some(None),
+            service_tier: Some(None),
             ..Default::default()
         };
 
@@ -754,6 +775,8 @@ mod tests {
         assert_eq!(value["agent_nickname"], json!(null));
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
+        assert_eq!(value["reasoning_effort"], json!(null));
+        assert_eq!(value["service_tier"], json!(null));
 
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
@@ -762,6 +785,8 @@ mod tests {
         assert_eq!(decoded.agent_nickname, Some(None));
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
+        assert_eq!(decoded.reasoning_effort, Some(None));
+        assert_eq!(decoded.service_tier, Some(None));
     }
 
     #[test]

@@ -266,7 +266,10 @@ async fn apply_metadata_update(
                 metadata.model = Some(model);
             }
             if let Some(reasoning_effort) = patch.reasoning_effort {
-                metadata.reasoning_effort = Some(reasoning_effort);
+                metadata.reasoning_effort = reasoning_effort;
+            }
+            if let Some(service_tier) = patch.service_tier {
+                metadata.service_tier = service_tier;
             }
             if let Some(created_at) = patch.created_at {
                 metadata.created_at = created_at;
@@ -485,6 +488,7 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.model_provider.is_some()
         || patch.model.is_some()
         || patch.reasoning_effort.is_some()
+        || patch.service_tier.is_some()
         || patch.created_at.is_some()
         || patch.source.is_some()
         || patch.thread_source.is_some()

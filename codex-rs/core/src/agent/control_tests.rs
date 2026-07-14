@@ -401,7 +401,7 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
             effective_model: stored_child.model.clone(),
             effective_model_provider_id: Some(stored_child.model_provider.clone()),
             effective_reasoning_effort: stored_child.reasoning_effort.clone(),
-            effective_service_tier: None,
+            effective_service_tier: stored_child.service_tier.clone(),
             identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
         }
     );
@@ -726,6 +726,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    config.service_tier = Some("priority".to_string());
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
@@ -782,7 +783,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let mut conflicting_resume_config = harness.config.clone();
     conflicting_resume_config.model = Some("different-caller-model".to_string());
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
-    conflicting_resume_config.service_tier = Some("priority".to_string());
+    conflicting_resume_config.service_tier = Some("flex".to_string());
     let mut missing_provider_config = conflicting_resume_config.clone();
     missing_provider_config
         .model_providers
@@ -812,11 +813,13 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             reloaded_config.model,
             reloaded_config.model_provider_id,
             reloaded_config.reasoning_effort,
+            reloaded_config.service_tier,
         ),
         (
             original_config.model,
             original_config.model_provider_id,
             original_config.reasoning_effort,
+            original_config.service_tier,
         )
     );
 

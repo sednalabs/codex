@@ -135,6 +135,7 @@ pub(super) fn stored_thread_from_rollout_item(
             .unwrap_or_else(|| default_provider.to_string()),
         model: None,
         reasoning_effort: None,
+        service_tier: None,
         created_at,
         updated_at,
         recency_at,
