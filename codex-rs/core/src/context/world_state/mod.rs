@@ -20,9 +20,6 @@ use std::fmt;
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use environment::EnvironmentsState;
-pub(crate) use environment::SubagentContext;
-pub(crate) use environment::SubagentContextBuilder;
-pub(crate) use environment::SubagentContextRow;
 pub(crate) use plugins_instructions::PluginsInstructionsState;
 
 trait ErasedWorldStateSection: Send + Sync {
