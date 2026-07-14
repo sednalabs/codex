@@ -42,6 +42,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::InferenceCallStatus;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -61,6 +63,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -575,6 +578,60 @@ async fn summarize_memories_returns_empty_for_empty_input() {
         .await
         .expect("empty summarize request should succeed");
     assert_eq!(output.len(), 0);
+}
+
+#[tokio::test]
+async fn pending_setup_delivers_started_then_cancelled_while_sink_is_blocked() {
+    let gate = Arc::new(Notify::new());
+    let first_delivery = Arc::new(AtomicBool::new(true));
+    let (delivered_tx, mut delivered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = super::InferenceObservationEmitter::new({
+        let gate = Arc::clone(&gate);
+        let first_delivery = Arc::clone(&first_delivery);
+        move |event| {
+            let gate = Arc::clone(&gate);
+            let first_delivery = Arc::clone(&first_delivery);
+            let delivered_tx = delivered_tx.clone();
+            async move {
+                if first_delivery.swap(false, Ordering::AcqRel) {
+                    gate.notified().await;
+                }
+                let _ = delivered_tx.send(event);
+            }
+        }
+    });
+    let attempt = InferenceTraceContext::disabled()
+        .with_observations(
+            ThreadId::new(),
+            "turn-1".to_string(),
+            "configured-provider".to_string(),
+            "configured-model".to_string(),
+            None,
+        )
+        .start_observed_attempt(
+            InferenceCallTransport::ResponsesHttp,
+            "requested-model".to_string(),
+            None,
+        );
+    let pending = super::PendingInferenceAttempt::new(attempt, emitter.clone());
+
+    emitter.emit(pending.attempt().started_observation());
+    drop(pending);
+    assert!(delivered_rx.try_recv().is_err());
+    gate.notify_one();
+
+    let started = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
+        .await
+        .expect("started observation delivery should resume")
+        .expect("started observation should be delivered");
+    let cancelled = tokio::time::timeout(Duration::from_secs(1), delivered_rx.recv())
+        .await
+        .expect("cancelled observation should follow")
+        .expect("cancelled observation should be delivered");
+
+    assert_eq!(started.status, InferenceCallStatus::Started);
+    assert_eq!(cancelled.status, InferenceCallStatus::Cancelled);
+    assert_eq!(cancelled.inference_call_id, started.inference_call_id);
 }
 
 #[tokio::test]
