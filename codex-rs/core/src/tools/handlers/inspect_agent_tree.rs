@@ -1,5 +1,7 @@
 use crate::agent::control::AgentTreeInspection;
 use crate::agent::control::AgentTreeScope;
+use crate::agent::control::MAX_INSPECT_AGENT_ROOTS;
+use crate::agent::control::MAX_INSPECT_AGENT_ROWS;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -55,7 +57,10 @@ impl InspectAgentTreeHandler {
         };
         let args: InspectAgentTreeArgs = parse_arguments(&arguments)?;
         let max_depth = args.max_depth.unwrap_or(DEFAULT_TREE_MAX_DEPTH);
-        let max_agents = args.max_agents.unwrap_or(DEFAULT_TREE_MAX_AGENTS);
+        let max_agents = args
+            .max_agents
+            .unwrap_or(DEFAULT_TREE_MAX_AGENTS)
+            .min(MAX_INSPECT_AGENT_ROWS);
         if max_depth == 0 {
             return Err(crate::function_tool::FunctionCallError::RespondToModel(
                 "max_depth must be greater than zero".to_string(),
@@ -64,6 +69,15 @@ impl InspectAgentTreeHandler {
         if max_agents == 0 {
             return Err(crate::function_tool::FunctionCallError::RespondToModel(
                 "max_agents must be greater than zero".to_string(),
+            ));
+        }
+        if args
+            .agent_roots
+            .as_ref()
+            .is_some_and(|roots| roots.len() > MAX_INSPECT_AGENT_ROOTS)
+        {
+            return Err(crate::function_tool::FunctionCallError::RespondToModel(
+                format!("agent_roots accepts at most {MAX_INSPECT_AGENT_ROOTS} entries"),
             ));
         }
 
