@@ -26,6 +26,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -301,7 +302,7 @@ async fn wait_for_live_thread_spawn_children(
 }
 
 #[tokio::test]
-async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
+async fn inspect_agent_tree_uses_live_and_stored_identity_receipts() {
     let (home, mut config) = test_config().await;
     config
         .features
@@ -367,16 +368,26 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
         .iter()
         .find(|agent| agent.agent_name == child_path.as_str())
         .expect("live child should be listed");
-    assert_eq!(
-        live_child.identity,
-        EffectiveAgentIdentity {
-            effective_model: Some(child_snapshot.model.clone()),
-            effective_model_provider_id: Some(child_snapshot.model_provider_id.clone()),
-            effective_reasoning_effort: child_snapshot.reasoning_effort.clone(),
-            effective_service_tier: child_snapshot.service_tier.clone(),
-            identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
-        }
+    let live_identity = ModelVisibleAgentIdentity::from_live(
+        &child_thread.inference_identity_snapshot().await,
+        ModelVisibleIdentityEncoding::Json,
     );
+    assert_eq!(live_child.identity, live_identity);
+    let configured = live_child
+        .identity
+        .configured_identity
+        .as_ref()
+        .expect("live configured receipt");
+    assert_eq!(
+        configured.model.as_deref(),
+        Some(child_snapshot.model.as_str())
+    );
+    assert_eq!(
+        configured.model_provider_id.as_deref(),
+        Some(child_snapshot.model_provider_id.as_str())
+    );
+    assert_eq!(configured.reasoning_effort, child_snapshot.reasoning_effort);
+    assert_eq!(configured.service_tier, child_snapshot.service_tier);
 
     let stored_child = child_thread
         .read_thread(
@@ -392,18 +403,12 @@ async fn inspect_agent_tree_uses_live_and_stored_effective_identity_sources() {
 
     let stored_identity = harness
         .control
-        .get_agent_identity(child_thread_id)
+        .get_model_visible_agent_identity(child_thread_id)
         .await
         .expect("closed child identity should resolve from storage");
     assert_eq!(
         stored_identity,
-        EffectiveAgentIdentity {
-            effective_model: stored_child.model.clone(),
-            effective_model_provider_id: Some(stored_child.model_provider.clone()),
-            effective_reasoning_effort: stored_child.reasoning_effort.clone(),
-            effective_service_tier: None,
-            identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
-        }
+        ModelVisibleAgentIdentity::from_stored(&stored_child, ModelVisibleIdentityEncoding::Json,)
     );
 
     let all_tree = harness

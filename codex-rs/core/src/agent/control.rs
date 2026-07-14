@@ -1,4 +1,6 @@
 use crate::agent::AgentStatus;
+use crate::agent::identity::ModelVisibleAgentIdentity;
+use crate::agent::identity::ModelVisibleIdentityEncoding;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
@@ -26,7 +28,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -40,7 +41,6 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ReadThreadParams;
-use codex_thread_store::StoredThread;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -55,8 +55,6 @@ pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
 
-pub(crate) const SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT: &str = "thread_config_snapshot";
-pub(crate) const SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA: &str = "stored_thread_metadata";
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
 const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
     "inspect_agent_tree cannot include stale descendants because this session has no configured ",
@@ -94,52 +92,14 @@ pub(crate) struct LiveAgent {
 
 /// Internal inventory snapshot for a spawned sub-agent.
 ///
-/// `status` is the live agent state, while `effective_*` and `identity_source`
-/// are resolved from the config snapshot used to reconstruct the agent record.
+/// `status` is the live agent state, while `identity` is a bounded projection
+/// of configured settings and the latest real turn request.
 #[derive(Debug, Clone)]
 pub(crate) struct SubAgentInventoryInfo {
     pub(crate) nickname: Option<String>,
     pub(crate) role: Option<String>,
     pub(crate) status: AgentStatus,
-    pub(crate) identity: EffectiveAgentIdentity,
-}
-
-/// Effective inference identity and the authoritative source used to resolve it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct EffectiveAgentIdentity {
-    pub(crate) effective_model: Option<String>,
-    pub(crate) effective_model_provider_id: Option<String>,
-    pub(crate) effective_reasoning_effort: Option<ReasoningEffort>,
-    pub(crate) effective_service_tier: Option<String>,
-    pub(crate) identity_source: String,
-}
-
-impl EffectiveAgentIdentity {
-    fn from_thread_config_snapshot(snapshot: &ThreadConfigSnapshot) -> Self {
-        Self {
-            effective_model: Some(snapshot.model.clone()),
-            effective_model_provider_id: non_empty_identity_value(
-                snapshot.model_provider_id.clone(),
-            ),
-            effective_reasoning_effort: snapshot.reasoning_effort.clone(),
-            effective_service_tier: snapshot.service_tier.clone(),
-            identity_source: SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT.to_string(),
-        }
-    }
-
-    fn from_stored_thread(stored_thread: &StoredThread) -> Self {
-        Self {
-            effective_model: stored_thread.model.clone(),
-            effective_model_provider_id: non_empty_identity_value(
-                stored_thread.model_provider.clone(),
-            ),
-            effective_reasoning_effort: stored_thread.reasoning_effort.clone(),
-            // StoredThread does not currently persist service tier, so keep this
-            // field nullable instead of reconstructing it from ambient config.
-            effective_service_tier: None,
-            identity_source: SUBAGENT_IDENTITY_SOURCE_STORED_THREAD_METADATA.to_string(),
-        }
-    }
+    pub(crate) identity: ModelVisibleAgentIdentity,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -149,8 +109,7 @@ pub(crate) struct ListedAgent {
     pub(crate) last_task_message: Option<String>,
     pub(crate) has_active_subagents: bool,
     pub(crate) active_subagent_count: usize,
-    #[serde(flatten)]
-    pub(crate) identity: EffectiveAgentIdentity,
+    pub(crate) identity: ModelVisibleAgentIdentity,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -193,8 +152,7 @@ pub(crate) struct AgentTreeNode {
     pub(crate) direct_child_count: usize,
     pub(crate) descendant_count: usize,
     pub(crate) last_task_message_preview: Option<String>,
-    #[serde(flatten)]
-    pub(crate) identity: EffectiveAgentIdentity,
+    pub(crate) identity: ModelVisibleAgentIdentity,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -217,7 +175,7 @@ struct AgentTreeRecord {
     nickname: Option<String>,
     role: Option<String>,
     last_task_message_preview: Option<String>,
-    identity: EffectiveAgentIdentity,
+    identity: ModelVisibleAgentIdentity,
 }
 
 /// Control-plane handle for multi-agent operations.
@@ -443,7 +401,10 @@ impl AgentControl {
         let state = self.upgrade().ok()?;
         let thread = state.get_thread(thread_id).await.ok()?;
         let snapshot = thread.config_snapshot().await;
-        let identity = EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot);
+        let identity = ModelVisibleAgentIdentity::from_live(
+            &thread.inference_identity_snapshot().await,
+            ModelVisibleIdentityEncoding::Json,
+        );
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             agent_nickname,
             agent_role,
@@ -461,17 +422,17 @@ impl AgentControl {
         })
     }
 
-    /// Resolve an agent's effective identity from the authoritative live
-    /// snapshot, falling back to durable thread metadata after eviction.
-    pub(crate) async fn get_agent_identity(
+    /// Resolve a bounded model-visible identity receipt from live state,
+    /// falling back to durable thread metadata after eviction.
+    pub(crate) async fn get_model_visible_agent_identity(
         &self,
         thread_id: ThreadId,
-    ) -> Option<EffectiveAgentIdentity> {
+    ) -> Option<ModelVisibleAgentIdentity> {
         let state = self.upgrade().ok()?;
         if let Ok(thread) = state.get_thread(thread_id).await {
-            let snapshot = thread.config_snapshot().await;
-            return Some(EffectiveAgentIdentity::from_thread_config_snapshot(
-                &snapshot,
+            return Some(ModelVisibleAgentIdentity::from_live(
+                &thread.inference_identity_snapshot().await,
+                ModelVisibleIdentityEncoding::Json,
             ));
         }
 
@@ -483,7 +444,12 @@ impl AgentControl {
             })
             .await
             .ok()
-            .map(|stored_thread| EffectiveAgentIdentity::from_stored_thread(&stored_thread))
+            .map(|stored_thread| {
+                ModelVisibleAgentIdentity::from_stored(
+                    &stored_thread,
+                    ModelVisibleIdentityEncoding::Json,
+                )
+            })
     }
 
     pub(crate) async fn get_agent_config_snapshot(
@@ -595,13 +561,15 @@ impl AgentControl {
                 .as_ref()
                 .is_none_or(|prefix| agent_matches_prefix(Some(&root_path), prefix))
             {
-                let snapshot = root_thread.config_snapshot().await;
                 listed_rows.push((
                     root_thread_id,
                     root_path.to_string(),
                     root_status,
                     Some(ROOT_LAST_TASK_MESSAGE.to_string()),
-                    EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot),
+                    ModelVisibleAgentIdentity::from_live(
+                        &root_thread.inference_identity_snapshot().await,
+                        ModelVisibleIdentityEncoding::Json,
+                    ),
                 ));
             }
         }
@@ -627,13 +595,15 @@ impl AgentControl {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| thread_id.to_string());
             let last_task_message = metadata.last_task_message.clone();
-            let snapshot = thread.config_snapshot().await;
             listed_rows.push((
                 thread_id,
                 agent_name,
                 agent_status,
                 last_task_message,
-                EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot),
+                ModelVisibleAgentIdentity::from_live(
+                    &thread.inference_identity_snapshot().await,
+                    ModelVisibleIdentityEncoding::Json,
+                ),
             ));
         }
 
@@ -1281,7 +1251,6 @@ impl AgentControl {
         match session_state {
             AgentSessionState::Live => {
                 let thread = state.get_thread(thread_id).await?;
-                let snapshot = thread.config_snapshot().await;
                 let metadata =
                     self.state
                         .agent_metadata_for_thread(thread_id)
@@ -1310,7 +1279,10 @@ impl AgentControl {
                     nickname: metadata.agent_nickname,
                     role: metadata.agent_role,
                     last_task_message_preview,
-                    identity: EffectiveAgentIdentity::from_thread_config_snapshot(&snapshot),
+                    identity: ModelVisibleAgentIdentity::from_live(
+                        &thread.inference_identity_snapshot().await,
+                        ModelVisibleIdentityEncoding::Json,
+                    ),
                 })
             }
             AgentSessionState::Stale => {
@@ -1330,7 +1302,10 @@ impl AgentControl {
                         )),
                         other => other,
                     })?;
-                let identity = EffectiveAgentIdentity::from_stored_thread(&stored_thread);
+                let identity = ModelVisibleAgentIdentity::from_stored(
+                    &stored_thread,
+                    ModelVisibleIdentityEncoding::Json,
+                );
 
                 Ok(AgentTreeRecord {
                     agent_name: stored_thread
@@ -1402,10 +1377,6 @@ fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<Threa
 
 fn inspect_agent_tree_state_db_unavailable() -> CodexErr {
     CodexErr::UnsupportedOperation(INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE.to_string())
-}
-
-fn non_empty_identity_value(value: String) -> Option<String> {
-    (!value.is_empty()).then_some(value)
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {

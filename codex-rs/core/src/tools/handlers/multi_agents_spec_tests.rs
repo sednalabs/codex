@@ -613,11 +613,7 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source",
+            "identity",
             "has_active_subagents",
             "active_subagent_count"
         ])
@@ -664,11 +660,7 @@ fn list_agents_tool_omits_active_descendants_without_capability_provider() {
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
 }
@@ -703,15 +695,12 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "direct_child_count",
             "descendant_count",
             "last_task_message_preview",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
     assert_eq!(
-        output_schema["properties"]["agents"]["items"]["properties"]["identity_source"]["enum"],
-        json!(["thread_config_snapshot", "stored_thread_metadata"])
+        output_schema["properties"]["agents"]["items"]["properties"]["identity"]["properties"]["configured_identity"]
+            ["anyOf"][0]["properties"]["source"]["enum"],
+        json!(["live_thread_config", "stored_thread_metadata"])
     );
 }

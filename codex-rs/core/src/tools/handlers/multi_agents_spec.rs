@@ -603,58 +603,76 @@ fn send_input_output_schema() -> Value {
     })
 }
 
-fn effective_agent_identity_output_properties() -> serde_json::Map<String, Value> {
-    serde_json::Map::from_iter([
-        (
-            "effective_model".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective model resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_model_provider_id".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective model provider resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_reasoning_effort".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective reasoning effort resolved for the agent, when available."
-            }),
-        ),
-        (
-            "effective_service_tier".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Effective service tier resolved for the agent, when available."
-            }),
-        ),
-        (
-            "identity_source".to_string(),
-            json!({
+fn model_visible_agent_identity_output_schema() -> Value {
+    let configured_receipt = json!({
+        "type": "object",
+        "properties": {
+            "model": { "type": ["string", "null"] },
+            "model_provider_id": { "type": ["string", "null"] },
+            "reasoning_effort": { "type": ["string", "null"] },
+            "service_tier": { "type": ["string", "null"] },
+            "source": {
                 "type": "string",
-                "enum": ["thread_config_snapshot", "stored_thread_metadata"],
-                "description": "Authoritative source used to resolve the effective identity."
-            }),
-        ),
-    ])
-}
-
-fn effective_agent_identity_required_fields() -> Vec<String> {
-    [
-        "effective_model",
-        "effective_model_provider_id",
-        "effective_reasoning_effort",
-        "effective_service_tier",
-        "identity_source",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+                "enum": ["live_thread_config", "stored_thread_metadata"]
+            }
+        },
+        "required": [
+            "model",
+            "model_provider_id",
+            "reasoning_effort",
+            "service_tier",
+            "source"
+        ],
+        "additionalProperties": false
+    });
+    let turn_request_receipt = json!({
+        "type": "object",
+        "properties": {
+            "turn_id": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] },
+            "model_provider_id": { "type": ["string", "null"] },
+            "reasoning_effort": { "type": ["string", "null"] },
+            "service_tier": { "type": ["string", "null"] },
+            "source": { "type": "string", "enum": ["turn_request"] }
+        },
+        "required": [
+            "turn_id",
+            "model",
+            "model_provider_id",
+            "reasoning_effort",
+            "service_tier",
+            "source"
+        ],
+        "additionalProperties": false
+    });
+    json!({
+        "type": "object",
+        "properties": {
+            "configured_identity": {
+                "anyOf": [configured_receipt, { "type": "null" }],
+                "description": "Configured thread inference settings and their provenance."
+            },
+            "latest_turn_request_identity": {
+                "anyOf": [turn_request_receipt, { "type": "null" }],
+                "description": "Latest real turn request identity after request normalization."
+            },
+            "identity_truncated": {
+                "type": "boolean",
+                "description": "Whether identity text was truncated or fields were omitted."
+            },
+            "identity_fields_omitted": {
+                "type": "number",
+                "description": "Number of identity fields omitted to enforce the output bound."
+            }
+        },
+        "required": [
+            "configured_identity",
+            "latest_turn_request_identity",
+            "identity_truncated",
+            "identity_fields_omitted"
+        ],
+        "additionalProperties": false
+    })
 }
 
 fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
@@ -689,8 +707,11 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
         "agent_status".to_string(),
         "last_task_message".to_string(),
     ];
-    agent_properties.extend(effective_agent_identity_output_properties());
-    agent_required.extend(effective_agent_identity_required_fields());
+    agent_properties.insert(
+        "identity".to_string(),
+        model_visible_agent_identity_output_schema(),
+    );
+    agent_required.push("identity".to_string());
     if include_active_descendants {
         agent_properties.insert(
             "has_active_subagents".to_string(),
@@ -758,7 +779,10 @@ fn inspect_agent_tree_output_schema() -> Value {
             json!({ "type": ["string", "null"] }),
         ),
     ]);
-    agent_properties.extend(effective_agent_identity_output_properties());
+    agent_properties.insert(
+        "identity".to_string(),
+        model_visible_agent_identity_output_schema(),
+    );
     let mut agent_required = [
         "agent_name",
         "depth",
@@ -773,7 +797,7 @@ fn inspect_agent_tree_output_schema() -> Value {
     .into_iter()
     .map(str::to_string)
     .collect::<Vec<_>>();
-    agent_required.extend(effective_agent_identity_required_fields());
+    agent_required.push("identity".to_string());
 
     json!({
         "type": "object",
