@@ -126,6 +126,32 @@ mod tests {
     }
 
     #[test]
+    fn rendered_identity_is_a_runtime_owned_developer_fragment() {
+        let current = identity("current-model");
+        let rendered = current.render();
+        let item = ContextualUserFragment::into(current);
+
+        let payload: serde_json::Value = serde_json::from_str(
+            rendered
+                .trim()
+                .strip_prefix(START_MARKER)
+                .and_then(|text| text.strip_suffix(END_MARKER))
+                .expect("balanced markers")
+                .trim(),
+        )
+        .expect("identity payload should be JSON");
+
+        assert_eq!(payload["configured_identity"]["model"], "current-model");
+        assert_eq!(
+            payload["latest_turn_request_identity"]["source"],
+            "turn_request"
+        );
+        assert_eq!(payload["identity_truncated"], false);
+        assert_eq!(payload["identity_fields_omitted"], 0);
+        assert!(SubagentRuntimeIdentity::matches_response_item(&item));
+    }
+
+    #[test]
     fn current_match_requires_exact_model_visible_projection() {
         let current = identity("current-model");
         let stale = ContextualUserFragment::into(identity("stale-model"));

@@ -8742,6 +8742,61 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
 }
 
 #[tokio::test]
+async fn runtime_identity_is_injected_once_only_for_thread_spawn_children() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path should parse")),
+        agent_nickname: Some("worker".to_string()),
+        agent_role: None,
+    });
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = thread_spawn_source.clone();
+    turn_context.session_source = thread_spawn_source;
+    let turn_context = Arc::new(turn_context);
+
+    session
+        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
+    session
+        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
+    let runtime_identity_count = session
+        .clone_history()
+        .await
+        .raw_items()
+        .iter()
+        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+        .count();
+    assert_eq!(runtime_identity_count, 1);
+
+    let (review_session, mut review_turn_context) = make_session_and_context().await;
+    review_session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .session_source = SessionSource::SubAgent(SubAgentSource::Review);
+    review_turn_context.session_source = SessionSource::SubAgent(SubAgentSource::Review);
+    review_session
+        .ensure_subagent_runtime_identity_context(&review_turn_context)
+        .await;
+    let review_identity_count = review_session
+        .clone_history()
+        .await
+        .raw_items()
+        .iter()
+        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+        .count();
+    assert_eq!(review_identity_count, 0);
+}
+
+#[tokio::test]
 async fn build_initial_context_adds_one_runtime_identity_only_for_thread_spawn_children() {
     let (session, mut turn_context) = make_session_and_context().await;
     let thread_spawn_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
