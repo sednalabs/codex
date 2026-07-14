@@ -437,7 +437,7 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         .control
         .get_model_visible_agent_identity(child_thread_id)
         .await
-        .expect("closed child identity should resolve from storage");
+        .expect("unloaded child identity should resolve from storage");
     assert_eq!(
         stored_identity,
         ModelVisibleAgentIdentity::from_stored(&stored_child, ModelVisibleIdentityEncoding::Json,)
@@ -455,28 +455,6 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         stored_configured.reasoning_effort,
         Some(ReasoningEffort::Low)
     );
-
-    let all_tree = harness
-        .control
-        .inspect_agent_tree(
-            root_thread_id,
-            &SessionSource::Exec,
-            /*target*/ None,
-            /*agent_roots*/ None,
-            AgentTreeScope::All,
-            /*max_depth*/ 2,
-            /*max_agents*/ 10,
-        )
-        .await
-        .expect("combined tree inspection should succeed");
-    let stale_child = all_tree
-        .agents
-        .iter()
-        .find(|agent| agent.agent_name == child_path.as_str())
-        .expect("stale child should be listed");
-    assert_eq!(stale_child.session_state, AgentSessionState::Stale);
-    assert_eq!(stale_child.agent_status, None);
-    assert_eq!(stale_child.identity, stored_identity);
 
     let mut conflicting_resume_config = config;
     conflicting_resume_config.model = Some("gpt-5.2".to_string());
@@ -501,6 +479,33 @@ async fn identity_receipt_survives_settings_update_eviction_and_reload() {
         resumed_identity.configured.configured_reasoning_effort,
         Some(ReasoningEffort::Low)
     );
+
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("reloaded child close should succeed");
+    let all_tree = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("combined tree inspection should succeed");
+    let stale_child = all_tree
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == child_path.as_str())
+        .expect("closed child should be listed as stale");
+    assert_eq!(stale_child.session_state, AgentSessionState::Stale);
+    assert_eq!(stale_child.agent_status, None);
+    assert_eq!(stale_child.identity, stored_identity);
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
