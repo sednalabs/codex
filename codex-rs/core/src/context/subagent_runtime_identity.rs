@@ -1,14 +1,11 @@
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use serde::Serialize;
 
 use super::ContextualUserFragment;
-use crate::ThreadConfigSnapshot;
-use crate::agent::control::EffectiveAgentIdentity;
+use crate::agent::identity::ModelVisibleAgentIdentity;
 
-const IDENTITY_SEMANTICS: &str = "latest_runtime_configured_request_identity_is_authoritative";
+const IDENTITY_SEMANTICS: &str = "configured_and_latest_turn_request_identity_are_separate";
 const USAGE_ACCOUNTING_SEMANTICS: &str = "not_terminal_provider_response_or_usage_accounting";
 const START_MARKER: &str = "<subagent_runtime_identity>";
 const END_MARKER: &str = "</subagent_runtime_identity>";
@@ -16,32 +13,20 @@ const END_MARKER: &str = "</subagent_runtime_identity>";
 /// Runtime-owned inference identity supplied to a spawned agent before sampling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubagentRuntimeIdentity {
-    identity: EffectiveAgentIdentity,
+    identity: ModelVisibleAgentIdentity,
 }
 
 #[derive(Serialize)]
 struct SubagentRuntimeIdentityPayload<'a> {
     #[serde(flatten)]
-    identity: &'a EffectiveAgentIdentity,
+    identity: &'a ModelVisibleAgentIdentity,
     identity_semantics: &'static str,
     usage_accounting: &'static str,
 }
 
 impl SubagentRuntimeIdentity {
-    pub(crate) fn new(identity: EffectiveAgentIdentity) -> Self {
+    pub(crate) fn new(identity: ModelVisibleAgentIdentity) -> Self {
         Self { identity }
-    }
-
-    pub(crate) fn from_thread_config_snapshot(snapshot: &ThreadConfigSnapshot) -> Option<Self> {
-        matches!(
-            &snapshot.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
-        .then(|| {
-            Self::new(EffectiveAgentIdentity::from_thread_config_snapshot(
-                snapshot,
-            ))
-        })
     }
 
     pub(crate) fn matches_response_item(item: &ResponseItem) -> bool {
@@ -90,16 +75,32 @@ impl ContextualUserFragment for SubagentRuntimeIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::ModelVisibleIdentityEncoding;
+    use crate::codex_thread::ConfiguredInferenceIdentity;
+    use crate::codex_thread::ThreadInferenceIdentitySnapshot;
+    use crate::codex_thread::TurnInferenceIdentity;
     use codex_protocol::openai_models::ReasoningEffort;
 
     fn identity(model: &str) -> SubagentRuntimeIdentity {
-        SubagentRuntimeIdentity::new(EffectiveAgentIdentity {
-            effective_model: Some(model.to_string()),
-            effective_model_provider_id: Some("provider".to_string()),
-            effective_reasoning_effort: Some(ReasoningEffort::High),
-            effective_service_tier: Some("priority".to_string()),
-            identity_source: "thread_config_snapshot".to_string(),
-        })
+        let snapshot = ThreadInferenceIdentitySnapshot {
+            configured: ConfiguredInferenceIdentity {
+                configured_model: model.to_string(),
+                configured_model_provider_id: "provider".to_string(),
+                configured_reasoning_effort: Some(ReasoningEffort::High),
+                configured_service_tier: Some("priority".to_string()),
+            },
+            latest_turn: Some(TurnInferenceIdentity {
+                turn_id: "turn-1".to_string(),
+                request_model: model.to_string(),
+                model_provider_id: "provider".to_string(),
+                requested_reasoning_effort: Some(ReasoningEffort::High),
+                request_service_tier: Some("priority".to_string()),
+            }),
+        };
+        SubagentRuntimeIdentity::new(ModelVisibleAgentIdentity::from_live(
+            &snapshot,
+            ModelVisibleIdentityEncoding::Json,
+        ))
     }
 
     #[test]
@@ -118,8 +119,13 @@ mod tests {
         )
         .expect("identity payload should be JSON");
 
-        assert_eq!(payload["effective_model"], "current-model");
-        assert_eq!(payload["identity_source"], "thread_config_snapshot");
+        assert_eq!(payload["configured_identity"]["model"], "current-model");
+        assert_eq!(
+            payload["latest_turn_request_identity"]["source"],
+            "turn_request"
+        );
+        assert_eq!(payload["identity_truncated"], false);
+        assert_eq!(payload["identity_fields_omitted"], 0);
         assert!(SubagentRuntimeIdentity::matches_response_item(&item));
     }
 }

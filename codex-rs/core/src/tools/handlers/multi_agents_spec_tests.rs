@@ -42,10 +42,13 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
 fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     let mut incompatible = model_preset("incompatible", /*show_in_picker*/ true);
     incompatible.multi_agent_version = Some(MultiAgentVersion::V1);
+    let mut unspecified = model_preset("unspecified", /*show_in_picker*/ true);
+    unspecified.multi_agent_version = None;
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![
             model_preset("visible", /*show_in_picker*/ true),
             model_preset("hidden", /*show_in_picker*/ false),
+            unspecified,
             incompatible,
         ],
         agent_type_description: "role help".to_string(),
@@ -82,6 +85,9 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert!(description.contains(
         "- `visible-model`: visible description Reasoning efforts: medium (default). Service tiers: priority."
+    ));
+    assert!(description.contains(
+        "- `unspecified-model`: unspecified description Reasoning efforts: medium (default). Service tiers: priority."
     ));
     assert!(!description.contains("hidden-model"));
     assert!(!description.contains("incompatible-model"));
@@ -530,21 +536,9 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         )
     );
     assert_eq!(parameters.required.as_ref(), None);
-    let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
-        output_schema["properties"]["message"]["description"],
+        output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
-    );
-    assert_eq!(
-        output_schema["properties"]["agent_identities"]["items"]["required"],
-        json!([
-            "agent_id",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
-        ])
     );
 }
 
@@ -584,7 +578,7 @@ fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
     );
     assert_eq!(
         output_schema["required"],
-        json!(["message", "requested_ids", "timed_out", "agent_identities"])
+        json!(["message", "requested_ids", "timed_out"])
     );
 }
 
@@ -613,17 +607,15 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
             .and_then(|schema| schema.description.as_deref()),
         Some("Task-path prefix filter without a trailing slash. Omit to list all live agents.")
     );
+    let output_schema = output_schema.expect("list_agents output schema");
+    assert_eq!(output_schema["properties"]["agents"]["maxItems"], 50);
     assert_eq!(
-        output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
+        output_schema["properties"]["agents"]["items"]["required"],
         json!([
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source",
+            "identity",
             "has_active_subagents",
             "active_subagent_count"
         ])
@@ -670,11 +662,7 @@ fn list_agents_tool_omits_active_descendants_without_capability_provider() {
             "agent_name",
             "agent_status",
             "last_task_message",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
 }
@@ -697,6 +685,22 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
     assert!(properties.contains_key("scope"));
     assert!(properties.contains_key("agent_roots"));
     let output_schema = output_schema.expect("inspect_agent_tree output schema");
+    assert_eq!(output_schema["properties"]["agents"]["maxItems"], 100);
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "root_agent_name",
+            "scope_applied",
+            "agent_roots_applied",
+            "max_depth_applied",
+            "max_agents_applied",
+            "truncated",
+            "scan_limit_reached",
+            "candidate_agents_omitted",
+            "summary",
+            "agents"
+        ])
+    );
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],
         json!([
@@ -709,15 +713,12 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "direct_child_count",
             "descendant_count",
             "last_task_message_preview",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier",
-            "identity_source"
+            "identity"
         ])
     );
     assert_eq!(
-        output_schema["properties"]["agents"]["items"]["properties"]["identity_source"]["enum"],
-        json!(["thread_config_snapshot", "stored_thread_metadata"])
+        output_schema["properties"]["agents"]["items"]["properties"]["identity"]["properties"]["configured_identity"]
+            ["anyOf"][0]["properties"]["source"]["enum"],
+        json!(["live_thread_config", "stored_thread_metadata"])
     );
 }

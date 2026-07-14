@@ -240,9 +240,15 @@ impl ThreadMetadataSync {
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
                     update.model = Some(turn_ctx.model.clone());
-                    update.reasoning_effort = turn_ctx.effort.clone();
+                    update.reasoning_effort_update = Some(turn_ctx.effort.clone());
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
+                }
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    let settings = &event.thread_settings;
+                    update.model = Some(settings.model.clone());
+                    update.model_provider = Some(settings.model_provider_id.clone());
+                    update.reasoning_effort_update = Some(settings.reasoning_effort.clone());
                 }
                 RolloutItem::EventMsg(EventMsg::UserMessage(user)) => {
                     self.observe_user_message(user, &mut update);
@@ -345,6 +351,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.model_provider.is_some()
         || update.model.is_some()
         || update.reasoning_effort.is_some()
+        || update.reasoning_effort_update.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
         || update.source.is_some()
@@ -383,6 +390,8 @@ mod tests {
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::user_input::UserInput;
@@ -472,6 +481,43 @@ mod tests {
         assert_eq!(update.patch.title, None);
         assert_eq!(update.patch.first_user_message, None);
         assert!(update.patch.updated_at.is_some());
+    }
+
+    #[test]
+    fn settings_events_replace_complete_configured_identity_and_preserve_clears() {
+        let thread_id = ThreadId::new();
+        let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));
+
+        let update = sync
+            .observe_appended_items(&[thread_settings_item(
+                "configured-model",
+                "configured-provider",
+                Some(codex_protocol::openai_models::ReasoningEffort::High),
+            )])
+            .expect("settings metadata update");
+        let expected = ThreadMetadataPatch {
+            model: Some("configured-model".to_string()),
+            model_provider: Some("configured-provider".to_string()),
+            reasoning_effort_update: Some(Some(
+                codex_protocol::openai_models::ReasoningEffort::High,
+            )),
+            updated_at: update.patch.updated_at,
+            ..Default::default()
+        };
+        assert_eq!(update.patch, expected);
+        sync.mark_pending_update_applied(&update);
+
+        let cleared = sync
+            .observe_appended_items(&[thread_settings_item("next-model", "next-provider", None)])
+            .expect("settings clear update");
+        let expected = ThreadMetadataPatch {
+            model: Some("next-model".to_string()),
+            model_provider: Some("next-provider".to_string()),
+            reasoning_effort_update: Some(None),
+            updated_at: cleared.patch.updated_at,
+            ..Default::default()
+        };
+        assert_eq!(cleared.patch, expected);
     }
 
     #[test]
@@ -598,6 +644,43 @@ mod tests {
             text_elements: Vec::new(),
             ..Default::default()
         }
+    }
+
+    fn thread_settings_item(
+        model: &str,
+        provider: &str,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) -> RolloutItem {
+        use codex_protocol::config_types::CollaborationMode;
+        use codex_protocol::config_types::ModeKind;
+        use codex_protocol::config_types::Settings;
+        use codex_protocol::models::PermissionProfile;
+
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: model.to_string(),
+                    model_provider_id: provider.to_string(),
+                    service_tier: None,
+                    approval_policy: Default::default(),
+                    approvals_reviewer: Default::default(),
+                    permission_profile: PermissionProfile::Disabled,
+                    active_permission_profile: None,
+                    cwd: serde_json::from_value(serde_json::json!("/tmp")).expect("absolute cwd"),
+                    reasoning_effort: reasoning_effort.clone(),
+                    reasoning_summary: None,
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: model.to_string(),
+                            reasoning_effort,
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ))
     }
 
     fn session_meta(thread_id: ThreadId) -> SessionMetaLine {

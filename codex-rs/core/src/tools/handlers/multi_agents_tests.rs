@@ -274,6 +274,9 @@ where
 #[derive(Debug, Deserialize)]
 struct ListAgentsResult {
     agents: Vec<ListedAgentResult>,
+    truncated: bool,
+    scan_limit_reached: bool,
+    candidate_agents_omitted: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,11 +286,24 @@ struct ListedAgentResult {
     last_task_message: Option<String>,
     has_active_subagents: bool,
     active_subagent_count: usize,
-    effective_model: Option<String>,
-    effective_model_provider_id: Option<String>,
-    effective_reasoning_effort: Option<ReasoningEffort>,
-    effective_service_tier: Option<String>,
-    identity_source: String,
+    identity: ModelVisibleIdentityResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelVisibleIdentityResult {
+    configured_identity: Option<ConfiguredIdentityResult>,
+    latest_turn_request_identity: Option<serde_json::Value>,
+    identity_truncated: bool,
+    identity_fields_omitted: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfiguredIdentityResult {
+    model: Option<String>,
+    model_provider_id: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
+    source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -575,6 +591,57 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "unspecified_backend_model",
+                "model": "gpt-5.4",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("a model without an explicit backend assignment should remain eligible");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -592,7 +659,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_name": "incompatible_model",
-                "model": "gpt-5.4",
+                "model": "gpt-5.6-luna",
                 "fork_turns": "none"
             })),
         ))
@@ -603,8 +670,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Unknown model `gpt-5.4` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra"
-                .to_string()
+            "Unknown model `gpt-5.6-luna` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.5, gpt-5.4, gpt-5.4-mini".to_string()
         )
     );
 }
@@ -1957,20 +2023,34 @@ async fn multi_agent_v2_list_agents_returns_completed_status_without_encrypted_s
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
     assert_eq!(worker.last_task_message, None);
+    let configured_identity = worker
+        .identity
+        .configured_identity
+        .as_ref()
+        .expect("worker configured identity");
     assert_eq!(
-        worker.effective_model.as_deref(),
+        configured_identity.model.as_deref(),
         Some(child_snapshot.model.as_str())
     );
     assert_eq!(
-        worker.effective_model_provider_id.as_deref(),
+        configured_identity.model_provider_id.as_deref(),
         Some(child_snapshot.model_provider_id.as_str())
     );
     assert_eq!(
-        worker.effective_reasoning_effort,
+        configured_identity.reasoning_effort,
         child_snapshot.reasoning_effort
     );
-    assert_eq!(worker.effective_service_tier, child_snapshot.service_tier);
-    assert_eq!(worker.identity_source, "thread_config_snapshot");
+    assert_eq!(
+        configured_identity.service_tier,
+        child_snapshot.service_tier
+    );
+    assert_eq!(configured_identity.source, "live_thread_config");
+    assert_eq!(worker.identity.latest_turn_request_identity, None);
+    assert!(!worker.identity.identity_truncated);
+    assert_eq!(worker.identity.identity_fields_omitted, 0);
+    assert!(!result.truncated);
+    assert!(!result.scan_limit_reached);
+    assert_eq!(result.candidate_agents_omitted, 0);
     assert_eq!(success, Some(true));
 }
 
@@ -4030,7 +4110,6 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             pending_ids: Vec::new(),
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
-            agent_identities: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -4080,12 +4159,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         .expect("worker metadata")
         .agent_path
         .expect("worker path");
-    let expected_identity = session
-        .services
-        .agent_control
-        .get_agent_identity(agent_id)
-        .await
-        .expect("worker identity should resolve");
 
     session
         .input_queue
@@ -4124,12 +4197,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             pending_ids: vec![agent_id],
             completion_reason: CollabWaitingCompletionReason::Mailbox,
             timed_out: false,
-            agent_identities: vec![
-                crate::tools::handlers::multi_agents_v2::wait::WaitAgentIdentity {
-                    agent_id,
-                    identity: expected_identity,
-                },
-            ],
         }
     );
     assert_eq!(success, None);
