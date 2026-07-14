@@ -1843,6 +1843,210 @@ pub struct InferenceCallEvent {
     /// Exact per-response usage. Present only on completed observations when
     /// the provider supplied usage for that response.
     pub token_usage: Option<TokenUsage>,
+    /// String fields shortened to fit the durable observation limits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub truncated_fields: Vec<InferenceCallField>,
+    /// Optional evidence removed to fit lifecycle or aggregate-size limits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_fields: Vec<InferenceCallField>,
+}
+
+pub const INFERENCE_CALL_ID_MAX_BYTES: usize = 64;
+pub const INFERENCE_CALL_STRING_MAX_BYTES: usize = 512;
+pub const INFERENCE_CALL_EVENT_MAX_BYTES: usize = 4096;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum InferenceCallField {
+    TurnId,
+    ConfiguredProvider,
+    ConfiguredModel,
+    ConfiguredServiceTier,
+    RequestedModel,
+    RequestedServiceTier,
+    ResponseId,
+    UpstreamRequestId,
+    ObservedModel,
+    ObservedModelSnapshot,
+    ObservedServiceTier,
+    TokenUsage,
+}
+
+impl InferenceCallEvent {
+    /// Applies the durable observation bounds without changing the internal call id.
+    ///
+    /// `None` means the event cannot fit without changing its exact call id. Runtime-authored
+    /// ids are UUIDs and therefore always satisfy this invariant.
+    pub fn into_durable(mut self) -> Option<Self> {
+        if self.inference_call_id.len() > INFERENCE_CALL_ID_MAX_BYTES {
+            return None;
+        }
+
+        self.truncated_fields.clear();
+        self.omitted_fields.clear();
+        for (field, value) in [
+            (InferenceCallField::TurnId, &mut self.turn_id),
+            (
+                InferenceCallField::ConfiguredProvider,
+                &mut self.configured_provider,
+            ),
+            (
+                InferenceCallField::ConfiguredModel,
+                &mut self.configured_model,
+            ),
+            (
+                InferenceCallField::RequestedModel,
+                &mut self.requested_model,
+            ),
+        ] {
+            truncate_inference_string(value, field, &mut self.truncated_fields);
+        }
+        for (field, value) in [
+            (
+                InferenceCallField::ConfiguredServiceTier,
+                &mut self.configured_service_tier,
+            ),
+            (
+                InferenceCallField::RequestedServiceTier,
+                &mut self.requested_service_tier,
+            ),
+            (InferenceCallField::ResponseId, &mut self.response_id),
+            (
+                InferenceCallField::UpstreamRequestId,
+                &mut self.upstream_request_id,
+            ),
+            (InferenceCallField::ObservedModel, &mut self.observed_model),
+            (
+                InferenceCallField::ObservedModelSnapshot,
+                &mut self.observed_model_snapshot,
+            ),
+            (
+                InferenceCallField::ObservedServiceTier,
+                &mut self.observed_service_tier,
+            ),
+        ] {
+            if let Some(value) = value {
+                truncate_inference_string(value, field, &mut self.truncated_fields);
+            }
+        }
+
+        if self.status != InferenceCallStatus::Completed {
+            for field in [
+                InferenceCallField::ResponseId,
+                InferenceCallField::ObservedModel,
+                InferenceCallField::ObservedModelSnapshot,
+                InferenceCallField::ObservedServiceTier,
+                InferenceCallField::TokenUsage,
+            ] {
+                self.omit_field(field);
+            }
+        }
+        if self.status == InferenceCallStatus::Started {
+            self.omit_field(InferenceCallField::UpstreamRequestId);
+        }
+
+        for field in [
+            InferenceCallField::ConfiguredServiceTier,
+            InferenceCallField::RequestedServiceTier,
+            InferenceCallField::ObservedServiceTier,
+            InferenceCallField::ObservedModelSnapshot,
+            InferenceCallField::ObservedModel,
+            InferenceCallField::UpstreamRequestId,
+            InferenceCallField::ResponseId,
+        ] {
+            if self.serialized_len()? <= INFERENCE_CALL_EVENT_MAX_BYTES {
+                return Some(self);
+            }
+            self.omit_field(field);
+        }
+
+        if self.serialized_len()? > INFERENCE_CALL_EVENT_MAX_BYTES {
+            for (field, value) in [
+                (InferenceCallField::TurnId, &mut self.turn_id),
+                (
+                    InferenceCallField::ConfiguredProvider,
+                    &mut self.configured_provider,
+                ),
+                (
+                    InferenceCallField::ConfiguredModel,
+                    &mut self.configured_model,
+                ),
+                (
+                    InferenceCallField::RequestedModel,
+                    &mut self.requested_model,
+                ),
+            ] {
+                truncate_inference_string_to(value, 128, field, &mut self.truncated_fields);
+            }
+        }
+
+        (self.serialized_len()? <= INFERENCE_CALL_EVENT_MAX_BYTES).then_some(self)
+    }
+
+    fn omit_field(&mut self, field: InferenceCallField) {
+        let present = match field {
+            InferenceCallField::ConfiguredServiceTier => {
+                self.configured_service_tier.take().is_some()
+            }
+            InferenceCallField::RequestedServiceTier => {
+                self.requested_service_tier.take().is_some()
+            }
+            InferenceCallField::ResponseId => self.response_id.take().is_some(),
+            InferenceCallField::UpstreamRequestId => self.upstream_request_id.take().is_some(),
+            InferenceCallField::ObservedModel => self.observed_model.take().is_some(),
+            InferenceCallField::ObservedModelSnapshot => {
+                self.observed_model_snapshot.take().is_some()
+            }
+            InferenceCallField::ObservedServiceTier => self.observed_service_tier.take().is_some(),
+            InferenceCallField::TokenUsage => self.token_usage.take().is_some(),
+            InferenceCallField::TurnId
+            | InferenceCallField::ConfiguredProvider
+            | InferenceCallField::ConfiguredModel
+            | InferenceCallField::RequestedModel => false,
+        };
+        if present && !self.omitted_fields.contains(&field) {
+            self.omitted_fields.push(field);
+        }
+    }
+
+    fn serialized_len(&self) -> Option<usize> {
+        serde_json::to_vec(&EventMsg::InferenceCall(self.clone()))
+            .ok()
+            .map(|value| value.len())
+    }
+}
+
+fn truncate_inference_string(
+    value: &mut String,
+    field: InferenceCallField,
+    truncated_fields: &mut Vec<InferenceCallField>,
+) {
+    truncate_inference_string_to(
+        value,
+        INFERENCE_CALL_STRING_MAX_BYTES,
+        field,
+        truncated_fields,
+    );
+}
+
+fn truncate_inference_string_to(
+    value: &mut String,
+    max_bytes: usize,
+    field: InferenceCallField,
+    truncated_fields: &mut Vec<InferenceCallField>,
+) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    if !truncated_fields.contains(&field) {
+        truncated_fields.push(field);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -4559,6 +4763,116 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+    use ts_rs::TS as _;
+
+    fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
+        InferenceCallEvent {
+            inference_call_id: "call-id-kept-exact".to_string(),
+            thread_id: ThreadId::from_string("01900000-0000-7000-8000-000000000001")
+                .expect("thread id"),
+            turn_id: "turn-1".to_string(),
+            status,
+            transport: InferenceCallTransport::ResponsesHttp,
+            configured_provider: "configured-provider".to_string(),
+            configured_model: "configured-model".to_string(),
+            configured_service_tier: Some("configured-tier".to_string()),
+            requested_model: "requested-model".to_string(),
+            requested_service_tier: Some("requested-tier".to_string()),
+            request_started_at_ms: 10,
+            request_completed_at_ms: Some(20),
+            response_id: Some("response-1".to_string()),
+            upstream_request_id: Some("request-1".to_string()),
+            observed_model: Some("observed-model".to_string()),
+            observed_model_snapshot: Some("observed-snapshot".to_string()),
+            observed_service_tier: Some("observed-tier".to_string()),
+            token_usage: Some(TokenUsage {
+                input_tokens: 11,
+                cached_input_tokens: 2,
+                output_tokens: 7,
+                reasoning_output_tokens: 3,
+                total_tokens: 18,
+            }),
+            truncated_fields: Vec::new(),
+            omitted_fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn inference_call_event_round_trips_legacy_wire_shape_and_typescript_contract() -> Result<()> {
+        let event = inference_call_event(InferenceCallStatus::Completed);
+        let wire = serde_json::to_value(EventMsg::InferenceCall(event.clone()))?;
+        assert_eq!(wire["type"], "inference_call");
+        let decoded: EventMsg = serde_json::from_value(wire)?;
+        let EventMsg::InferenceCall(decoded) = decoded else {
+            panic!("expected inference call event");
+        };
+        assert_eq!(decoded, event);
+
+        let mut legacy_wire = serde_json::to_value(event.clone())?;
+        legacy_wire
+            .as_object_mut()
+            .expect("object")
+            .remove("truncated_fields");
+        legacy_wire
+            .as_object_mut()
+            .expect("object")
+            .remove("omitted_fields");
+        assert_eq!(
+            serde_json::from_value::<InferenceCallEvent>(legacy_wire)?,
+            event
+        );
+
+        let declaration = InferenceCallEvent::decl();
+        assert!(declaration.contains("truncated_fields"));
+        assert!(declaration.contains("omitted_fields"));
+        Ok(())
+    }
+
+    #[test]
+    fn inference_call_event_bounds_strings_and_noncompleted_evidence() -> Result<()> {
+        let oversized = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES);
+        let mut event = inference_call_event(InferenceCallStatus::Completed);
+        event.turn_id.clone_from(&oversized);
+        event.configured_provider.clone_from(&oversized);
+        event.configured_model.clone_from(&oversized);
+        event.configured_service_tier = Some(oversized.clone());
+        event.requested_model.clone_from(&oversized);
+        event.requested_service_tier = Some(oversized.clone());
+        event.response_id = Some(oversized.clone());
+        event.upstream_request_id = Some(oversized.clone());
+        event.observed_model = Some(oversized.clone());
+        event.observed_model_snapshot = Some(oversized.clone());
+        event.observed_service_tier = Some(oversized);
+
+        let bounded = event.into_durable().expect("bounded event");
+        assert_eq!(bounded.inference_call_id, "call-id-kept-exact");
+        assert!(
+            serde_json::to_vec(&EventMsg::InferenceCall(bounded.clone()))?.len()
+                <= INFERENCE_CALL_EVENT_MAX_BYTES
+        );
+        assert!(bounded.turn_id.len() <= INFERENCE_CALL_STRING_MAX_BYTES);
+        assert!(bounded.configured_provider.len() <= INFERENCE_CALL_STRING_MAX_BYTES);
+        assert!(bounded.configured_model.len() <= INFERENCE_CALL_STRING_MAX_BYTES);
+        assert!(bounded.requested_model.len() <= INFERENCE_CALL_STRING_MAX_BYTES);
+        assert!(!bounded.truncated_fields.is_empty());
+        assert!(!bounded.omitted_fields.is_empty());
+
+        let failed = inference_call_event(InferenceCallStatus::Failed)
+            .into_durable()
+            .expect("failed event");
+        assert_eq!(failed.upstream_request_id.as_deref(), Some("request-1"));
+        assert!(failed.response_id.is_none());
+        assert!(failed.observed_model.is_none());
+        assert!(failed.observed_model_snapshot.is_none());
+        assert!(failed.observed_service_tier.is_none());
+        assert!(failed.token_usage.is_none());
+        assert!(
+            failed
+                .omitted_fields
+                .contains(&InferenceCallField::TokenUsage)
+        );
+        Ok(())
+    }
 
     #[test]
     fn feature_thread_source_serializes_as_its_app_owned_label() -> Result<()> {
