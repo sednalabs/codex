@@ -379,6 +379,13 @@ impl AgentControl {
             },
         )) = notification_source.as_ref()
         {
+            let turn_context = new_thread.thread.codex.session.new_default_turn().await;
+            new_thread
+                .thread
+                .codex
+                .session
+                .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+                .await;
             let client_metadata = match state.get_thread(*parent_thread_id).await {
                 Ok(parent_thread) => {
                     parent_thread

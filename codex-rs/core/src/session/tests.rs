@@ -8742,47 +8742,34 @@ async fn runtime_identity_is_cache_stable_and_refreshes_after_settings_change() 
         "unchanged identity should deduplicate"
     );
 
-    {
-        let mut state = session.state.lock().await;
-        let updated = state
-            .session_configuration
-            .apply(&SessionSettingsUpdate {
-                service_tier: Some(Some("priority".to_string())),
-                ..Default::default()
-            })
-            .expect("service tier update should apply");
-        state.session_configuration = updated;
-    }
-    session
-        .ensure_subagent_runtime_identity_context(turn_context.as_ref())
-        .await;
+    for (service_tier, expected_count) in [(Some("priority".to_string()), 2), (None, 3)] {
+        {
+            let mut state = session.state.lock().await;
+            state.session_configuration = state
+                .session_configuration
+                .apply(&SessionSettingsUpdate {
+                    service_tier: Some(service_tier),
+                    ..Default::default()
+                })
+                .expect("service tier update should apply");
+        }
+        session
+            .ensure_subagent_runtime_identity_context(turn_context.as_ref())
+            .await;
 
-    let history = session.clone_history().await;
-    let identities = history
-        .raw_items()
-        .iter()
-        .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        identities.len(),
-        2,
-        "changed identity should append one update"
-    );
-    let current_identity = {
         let state = session.state.lock().await;
-        let current_snapshot = state.session_configuration.thread_config_snapshot();
-        SubagentRuntimeIdentity::from_thread_config_snapshot(&current_snapshot)
-            .expect("thread-spawn identity")
-    };
-    assert!(
-        current_identity.matches_current_response_item(
-            identities
-                .last()
-                .copied()
-                .expect("latest identity fragment")
-        ),
-        "latest identity fragment should match the updated settings"
-    );
+        let current_identity = SubagentRuntimeIdentity::from_thread_config_snapshot(
+            &state.session_configuration.thread_config_snapshot(),
+        )
+        .expect("thread-spawn identity");
+        let items = state.history.raw_items();
+        let identity_count = items
+            .iter()
+            .filter(|item| SubagentRuntimeIdentity::matches_response_item(item))
+            .count();
+        assert_eq!(identity_count, expected_count);
+        assert!(current_identity.matches_latest_response_item(items));
+    }
 }
 
 #[tokio::test]
