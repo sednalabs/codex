@@ -204,7 +204,7 @@
       "type": "array"
     },
     "migrationSource": {
-      "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+      "description": "Migration-source selector used to produce the migration items. Pass the same value to\ndetection and import; missing or unrecognized values use the default source.",
       "type": [
         "string",
         "null"

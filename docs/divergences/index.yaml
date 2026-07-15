@@ -1503,6 +1503,44 @@
       "extraction_target": "domain-specific runtime capability adapters"
     },
     {
+      "id": "windows-sandbox-generated-default-normalization",
+      "title": "Side-effect-free Windows generated defaults",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "Windows workspace-write setup",
+        "restricted-token filesystem override resolution"
+      ],
+      "files": [
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/tests/suite/windows_sandbox.rs"
+      ],
+      "behavior": "Generated built-in metadata defaults are removed before the restricted-token backend decides whether direct runtime enforcement is required, so ordinary workspace-write remains on the legacy-equivalent path and neither Windows backend materializes absent metadata during setup. Explicit carveouts and pre-existing protected metadata remain enforced.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "cb79b3cdf9c5922bc32ce9dc55582a04a55989ee"
+      },
+      "guardrail_lane": "GitHub-hosted Bazel Windows tests",
+      "tests": [
+        "windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts",
+        "windows_elevated_does_not_create_missing_workspace_metadata",
+        "windows_restricted_token_does_not_create_missing_workspace_metadata",
+        "windows_restricted_token_supports_full_read_split_write_read_carveouts",
+        "legacy_workspace_write_delete_is_limited_to_writable_roots"
+      ],
+      "owner": "downstream",
+      "notes": "This carry preserves upstream PR #33430's side-effect-free setup contract and fixes restricted-token classification after generated defaults are filtered. It does not claim that NTFS ACLs reserve absent child names beneath a writable directory; existing protected metadata and explicit carveouts remain the enforceable boundary. Preserve the ordering until upstream performs the same normalization or introduces a side-effect-free filesystem interception mechanism.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "windows-sandbox-policy-adapter",
+      "hotspot_files": [
+        "codex-rs/sandboxing/src/windows.rs"
+      ],
+      "extraction_target": "upstream restricted-token policy normalization"
+    },
+    {
       "id": "external-agent-migration-repository-containment",
       "title": "Repository-contained external-agent migration",
       "status": "live",
@@ -1547,7 +1585,7 @@
       ],
       "owner": "downstream",
       "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. It protects against static redirected repository paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, and dangling target leaves with equivalent regression coverage.",
-      "upstreamability_tier": "upstream-candidate",
+      "upstreamability_tier": "upstream-pr",
       "boundary_type": "filesystem-containment",
       "hotspot_files": [
         "codex-rs/app-server/src/external_agent_migration/service.rs",

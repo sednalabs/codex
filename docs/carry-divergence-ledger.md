@@ -165,6 +165,33 @@ docs-only refresh commit that records this snapshot.
   - `docs/contributing.md`
   - `docs/downstream.md`
 
+### Windows Generated-Default Normalization
+
+- Windows workspace-write setup removes built-in protected-metadata defaults
+  before the restricted-token backend decides whether a direct split-policy
+  override is required. Ordinary workspace-write therefore remains
+  legacy-equivalent and neither backend creates absent `.git`, `.agents`, or
+  `.codex` paths during setup.
+- Pre-existing protected metadata and explicitly configured read-only carveouts
+  remain enforced. NTFS ACLs cannot reserve a nonexistent child name while
+  leaving its parent generally writable, so this carry does not claim that
+  opaque child processes cannot create an absent name.
+- Preserve this order until upstream performs the same normalization or supplies
+  side-effect-free filesystem interception. Do not replace it with persistent
+  sentinel directories or command-text parsing.
+- Hosted Windows guardrails:
+  `windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts`,
+  `windows_elevated_does_not_create_missing_workspace_metadata`, and
+  `windows_restricted_token_does_not_create_missing_workspace_metadata` for
+  side-effect-free setup; and
+  `windows_restricted_token_supports_full_read_split_write_read_carveouts` plus
+  `legacy_workspace_write_delete_is_limited_to_writable_roots` for explicit
+  carveout and pre-existing metadata boundaries.
+- Primary files:
+  - `codex-rs/sandboxing/src/windows.rs`
+  - `codex-rs/core/src/exec_tests.rs`
+  - `codex-rs/core/tests/suite/windows_sandbox.rs`
+
 ### Python Code Quality Corrections
 
 - Downstream carries three upstreamable Python maintenance corrections so

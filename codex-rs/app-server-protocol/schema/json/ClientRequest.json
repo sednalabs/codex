@@ -836,7 +836,7 @@
           ]
         },
         "source": {
-          "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource` to select the migration source.",
+          "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource`\nto select the migration source.",
           "type": [
             "string",
             "null"
@@ -854,7 +854,7 @@
           "type": "array"
         },
         "migrationSource": {
-          "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+          "description": "Migration-source selector used to produce the migration items. Pass the same value to\ndetection and import; missing or unrecognized values use the default source.",
           "type": [
             "string",
             "null"
