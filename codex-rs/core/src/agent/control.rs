@@ -505,11 +505,7 @@ impl AgentControl {
                 .as_ref()
                 .is_none_or(|prefix| agent_matches_prefix(Some(&root_path), prefix))
             {
-                listed_rows.push((
-                    root_thread_id,
-                    root_path.to_string(),
-                    root_status,
-                ));
+                listed_rows.push((root_thread_id, root_path.to_string(), root_status));
             }
         }
 

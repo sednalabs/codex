@@ -11,6 +11,8 @@ use codex_app_server_protocol::FsWatchParams;
 use codex_app_server_protocol::FsWatchResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
+#[cfg(test)]
+use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_file_watcher::DebouncedWatchReceiver;
 use codex_file_watcher::FileWatcher;
 use codex_file_watcher::FileWatcherSubscriber;
@@ -357,9 +359,10 @@ mod tests {
             match envelope {
                 OutgoingEnvelope::ToConnection {
                     message:
-                        OutgoingMessage::AppServerNotification(ServerNotification::FsChanged(
-                            notification,
-                        )),
+                        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                            notification: ServerNotification::FsChanged(notification),
+                            ..
+                        }),
                     write_complete_tx,
                     ..
                 } => {
@@ -743,7 +746,10 @@ mod tests {
             .expect("outgoing channel should remain open for expected notification");
         let OutgoingEnvelope::ToConnection {
             message:
-                OutgoingMessage::AppServerNotification(ServerNotification::FsChanged(notification)),
+                OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                    notification: ServerNotification::FsChanged(notification),
+                    ..
+                }),
             write_complete_tx,
             ..
         } = notification_envelope

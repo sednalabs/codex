@@ -889,6 +889,7 @@ mod tests {
             rate_limit_reached_type: None,
             plan_type: None,
             individual_limit: None,
+            spend_control_reached: None,
         });
         Event {
             id: turn_id.to_string(),

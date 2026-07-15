@@ -1189,9 +1189,9 @@ mod tests {
     use crate::history_cell::TranscriptDetailMode;
     use crate::legacy_core::config::edit::ConfigEdit;
     use crate::test_support::PathBufExt;
-    use codex_config::types::TuiTranscriptDetailMode;
     use codex_config::ConfigLayerEntry;
     use codex_config::ConfigLayerStack;
+    use codex_config::types::TuiTranscriptDetailMode;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffortPreset;
     use crossterm::event::KeyCode;

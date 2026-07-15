@@ -18,6 +18,8 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::CommandExecWriteResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
+#[cfg(test)]
+use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_core::config::StartedNetworkProxy;
 use codex_core::exec::ExecExpiration;
 use codex_core::exec::ExecExpirationOutcome;
@@ -1197,9 +1199,10 @@ mod tests {
             panic!("expected connection-scoped output delta");
         };
         assert_eq!(connection_id, ConnectionId(21));
-        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
-            notification,
-        )) = message
+        let OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::CommandExecOutputDelta(notification),
+            ..
+        }) = message
         else {
             panic!("expected command/exec output delta notification");
         };
@@ -1226,9 +1229,10 @@ mod tests {
             panic!("expected connection-scoped output delta");
         };
         assert_eq!(connection_id, ConnectionId(21));
-        let OutgoingMessage::AppServerNotification(ServerNotification::CommandExecOutputDelta(
-            notification,
-        )) = message
+        let OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::CommandExecOutputDelta(notification),
+            ..
+        }) = message
         else {
             panic!("expected command/exec output delta notification");
         };

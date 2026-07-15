@@ -480,10 +480,8 @@ impl App {
         else {
             return self.chat_widget.copy_last_agent_markdown_for_overlay();
         };
-        self.chat_widget.copy_transcript_turn_markdown_for_overlay(
-            &user_prompt,
-            agent_markdown.as_deref(),
-        )
+        self.chat_widget
+            .copy_transcript_turn_markdown_for_overlay(&user_prompt, agent_markdown.as_deref())
     }
 
     /// Handle Enter in overlay backtrack preview: confirm selection and reset state.
@@ -1228,7 +1226,7 @@ mod tests {
         ];
 
         assert_eq!(
-            transcript_turn_copy_source(&cells, 0),
+            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
             Some((
                 "first prompt".to_string(),
                 Some("first response".to_string()),
@@ -1247,7 +1245,7 @@ mod tests {
         ];
 
         assert_eq!(
-            transcript_turn_copy_source(&cells, 0),
+            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
             Some((
                 "plan this".to_string(),
                 Some("1. Inspect\n2. Repair".to_string()),
@@ -1266,7 +1264,7 @@ mod tests {
         ];
 
         assert_eq!(
-            transcript_turn_copy_source(&cells, 0),
+            transcript_turn_copy_source(&cells, /*user_cell_idx*/ 0),
             Some(("unfinished prompt".to_string(), None))
         );
     }

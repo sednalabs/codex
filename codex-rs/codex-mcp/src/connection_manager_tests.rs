@@ -970,8 +970,9 @@ async fn cancelling_startup_does_not_disable_a_ready_client() {
         .client()
         .await
         .expect("startup cancellation should not disable a ready client");
+    let tools = managed.listed_tools().await;
     assert_eq!(
-        model_tool_names(&managed.tools),
+        model_tool_names(&tools),
         HashSet::from([ToolName::namespaced("ready", "search")])
     );
 }
