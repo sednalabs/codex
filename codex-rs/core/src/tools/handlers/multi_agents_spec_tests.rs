@@ -612,7 +612,6 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
         json!([
             "agent_name",
             "agent_status",
-            "last_task_message",
             "has_active_subagents",
             "active_subagent_count"
         ])
@@ -655,7 +654,7 @@ fn list_agents_tool_omits_active_descendants_without_capability_provider() {
     assert!(!agent_properties.contains_key("active_subagent_count"));
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!(["agent_name", "agent_status"])
     );
 }
 
@@ -687,8 +686,7 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "nickname",
             "role",
             "direct_child_count",
-            "descendant_count",
-            "last_task_message_preview"
+            "descendant_count"
         ])
     );
 }

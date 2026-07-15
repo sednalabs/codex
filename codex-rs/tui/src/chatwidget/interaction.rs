@@ -273,14 +273,6 @@ impl ChatWidget {
         )
     }
 
-    pub(crate) fn truncate_agent_copy_history_to_user_turn_count(
-        &mut self,
-        user_turn_count: usize,
-    ) {
-        self.transcript
-            .truncate_copy_history_to_user_turn_count(user_turn_count);
-    }
-
     /// Inner implementation with an injectable clipboard backend for testing.
     pub(super) fn copy_last_agent_markdown_with(
         &mut self,
@@ -452,7 +444,7 @@ impl ChatWidget {
                 self.quit_shortcut_expires_at = None;
                 self.quit_shortcut_key = None;
                 self.bottom_pane.clear_quit_shortcut_hint();
-                if self.submit_op(AppCommand::interrupt_and_restore_prompt_if_no_output()) {
+                if self.submit_op(AppCommand::interrupt()) {
                     self.pause_active_goal_for_interrupt();
                 }
             } else {
@@ -470,9 +462,7 @@ impl ChatWidget {
 
         self.arm_quit_shortcut(key);
 
-        if self.is_cancellable_work_active()
-            && self.submit_op(AppCommand::interrupt_and_restore_prompt_if_no_output())
-        {
+        if self.is_cancellable_work_active() && self.submit_op(AppCommand::interrupt()) {
             self.pause_active_goal_for_interrupt();
         }
     }

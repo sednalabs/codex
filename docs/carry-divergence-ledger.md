@@ -361,6 +361,14 @@ docs-only refresh commit that records this snapshot.
   metadata, wait summaries, and `agent/control.rs`.
 - The historical `spawn_approval` argument was unused by both spawn handlers;
   the upstream removal is retained rather than carried as a phantom contract.
+- MultiAgentV2 keeps the configurable `agents` namespace and the shared usage
+  hint that distinguishes direct agent tool calls from `functions.exec` tools.
+  This is intentional downstream routing behavior, not a reason to retain old
+  handler implementations.
+- The 2026-07-15 sync adopts upstream's removal of `last_task_message` and
+  `last_task_message_preview` from `list_agents` and `inspect_agent_tree`.
+  Descendant counts, status, role, nickname, and live/stale structure remain,
+  but inventory output does not expose instruction content.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
@@ -381,7 +389,9 @@ docs-only refresh commit that records this snapshot.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
+  - `codex-rs/core/src/agent/control.rs`
   - `codex-rs/core/src/agent/role.rs`
+  - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
@@ -406,8 +416,9 @@ docs-only refresh commit that records this snapshot.
 - Session environment updates validate duplicate and unknown environment ids
   before mutating stored session state.
 - When a session cwd/environment update changes the legacy fallback cwd,
-  sticky environment selections retarget to that cwd instead of retaining stale
-  path selections.
+  the current upstream explicit-environment cwd and workspace-root semantics
+  are authoritative. The superseded fallback-cwd rewrite implementation is not
+  carried merely because it previously conflicted.
 - Default turns refresh runtime `ThreadEnvironments` from stored selections so
   explicit empty or non-fallback stored environments are honored.
 - Mailbox deferral must not overtake explicit steered user input, while
@@ -655,6 +666,11 @@ docs-only refresh commit that records this snapshot.
 - Tool-list change notifications advance a generation. Codex discards and
   retries a walk that crosses generations, atomically swaps only a complete
   replacement, and retains the last complete snapshot when refresh fails.
+- The 2026-07-15 sync re-homes this contract on upstream's
+  `connector_runtime` and `tool_catalog_cache` ownership. Startup, hard-refresh,
+  and list-changed fetches publish the raw complete catalogue to the applicable
+  shared cache before per-client filtering; the removed `codex_apps_cache.rs`
+  implementation is not carried.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
@@ -662,8 +678,11 @@ docs-only refresh commit that records this snapshot.
   happy-path page walk.
 - Primary files:
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/connectors/src/connector_runtime/mod.rs`
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
   - `codex-rs/codex-mcp/src/rmcp_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
+  - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
 
 ### MCP Server Safety Policy Extensions
@@ -780,6 +799,9 @@ docs-only refresh commit that records this snapshot.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
+- Selected-turn copy keeps `CopyStatus` success/error feedback in the
+  transcript overlay footer, including clipboard failures and expiry/replacement
+  behavior, so copy actions never fail silently.
 - Bottom-pane transient views run their pre-draw tick and completion path so
   request-user-input overlays and other timed active views can redraw,
   auto-resolve, and pop through the same active-view seam instead of stalling
@@ -818,10 +840,12 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/interaction.rs`
   - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
   - `codex-rs/tui/src/chatwidget/protocol.rs`
   - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/pager_overlay.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
@@ -937,6 +961,10 @@ docs-only refresh commit that records this snapshot.
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
   app-server/protocol maintenance rather than as standalone behavior.
+- The removed config template-interpolation module is deliberately not carry.
+  Effective config now follows upstream's authoritative layer-stack
+  materialization; old interpolation helpers and their tests must not be
+  resurrected during later syncs.
 
 ## Historical Carry Commits Now Upstream-Equivalent
 

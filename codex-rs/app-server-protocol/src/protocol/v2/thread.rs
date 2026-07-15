@@ -509,6 +509,12 @@ pub struct ThreadForkParams {
     #[ts(optional = nullable)]
     pub last_turn_id: Option<String>,
 
+    /// Optional turn id to fork before, excluding that turn and all later turns.
+    /// Cannot be combined with `last_turn_id`.
+    #[experimental("thread/fork.beforeTurnId")]
+    #[ts(optional = nullable)]
+    pub before_turn_id: Option<String>,
+
     /// [UNSTABLE] Specify the rollout path to fork from.
     /// If specified, the thread_id param will be ignored.
     #[experimental("thread/fork.path")]
@@ -577,6 +583,12 @@ pub struct ThreadForkParams {
     #[experimental("thread/fork.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
+    /// When true, carry the source thread's current goal into the fork without
+    /// starting its initial automatic continuation. The next explicit turn owns
+    /// the goal lifecycle, and normal automatic continuation resumes after it.
+    #[experimental("thread/fork.deferGoalContinuation")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_goal_continuation: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
@@ -1378,8 +1390,17 @@ pub struct ThreadItemsListParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadItemEntry {
+    /// Turn containing this item.
+    pub turn_id: String,
+    pub item: ThreadItem,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadItemsListResponse {
-    pub data: Vec<ThreadItem>,
+    pub data: Vec<ThreadItemEntry>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
@@ -1395,6 +1416,18 @@ pub struct ThreadTokenUsageUpdatedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub token_usage: ThreadTokenUsage,
+}
+
+/// Internal-only notification containing the exact usage from one upstream
+/// Responses API completion.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RawResponseCompletedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub response_id: String,
+    pub usage: Option<TokenUsageBreakdown>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

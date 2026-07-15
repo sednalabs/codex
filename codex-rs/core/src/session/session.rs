@@ -83,9 +83,6 @@ pub(crate) struct SessionConfiguration {
     /// Sticky thread-level environment selections plus the legacy cwd used
     /// when a turn does not select an environment.
     pub(super) environments: TurnEnvironmentSelections,
-    /// Thread-scoped runtime workspace roots for materializing symbolic
-    /// workspace permissions at session runtime.
-    pub(super) workspace_roots: Vec<AbsolutePathBuf>,
     /// Directory containing all Codex state for this session.
     pub(super) codex_home: AbsolutePathBuf,
     /// Optional user-facing name for the thread, updated during the session.
@@ -122,6 +119,20 @@ impl SessionConfiguration {
         &self.environments.environments
     }
 
+    pub(super) fn primary_workspace_roots(&self) -> Vec<AbsolutePathBuf> {
+        self.environments
+            .environments
+            .first()
+            .map(|environment| {
+                environment
+                    .workspace_roots
+                    .iter()
+                    .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn codex_home(&self) -> &AbsolutePathBuf {
         &self.codex_home
     }
@@ -131,10 +142,12 @@ impl SessionConfiguration {
     }
 
     pub(super) fn permission_profile(&self) -> PermissionProfile {
-        self.permission_profile_state
-            .permission_profile()
-            .clone()
-            .materialize_project_roots_with_workspace_roots(&self.workspace_roots)
+        self.permission_profile_state.permission_profile().clone()
+    }
+
+    fn materialized_permission_profile(&self) -> PermissionProfile {
+        self.permission_profile()
+            .materialize_project_roots_with_workspace_roots(&self.primary_workspace_roots())
     }
 
     pub(super) fn active_permission_profile(&self) -> Option<ActivePermissionProfile> {
@@ -162,7 +175,7 @@ impl SessionConfiguration {
     }
 
     pub(super) fn sandbox_policy(&self) -> SandboxPolicy {
-        let permission_profile = self.permission_profile();
+        let permission_profile = self.materialized_permission_profile();
         codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
             &permission_profile,
             self.cwd(),
@@ -170,7 +183,8 @@ impl SessionConfiguration {
     }
 
     pub(super) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
-        self.permission_profile().file_system_sandbox_policy()
+        self.materialized_permission_profile()
+            .file_system_sandbox_policy()
     }
 
     pub(super) fn network_sandbox_policy(&self) -> NetworkSandboxPolicy {
@@ -186,10 +200,10 @@ impl SessionConfiguration {
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
-            permission_profile: self.permission_profile(),
+            permission_profile: self.materialized_permission_profile(),
             active_permission_profile: self.active_permission_profile(),
             environments: self.environments.clone(),
-            workspace_roots: self.workspace_roots.clone(),
+            workspace_roots: self.primary_workspace_roots(),
             profile_workspace_roots: self.profile_workspace_roots().to_vec(),
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
@@ -268,33 +282,8 @@ impl SessionConfiguration {
             .environments
             .clone()
             .unwrap_or_else(|| self.environments.clone());
-        let cwd_changed = next_environments.legacy_fallback_cwd.as_path() != current_cwd.as_path();
-        if updates.environments.is_some() && cwd_changed {
-            let cwd = codex_utils_path_uri::PathUri::from_abs_path(
-                &next_environments.legacy_fallback_cwd,
-            );
-            for environment in &mut next_environments.environments {
-                environment.cwd = cwd.clone();
-            }
-        }
+        let cwd_changed = next_environments.legacy_fallback_cwd != current_cwd;
         next_configuration.environments = next_environments;
-        if let Some(workspace_roots) = updates.workspace_roots.clone() {
-            next_configuration.workspace_roots = workspace_roots;
-        } else if cwd_changed && self.workspace_roots.contains(&current_cwd) {
-            let mut retargeted_workspace_roots =
-                Vec::with_capacity(next_configuration.workspace_roots.len());
-            for root in &self.workspace_roots {
-                let root = if root == &current_cwd {
-                    next_configuration.cwd().clone()
-                } else {
-                    root.clone()
-                };
-                if !retargeted_workspace_roots.contains(&root) {
-                    retargeted_workspace_roots.push(root);
-                }
-            }
-            next_configuration.workspace_roots = retargeted_workspace_roots;
-        }
 
         if let Some(permission_profile) = updates.permission_profile.clone() {
             let active_permission_profile =
@@ -427,7 +416,6 @@ impl SessionConfiguration {
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) environments: Option<TurnEnvironmentSelections>,
-    pub(crate) workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub(crate) profile_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
@@ -718,7 +706,6 @@ impl Session {
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let mcp_runtime_context =
             McpRuntimeContext::new(Arc::clone(&environment_manager), mcp_runtime_cwd);
-        let mcp_runtime_context_for_auth = mcp_runtime_context.clone();
         let auth_and_mcp_fut = async move {
             let auth = auth_manager_clone.auth().await;
             let mcp_projection = mcp_manager_for_mcp
@@ -733,21 +720,7 @@ impl Session {
             let mcp_config = &mcp_projection.config;
             let mcp_servers = codex_mcp::effective_mcp_servers(mcp_config, auth.as_ref());
             let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(mcp_config);
-            let auth_statuses = compute_auth_statuses(
-                mcp_servers.iter(),
-                config_for_mcp.mcp_oauth_credentials_store_mode,
-                config_for_mcp.auth_keyring_backend_kind(),
-                auth.as_ref(),
-                &mcp_runtime_context_for_auth,
-            )
-            .await;
-            (
-                auth,
-                mcp_projection,
-                mcp_servers,
-                auth_statuses,
-                tool_plugin_provenance,
-            )
+            (auth, mcp_projection, mcp_servers, tool_plugin_provenance)
         }
         .instrument(info_span!(
             "session_init.auth_mcp",
@@ -758,7 +731,7 @@ impl Session {
         let (
             thread_persistence_result,
             state_db_ctx,
-            (auth, mcp_projection, mcp_servers, auth_statuses, tool_plugin_provenance),
+            (auth, mcp_projection, mcp_servers, tool_plugin_provenance),
         ) = tokio::join!(thread_persistence_fut, state_db_fut, auth_and_mcp_fut);
 
         let mut live_thread_init =
@@ -1025,7 +998,12 @@ impl Session {
                         )
                     });
             let (network_proxy, session_network_proxy) =
-                if let Some(spec) = config.permissions.network.as_ref() {
+                if let Some(spec) = config
+                    .permissions
+                    .network
+                    .as_ref()
+                    .filter(|spec| !cfg!(target_os = "windows") || spec.enabled())
+                {
                     let current_exec_policy = exec_policy.current();
                     let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
                         spec,
@@ -1228,7 +1206,7 @@ impl Session {
                     service_tier: session_configuration.service_tier.clone(),
                     approval_policy: session_configuration.approval_policy.value(),
                     approvals_reviewer: session_configuration.approvals_reviewer,
-                    permission_profile: session_configuration.permission_profile(),
+                    permission_profile: session_configuration.materialized_permission_profile(),
                     active_permission_profile: session_configuration.active_permission_profile(),
                     cwd: session_configuration.cwd().clone(),
                     reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
@@ -1262,7 +1240,6 @@ impl Session {
                 &mcp_servers,
                 config.mcp_oauth_credentials_store_mode,
                 config.auth_keyring_backend_kind(),
-                auth_statuses,
                 &session_configuration.approval_policy,
                 INITIAL_SUBMIT_ID.to_owned(),
                 tx_event.clone(),
@@ -1271,7 +1248,8 @@ impl Session {
                 mcp_runtime_context.clone(),
                 config.codex_home.to_path_buf(),
                 sess.services.mcp_manager.codex_apps_tools_cache(),
-                codex_apps_tools_cache_key(auth),
+                sess.services.mcp_manager.tool_catalog_cache(),
+                connector_runtime_context_key(auth),
                 config.prefix_mcp_tool_names(),
                 mcp_projection
                     .config

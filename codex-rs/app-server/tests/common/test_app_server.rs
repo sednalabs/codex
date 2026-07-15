@@ -192,6 +192,7 @@ impl TestAppServer {
         Ok(TurnEnvironmentParams {
             environment_id: selection.environment_id.clone(),
             cwd: selection.cwd.clone().into(),
+            runtime_workspace_roots: None,
         })
     }
 
@@ -1332,6 +1333,20 @@ impl TestAppServer {
             "apiKey": api_key,
         });
         self.send_login_account_request(params).await
+    }
+
+    /// Send an `account/login/start` JSON-RPC request for managed Amazon Bedrock login.
+    pub async fn send_login_account_amazon_bedrock_request(
+        &mut self,
+        api_key: &str,
+        region: &str,
+    ) -> anyhow::Result<i64> {
+        let params = serde_json::json!({
+            "type": "amazonBedrock",
+            "apiKey": api_key,
+            "region": region,
+        });
+        self.send_request("account/login/start", Some(params)).await
     }
 
     /// Send an `account/login/start` JSON-RPC request for ChatGPT login.

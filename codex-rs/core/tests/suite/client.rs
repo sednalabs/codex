@@ -1225,7 +1225,7 @@ async fn includes_session_id_thread_id_and_model_headers_in_request() {
     assert_eq!(request_authorization, "Bearer Test API Key");
     assert_eq!(
         request_body["prompt_cache_key"].as_str(),
-        Some(thread_id_string.as_str())
+        Some(session_id_string.as_str())
     );
     assert_codex_client_metadata(
         &request_body,
@@ -1582,7 +1582,9 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         .expect("resolve installation id");
     let thread_manager = ThreadManager::new(
         &config,
-        auth_manager,
+        auth_manager.clone(),
+        codex_core::build_models_manager(&config, auth_manager),
+        codex_core::CodexAppsToolsCache::default(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
@@ -3325,6 +3327,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                 },
                 "credits": null,
                 "individual_limit": null,
+                "spend_control_reached": null,
                 "plan_type": null,
                 "rate_limit_reached_type": null
             },
@@ -3368,6 +3371,13 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         .insert_header("x-codex-primary-over-secondary-limit-percent", "95.0")
         .insert_header("x-codex-primary-window-minutes", "15")
         .insert_header("x-codex-secondary-window-minutes", "60")
+        .insert_header("x-codex-credits-has-credits", "true")
+        .insert_header("x-codex-credits-unlimited", "false")
+        .insert_header("x-codex-credits-balance", "")
+        .insert_header(
+            "x-codex-rate-limit-reached-type",
+            "workspace_member_usage_limit_reached",
+        )
         .set_body_json(json!({
             "error": {
                 "type": "usage_limit_reached",
@@ -3402,10 +3412,15 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             "window_minutes": 60,
             "resets_at": null
         },
-        "credits": null,
+        "credits": {
+            "has_credits": true,
+            "unlimited": false,
+            "balance": null
+        },
         "individual_limit": null,
+        "spend_control_reached": null,
         "plan_type": null,
-        "rate_limit_reached_type": null
+        "rate_limit_reached_type": "workspace_member_usage_limit_reached"
     });
 
     let submission_id = codex
@@ -3443,7 +3458,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         unreachable!();
     };
     assert!(
-        error_event.message.to_lowercase().contains("usage limit"),
+        error_event.message.contains("spend cap set by the owner"),
         "unexpected error message for submission {submission_id}: {}",
         error_event.message
     );

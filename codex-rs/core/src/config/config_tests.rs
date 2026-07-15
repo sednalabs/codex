@@ -101,6 +101,92 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use super::*;
+
+async fn load_config_with_elevated_only_windows_sandbox_requirement(
+    cfg: ConfigToml,
+    overrides: ConfigOverrides,
+    codex_home: AbsolutePathBuf,
+) -> std::io::Result<Config> {
+    let requirements_toml = ConfigRequirementsToml {
+        windows: Some(codex_config::WindowsRequirementsToml {
+            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
+        }),
+        ..Default::default()
+    };
+    let mut requirements_with_sources = codex_config::ConfigRequirementsWithSources::default();
+    requirements_with_sources.merge_unset_fields(
+        codex_config::RequirementSource::Unknown,
+        requirements_toml.clone(),
+    );
+    let requirements = ConfigRequirements::try_from(requirements_with_sources)?;
+    let config_layer_stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)?;
+    Config::load_config_with_layer_stack(
+        codex_exec_server::LOCAL_FS.as_ref(),
+        cfg,
+        overrides,
+        codex_home,
+        config_layer_stack,
+    )
+    .await
+}
+
+#[test]
+fn windows_network_proxy_validation() {
+    let elevated_only = ConfigRequirementsToml {
+        windows: Some(codex_config::WindowsRequirementsToml {
+            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
+        }),
+        ..Default::default()
+    };
+    for (is_windows, requirements, network_proxy_enabled, allowed) in [
+        (true, ConfigRequirementsToml::default(), true, false),
+        (true, ConfigRequirementsToml::default(), false, true),
+        (true, elevated_only, true, true),
+        (
+            true,
+            ConfigRequirementsToml {
+                windows: Some(codex_config::WindowsRequirementsToml {
+                    allowed_sandbox_implementations: Some(vec![
+                        WindowsSandboxModeToml::Elevated,
+                        WindowsSandboxModeToml::Unelevated,
+                    ]),
+                }),
+                ..Default::default()
+            },
+            true,
+            false,
+        ),
+        (false, ConfigRequirementsToml::default(), true, true),
+    ] {
+        assert_eq!(
+            validate_windows_network_proxy_requirements_for_platform(
+                is_windows,
+                &requirements,
+                network_proxy_enabled,
+            )
+            .is_ok(),
+            allowed
+        );
+    }
+
+    for (is_windows, sandbox_level, network_proxy_enabled, allowed) in [
+        (true, WindowsSandboxLevel::Disabled, true, false),
+        (true, WindowsSandboxLevel::RestrictedToken, true, false),
+        (true, WindowsSandboxLevel::Elevated, true, true),
+        (true, WindowsSandboxLevel::RestrictedToken, false, true),
+        (false, WindowsSandboxLevel::RestrictedToken, true, true),
+    ] {
+        assert_eq!(
+            validate_windows_sandbox_network_proxy_compatibility_for_platform(
+                is_windows,
+                sandbox_level,
+                network_proxy_enabled,
+            )
+            .is_ok(),
+            allowed
+        );
+    }
+}
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
@@ -518,11 +604,15 @@ enabled = true
 reminder_threshold_tokens = 16000
 reminder_message_template = "Custom reminder: {n_remaining} tokens."
 guidance_message = "Preserve important state before compaction."
+auto_compact_fallback_prompt = "  Write notes immediately.  "
+auto_compact_fallback_buffer_tokens = 8000
 "#,
             TokenBudgetConfig {
                 reminder_threshold_tokens: Some(16_000),
                 reminder_message_template: "Custom reminder: {n_remaining} tokens.".to_string(),
                 guidance_message: Some("Preserve important state before compaction.".to_string()),
+                auto_compact_fallback_prompt: Some("Write notes immediately.".to_string()),
+                auto_compact_fallback_buffer_tokens: Some(8_000),
             },
         ),
     ] {
@@ -538,6 +628,26 @@ guidance_message = "Preserve important state before compaction."
         assert!(config.features.enabled(Feature::TokenBudget));
         assert_eq!(config.token_budget, Some(expected));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_overlong_auto_compact_fallback_prompt() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let prompt = "x".repeat(AUTO_COMPACT_FALLBACK_PROMPT_MAX_BYTES + 1);
+    let config_toml = toml::from_str(&format!(
+        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = {prompt:?}\n"
+    ))
+    .expect("TOML should deserialize");
+    let error = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("overlong fallback prompt should be rejected");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     Ok(())
 }
 
@@ -587,6 +697,55 @@ async fn load_config_rejects_non_positive_token_budget_reminder_threshold() -> s
             "features.token_budget.reminder_threshold_tokens must be positive"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_non_positive_auto_compact_fallback_buffer() -> std::io::Result<()> {
+    for auto_compact_fallback_buffer_tokens in [-1, 0] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(&format!(
+            "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = \"Write notes.\"\nauto_compact_fallback_buffer_tokens = {auto_compact_fallback_buffer_tokens}\n"
+        ))
+        .expect("TOML should deserialize");
+        let error = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("non-positive fallback buffer should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "features.token_budget.auto_compact_fallback_buffer_tokens must be positive"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_missing_auto_compact_fallback_buffer() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml = toml::from_str(
+        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = \"Write notes.\"\n",
+    )
+    .expect("TOML should deserialize");
+
+    let error = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("missing fallback buffer should be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "features.token_budget.auto_compact_fallback_buffer_tokens is required when auto_compact_fallback_prompt is set"
+    );
+
     Ok(())
 }
 
@@ -1619,7 +1778,7 @@ async fn network_proxy_feature_matrix_preserves_sandbox_network_semantics() -> s
                 ..Default::default()
             },
         };
-        let config = Config::load_from_base_config_with_overrides(
+        let config = load_config_with_elevated_only_windows_sandbox_requirement(
             base_config,
             ConfigOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
@@ -1664,6 +1823,13 @@ sandbox = "elevated"
     )?;
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
+        .cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                r#"[windows]
+allowed_sandbox_implementations = ["elevated"]
+"#,
+            ),
+        )
         .cli_overrides(vec![
             (
                 "features.network_proxy.enabled".to_string(),
@@ -1796,6 +1962,9 @@ async fn experimental_network_requirements_enable_proxy_without_feature() -> std
                 r#"
 [experimental_network]
 enabled = true
+
+[windows]
+allowed_sandbox_implementations = ["elevated"]
 "#,
             ),
         )
@@ -1819,7 +1988,7 @@ enabled = true
 async fn network_proxy_feature_uses_profile_network_proxy_settings() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
-    let config = Config::load_from_base_config_with_overrides(
+    let config = load_config_with_elevated_only_windows_sandbox_requirement(
         ConfigToml {
             features: Some(toml::from_str("network_proxy = true").expect("valid features")),
             default_permissions: Some("dev".to_string()),
@@ -10569,68 +10738,6 @@ non_code_mode_only = true
     assert!(config.multi_agent_v2.non_code_mode_only);
 
     Ok(())
-}
-
-#[tokio::test]
-async fn multi_agent_v2_usage_hint_templates_use_materialized_config_values() -> std::io::Result<()>
-{
-    let codex_home = TempDir::new()?;
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"[features.multi_agent_v2]
-enabled = true
-usage_hint_text = "Limit {{ features.multi_agent_v2.max_concurrent_threads_per_session }}"
-root_agent_usage_hint_text = "Root {{ features.multi_agent_v2.max_concurrent_threads_per_session }}"
-subagent_usage_hint_text = "Subagent {{ features.multi_agent_v2.max_concurrent_threads_per_session }}"
-"#,
-    )?;
-
-    let config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert_eq!(
-        config.multi_agent_v2.usage_hint_text.as_deref(),
-        Some("Limit 4")
-    );
-    assert_eq!(
-        config.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
-        Some("Root 4")
-    );
-    assert_eq!(
-        config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
-        Some("Subagent 4")
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn multi_agent_v2_usage_hint_templates_fail_when_placeholder_is_missing() {
-    let codex_home = TempDir::new().expect("create codex home");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"[features.multi_agent_v2]
-enabled = true
-usage_hint_text = "{{ features.multi_agent_v2.does_not_exist }}"
-"#,
-    )
-    .expect("write config");
-
-    let err = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await
-        .expect_err("config load should fail");
-
-    assert!(
-        err.to_string()
-            .contains("features.multi_agent_v2.does_not_exist"),
-        "unexpected error: {err}",
-    );
 }
 
 #[tokio::test]

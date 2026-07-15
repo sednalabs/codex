@@ -1170,6 +1170,7 @@ async fn mcp_sandbox_cwd_uses_matching_server_environment_uri() -> anyhow::Resul
             "remote".to_string(),
             environment,
             secondary_cwd.clone(),
+            Vec::new(),
             /*shell*/ None,
         ));
 
@@ -1440,7 +1441,6 @@ async fn host_owned_codex_apps_manager(
         &mcp_servers,
         turn_context.config.mcp_oauth_credentials_store_mode,
         turn_context.config.auth_keyring_backend_kind(),
-        HashMap::new(),
         &turn_context.approval_policy,
         turn_context.sub_id.clone(),
         tx_event,
@@ -1455,7 +1455,8 @@ async fn host_owned_codex_apps_manager(
         ),
         turn_context.config.codex_home.to_path_buf(),
         session.services.mcp_manager.codex_apps_tools_cache(),
-        codex_mcp::codex_apps_tools_cache_key(auth.as_ref()),
+        session.services.mcp_manager.tool_catalog_cache(),
+        codex_connectors::connector_runtime_context_key(auth.as_ref()),
         turn_context.config.prefix_mcp_tool_names(),
         rmcp::model::ElicitationCapability::default(),
         /*supports_openai_form_elicitation*/ false,

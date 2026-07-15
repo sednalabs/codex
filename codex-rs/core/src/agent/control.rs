@@ -55,7 +55,6 @@ use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
 
 pub(crate) const SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT: &str = "thread_config_snapshot";
-const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
 const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
     "inspect_agent_tree cannot include stale descendants because this session has no configured ",
     "state_db. Retry with scope=\"live\" for live-only inspection. For a completed sidecar, use ",
@@ -63,7 +62,6 @@ const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
     "<child-thread-id>`), or with parent thread id plus the exact agent_path if the child id is ",
     "unavailable."
 );
-
 mod execution;
 mod legacy;
 mod residency;
@@ -109,7 +107,6 @@ pub(crate) struct SubAgentInventoryInfo {
 pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
-    pub(crate) last_task_message: Option<String>,
     pub(crate) has_active_subagents: bool,
     pub(crate) active_subagent_count: usize,
 }
@@ -153,7 +150,6 @@ pub(crate) struct AgentTreeNode {
     pub(crate) role: Option<String>,
     pub(crate) direct_child_count: usize,
     pub(crate) descendant_count: usize,
-    pub(crate) last_task_message_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -175,7 +171,6 @@ struct AgentTreeRecord {
     agent_status: Option<AgentStatus>,
     nickname: Option<String>,
     role: Option<String>,
-    last_task_message_preview: Option<String>,
 }
 
 /// Control-plane handle for multi-agent operations.
@@ -249,23 +244,12 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         input: Vec<UserInput>,
     ) -> CodexResult<String> {
-        let last_task_message = non_empty_task_message(render_user_input_preview(&input));
-        let result = self
-            .handle_thread_request_result(
-                agent_id,
-                state,
-                state.send_op(agent_id, input.into()).await,
-            )
-            .await;
-        if result.is_ok() {
-            match last_task_message {
-                Some(last_task_message) => self
-                    .state
-                    .update_last_task_message(agent_id, last_task_message),
-                None => self.state.clear_last_task_message(agent_id),
-            }
-        }
-        result
+        self.handle_thread_request_result(
+            agent_id,
+            state,
+            state.send_op(agent_id, input.into()).await,
+        )
+        .await
     }
 
     pub(crate) async fn send_inter_agent_communication(
@@ -304,7 +288,6 @@ impl AgentControl {
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
     ) -> CodexResult<String> {
-        let last_task_message = last_task_message_from_communication(&communication);
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         let result = self
@@ -325,14 +308,6 @@ impl AgentControl {
                 &communication,
                 agent_id,
             );
-        }
-        if result.is_ok() {
-            match last_task_message {
-                Some(last_task_message) => self
-                    .state
-                    .update_last_task_message(agent_id, last_task_message),
-                None => self.state.clear_last_task_message(agent_id),
-            }
         }
         result
     }
@@ -534,7 +509,6 @@ impl AgentControl {
                     root_thread_id,
                     root_path.to_string(),
                     root_status,
-                    Some(ROOT_LAST_TASK_MESSAGE.to_string()),
                 ));
             }
         }
@@ -559,14 +533,13 @@ impl AgentControl {
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| thread_id.to_string());
-            let last_task_message = metadata.last_task_message.clone();
-            listed_rows.push((thread_id, agent_name, agent_status, last_task_message));
+            listed_rows.push((thread_id, agent_name, agent_status));
         }
 
         let mut active_descendant_counts = HashMap::<ThreadId, usize>::new();
         let agents = listed_rows
             .into_iter()
-            .map(|(thread_id, agent_name, agent_status, last_task_message)| {
+            .map(|(thread_id, agent_name, agent_status)| {
                 let active_subagent_count = compute_active_live_descendant_count(
                     thread_id,
                     &live_children_by_parent,
@@ -576,7 +549,6 @@ impl AgentControl {
                 ListedAgent {
                     agent_name,
                     agent_status,
-                    last_task_message,
                     has_active_subagents: active_subagent_count > 0,
                     active_subagent_count,
                 }
@@ -854,7 +826,6 @@ impl AgentControl {
                     role: record.role.clone(),
                     direct_child_count: tree_children.get(&thread_id).map_or(0, Vec::len),
                     descendant_count: descendant_counts.get(&thread_id).copied().unwrap_or(0),
-                    last_task_message_preview: record.last_task_message_preview.clone(),
                 })
             })
             .collect::<Vec<_>>();
@@ -967,6 +938,31 @@ impl AgentControl {
         });
     }
 
+    fn prepare_agent_metadata(
+        &self,
+        reservation: &mut crate::agent::registry::SpawnReservation,
+        config: &Config,
+        agent_path: Option<AgentPath>,
+        agent_role: Option<String>,
+        preferred_agent_nickname: Option<String>,
+    ) -> CodexResult<AgentMetadata> {
+        if let Some(agent_path) = agent_path.as_ref() {
+            reservation.reserve_agent_path(agent_path)?;
+        }
+        let candidate_names = spawn::agent_nickname_candidates(config, agent_role.as_deref());
+        let candidate_name_refs: Vec<&str> = candidate_names.iter().map(String::as_str).collect();
+        let agent_nickname = Some(reservation.reserve_agent_nickname_with_preference(
+            &candidate_name_refs,
+            preferred_agent_nickname.as_deref(),
+        )?);
+        Ok(AgentMetadata {
+            agent_id: None,
+            agent_path,
+            agent_nickname,
+            agent_role,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn prepare_thread_spawn(
         &self,
@@ -981,29 +977,20 @@ impl AgentControl {
         if depth == 1 {
             self.state.register_root_thread(parent_thread_id);
         }
-        if let Some(agent_path) = agent_path.as_ref() {
-            reservation.reserve_agent_path(agent_path)?;
-        }
-        let candidate_names = spawn::agent_nickname_candidates(config, agent_role.as_deref());
-        let candidate_name_refs: Vec<&str> = candidate_names.iter().map(String::as_str).collect();
-        let agent_nickname = Some(reservation.reserve_agent_nickname_with_preference(
-            &candidate_name_refs,
-            preferred_agent_nickname.as_deref(),
-        )?);
+        let agent_metadata = self.prepare_agent_metadata(
+            reservation,
+            config,
+            agent_path,
+            agent_role,
+            preferred_agent_nickname,
+        )?;
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth,
-            agent_path: agent_path.clone(),
-            agent_nickname: agent_nickname.clone(),
-            agent_role: agent_role.clone(),
+            agent_path: agent_metadata.agent_path.clone(),
+            agent_nickname: agent_metadata.agent_nickname.clone(),
+            agent_role: agent_metadata.agent_role.clone(),
         });
-        let agent_metadata = AgentMetadata {
-            agent_id: None,
-            agent_path,
-            agent_nickname,
-            agent_role,
-            last_task_message: None,
-        };
         Ok((session_source, agent_metadata))
     }
 
@@ -1028,7 +1015,6 @@ impl AgentControl {
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
         Some(
             parent_thread
-                .codex
                 .session
                 .services
                 .turn_environments
@@ -1051,14 +1037,12 @@ impl AgentControl {
         };
 
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
-        let parent_config = parent_thread.codex.session.get_config().await;
+        let parent_config = parent_thread.session.get_config().await;
         if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, child_config) {
             return None;
         }
 
-        Some(Arc::clone(
-            &parent_thread.codex.session.services.exec_policy,
-        ))
+        Some(Arc::clone(&parent_thread.session.services.exec_policy))
     }
 
     async fn open_thread_spawn_children(
@@ -1188,9 +1172,11 @@ impl AgentControl {
 
     pub(crate) async fn list_live_agent_subtree_thread_ids(
         &self,
-        root_thread_id: ThreadId,
+        agent_id: ThreadId,
     ) -> CodexResult<Vec<ThreadId>> {
-        self.live_thread_spawn_descendants(root_thread_id).await
+        let mut thread_ids = vec![agent_id];
+        thread_ids.extend(self.live_thread_spawn_descendants(agent_id).await?);
+        Ok(thread_ids)
     }
 
     async fn load_agent_tree_record(
@@ -1210,16 +1196,6 @@ impl AgentControl {
                             agent_id: Some(thread_id),
                             ..Default::default()
                         });
-                let last_task_message_preview =
-                    if metadata.agent_path.as_ref().is_some_and(AgentPath::is_root) {
-                        Some(ROOT_LAST_TASK_MESSAGE.to_string())
-                    } else {
-                        metadata
-                            .last_task_message
-                            .as_deref()
-                            .map(preview_agent_message)
-                    };
-
                 Ok(AgentTreeRecord {
                     agent_name: metadata
                         .agent_path
@@ -1230,7 +1206,6 @@ impl AgentControl {
                     agent_status: Some(thread.agent_status().await),
                     nickname: metadata.agent_nickname,
                     role: metadata.agent_role,
-                    last_task_message_preview,
                 })
             }
             AgentSessionState::Stale => {
@@ -1257,7 +1232,6 @@ impl AgentControl {
                     agent_status: None,
                     nickname: metadata.agent_nickname,
                     role: metadata.agent_role,
-                    last_task_message_preview: None,
                 })
             }
         }
@@ -1332,23 +1306,6 @@ fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> b
                 .strip_prefix(prefix.as_str())
                 .is_some_and(|suffix| suffix.starts_with('/'))
     })
-}
-
-fn preview_agent_message(message: &str) -> String {
-    let mut words = message.split_whitespace();
-    let Some(first) = words.next() else {
-        return String::new();
-    };
-    let mut normalized = first.to_string();
-    for word in words {
-        normalized.push(' ');
-        normalized.push_str(word);
-    }
-    let mut preview = normalized.chars().take(120).collect::<String>();
-    if normalized.chars().count() > 120 {
-        preview.push('…');
-    }
-    preview
 }
 
 fn compute_descendant_counts(
@@ -1475,15 +1432,7 @@ fn agent_name_is_same_or_descendant_of(agent_name: &str, parent_name: &str) -> b
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-pub(crate) fn render_input_preview(initial_operation: &Op) -> String {
-    match initial_operation {
-        Op::UserInput { items, .. } => render_user_input_preview(items),
-        Op::InterAgentCommunication { communication } => communication.content.clone(),
-        _ => String::new(),
-    }
-}
-
-pub(crate) fn render_user_input_preview(input: &[UserInput]) -> String {
+pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
     input
         .iter()
         .map(|item| match item {
@@ -1500,17 +1449,6 @@ pub(crate) fn render_user_input_preview(input: &[UserInput]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn last_task_message_from_communication(communication: &InterAgentCommunication) -> Option<String> {
-    if communication.encrypted_content.is_some() {
-        return None;
-    }
-    non_empty_task_message(communication.content.clone())
-}
-
-fn non_empty_task_message(message: String) -> Option<String> {
-    (!message.is_empty()).then_some(message)
 }
 
 fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {

@@ -622,19 +622,8 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
                 "allOf": [agent_status_output_schema()]
             }),
         ),
-        (
-            "last_task_message".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Most recent user or inter-agent instruction received by the agent, when available."
-            }),
-        ),
     ]);
-    let mut agent_required = vec![
-        "agent_name".to_string(),
-        "agent_status".to_string(),
-        "last_task_message".to_string(),
-    ];
+    let mut agent_required = vec!["agent_name".to_string(), "agent_status".to_string()];
     if include_active_descendants {
         agent_properties.insert(
             "has_active_subagents".to_string(),
@@ -742,8 +731,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "nickname": { "type": ["string", "null"] },
                         "role": { "type": ["string", "null"] },
                         "direct_child_count": { "type": "number" },
-                        "descendant_count": { "type": "number" },
-                        "last_task_message_preview": { "type": ["string", "null"] }
+                        "descendant_count": { "type": "number" }
                     },
                     "required": [
                         "agent_name",
@@ -753,8 +741,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "nickname",
                         "role",
                         "direct_child_count",
-                        "descendant_count",
-                        "last_task_message_preview"
+                        "descendant_count"
                     ],
                     "additionalProperties": false
                 }
@@ -1098,7 +1085,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}
-The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.
+The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns. Passing `fork_turns="none"` carries no surrounding context, while `fork_turns="all"` carries all surrounding context.
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#
