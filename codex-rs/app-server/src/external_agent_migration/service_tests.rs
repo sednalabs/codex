@@ -802,8 +802,11 @@ async fn detect_repo_rejects_symlinked_mcp_source() {
     let repo_root = root.path().join("repo");
     let external_mcp = root.path().join("external-mcp.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::write(&external_mcp, r#"{"mcpServers":{"outside":{"command":"outside"}}}"#)
-        .expect("write external MCP config");
+    fs::write(
+        &external_mcp,
+        r#"{"mcpServers":{"outside":{"command":"outside"}}}"#,
+    )
+    .expect("write external MCP config");
     let mcp_source = repo_root.join(REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE);
     std::os::unix::fs::symlink(&external_mcp, &mcp_source).expect("create MCP symlink");
 
@@ -940,16 +943,16 @@ async fn import_repo_hooks_rejects_symlinked_script_root() {
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
     fs::create_dir_all(repo_root.join(EXTERNAL_AGENT_DIR)).expect("create source config dir");
     fs::create_dir_all(&external_hooks).expect("create external hooks");
-    fs::write(external_hooks.join("outside.py"), "print('outside')")
-        .expect("write external hook");
+    fs::write(external_hooks.join("outside.py"), "print('outside')").expect("write external hook");
     fs::write(
         repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
         r#"{"hooks":{"Stop":[{"hooks":[{"command":"python .claude/hooks/outside.py"}]}]}}"#,
     )
     .expect("write source hooks");
-    let hooks_source = repo_root.join(EXTERNAL_AGENT_DIR).join(REPO_EXTERNAL_AGENT_HOOKS_DIR);
-    std::os::unix::fs::symlink(&external_hooks, &hooks_source)
-        .expect("create hooks symlink");
+    let hooks_source = repo_root
+        .join(EXTERNAL_AGENT_DIR)
+        .join(REPO_EXTERNAL_AGENT_HOOKS_DIR);
+    std::os::unix::fs::symlink(&external_hooks, &hooks_source).expect("create hooks symlink");
 
     let outcome = service_for_paths(
         root.path().join(EXTERNAL_AGENT_DIR),
@@ -1000,10 +1003,7 @@ async fn import_repo_skills_rejects_symlinked_source_root() {
     }])
     .await;
 
-    assert_single_symlink_import_error(
-        &outcome,
-        ExternalAgentConfigMigrationItemType::Skills,
-    );
+    assert_single_symlink_import_error(&outcome, ExternalAgentConfigMigrationItemType::Skills);
     assert_is_symlink(&repo_root.join(EXTERNAL_AGENT_DIR).join("skills"));
     assert!(!repo_root.join(".agents").exists());
 }
@@ -1047,12 +1047,12 @@ async fn import_repo_skills_rejects_symlinked_destination_root() {
     }])
     .await;
 
-    assert_single_symlink_import_error(
-        &outcome,
-        ExternalAgentConfigMigrationItemType::Skills,
-    );
+    assert_single_symlink_import_error(&outcome, ExternalAgentConfigMigrationItemType::Skills);
     assert_is_symlink(&repo_root.join(".agents"));
-    assert_eq!(fs::read_dir(external_target).expect("read target").count(), 0);
+    assert_eq!(
+        fs::read_dir(external_target).expect("read target").count(),
+        0
+    );
 }
 
 #[cfg(unix)]
@@ -1124,7 +1124,10 @@ async fn import_repo_hooks_rejects_symlinked_target_parent() {
 
     assert_single_symlink_import_error(&outcome, ExternalAgentConfigMigrationItemType::Hooks);
     assert_is_symlink(&repo_root.join(".codex"));
-    assert_eq!(fs::read_dir(external_target).expect("read target").count(), 0);
+    assert_eq!(
+        fs::read_dir(external_target).expect("read target").count(),
+        0
+    );
 }
 
 #[tokio::test]
