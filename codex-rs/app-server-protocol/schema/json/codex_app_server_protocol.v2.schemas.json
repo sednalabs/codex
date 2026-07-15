@@ -5013,6 +5013,23 @@
       ],
       "type": "object"
     },
+    "EnvironmentConnectionNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "threadId"
+      ],
+      "title": "EnvironmentConnectionNotification",
+      "type": "object"
+    },
     "ErrorNotification": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -12893,6 +12910,42 @@
             "params"
           ],
           "title": "Thread/goal/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread/environment/connected",
+              "title": "Thread/environment/connectedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/EnvironmentConnectionNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/environment/connectedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread/environment/disconnected",
+              "title": "Thread/environment/disconnectedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/EnvironmentConnectionNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/environment/disconnectedNotification",
           "type": "object"
         },
         {
