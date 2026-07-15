@@ -19,10 +19,8 @@ pub struct ThreadInferenceIdentitySidecar {
     pub latest_request: ThreadInferenceIdentityAuthority,
 }
 
-/// Presence-aware inference identity update owned by the thread store.
-///
-/// An omitted field is a no-op, an explicit `null` clears the authority, and an identity sets
-/// valid authority. Legacy-missing and malformed authority cannot be written through this API.
+/// Presence-aware inference identity update: omission is a no-op, `null` clears, and an identity
+/// sets valid authority. Legacy-missing and malformed authority cannot be written through it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadInferenceIdentitySidecarPatch {
     #[serde(
