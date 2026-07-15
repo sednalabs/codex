@@ -603,6 +603,30 @@ class DispatchSednaReleaseTests(unittest.TestCase):
 
 class RouteSelectionTests(unittest.TestCase):
     maxDiff = None
+    core_model_pinning_lane = "codex.core-subagent-model-pinning-targeted"
+    core_model_pinning_protected_paths = (
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/spawn.rs",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/core/src/agent/identity.rs",
+        "codex-rs/core/src/agent/mod.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/state/session.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
+        "codex-rs/tools/src/spawn_agent.rs",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+    )
     inference_identity_lane = "codex.thread-inference-identity-targeted"
     inference_identity_paths = (
         "codex-rs/protocol/src/inference_identity_tests.rs",
@@ -664,6 +688,52 @@ class RouteSelectionTests(unittest.TestCase):
             [
                 "codex.spawn-agent-tool-model-surface-targeted",
             ],
+        )
+
+    def test_core_model_pinning_route_requires_protected_source_path(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "core-subagent-model-pinning"
+        )
+        required_paths = route["required_any_paths"]
+
+        self.assertEqual(required_paths, list(self.core_model_pinning_protected_paths))
+        self.assertTrue(set(required_paths).issubset(route["allowed_paths"]))
+        self.assertTrue(all(path.startswith("codex-rs/") for path in required_paths))
+
+        for plumbing_path in (
+            "justfile",
+            ".github/validation-lanes.json",
+            ".github/scripts/test_ci_planners.py",
+        ):
+            with self.subTest(plumbing_path=plumbing_path):
+                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                    [plumbing_path],
+                    self.routes,
+                )
+                self.assertNotIn(self.core_model_pinning_lane, lanes)
+
+    def test_core_model_pinning_source_with_plumbing_routes_to_lane(self) -> None:
+        protected_path = "codex-rs/core/src/agent/identity.rs"
+        self.assertEqual(
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                [protected_path],
+                self.routes,
+            ),
+            [self.core_model_pinning_lane],
+        )
+        self.assertEqual(
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                [
+                    protected_path,
+                    "justfile",
+                    ".github/validation-lanes.json",
+                    ".github/scripts/test_ci_planners.py",
+                ],
+                self.routes,
+            ),
+            [self.core_model_pinning_lane],
         )
 
     def test_inference_identity_complete_path_set_routes_and_materializes_lane(
