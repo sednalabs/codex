@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
@@ -8,6 +9,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
+use crate::decode_thread_inference_identity_authority;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
@@ -217,6 +219,105 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
+}
+
+#[tokio::test]
+async fn inference_identity_authority_migration_preserves_populated_0044_row() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(/*max_connections*/ 1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(/*version*/ 44)
+        .run(&pool)
+        .await
+        .expect("0044 schema should apply");
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider,
+    model, reasoning_effort, cwd, title, sandbox_policy, approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .bind("/tmp/legacy-0044.jsonl")
+    .bind(/*value*/ 1_700_000_000_i64)
+    .bind(/*value*/ 1_700_000_100_i64)
+    .bind("cli")
+    .bind("legacy-provider")
+    .bind("legacy-model")
+    .bind("high")
+    .bind("/tmp")
+    .bind("Legacy row")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(&pool)
+    .await
+    .expect("0044 legacy row should insert");
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("identity authority migration should apply");
+    let row = sqlx::query(
+        r#"
+SELECT rollout_path, created_at, updated_at, source, model_provider, model,
+       reasoning_effort, cwd, title, sandbox_policy, approval_mode,
+       configured_inference_identity_authority,
+       latest_request_inference_identity_authority
+FROM threads WHERE id = ?
+        "#,
+    )
+    .bind("00000000-0000-0000-0000-000000000045")
+    .fetch_one(&pool)
+    .await
+    .expect("upgraded legacy row should load");
+    assert_eq!(
+        (
+            row.get::<String, _>("rollout_path"),
+            row.get::<i64, _>("created_at"),
+            row.get::<i64, _>("updated_at"),
+            row.get::<String, _>("source"),
+            row.get::<String, _>("model_provider"),
+            row.get::<Option<String>, _>("model"),
+            row.get::<Option<String>, _>("reasoning_effort"),
+            row.get::<String, _>("cwd"),
+            row.get::<String, _>("title"),
+            row.get::<String, _>("sandbox_policy"),
+            row.get::<String, _>("approval_mode"),
+        ),
+        (
+            "/tmp/legacy-0044.jsonl".to_string(),
+            1_700_000_000_i64,
+            1_700_000_100_i64,
+            "cli".to_string(),
+            "legacy-provider".to_string(),
+            Some("legacy-model".to_string()),
+            Some("high".to_string()),
+            "/tmp".to_string(),
+            "Legacy row".to_string(),
+            "read-only".to_string(),
+            "on-request".to_string(),
+        )
+    );
+    let configured_raw = row.get::<Option<String>, _>("configured_inference_identity_authority");
+    let latest_request_raw =
+        row.get::<Option<String>, _>("latest_request_inference_identity_authority");
+    assert_eq!(
+        (configured_raw.as_deref(), latest_request_raw.as_deref()),
+        (None, None)
+    );
+    assert_eq!(
+        (
+            decode_thread_inference_identity_authority(configured_raw.as_deref()),
+            decode_thread_inference_identity_authority(latest_request_raw.as_deref()),
+        ),
+        (
+            ThreadInferenceIdentityAuthority::LegacyMissing,
+            ThreadInferenceIdentityAuthority::LegacyMissing,
+        )
+    );
 }
 
 #[tokio::test]

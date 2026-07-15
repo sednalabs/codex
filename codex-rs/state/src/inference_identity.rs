@@ -154,3 +154,7 @@ pub fn encode_thread_inference_identity_authority(
     .map(Some)
     .map_err(ThreadInferenceIdentityAuthorityEncodeError::Serialization)
 }
+
+#[cfg(test)]
+#[path = "inference_identity_tests.rs"]
+mod tests;

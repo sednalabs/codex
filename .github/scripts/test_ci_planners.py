@@ -2610,6 +2610,36 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertTrue(commands)
         self.assertTrue(all("--no-tests=fail" in command for command in commands))
+        package_selectors = {
+            "codex-protocol": (
+                "inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
+            ),
+            "codex-state": (
+                "inference_identity::tests::authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
+                "migrations::tests::inference_identity_authority_migration_preserves_populated_0044_row",
+            ),
+            "codex-thread-store": (
+                "inference_identity::tests::inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
+            ),
+        }
+        all_proof_selectors = tuple(
+            selector for selectors in package_selectors.values() for selector in selectors
+        )
+        for package, selectors in package_selectors.items():
+            package_commands = [
+                command for command in commands if f"-p {package}" in command
+            ]
+            self.assertTrue(package_commands, msg=f"{package} must be compiled")
+            for selector in selectors:
+                matching = [
+                    command for command in package_commands if selector in command
+                ]
+                self.assertEqual(len(matching), 1, msg=f"{selector} must resolve once")
+                self.assertIn("--exact", matching[0])
+                self.assertEqual(
+                    [candidate for candidate in all_proof_selectors if candidate in matching[0]],
+                    [selector],
+                )
         self.assertIn(
             "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
             body,
