@@ -78,6 +78,8 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
+    let local_cwd = TempDir::new()?;
+    let local_cwd_path = local_cwd.path().abs();
     let first_call_id = "guardian-network-approved";
     let second_call_id = "guardian-network-denied";
     let first_command = network_fetch_args(LOCAL_ENVIRONMENT_ID)["cmd"]
@@ -147,7 +149,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
         submit_managed_network_turn(
             &test,
             prompt,
-            vec![local(test.config.cwd.clone())],
+            vec![local(local_cwd_path.clone())],
             ApprovalsReviewer::AutoReview,
             AskForApproval::OnRequest,
         )
@@ -168,7 +170,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
             "trigger": {
                 "callId": first_call_id,
                 "command": ["/bin/sh", "-c", first_command],
-                "cwd": test.config.cwd,
+                "cwd": local_cwd_path,
                 "sandboxPermissions": "use_default",
                 "toolName": "exec_command",
                 "tty": false,
@@ -302,6 +304,8 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
+    let local_cwd = TempDir::new()?;
+    let local_cwd_path = local_cwd.path().abs();
     let call_id = "guardian-network-timeout";
     let poll_call_id = "guardian-network-timeout-poll";
     mount_sse_once_match(
@@ -368,7 +372,7 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     submit_managed_network_turn(
         &test,
         "time out the Guardian network review",
-        vec![local(test.config.cwd.clone())],
+        vec![local(local_cwd_path)],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -410,7 +414,9 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let local_cwd = TempDir::new()?;
+    let local_cwd_path = local_cwd.path().abs();
+    let environments = vec![local(local_cwd_path.clone())];
 
     mount_exec_network_turn(
         &server,
@@ -434,7 +440,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     );
     assert_eq!(approval.approval_id, None);
     assert!(!approval.turn_id.is_empty());
-    assert_eq!(approval.cwd, test.config.cwd);
+    assert_eq!(approval.cwd, local_cwd_path);
     assert_eq!(
         approval.reason.as_deref(),
         Some("codex-network-test.invalid is not in the allowed_domains")
@@ -552,7 +558,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     submit_managed_network_turn(
         &test,
         "a different protocol must prompt and the user abort must stay a user outcome",
-        vec![local(test.config.cwd.clone())],
+        vec![local(local_cwd_path)],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -593,7 +599,9 @@ async fn allowing_network_policy_amendment_persists_context_and_bypasses_prompt(
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let local_cwd = TempDir::new()?;
+    let local_cwd_path = local_cwd.path().abs();
+    let environments = vec![local(local_cwd_path)];
     let first_responses = mount_exec_network_turn(
         &server,
         "resp-network-amendment-1",
@@ -747,8 +755,9 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let first_marker = test.cwd.path().join("ambiguous-network-first");
-    let second_marker = test.cwd.path().join("ambiguous-network-second");
+    let local_cwd = TempDir::new()?;
+    let first_marker = local_cwd.path().join("ambiguous-network-first");
+    let second_marker = local_cwd.path().join("ambiguous-network-second");
     let wait_command = |marker: &std::path::Path| {
         format!(
             "touch '{}' && while true; do sleep 1; done",
@@ -777,7 +786,7 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
     submit_managed_network_turn(
         &test,
         "start two active commands",
-        vec![local(test.config.cwd.clone())],
+        vec![local(local_cwd.path().abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )

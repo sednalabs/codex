@@ -1818,6 +1818,8 @@
         "codex-rs/codex-mcp/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
         "codex-rs/codex-mcp/src/tool_catalog_cache.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_server_status.rs",
+        "codex-rs/core/tests/suite/mcp_tool_cache.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
@@ -1831,17 +1833,20 @@
           "streamable_http_discovers_and_calls_later_page_tool"
         ]
       },
-      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering.",
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-test-progressive",
       "tests": [
         "streamable_http_discovers_and_calls_later_page_tool",
         "list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot",
-        "complete_tool_walk_rejects_cursor_cycles"
+        "complete_tool_walk_rejects_cursor_cycles",
+        "tool_catalog_cache_bypasses_remote_sourced_environment_variables",
+        "mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools",
+        "regular_mcp_definition_cache_preserves_live_session_state"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. Preserve until upstream issue #26094 is closed by behavior equivalent to this bounded complete-snapshot and list_changed contract; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [

@@ -671,6 +671,12 @@ docs-only refresh commit that records this snapshot.
   and list-changed fetches publish the raw complete catalogue to the applicable
   shared cache before per-client filtering; the removed `codex_apps_cache.rs`
   implementation is not carried.
+- Upstream commits `3307ea8b63` and `1bbdb32789` are adopted as complementary
+  cache safety: a server can disable shared tool-catalog caching, remotely
+  sourced environment variables bypass that cache, and cached definitions do
+  not substitute stale process metadata or output for the live connection.
+  These guarantees narrow the carry but do not replace downstream's bounded
+  pagination and atomic `list_changed` refresh contract.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
@@ -683,6 +689,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/codex-mcp/src/rmcp_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
   - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
+  - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
+  - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
 
 ### MCP Server Safety Policy Extensions
