@@ -155,7 +155,11 @@ mod strict_optional_identity {
 
 impl ThreadInferenceIdentitySidecarPatch {
     pub fn is_empty(&self) -> bool {
-        self.configured.is_none() && self.latest_request.is_none()
+        let Self {
+            configured,
+            latest_request,
+        } = self;
+        configured.is_none() && latest_request.is_none()
     }
 }
 
