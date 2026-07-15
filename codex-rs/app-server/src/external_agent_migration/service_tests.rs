@@ -724,6 +724,27 @@ fn detect_repo_canonicalizes_relative_cwd() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn detect_repo_canonicalizes_without_windows_verbatim_prefix() {
+    let root = TempDir::new().expect("create tempdir");
+    let repo_root = root.path().join("repo");
+    let nested = repo_root.join("nested");
+    fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
+    fs::create_dir_all(&nested).expect("create nested dir");
+
+    let expected = AbsolutePathBuf::from_absolute_path(&repo_root)
+        .and_then(|path| path.canonicalize())
+        .map(AbsolutePathBuf::into_path_buf)
+        .expect("canonicalize repository root");
+    let actual = find_repo_root(Some(&nested))
+        .expect("find repository root")
+        .expect("repository root");
+
+    assert_eq!(actual, expected);
+    assert!(!actual.to_string_lossy().starts_with(r"\\?\"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_checks() {
