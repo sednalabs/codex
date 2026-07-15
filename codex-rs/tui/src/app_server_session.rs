@@ -2076,6 +2076,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            ResumeModelSettings::OverrideFromCurrentConfig,
         );
         let fork = thread_fork_params_from_config(
             config,
