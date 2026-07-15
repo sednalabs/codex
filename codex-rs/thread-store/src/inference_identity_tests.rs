@@ -1,5 +1,6 @@
 use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::models::ThreadInferenceIdentityAuthority;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 
 use super::ThreadInferenceIdentitySidecar;
@@ -70,6 +71,10 @@ fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
     let identity =
         ThreadInferenceIdentity::new("m", "p", /*reasoning_effort*/ None).expect("valid identity");
     let valid = r#"{"configured":{"model":"m","model_provider_id":"p","reasoning_effort":null}}"#;
+    let effort_identity =
+        ThreadInferenceIdentity::new("effort-model", "p", Some(ReasoningEffort::High))
+            .expect("identity with effort should be valid");
+    let valid_effort = r#"{"latest_request":{"model":"effort-model","model_provider_id":"p","reasoning_effort":"high"}}"#;
     let expected = |configured, latest_request| ThreadInferenceIdentitySidecarPatch {
         configured,
         latest_request,
@@ -78,6 +83,7 @@ fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
         ("{}", expected(None, None)),
         (r#"{"configured":null}"#, expected(Some(None), None)),
         (valid, expected(Some(Some(identity)), None)),
+        (valid_effort, expected(None, Some(Some(effort_identity)))),
         (
             r#"{"configured":null,"latest_request":null}"#,
             expected(Some(None), Some(None)),
@@ -94,6 +100,8 @@ fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
         r#"{"configured":{"status":"malformed","raw":"bad"}}"#,
         r#"{"configured":{"model":"m","model_provider_id":"p","reasoning_effort":null,"status":"valid","raw":"bad"}}"#,
         r#"{"configured":{"model":"","model_provider_id":"p","reasoning_effort":null}}"#,
+        r#"{"configured":{"model":"m","model_provider_id":"p"}}"#,
+        r#"{"latest_request":{"model":"m","model_provider_id":"p"}}"#,
         r#"{"configured":null,"configured":null}"#,
     ] {
         assert!(serde_json::from_str::<ThreadInferenceIdentitySidecarPatch>(invalid).is_err());
