@@ -24,12 +24,15 @@ use super::MigrationDetails;
 use super::PluginsMigration;
 use super::is_non_empty_text_file;
 use super::source::DetectedSourcePlugins;
-use super::source::InstructionSourceGroup;
 use super::source::MarketplaceImportSource;
 use super::source::PluginDetectionContext;
 
 pub(super) const CONFIG_DIR: &str = ".claude";
 pub(super) const CONFIG_MD: &str = "CLAUDE.md";
+pub(super) const LOCAL_SETTINGS_FILE: &str = "settings.local.json";
+pub(super) const MCP_CONFIG_FILE: &str = ".mcp.json";
+pub(super) const PROJECT_CONFIG_FILE: &str = ".claude.json";
+pub(super) const HOOKS_DIR: &str = "hooks";
 pub(super) const KNOWN_MARKETPLACES_PATH: &str = "plugins/known_marketplaces.json";
 pub(super) const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
 pub(super) const OFFICIAL_MARKETPLACE_SOURCE: &str = "anthropics/claude-plugins-official";
@@ -99,7 +102,7 @@ pub(super) fn effective_settings(project_settings: &Path) -> io::Result<Option<J
     let Some(settings_dir) = project_settings.parent() else {
         return Ok(effective);
     };
-    let local_settings = settings_dir.join("settings.local.json");
+    let local_settings = settings_dir.join(LOCAL_SETTINGS_FILE);
     let local_settings = match super::read_external_settings(&local_settings) {
         Ok(Some(local_settings)) => local_settings,
         Ok(None) => return Ok(effective),
@@ -247,23 +250,6 @@ pub(super) fn build_mcp_config(
     settings: Option<&JsonValue>,
 ) -> io::Result<TomlValue> {
     build_mcp_config_from_external(source_root, Some(external_agent_home), settings)
-}
-
-pub(super) fn repo_instruction_source_groups(
-    repo_root: &Path,
-) -> io::Result<Vec<InstructionSourceGroup>> {
-    for candidate in [
-        repo_root.join(CONFIG_MD),
-        repo_root.join(CONFIG_DIR).join(CONFIG_MD),
-    ] {
-        if is_non_empty_text_file(&candidate)? {
-            return Ok(vec![InstructionSourceGroup {
-                scope: repo_root.to_path_buf(),
-                sources: vec![candidate],
-            }]);
-        }
-    }
-    Ok(Vec::new())
 }
 
 pub(super) fn home_instruction_sources(external_agent_home: &Path) -> io::Result<Vec<PathBuf>> {

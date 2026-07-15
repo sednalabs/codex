@@ -1,5 +1,6 @@
 mod source;
 mod source_cla;
+mod source_cur;
 mod utils;
 
 use codex_analytics::AnalyticsEventsClient;
@@ -19,6 +20,7 @@ use codex_core_plugins::marketplace_add::is_local_marketplace_source;
 use codex_external_agent_migration::count_missing_subagents;
 use codex_external_agent_migration::missing_subagent_names;
 use codex_external_agent_migration::sessions::ExternalAgentSessionMigration;
+use codex_external_agent_migration::sessions::SessionMetadataMode;
 use codex_protocol::protocol::Product;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
@@ -40,21 +42,26 @@ use self::source::PluginDetectionContext;
 use self::source::SourceFeature;
 #[cfg(test)]
 use self::source_cla::CONFIG_DIR as EXTERNAL_AGENT_DIR;
+#[cfg(test)]
 use self::source_cla::CONFIG_MD as EXTERNAL_AGENT_CONFIG_MD;
+#[cfg(test)]
+use self::source_cla::HOOKS_DIR as REPO_EXTERNAL_AGENT_HOOKS_DIR;
 #[cfg(test)]
 use self::source_cla::KNOWN_MARKETPLACES_PATH as EXTERNAL_AGENT_KNOWN_MARKETPLACES_PATH;
 #[cfg(test)]
+use self::source_cla::LOCAL_SETTINGS_FILE as REPO_EXTERNAL_AGENT_LOCAL_SETTINGS_FILE;
+#[cfg(test)]
+use self::source_cla::MCP_CONFIG_FILE as REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE;
+#[cfg(test)]
 use self::source_cla::OFFICIAL_MARKETPLACE_NAME as EXTERNAL_OFFICIAL_MARKETPLACE_NAME;
+#[cfg(test)]
+use self::source_cla::PROJECT_CONFIG_FILE as REPO_EXTERNAL_AGENT_PROJECT_CONFIG_FILE;
 use self::utils::copy_dir_recursive;
 use self::utils::display_source_paths;
 use self::utils::rewrite_external_agent_terms;
 
 const EXTERNAL_AGENT_CONFIG_DETECT_METRIC: &str = "codex.external_agent_config.detect";
 const EXTERNAL_AGENT_CONFIG_IMPORT_METRIC: &str = "codex.external_agent_config.import";
-const REPO_EXTERNAL_AGENT_LOCAL_SETTINGS_FILE: &str = "settings.local.json";
-const REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE: &str = ".mcp.json";
-const REPO_EXTERNAL_AGENT_PROJECT_CONFIG_FILE: &str = ".claude.json";
-const REPO_EXTERNAL_AGENT_HOOKS_DIR: &str = "hooks";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalAgentConfigDetectOptions {
@@ -211,6 +218,23 @@ impl ExternalAgentConfigService {
             analytics_events_client: Some(analytics_events_client),
             source,
         }
+    }
+
+    pub(crate) fn with_migration_source(&self, migration_source: Option<&str>) -> Self {
+        let source = ExternalAgentSource::from_migration_source(migration_source);
+        let external_agent_home = default_external_agent_home(source);
+        let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
+        Self {
+            codex_home: self.codex_home.clone(),
+            connector_metadata_roots,
+            external_agent_home,
+            analytics_events_client: self.analytics_events_client.clone(),
+            source,
+        }
+    }
+
+    pub(crate) fn session_metadata_mode(&self) -> SessionMetadataMode {
+        self.source.session_metadata_mode()
     }
 
     #[cfg(test)]
@@ -528,7 +552,10 @@ impl ExternalAgentConfigService {
             }
         }
 
-        let mcp_source_path = self.source.mcp_source_path(self.source_root(repo_root));
+        let mcp_source_path = self.source.mcp_source_path(
+            self.source_root(repo_root),
+            self.source_config_dir(repo_root),
+        );
         let migrated_mcp = self.build_mcp_config(repo_root, settings.clone())?;
         let mut mcp_server_names = migrated_mcp_server_names(&migrated_mcp);
         if !is_empty_toml_table(&migrated_mcp) {
@@ -771,6 +798,7 @@ impl ExternalAgentConfigService {
                         external_agent_home: self.external_agent_home.as_path(),
                         source_settings: source_settings.as_path(),
                         source_root,
+                        repo_root,
                         settings: settings.as_ref(),
                         configured_plugin_ids: &configured_plugin_ids,
                         configured_marketplace_plugins: &configured_marketplace_plugins,
@@ -850,7 +878,10 @@ impl ExternalAgentConfigService {
         if let Some(repo_root) = repo_root {
             self.ensure_repo_settings_sources(repo_root)?;
         }
-        self.source.effective_settings(&source_settings)
+        self.source.effective_settings(
+            self.source_config_dir(repo_root).as_path(),
+            &source_settings,
+        )
     }
 
     fn build_mcp_config(
@@ -868,6 +899,7 @@ impl ExternalAgentConfigService {
         };
         self.source.build_mcp_config(
             self.source_root(repo_root).as_path(),
+            self.source_config_dir(repo_root).as_path(),
             self.external_agent_home.as_path(),
             settings.as_ref(),
         )
@@ -877,45 +909,37 @@ impl ExternalAgentConfigService {
         &self,
         repo_root: &Path,
     ) -> io::Result<Vec<InstructionSourceGroup>> {
-        ensure_repo_migration_path(repo_root, &repo_root.join(EXTERNAL_AGENT_CONFIG_MD))?;
-        ensure_repo_migration_path(
-            repo_root,
-            &repo_root
-                .join(self.source.config_dir())
-                .join(EXTERNAL_AGENT_CONFIG_MD),
-        )?;
-        self.source.repo_instruction_source_groups(repo_root)
+        for source in self.source.repo_instruction_sources(repo_root) {
+            ensure_repo_migration_path(repo_root, &source)?;
+            if is_non_empty_text_file(&source)? {
+                return Ok(vec![InstructionSourceGroup {
+                    scope: repo_root.to_path_buf(),
+                    sources: vec![source],
+                }]);
+            }
+        }
+        Ok(Vec::new())
     }
 
     fn ensure_repo_settings_sources(&self, repo_root: &Path) -> io::Result<()> {
-        let source_dir = self.source_config_dir(Some(repo_root));
-        for source in [
-            source_dir.join(self.source.settings_file_name(/*project_scope*/ true)),
-            source_dir.join(REPO_EXTERNAL_AGENT_LOCAL_SETTINGS_FILE),
-        ] {
+        for source in self.source.repo_settings_sources(repo_root) {
             ensure_repo_migration_path(repo_root, &source)?;
         }
         Ok(())
     }
 
     fn ensure_repo_mcp_sources(&self, repo_root: &Path) -> io::Result<()> {
-        for source in [
-            repo_root.join(REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE),
-            repo_root.join(REPO_EXTERNAL_AGENT_PROJECT_CONFIG_FILE),
-        ] {
+        for source in self.source.repo_mcp_sources(repo_root) {
             ensure_repo_migration_path(repo_root, &source)?;
         }
         Ok(())
     }
 
     fn ensure_repo_hook_sources(&self, repo_root: &Path) -> io::Result<()> {
-        self.ensure_repo_settings_sources(repo_root)?;
-        ensure_repo_migration_path(
-            repo_root,
-            &self
-                .source_config_dir(Some(repo_root))
-                .join(REPO_EXTERNAL_AGENT_HOOKS_DIR),
-        )
+        for source in self.source.repo_hook_sources(repo_root) {
+            ensure_repo_migration_path(repo_root, &source)?;
+        }
+        Ok(())
     }
 
     fn home_agents_md_sources(&self) -> io::Result<Vec<PathBuf>> {
@@ -1037,6 +1061,19 @@ impl ExternalAgentConfigService {
         if let Some(analytics_events_client) = self.analytics_events_client.clone() {
             plugins_manager.set_analytics_events_client(analytics_events_client);
         }
+        let configured_marketplace_paths = plugins_manager
+            .list_marketplaces_for_config(
+                &config.plugins_config_input(),
+                &[],
+                /*include_openai_curated*/ true,
+            )
+            .map_err(|err| {
+                invalid_data_error(format!("failed to list configured marketplaces: {err}"))
+            })?
+            .marketplaces
+            .into_iter()
+            .map(|marketplace| (marketplace.name, marketplace.path))
+            .collect::<BTreeMap<_, _>>();
         let import_sources = self.marketplace_import_sources(cwd)?;
         for plugin_group in plugins {
             let marketplace_name = plugin_group.marketplace_name.clone();
@@ -1045,64 +1082,71 @@ impl ExternalAgentConfigService {
                 .iter()
                 .map(|plugin_name| format!("{plugin_name}@{marketplace_name}"))
                 .collect::<Vec<_>>();
-            let import_source = import_sources.get(&marketplace_name).cloned();
-            let Some(import_source) = import_source else {
-                let message = format!(
-                    "external agent plugin marketplace source was not found: {marketplace_name}"
-                );
-                record_plugin_import_errors(
-                    &mut outcome,
-                    cwd,
-                    &plugin_ids,
-                    "plugin_import",
-                    message,
-                );
-                outcome.failed_marketplaces.push(marketplace_name);
-                outcome.failed_plugin_ids.extend(plugin_ids);
-                continue;
-            };
-            let request = MarketplaceAddRequest {
-                source: import_source.source,
-                ref_name: import_source.ref_name,
-                sparse_paths: Vec::new(),
-            };
-            let add_marketplace_outcome =
-                add_marketplace(self.codex_home.clone(), requirements.clone(), request).await;
-            let marketplace_path = match add_marketplace_outcome {
-                Ok(add_marketplace_outcome) => {
-                    let Some(marketplace_path) = find_marketplace_manifest_path(
-                        add_marketplace_outcome.installed_root.as_path(),
-                    ) else {
-                        let message = format!(
-                            "plugin marketplace manifest was not found after install: {marketplace_name}"
-                        );
-                        record_plugin_import_errors(
-                            &mut outcome,
-                            cwd,
-                            &plugin_ids,
-                            "plugin_import",
-                            message,
-                        );
-                        outcome.failed_marketplaces.push(marketplace_name);
-                        outcome.failed_plugin_ids.extend(plugin_ids);
-                        continue;
-                    };
-                    outcome
-                        .succeeded_marketplaces
-                        .push(marketplace_name.clone());
-                    marketplace_path
-                }
-                Err(err) => {
+            let marketplace_path = if let Some(marketplace_path) =
+                configured_marketplace_paths.get(&marketplace_name)
+            {
+                outcome
+                    .succeeded_marketplaces
+                    .push(marketplace_name.clone());
+                marketplace_path.clone()
+            } else {
+                let Some(import_source) = import_sources.get(&marketplace_name).cloned() else {
+                    let message = format!(
+                        "external agent plugin marketplace source was not found: {marketplace_name}"
+                    );
                     record_plugin_import_errors(
                         &mut outcome,
                         cwd,
                         &plugin_ids,
                         "plugin_import",
-                        err.to_string(),
+                        message,
                     );
                     outcome.failed_marketplaces.push(marketplace_name);
                     outcome.failed_plugin_ids.extend(plugin_ids);
                     continue;
+                };
+                let request = MarketplaceAddRequest {
+                    source: import_source.source,
+                    ref_name: import_source.ref_name,
+                    sparse_paths: Vec::new(),
+                };
+                match add_marketplace(self.codex_home.clone(), requirements.clone(), request).await
+                {
+                    Ok(add_marketplace_outcome) => {
+                        let Some(marketplace_path) = find_marketplace_manifest_path(
+                            add_marketplace_outcome.installed_root.as_path(),
+                        ) else {
+                            let message = format!(
+                                "plugin marketplace manifest was not found after install: {marketplace_name}"
+                            );
+                            record_plugin_import_errors(
+                                &mut outcome,
+                                cwd,
+                                &plugin_ids,
+                                "plugin_import",
+                                message,
+                            );
+                            outcome.failed_marketplaces.push(marketplace_name);
+                            outcome.failed_plugin_ids.extend(plugin_ids);
+                            continue;
+                        };
+                        outcome
+                            .succeeded_marketplaces
+                            .push(marketplace_name.clone());
+                        marketplace_path
+                    }
+                    Err(err) => {
+                        record_plugin_import_errors(
+                            &mut outcome,
+                            cwd,
+                            &plugin_ids,
+                            "plugin_import",
+                            err.to_string(),
+                        );
+                        outcome.failed_marketplaces.push(marketplace_name);
+                        outcome.failed_plugin_ids.extend(plugin_ids);
+                        continue;
+                    }
                 }
             };
             let install_config = match ConfigBuilder::default()
