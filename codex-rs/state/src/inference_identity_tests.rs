@@ -68,12 +68,48 @@ fn authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics() {
             .as_deref(),
         Some(explicit_null)
     );
+    let reordered = r#"{"authority":{"value":{"reasoning_effort":null,"model_provider_id":"provider","model":"model"},"status":"valid"},"version":1}"#;
+    assert_eq!(
+        decode_thread_inference_identity_authority(Some(reordered)),
+        no_effort
+    );
 
     for raw in [
         "{malformed",
+        "null",
+        "[]",
+        r#""scalar""#,
+        r#"{"version":1,"authority":null}"#,
+        r#"{"version":1,"authority":[]}"#,
+        r#"{"version":1,"authority":"scalar"}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":null}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":[]}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":"scalar"}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","value":null}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","value":[]}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","value":"scalar"}}"#,
         r#"{"version":2,"authority":{"status":"cleared","value":{}}}"#,
+        r#"{"version":1,"version":1,"authority":{"status":"cleared","value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","value":{}},"authority":{"status":"cleared","value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","status":"cleared","value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"cleared","value":{},"value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":{"model":"first","model":"second","model_provider_id":"provider","reasoning_effort":null}}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","model_provider_id":"first","model_provider_id":"second","reasoning_effort":null}}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","model_provider_id":"provider","reasoning_effort":null,"reasoning_effort":"high"}}}"#,
+        r#"{"authority":{"status":"cleared","value":{}}}"#,
+        r#"{"version":1}"#,
+        r#"{"version":1,"authority":{"value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"valid"}}"#,
+        r#"{"version":1,"authority":{"status":"cleared"}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":{"model_provider_id":"provider","reasoning_effort":null}}}"#,
+        r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","reasoning_effort":null}}}"#,
         r#"{"version":1,"authority":{"status":"legacy_missing"}}"#,
         r#"{"version":1,"authority":{"status":"malformed","value":{"raw":"nested"}}}"#,
+        r#"{"version":1,"authority":{"status":"future"}}"#,
+        r#"{"version":1,"authority":{"status":"future","value":{}}}"#,
+        r#"{"version":1,"authority":{"status":"future","value":null}}"#,
+        r#"{"version":1,"authority":{"status":"future","value":[]}}"#,
+        r#"{"version":1,"authority":{"status":"future","value":"scalar"}}"#,
         r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","model_provider_id":"provider"}}}"#,
         r#"{"version":1,"authority":{"status":"valid","value":{"model":" ","model_provider_id":"provider","reasoning_effort":null}}}"#,
         r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","model_provider_id":"\t","reasoning_effort":null}}}"#,
