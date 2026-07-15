@@ -57,3 +57,7 @@ impl StateRuntime {
         Ok(result.rows_affected() > 0)
     }
 }
+
+#[cfg(test)]
+#[path = "thread_inference_identity_tests.rs"]
+mod tests;
