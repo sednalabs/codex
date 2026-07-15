@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-15`
-- downstream branch `main` code tree: `e8f9d7600e6cb80cc50300f6af287b3843a6f9b1`
+- downstream branch `main` code tree: `488a3e7ae52bcd24a8c6dfbb3e16c92632699ef4`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `38b064c31b1f7464b281006316ec878ed23fea77`
 - `upstream/main`: `38b064c31b1f7464b281006316ec878ed23fea77`
-- downstream branch vs `upstream/main`: `1712` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1714` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1496` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1498` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -1001,7 +1001,9 @@ docs-only refresh commit that records this snapshot.
   destination-ancestor symlinks. Keep this carry until upstream has equivalent
   detection-and-import containment.
 - Primary files:
+  - `.github/scripts/test_ci_planners.py`
   - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
   - `codex-rs/app-server/src/external_agent_migration/service.rs`
   - `codex-rs/app-server/src/external_agent_migration/service/utils.rs`
   - `codex-rs/app-server/src/external_agent_migration/service_tests.rs`

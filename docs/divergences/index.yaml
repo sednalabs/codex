@@ -1468,7 +1468,9 @@
         "migration target symlink handling"
       ],
       "files": [
+        ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
         "codex-rs/app-server/src/external_agent_migration/service.rs",
         "codex-rs/app-server/src/external_agent_migration/service/utils.rs",
         "codex-rs/app-server/src/external_agent_migration/service_tests.rs",
