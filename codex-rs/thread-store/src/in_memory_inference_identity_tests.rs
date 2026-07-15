@@ -27,7 +27,7 @@ async fn identity_patch_preserves_omitted_state_and_thread_isolation() {
     let malformed = ThreadInferenceIdentityAuthority::Malformed {
         raw: "{exact malformed configured}".to_string(),
     };
-    store.state.lock().await.inference_identity_sidecars.insert(
+    store.state.lock().await.inference_identity.sidecars.insert(
         first_thread_id,
         ThreadInferenceIdentitySidecar {
             configured: malformed.clone(),
@@ -203,7 +203,7 @@ async fn identity_sidecar_lifecycle_does_not_resurrect_deleted_state() {
 async fn sidecars(
     store: &InMemoryThreadStore,
 ) -> HashMap<ThreadId, ThreadInferenceIdentitySidecar> {
-    store.state.lock().await.inference_identity_sidecars.clone()
+    store.state.lock().await.inference_identity.sidecars.clone()
 }
 
 fn identity(model: &str) -> ThreadInferenceIdentity {
