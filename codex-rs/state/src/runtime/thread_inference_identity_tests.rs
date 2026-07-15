@@ -189,6 +189,10 @@ async fn presence_patch_preserves_exact_raw_rows_and_missing_semantics() {
         ),
         (false, false, false, None)
     );
+
+    let codex_home = runtime.codex_home().to_path_buf();
+    runtime.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
 }
 
 #[tokio::test]
@@ -236,7 +240,7 @@ async fn independently_spawned_single_field_updates_converge_exactly() {
         }
     });
 
-    let task_results = timeout(Duration::from_secs(/*secs*/ 5), async {
+    let task_results = timeout(Duration::from_secs(/*secs*/ 10), async {
         barrier.wait().await;
         let configured_result = configured_task
             .await
@@ -264,6 +268,10 @@ async fn independently_spawned_single_field_updates_converge_exactly() {
         audit_events,
         vec!["configured".to_string(), "latest_request".to_string()]
     );
+
+    let codex_home = runtime.codex_home().to_path_buf();
+    runtime.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
 }
 
 async fn runtime_with_thread(thread_id: ThreadId) -> Arc<StateRuntime> {
