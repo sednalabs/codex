@@ -1893,6 +1893,7 @@ async fn load_plugin_skills_dedupes_overlapping_manifest_roots() {
         /*restriction_product*/ None,
         &codex_core_skills::config_rules::SkillConfigRules::default(),
         /*plugin_skill_snapshots*/ None,
+        Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
     )
     .await;
 
@@ -5546,6 +5547,7 @@ async fn load_plugins_ignores_project_config_files() {
         /*plugin_skill_snapshots*/ None,
         Some(Product::Codex),
         /*remote_global_catalog_active*/ false,
+        Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
     )
     .await;
 
