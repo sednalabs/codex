@@ -114,6 +114,26 @@ impl<'de> Deserialize<'de> for StoredThreadInferenceIdentityValueV1 {
     }
 }
 
+fn strict_v1_wire_layers_are_objects(value: &serde_json::Value) -> bool {
+    let Some(envelope) = value.as_object() else {
+        return false;
+    };
+    let Some(authority) = envelope
+        .get("authority")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    match authority.get("status").and_then(serde_json::Value::as_str) {
+        Some("valid" | "cleared") => authority
+            .get("value")
+            .is_some_and(serde_json::Value::is_object),
+        _ => authority
+            .get("value")
+            .is_none_or(serde_json::Value::is_object),
+    }
+}
+
 /// Failure to encode typed thread inference identity authority for durable storage.
 #[derive(Debug)]
 pub enum ThreadInferenceIdentityAuthorityEncodeError {
@@ -162,6 +182,18 @@ pub fn decode_thread_inference_identity_authority(
     let Some(raw) = raw else {
         return ThreadInferenceIdentityAuthority::LegacyMissing;
     };
+    // Use `Value` only for object-shape validation. Decode the original text below so duplicate
+    // fields remain visible to the strict typed visitors instead of being collapsed by a map.
+    let Ok(wire_shape) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return ThreadInferenceIdentityAuthority::Malformed {
+            raw: raw.to_string(),
+        };
+    };
+    if !strict_v1_wire_layers_are_objects(&wire_shape) {
+        return ThreadInferenceIdentityAuthority::Malformed {
+            raw: raw.to_string(),
+        };
+    }
     let Ok(envelope) = serde_json::from_str::<StoredThreadInferenceIdentityEnvelopeV1>(raw) else {
         return ThreadInferenceIdentityAuthority::Malformed {
             raw: raw.to_string(),
