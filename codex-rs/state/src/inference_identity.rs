@@ -6,7 +6,11 @@ use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use codex_protocol::models::ThreadInferenceIdentityValidationError;
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as _;
+use serde::de::MapAccess;
+use serde::de::Visitor;
 
 pub const THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION: u8 = 1;
 
@@ -29,21 +33,86 @@ enum StoredThreadInferenceIdentityAuthorityV1 {
     Cleared(StoredThreadInferenceIdentityClearedV1),
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 struct StoredThreadInferenceIdentityValueV1 {
     model: String,
     model_provider_id: String,
-    reasoning_effort: RequiredNullable<ReasoningEffort>,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredThreadInferenceIdentityClearedV1 {}
 
-#[derive(Deserialize, Serialize)]
-#[serde(transparent)]
-struct RequiredNullable<T>(Option<T>);
+const STORED_THREAD_INFERENCE_IDENTITY_VALUE_FIELDS_V1: &[&str] =
+    &["model", "model_provider_id", "reasoning_effort"];
+
+struct StoredThreadInferenceIdentityValueVisitorV1;
+
+impl<'de> Visitor<'de> for StoredThreadInferenceIdentityValueVisitorV1 {
+    type Value = StoredThreadInferenceIdentityValueV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a strict version 1 thread inference identity value object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut model = None;
+        let mut model_provider_id = None;
+        let mut reasoning_effort = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "model" => {
+                    if model.is_some() {
+                        return Err(A::Error::duplicate_field("model"));
+                    }
+                    model = Some(map.next_value()?);
+                }
+                "model_provider_id" => {
+                    if model_provider_id.is_some() {
+                        return Err(A::Error::duplicate_field("model_provider_id"));
+                    }
+                    model_provider_id = Some(map.next_value()?);
+                }
+                "reasoning_effort" => {
+                    if reasoning_effort.is_some() {
+                        return Err(A::Error::duplicate_field("reasoning_effort"));
+                    }
+                    reasoning_effort = Some(map.next_value::<Option<ReasoningEffort>>()?);
+                }
+                _ => {
+                    return Err(A::Error::unknown_field(
+                        &field,
+                        STORED_THREAD_INFERENCE_IDENTITY_VALUE_FIELDS_V1,
+                    ));
+                }
+            }
+        }
+        Ok(StoredThreadInferenceIdentityValueV1 {
+            model: model.ok_or_else(|| A::Error::missing_field("model"))?,
+            model_provider_id: model_provider_id
+                .ok_or_else(|| A::Error::missing_field("model_provider_id"))?,
+            reasoning_effort: reasoning_effort
+                .ok_or_else(|| A::Error::missing_field("reasoning_effort"))?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredThreadInferenceIdentityValueV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct(
+            "StoredThreadInferenceIdentityValueV1",
+            STORED_THREAD_INFERENCE_IDENTITY_VALUE_FIELDS_V1,
+            StoredThreadInferenceIdentityValueVisitorV1,
+        )
+    }
+}
 
 /// Failure to encode typed thread inference identity authority for durable storage.
 #[derive(Debug)]
@@ -108,7 +177,7 @@ pub fn decode_thread_inference_identity_authority(
             match ThreadInferenceIdentity::new(
                 value.model,
                 value.model_provider_id,
-                value.reasoning_effort.0,
+                value.reasoning_effort,
             ) {
                 Ok(identity) => ThreadInferenceIdentityAuthority::Valid(identity),
                 Err(_) => ThreadInferenceIdentityAuthority::Malformed {
@@ -135,7 +204,7 @@ pub fn encode_thread_inference_identity_authority(
             StoredThreadInferenceIdentityAuthorityV1::Valid(StoredThreadInferenceIdentityValueV1 {
                 model: identity.model().to_string(),
                 model_provider_id: identity.model_provider_id().to_string(),
-                reasoning_effort: RequiredNullable(identity.reasoning_effort().cloned()),
+                reasoning_effort: identity.reasoning_effort().cloned(),
             })
         }
         ThreadInferenceIdentityAuthority::Cleared => {
