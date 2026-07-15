@@ -24,6 +24,7 @@ use crate::ThreadSearchPage;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
+use crate::UpdateThreadInferenceIdentitySidecarParams;
 use crate::UpdateThreadMetadataParams;
 
 /// Future returned by [`ThreadStore`] operations.
@@ -128,6 +129,21 @@ pub trait ThreadStore: Any + Send + Sync {
         &self,
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread>;
+
+    /// Atomically applies presence-aware configured and latest-request inference authority.
+    ///
+    /// The default keeps existing store implementations source-compatible while making absence
+    /// of durable authority support explicit to callers.
+    fn update_thread_inference_identity_sidecar(
+        &self,
+        _params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "update_thread_inference_identity_sidecar",
+            })
+        })
+    }
 
     /// Archives a thread.
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()>;
