@@ -25,6 +25,72 @@ fn service_for_paths(
     ExternalAgentConfigService::new_for_test(codex_home, external_agent_home)
 }
 
+#[cfg(unix)]
+fn service_for_cursor_paths(
+    external_agent_home: PathBuf,
+    codex_home: PathBuf,
+) -> ExternalAgentConfigService {
+    let source = ExternalAgentSource::Cur;
+    let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
+    ExternalAgentConfigService {
+        codex_home,
+        connector_metadata_roots,
+        external_agent_home,
+        analytics_events_client: None,
+        source,
+    }
+}
+
+#[cfg(unix)]
+enum CursorRepoSourceFixture {
+    File(&'static str),
+    Directory,
+}
+
+#[cfg(unix)]
+fn cursor_repo_source_cases() -> Vec<(
+    PathBuf,
+    ExternalAgentConfigMigrationItemType,
+    CursorRepoSourceFixture,
+)> {
+    vec![
+        (
+            PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::PROJECT_CONFIG_FILE),
+            ExternalAgentConfigMigrationItemType::Config,
+            CursorRepoSourceFixture::File(r#"{"env":{"FOO":"bar"}}"#),
+        ),
+        (
+            PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::SANDBOX_CONFIG_FILE),
+            ExternalAgentConfigMigrationItemType::Config,
+            CursorRepoSourceFixture::File(r#"{"type":"read_only"}"#),
+        ),
+        (
+            PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::MCP_CONFIG_FILE),
+            ExternalAgentConfigMigrationItemType::McpServerConfig,
+            CursorRepoSourceFixture::File(
+                r#"{"mcpServers":{"outside":{"command":"outside"}}}"#,
+            ),
+        ),
+        (
+            PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::HOOKS_CONFIG_FILE),
+            ExternalAgentConfigMigrationItemType::Hooks,
+            CursorRepoSourceFixture::File(
+                r#"{"hooks":{"stop":[{"command":"echo outside"}]}}"#,
+            ),
+        ),
+        (
+            PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::HOOKS_DIR),
+            ExternalAgentConfigMigrationItemType::Hooks,
+            CursorRepoSourceFixture::Directory,
+        ),
+        (
+            PathBuf::from(source_cur::LEGACY_RULES_FILE),
+            ExternalAgentConfigMigrationItemType::AgentsMd,
+            CursorRepoSourceFixture::File("outside instructions"),
+        ),
+    ]
+}
+
 fn github_plugin_details() -> MigrationDetails {
     MigrationDetails {
         plugins: vec![PluginsMigration {
@@ -848,6 +914,43 @@ async fn detect_repo_rejects_symlinked_mcp_source() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn detect_cursor_repo_rejects_symlinked_source_files() {
+    for (relative_source, _, source_fixture) in cursor_repo_source_cases() {
+        let root = TempDir::new().expect("create tempdir");
+        let repo_root = root.path().join("repo");
+        let external_source = root.path().join("external-source");
+        let source = repo_root.join(relative_source);
+        fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
+        fs::create_dir_all(source.parent().expect("source parent"))
+            .expect("create source parent");
+        match source_fixture {
+            CursorRepoSourceFixture::File(contents) => {
+                fs::write(&external_source, contents).expect("write external source");
+            }
+            CursorRepoSourceFixture::Directory => {
+                fs::create_dir_all(&external_source).expect("create external source directory");
+            }
+        }
+        std::os::unix::fs::symlink(&external_source, &source).expect("create source symlink");
+
+        let error = service_for_cursor_paths(
+            root.path().join(source_cur::CONFIG_DIR),
+            root.path().join(".codex"),
+        )
+        .detect(ExternalAgentConfigDetectOptions {
+            include_home: false,
+            cwds: Some(vec![repo_root]),
+        })
+        .await
+        .expect_err("reject symlinked Cursor repository source");
+
+        assert!(error.to_string().contains("symlink"));
+        assert_is_symlink(&source);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn import_repo_config_rejects_symlinked_local_settings() {
     let root = TempDir::new().expect("create tempdir");
     let repo_root = root.path().join("repo");
@@ -915,6 +1018,45 @@ async fn import_repo_mcp_rejects_symlinked_source_files() {
             ExternalAgentConfigMigrationItemType::McpServerConfig,
         );
         assert_is_symlink(&mcp_source);
+        assert!(!repo_root.join(".codex").exists());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_cursor_repo_rejects_symlinked_source_files() {
+    for (relative_source, item_type, source_fixture) in cursor_repo_source_cases() {
+        let root = TempDir::new().expect("create tempdir");
+        let repo_root = root.path().join("repo");
+        let external_source = root.path().join("external-source");
+        let source = repo_root.join(relative_source);
+        fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
+        fs::create_dir_all(source.parent().expect("source parent"))
+            .expect("create source parent");
+        match source_fixture {
+            CursorRepoSourceFixture::File(contents) => {
+                fs::write(&external_source, contents).expect("write external source");
+            }
+            CursorRepoSourceFixture::Directory => {
+                fs::create_dir_all(&external_source).expect("create external source directory");
+            }
+        }
+        std::os::unix::fs::symlink(&external_source, &source).expect("create source symlink");
+
+        let outcome = service_for_cursor_paths(
+            root.path().join(source_cur::CONFIG_DIR),
+            root.path().join(".codex"),
+        )
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type,
+            description: String::new(),
+            cwd: Some(repo_root.clone()),
+            details: None,
+        }])
+        .await;
+
+        assert_single_symlink_import_error(&outcome, item_type);
+        assert_is_symlink(&source);
         assert!(!repo_root.join(".codex").exists());
     }
 }
@@ -3017,6 +3159,121 @@ async fn import_plugins_supports_external_agent_plugin_marketplace_layout() {
     let config = fs::read_to_string(codex_home.join("config.toml")).expect("read config");
     assert!(config.contains(r#"[plugins."cloudflare@my-plugins"]"#));
     assert!(config.contains("enabled = true"));
+}
+
+#[tokio::test]
+async fn import_plugins_reuses_configured_marketplace_with_different_source() {
+    let (_root, external_agent_home, codex_home) = fixture_paths();
+    let configured_marketplace_root = external_agent_home.join("configured-marketplace");
+    let source_marketplace_root = external_agent_home.join("source-marketplace");
+    let configured_plugin_root = configured_marketplace_root.join("plugins/cloudflare");
+    let source_plugin_root = source_marketplace_root.join("plugins/cloudflare");
+    fs::create_dir_all(configured_marketplace_root.join(".agents/plugins"))
+        .expect("create configured marketplace manifest dir");
+    fs::create_dir_all(configured_plugin_root.join(".codex-plugin"))
+        .expect("create configured plugin manifest dir");
+    fs::create_dir_all(source_marketplace_root.join(EXTERNAL_AGENT_PLUGIN_MANIFEST_DIR))
+        .expect("create source marketplace manifest dir");
+    fs::create_dir_all(source_plugin_root.join(".codex-plugin"))
+        .expect("create source plugin manifest dir");
+    fs::create_dir_all(&codex_home).expect("create codex home");
+
+    fs::write(
+        external_agent_home.join("settings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabledPlugins": {
+                "cloudflare@my-plugins": true
+            },
+            "extraKnownMarketplaces": {
+                "my-plugins": {
+                    "source": "local",
+                    "path": source_marketplace_root
+                }
+            }
+        }))
+        .expect("serialize settings"),
+    )
+    .expect("write settings");
+    fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            r#"[marketplaces.my-plugins]
+source_type = "local"
+source = {configured_marketplace_root:?}
+"#
+        ),
+    )
+    .expect("write Codex config");
+    fs::write(
+        configured_marketplace_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+          "name": "my-plugins",
+          "plugins": [{
+            "name": "cloudflare",
+            "source": {"source": "local", "path": "./plugins/cloudflare"}
+          }]
+        }"#,
+    )
+    .expect("write configured marketplace manifest");
+    fs::write(
+        source_marketplace_root
+            .join(EXTERNAL_AGENT_PLUGIN_MANIFEST_DIR)
+            .join("marketplace.json"),
+        r#"{
+          "name": "my-plugins",
+          "plugins": [{"name": "cloudflare", "source": "./plugins/cloudflare"}]
+        }"#,
+    )
+    .expect("write source marketplace manifest");
+    fs::write(
+        configured_plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"cloudflare","version":"0.1.0"}"#,
+    )
+    .expect("write configured plugin manifest");
+    fs::write(
+        source_plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"cloudflare","version":"0.2.0"}"#,
+    )
+    .expect("write source plugin manifest");
+
+    let outcome = service_for_paths(external_agent_home, codex_home.clone())
+        .import_plugins(
+            /*cwd*/ None,
+            Some(MigrationDetails {
+                plugins: vec![PluginsMigration {
+                    marketplace_name: "my-plugins".to_string(),
+                    plugin_names: vec!["cloudflare".to_string()],
+                }],
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("import plugins");
+
+    assert_eq!(
+        outcome,
+        PluginImportOutcome {
+            succeeded_marketplaces: vec!["my-plugins".to_string()],
+            succeeded_plugin_ids: vec!["cloudflare@my-plugins".to_string()],
+            failed_marketplaces: Vec::new(),
+            failed_plugin_ids: Vec::new(),
+            raw_errors: Vec::new(),
+        }
+    );
+    let config: TomlValue =
+        toml::from_str(&fs::read_to_string(codex_home.join("config.toml")).expect("read config"))
+            .expect("parse config");
+    let expected: TomlValue = toml::from_str(&format!(
+        r#"[marketplaces.my-plugins]
+source_type = "local"
+source = {configured_marketplace_root:?}
+
+[plugins."cloudflare@my-plugins"]
+enabled = true
+"#
+    ))
+    .expect("parse expected config");
+    assert_eq!(config, expected);
 }
 
 #[tokio::test]

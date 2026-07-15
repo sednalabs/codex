@@ -1075,7 +1075,11 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("type".to_string(), Value::String("object".into()));
     root.insert("definitions".to_string(), Value::Object(definitions));
 
-    Ok(Value::Object(root))
+    let mut bundle = Value::Object(root);
+    rewrite_ref_prefix(&mut bundle, "#/$defs/", "#/definitions/");
+    ensure_no_ref_prefix(&bundle, "#/$defs/", "full")?;
+    ensure_referenced_definitions_present(&bundle, "full")?;
+    Ok(bundle)
 }
 
 fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
@@ -1255,45 +1259,44 @@ fn first_ref_with_prefix(value: &Value, prefix: &str) -> Option<String> {
 }
 
 fn ensure_referenced_definitions_present(schema: &Value, label: &str) -> Result<()> {
-    let definitions = schema
+    schema
         .get("definitions")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("expected definitions map in {label} schema"))?;
     let mut missing = HashSet::new();
-    collect_missing_definitions(schema, definitions, &mut missing);
+    collect_missing_definitions(schema, schema, &mut missing);
     if missing.is_empty() {
         return Ok(());
     }
-    let mut missing_names: Vec<String> = missing.into_iter().collect();
-    missing_names.sort();
+    let mut missing_references: Vec<String> = missing.into_iter().collect();
+    missing_references.sort();
     Err(anyhow!(
-        "{label} schema missing definitions: {}",
-        missing_names.join(", ")
+        "{label} schema has unresolved definition references: {}",
+        missing_references.join(", ")
     ))
 }
 
 fn collect_missing_definitions(
     value: &Value,
-    definitions: &Map<String, Value>,
+    schema: &Value,
     missing: &mut HashSet<String>,
 ) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(suffix) = local_definition_ref_suffix(reference)
+                && local_definition_ref_suffix(reference).is_some()
+                && let Some(pointer) = reference.strip_prefix('#')
+                && schema.pointer(pointer).is_none()
             {
-                let name = suffix.split('/').next().unwrap_or(suffix);
-                if !definitions.contains_key(name) {
-                    missing.insert(name.to_string());
-                }
+                missing.insert(reference.clone());
             }
             for child in obj.values() {
-                collect_missing_definitions(child, definitions, missing);
+                collect_missing_definitions(child, schema, missing);
             }
         }
         Value::Array(items) => {
             for child in items {
-                collect_missing_definitions(child, definitions, missing);
+                collect_missing_definitions(child, schema, missing);
             }
         }
         _ => {}
@@ -2585,6 +2588,70 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn build_schema_bundle_rewrites_draft_2020_refs_to_draft_7() -> Result<()> {
+        let bundle = build_schema_bundle(vec![GeneratedSchema {
+            namespace: None,
+            logical_name: "Draft2020Envelope".to_string(),
+            in_v1_dir: false,
+            value: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Draft2020Envelope",
+                "type": "object",
+                "properties": {
+                    "helper": { "$ref": "#/$defs/Helper" }
+                },
+                "required": ["helper"],
+                "$defs": {
+                    "Helper": { "type": "string" }
+                }
+            }),
+        }])?;
+
+        assert_eq!(
+            bundle,
+            serde_json::json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": "CodexAppServerProtocol",
+                "type": "object",
+                "definitions": {
+                    "Draft2020Envelope": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "title": "Draft2020Envelope",
+                        "type": "object",
+                        "properties": {
+                            "helper": { "$ref": "#/definitions/Helper" }
+                        },
+                        "required": ["helper"]
+                    },
+                    "Helper": { "type": "string" }
+                }
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn referenced_definitions_check_rejects_missing_namespaced_target() {
+        let schema = serde_json::json!({
+            "definitions": {
+                "Envelope": { "$ref": "#/definitions/v2/MissingType" },
+                "v2": {
+                    "ExistingType": { "type": "string" }
+                }
+            }
+        });
+
+        let error = ensure_referenced_definitions_present(&schema, "test")
+            .expect_err("reject unresolved namespaced reference");
+
+        assert_eq!(
+            error.to_string(),
+            "test schema has unresolved definition references: #/definitions/v2/MissingType"
+        );
     }
 
     #[test]

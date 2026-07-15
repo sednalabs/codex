@@ -43,7 +43,7 @@
         },
         "fileChanges": {
           "additionalProperties": {
-            "$ref": "#/$defs/FileChange"
+            "$ref": "#/definitions/FileChange"
           },
           "type": "object"
         },
@@ -74,7 +74,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "decision": {
-          "$ref": "#/$defs/ReviewDecision"
+          "$ref": "#/definitions/ReviewDecision"
         }
       },
       "required": [
@@ -113,7 +113,7 @@
           ]
         },
         "reason": {
-          "$ref": "#/$defs/ChatgptAuthTokensRefreshReason"
+          "$ref": "#/definitions/ChatgptAuthTokensRefreshReason"
         }
       },
       "required": [
@@ -210,7 +210,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/InitializeParams"
+              "$ref": "#/definitions/InitializeParams"
             }
           },
           "required": [
@@ -2100,7 +2100,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/FuzzyFileSearchParams"
+              "$ref": "#/definitions/FuzzyFileSearchParams"
             }
           },
           "required": [
@@ -2158,7 +2158,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                  "$ref": "#/definitions/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -2237,7 +2237,7 @@
         "networkApprovalContext": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NetworkApprovalContext"
+              "$ref": "#/definitions/NetworkApprovalContext"
             },
             {
               "type": "null"
@@ -2258,7 +2258,7 @@
         "proposedNetworkPolicyAmendments": {
           "description": "Optional proposed network policy amendments (allow/deny host) for future requests.",
           "items": {
-            "$ref": "#/$defs/NetworkPolicyAmendment"
+            "$ref": "#/definitions/NetworkPolicyAmendment"
           },
           "type": [
             "array",
@@ -2297,7 +2297,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "decision": {
-          "$ref": "#/$defs/CommandExecutionApprovalDecision"
+          "$ref": "#/definitions/CommandExecutionApprovalDecision"
         }
       },
       "required": [
@@ -2450,7 +2450,7 @@
         },
         "parsedCmd": {
           "items": {
-            "$ref": "#/$defs/ParsedCommand"
+            "$ref": "#/definitions/ParsedCommand"
           },
           "type": "array"
         },
@@ -2475,7 +2475,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "decision": {
-          "$ref": "#/$defs/ReviewDecision"
+          "$ref": "#/definitions/ReviewDecision"
         }
       },
       "required": [
@@ -2624,7 +2624,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "decision": {
-          "$ref": "#/$defs/FileChangeApprovalDecision"
+          "$ref": "#/definitions/FileChangeApprovalDecision"
         }
       },
       "required": [
@@ -2671,7 +2671,7 @@
       "properties": {
         "files": {
           "items": {
-            "$ref": "#/$defs/FuzzyFileSearchResult"
+            "$ref": "#/definitions/FuzzyFileSearchResult"
           },
           "type": "array"
         }
@@ -2700,7 +2700,7 @@
           ]
         },
         "match_type": {
-          "$ref": "#/$defs/FuzzyFileSearchMatchType"
+          "$ref": "#/definitions/FuzzyFileSearchMatchType"
         },
         "path": {
           "type": "string"
@@ -2741,7 +2741,7 @@
       "properties": {
         "files": {
           "items": {
-            "$ref": "#/$defs/FuzzyFileSearchResult"
+            "$ref": "#/definitions/FuzzyFileSearchResult"
           },
           "type": "array"
         },
@@ -2877,7 +2877,7 @@
         "capabilities": {
           "anyOf": [
             {
-              "$ref": "#/$defs/InitializeCapabilities"
+              "$ref": "#/definitions/InitializeCapabilities"
             },
             {
               "type": "null"
@@ -2885,7 +2885,7 @@
           ]
         },
         "clientInfo": {
-          "$ref": "#/$defs/ClientInfo"
+          "$ref": "#/definitions/ClientInfo"
         }
       },
       "required": [
@@ -2927,7 +2927,7 @@
       "description": "A response to a request that indicates an error occurred.",
       "properties": {
         "error": {
-          "$ref": "#/$defs/JSONRPCErrorError"
+          "$ref": "#/definitions/JSONRPCErrorError"
         },
         "id": {
           "$ref": "#/definitions/v2/RequestId"
@@ -2963,16 +2963,16 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "anyOf": [
         {
-          "$ref": "#/$defs/JSONRPCRequest"
+          "$ref": "#/definitions/JSONRPCRequest"
         },
         {
-          "$ref": "#/$defs/JSONRPCNotification"
+          "$ref": "#/definitions/JSONRPCNotification"
         },
         {
-          "$ref": "#/$defs/JSONRPCResponse"
+          "$ref": "#/definitions/JSONRPCResponse"
         },
         {
-          "$ref": "#/$defs/JSONRPCError"
+          "$ref": "#/definitions/JSONRPCError"
         }
       ],
       "description": "Refers to any valid JSON-RPC object that can be decoded off the wire, or encoded to be sent.",
@@ -3007,7 +3007,7 @@
         "trace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/W3cTraceContext"
+              "$ref": "#/definitions/W3cTraceContext"
             },
             {
               "type": "null"
@@ -3067,7 +3067,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationBooleanType"
+          "$ref": "#/definitions/McpElicitationBooleanType"
         }
       },
       "required": [
@@ -3100,13 +3100,13 @@
     "McpElicitationEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/$defs/McpElicitationSingleSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationSingleSelectEnumSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationMultiSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationMultiSelectEnumSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationLegacyTitledEnumSchema"
+          "$ref": "#/definitions/McpElicitationLegacyTitledEnumSchema"
         }
       ]
     },
@@ -3147,7 +3147,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationStringType"
+          "$ref": "#/definitions/McpElicitationStringType"
         }
       },
       "required": [
@@ -3159,10 +3159,10 @@
     "McpElicitationMultiSelectEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/$defs/McpElicitationUntitledMultiSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationUntitledMultiSelectEnumSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationTitledMultiSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationTitledMultiSelectEnumSchema"
         }
       ]
     },
@@ -3203,7 +3203,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationNumberType"
+          "$ref": "#/definitions/McpElicitationNumberType"
         }
       },
       "required": [
@@ -3227,16 +3227,16 @@
     "McpElicitationPrimitiveSchema": {
       "anyOf": [
         {
-          "$ref": "#/$defs/McpElicitationEnumSchema"
+          "$ref": "#/definitions/McpElicitationEnumSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationStringSchema"
+          "$ref": "#/definitions/McpElicitationStringSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationNumberSchema"
+          "$ref": "#/definitions/McpElicitationNumberSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationBooleanSchema"
+          "$ref": "#/definitions/McpElicitationBooleanSchema"
         }
       ]
     },
@@ -3252,7 +3252,7 @@
         },
         "properties": {
           "additionalProperties": {
-            "$ref": "#/$defs/McpElicitationPrimitiveSchema"
+            "$ref": "#/definitions/McpElicitationPrimitiveSchema"
           },
           "type": "object"
         },
@@ -3266,7 +3266,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationObjectType"
+          "$ref": "#/definitions/McpElicitationObjectType"
         }
       },
       "required": [
@@ -3278,10 +3278,10 @@
     "McpElicitationSingleSelectEnumSchema": {
       "anyOf": [
         {
-          "$ref": "#/$defs/McpElicitationUntitledSingleSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationUntitledSingleSelectEnumSchema"
         },
         {
-          "$ref": "#/$defs/McpElicitationTitledSingleSelectEnumSchema"
+          "$ref": "#/definitions/McpElicitationTitledSingleSelectEnumSchema"
         }
       ]
     },
@@ -3312,7 +3312,7 @@
         "format": {
           "anyOf": [
             {
-              "$ref": "#/$defs/McpElicitationStringFormat"
+              "$ref": "#/definitions/McpElicitationStringFormat"
             },
             {
               "type": "null"
@@ -3342,7 +3342,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationStringType"
+          "$ref": "#/definitions/McpElicitationStringType"
         }
       },
       "required": [
@@ -3361,7 +3361,7 @@
       "properties": {
         "anyOf": {
           "items": {
-            "$ref": "#/$defs/McpElicitationConstOption"
+            "$ref": "#/definitions/McpElicitationConstOption"
           },
           "type": "array"
         }
@@ -3390,7 +3390,7 @@
           ]
         },
         "items": {
-          "$ref": "#/$defs/McpElicitationTitledEnumItems"
+          "$ref": "#/definitions/McpElicitationTitledEnumItems"
         },
         "maxItems": {
           "format": "uint64",
@@ -3415,7 +3415,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationArrayType"
+          "$ref": "#/definitions/McpElicitationArrayType"
         }
       },
       "required": [
@@ -3441,7 +3441,7 @@
         },
         "oneOf": {
           "items": {
-            "$ref": "#/$defs/McpElicitationConstOption"
+            "$ref": "#/definitions/McpElicitationConstOption"
           },
           "type": "array"
         },
@@ -3452,7 +3452,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationStringType"
+          "$ref": "#/definitions/McpElicitationStringType"
         }
       },
       "required": [
@@ -3471,7 +3471,7 @@
           "type": "array"
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationStringType"
+          "$ref": "#/definitions/McpElicitationStringType"
         }
       },
       "required": [
@@ -3499,7 +3499,7 @@
           ]
         },
         "items": {
-          "$ref": "#/$defs/McpElicitationUntitledEnumItems"
+          "$ref": "#/definitions/McpElicitationUntitledEnumItems"
         },
         "maxItems": {
           "format": "uint64",
@@ -3524,7 +3524,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationArrayType"
+          "$ref": "#/definitions/McpElicitationArrayType"
         }
       },
       "required": [
@@ -3561,7 +3561,7 @@
           ]
         },
         "type": {
-          "$ref": "#/$defs/McpElicitationStringType"
+          "$ref": "#/definitions/McpElicitationStringType"
         }
       },
       "required": [
@@ -3592,7 +3592,7 @@
               "type": "string"
             },
             "requestedSchema": {
-              "$ref": "#/$defs/McpElicitationSchema"
+              "$ref": "#/definitions/McpElicitationSchema"
             }
           },
           "required": [
@@ -3676,7 +3676,7 @@
           "description": "Optional client metadata for form-mode action handling."
         },
         "action": {
-          "$ref": "#/$defs/McpServerElicitationAction"
+          "$ref": "#/definitions/McpServerElicitationAction"
         },
         "content": {
           "description": "Structured user input for accepted elicitations, mirroring RMCP `CreateElicitationResult`.\n\nThis is nullable because decline/cancel responses have no content."
@@ -3706,7 +3706,7 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/$defs/NetworkPolicyRuleAction"
+          "$ref": "#/definitions/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
@@ -3887,10 +3887,10 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "permissions": {
-          "$ref": "#/$defs/GrantedPermissionProfile"
+          "$ref": "#/definitions/GrantedPermissionProfile"
         },
         "scope": {
-          "$ref": "#/$defs/PermissionGrantScope",
+          "$ref": "#/definitions/PermissionGrantScope",
           "default": "turn"
         },
         "strictAutoReview": {
@@ -3935,7 +3935,7 @@
             "approved_execpolicy_amendment": {
               "properties": {
                 "proposed_execpolicy_amendment": {
-                  "$ref": "#/$defs/ExecPolicyAmendment"
+                  "$ref": "#/definitions/ExecPolicyAmendment"
                 }
               },
               "required": [
@@ -3962,7 +3962,7 @@
             "network_policy_amendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                  "$ref": "#/definitions/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -5039,7 +5039,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/FuzzyFileSearchSessionUpdatedNotification"
+              "$ref": "#/definitions/FuzzyFileSearchSessionUpdatedNotification"
             }
           },
           "required": [
@@ -5057,7 +5057,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/FuzzyFileSearchSessionCompletedNotification"
+              "$ref": "#/definitions/FuzzyFileSearchSessionCompletedNotification"
             }
           },
           "required": [
@@ -5292,7 +5292,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/CommandExecutionRequestApprovalParams"
+              "$ref": "#/definitions/CommandExecutionRequestApprovalParams"
             }
           },
           "required": [
@@ -5315,7 +5315,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/FileChangeRequestApprovalParams"
+              "$ref": "#/definitions/FileChangeRequestApprovalParams"
             }
           },
           "required": [
@@ -5338,7 +5338,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/ToolRequestUserInputParams"
+              "$ref": "#/definitions/ToolRequestUserInputParams"
             }
           },
           "required": [
@@ -5361,7 +5361,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/McpServerElicitationRequestParams"
+              "$ref": "#/definitions/McpServerElicitationRequestParams"
             }
           },
           "required": [
@@ -5384,7 +5384,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/PermissionsRequestApprovalParams"
+              "$ref": "#/definitions/PermissionsRequestApprovalParams"
             }
           },
           "required": [
@@ -5407,7 +5407,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/DynamicToolCallParams"
+              "$ref": "#/definitions/DynamicToolCallParams"
             }
           },
           "required": [
@@ -5430,7 +5430,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/ComputerUseCallParams"
+              "$ref": "#/definitions/ComputerUseCallParams"
             }
           },
           "required": [
@@ -5452,7 +5452,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/ChatgptAuthTokensRefreshParams"
+              "$ref": "#/definitions/ChatgptAuthTokensRefreshParams"
             }
           },
           "required": [
@@ -5475,7 +5475,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/AttestationGenerateParams"
+              "$ref": "#/definitions/AttestationGenerateParams"
             }
           },
           "required": [
@@ -5498,7 +5498,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/ApplyPatchApprovalParams"
+              "$ref": "#/definitions/ApplyPatchApprovalParams"
             }
           },
           "required": [
@@ -5521,7 +5521,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/$defs/ExecCommandApprovalParams"
+              "$ref": "#/definitions/ExecCommandApprovalParams"
             }
           },
           "required": [
@@ -5584,7 +5584,7 @@
         },
         "questions": {
           "items": {
-            "$ref": "#/$defs/ToolRequestUserInputQuestion"
+            "$ref": "#/definitions/ToolRequestUserInputQuestion"
           },
           "type": "array"
         },
@@ -5623,7 +5623,7 @@
         },
         "options": {
           "items": {
-            "$ref": "#/$defs/ToolRequestUserInputOption"
+            "$ref": "#/definitions/ToolRequestUserInputOption"
           },
           "type": [
             "array",
@@ -5647,7 +5647,7 @@
       "properties": {
         "answers": {
           "additionalProperties": {
-            "$ref": "#/$defs/ToolRequestUserInputAnswer"
+            "$ref": "#/definitions/ToolRequestUserInputAnswer"
           },
           "type": "object"
         }
@@ -8971,8 +8971,15 @@
             "description": "If true, include detection under the user's home directory.",
             "type": "boolean"
           },
+          "migrationSource": {
+            "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
-            "description": "Optional import-source selector. Missing or unrecognized values use the default source for\nbackwards compatibility.",
+            "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource` to select the migration source.",
             "type": [
               "string",
               "null"
@@ -9152,8 +9159,15 @@
             },
             "type": "array"
           },
+          "migrationSource": {
+            "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
-            "description": "Import-source selector used to produce the migration items. Pass the same value to detection\nand import; missing or unrecognized values use the default source for backwards\ncompatibility.",
+            "description": "Optional identifier for the product that initiated the import.",
             "type": [
               "string",
               "null"

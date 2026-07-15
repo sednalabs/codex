@@ -140,6 +140,7 @@ mod exec_command;
 mod external_agent_config_migration;
 mod external_agent_config_migration_flow;
 mod external_agent_config_migration_model;
+mod external_agent_config_migration_source;
 mod external_editor;
 mod file_search;
 mod footer_hints;
