@@ -731,6 +731,24 @@
       "minLength": 1,
       "type": "string"
     },
+    "SleepItem": {
+      "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "durationMs"
+      ],
+      "type": "object"
+    },
     "SubAgentActivityKind": {
       "enum": [
         "started",
@@ -1414,16 +1432,8 @@
           "type": "object"
         },
         {
-          "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+          "$ref": "#/$defs/SleepItem",
           "properties": {
-            "durationMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "id": {
-              "type": "string"
-            },
             "type": {
               "const": "sleep",
               "title": "SleepThreadItemType",
@@ -1431,9 +1441,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "durationMs"
+            "type"
           ],
           "title": "SleepThreadItem",
           "type": "object"
@@ -1882,7 +1890,7 @@
         },
         "results": {
           "default": null,
-          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release.",
+          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new\nresult fields and result types can pass through without a Codex release.",
           "items": true,
           "type": [
             "array",

@@ -1284,8 +1284,8 @@
         }
       },
       "required": [
-        "environmentId",
-        "threadId"
+        "threadId",
+        "environmentId"
       ],
       "type": "object"
     },
@@ -1627,7 +1627,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/LegacyAppPathString"
+                  "$ref": "#/$defs/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -1679,7 +1679,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/LegacyAppPathString"
+                  "$ref": "#/$defs/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -3404,6 +3404,36 @@
       ],
       "type": "object"
     },
+    "RawResponseCompletedNotification": {
+      "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
+      "properties": {
+        "responseId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsageBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "responseId"
+      ],
+      "type": "object"
+    },
     "RawResponseItemCompletedNotification": {
       "properties": {
         "item": {
@@ -4663,6 +4693,24 @@
       "description": "Notification emitted when watched local skill files change.\n\nTreat this as an invalidation signal and re-run `skills/list` with the\nclient's current parameters when refreshed skill metadata is needed.",
       "type": "object"
     },
+    "SleepItem": {
+      "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "durationMs"
+      ],
+      "type": "object"
+    },
     "SpendControlLimitSnapshot": {
       "properties": {
         "limit": {
@@ -5837,16 +5885,8 @@
           "type": "object"
         },
         {
-          "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+          "$ref": "#/$defs/SleepItem",
           "properties": {
-            "durationMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "id": {
-              "type": "string"
-            },
             "type": {
               "const": "sleep",
               "title": "SleepThreadItemType",
@@ -5854,9 +5894,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "durationMs"
+            "type"
           ],
           "title": "SleepThreadItem",
           "type": "object"
@@ -6937,7 +6975,7 @@
         },
         "results": {
           "default": null,
-          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release.",
+          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new\nresult fields and result types can pass through without a Codex release.",
           "items": true,
           "type": [
             "array",

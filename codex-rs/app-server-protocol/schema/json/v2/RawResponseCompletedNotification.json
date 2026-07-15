@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "TokenUsageBreakdown": {
       "properties": {
         "cachedInputTokens": {
@@ -25,16 +24,17 @@
         }
       },
       "required": [
-        "cachedInputTokens",
+        "totalTokens",
         "inputTokens",
+        "cachedInputTokens",
         "outputTokens",
-        "reasoningOutputTokens",
-        "totalTokens"
+        "reasoningOutputTokens"
       ],
       "type": "object"
     }
   },
-  "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
   "properties": {
     "responseId": {
       "type": "string"
@@ -48,7 +48,7 @@
     "usage": {
       "anyOf": [
         {
-          "$ref": "#/definitions/TokenUsageBreakdown"
+          "$ref": "#/$defs/TokenUsageBreakdown"
         },
         {
           "type": "null"
@@ -57,9 +57,9 @@
     }
   },
   "required": [
-    "responseId",
     "threadId",
-    "turnId"
+    "turnId",
+    "responseId"
   ],
   "title": "RawResponseCompletedNotification",
   "type": "object"

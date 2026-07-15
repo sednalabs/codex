@@ -251,7 +251,7 @@
         "runtimeWorkspaceRoots": {
           "description": "Environment-native runtime workspace roots. Omitted defaults to `cwd`.",
           "items": {
-            "$ref": "#/definitions/LegacyAppPathString"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",

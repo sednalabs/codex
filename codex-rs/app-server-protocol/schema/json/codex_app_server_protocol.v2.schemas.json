@@ -5014,7 +5014,7 @@
       "type": "object"
     },
     "EnvironmentConnectionNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "environmentId": {
           "type": "string"
@@ -5024,8 +5024,8 @@
         }
       },
       "required": [
-        "environmentId",
-        "threadId"
+        "threadId",
+        "environmentId"
       ],
       "title": "EnvironmentConnectionNotification",
       "type": "object"
@@ -5237,7 +5237,7 @@
           "type": "boolean"
         },
         "source": {
-          "description": "Optional import-source selector. Missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Optional import-source selector. Missing or unrecognized values use the default source for\nbackwards compatibility.",
           "type": [
             "string",
             "null"
@@ -5411,7 +5411,7 @@
           "type": "array"
         },
         "source": {
-          "description": "Import-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Import-source selector used to produce the migration items. Pass the same value to detection\nand import; missing or unrecognized values use the default source for backwards\ncompatibility.",
           "type": [
             "string",
             "null"
@@ -10922,8 +10922,8 @@
       "type": "object"
     },
     "RawResponseCompletedNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
       "properties": {
         "responseId": {
           "type": "string"
@@ -10946,9 +10946,9 @@
         }
       },
       "required": [
-        "responseId",
         "threadId",
-        "turnId"
+        "turnId",
+        "responseId"
       ],
       "title": "RawResponseCompletedNotification",
       "type": "object"
@@ -14464,6 +14464,24 @@
       "title": "SkillsListResponse",
       "type": "object"
     },
+    "SleepItem": {
+      "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "durationMs"
+      ],
+      "type": "object"
+    },
     "SortDirection": {
       "enum": [
         "asc",
@@ -16030,16 +16048,8 @@
           "type": "object"
         },
         {
-          "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+          "$ref": "#/definitions/SleepItem",
           "properties": {
-            "durationMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "id": {
-              "type": "string"
-            },
             "type": {
               "const": "sleep",
               "title": "SleepThreadItemType",
@@ -16047,9 +16057,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "durationMs"
+            "type"
           ],
           "title": "SleepThreadItem",
           "type": "object"
@@ -16144,8 +16152,8 @@
         }
       },
       "required": [
-        "item",
-        "turnId"
+        "turnId",
+        "item"
       ],
       "type": "object"
     },
@@ -18397,7 +18405,7 @@
         },
         "results": {
           "default": null,
-          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release.",
+          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new\nresult fields and result types can pass through without a Codex release.",
           "items": true,
           "type": [
             "array",
