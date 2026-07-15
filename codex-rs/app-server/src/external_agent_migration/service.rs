@@ -1288,8 +1288,7 @@ impl ExternalAgentConfigService {
     fn import_hooks(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let (source_external_agent_dir, target_hooks) =
             if let Some(repo_root) = find_repo_root(cwd)? {
-                let source_external_agent_dir =
-                    self.source_config_dir(Some(repo_root.as_path()));
+                let source_external_agent_dir = self.source_config_dir(Some(repo_root.as_path()));
                 let target_hooks = repo_root.join(".codex").join("hooks.json");
                 self.ensure_repo_hook_sources(&repo_root)?;
                 ensure_repo_migration_path(&repo_root, &target_hooks)?;

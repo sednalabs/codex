@@ -814,7 +814,10 @@ fn copy_dir_recursive_skip_existing(source: &Path, target: &Path) -> io::Result<
         Ok(_) => {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                format!("hook migration target `{}` is not a directory", target.display()),
+                format!(
+                    "hook migration target `{}` is not a directory",
+                    target.display()
+                ),
             ));
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => fs::create_dir_all(target)?,
