@@ -1037,7 +1037,7 @@ docs-only refresh commit that records this snapshot.
   - `.github/validation-lanes.json`
   - `justfile`
 
-### External-Agent Repository Import Containment
+### External-Agent Migration Path Containment
 
 - Repository-scoped external-agent detection and import canonicalize the
   project selected by the trusted local app-server client before deriving
@@ -1050,6 +1050,19 @@ docs-only refresh commit that records this snapshot.
   avoid overwriting symlink entries in either scope. It does not claim
   handle-relative protection against concurrent replacement of an already
   checked repository path.
+- Upstream MEMORY migration remains home-scoped, but its client-selected project
+  keys must be exactly one normal path component. Before memory detection or
+  import mutates the workspace, the memory root, extension/resource ancestors,
+  project root, `scope.json`, Markdown resource leaves, and `instructions.md`
+  are checked beneath `CODEX_HOME` and rejected when any existing component is
+  a symlink. This preserves stale-project removal without allowing absolute or
+  parent-relative selections to escape the extension workspace.
+- The focused lane covers both the service-module denial tests and the app-server
+  request boundary. `detect_rejects_symlinked_stale_memory_project` proves stale
+  owned projects are preflighted before detection offers them. In particular,
+  `external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation`
+  proves a rejected stale-project selection cannot initialize or rewrite the
+  memory workspace before the containment error is reported.
 - Recursive copy helpers skip symlink entries and refuse symlinked target
   directories. Empty-text target checks use `symlink_metadata`, so an empty or
   dangling symlink is protected rather than treated as an overwritable file.
@@ -1062,6 +1075,8 @@ docs-only refresh commit that records this snapshot.
   - `.github/validation-lanes.json`
   - `.github/workflows/sedna-heavy-tests.yml`
   - `codex-rs/app-server/src/external_agent_migration/service.rs`
+  - `codex-rs/app-server/src/external_agent_migration/service/memory.rs`
+  - `codex-rs/app-server/src/external_agent_migration/service/memory_tests.rs`
   - `codex-rs/app-server/src/external_agent_migration/service/utils.rs`
   - `codex-rs/app-server/src/external_agent_migration/service_tests.rs`
   - `codex-rs/external-agent-migration/src/lib.rs`

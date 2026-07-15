@@ -1,8 +1,49 @@
 use codex_external_agent_migration::RewriteProfile;
 use std::fs;
 use std::io;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+
+pub(super) fn ensure_migration_path(root: &Path, path: &Path) -> io::Result<()> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        invalid_data_error(format!(
+            "migration path `{}` is outside migration root `{}`",
+            path.display(),
+            root.display()
+        ))
+    })?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid_data_error(format!(
+            "migration path `{}` is not normalized beneath `{}`",
+            path.display(),
+            root.display()
+        )));
+    }
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("migration path components were validated above");
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(invalid_data_error(format!(
+                    "migration path `{}` contains symlink component `{}`",
+                    path.display(),
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn display_source_paths(paths: &[PathBuf]) -> String {
     paths
@@ -153,4 +194,27 @@ fn replace_case_insensitive_with_boundaries(
 
 fn is_word_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn invalid_data_error(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    #[test]
+    fn ensure_migration_path_rejects_parent_after_missing_component() {
+        let root = TempDir::new().expect("create tempdir");
+        let path = root.path().join("missing/../outside");
+
+        let error = ensure_migration_path(root.path(), &path)
+            .expect_err("reject parent component after missing path");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("not normalized"));
+    }
 }

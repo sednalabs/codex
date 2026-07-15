@@ -1542,26 +1542,29 @@
     },
     {
       "id": "external-agent-migration-repository-containment",
-      "title": "Repository-contained external-agent migration",
+      "title": "External-agent migration path containment",
       "status": "live",
       "category": "security",
       "surface_type": "runtime-policy",
       "surface": [
         "repository-scoped external-agent import",
-        "migration target symlink handling"
+        "migration target symlink handling",
+        "home-scoped memory import destinations"
       ],
       "files": [
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
         ".github/workflows/sedna-heavy-tests.yml",
         "codex-rs/app-server/src/external_agent_migration/service.rs",
+        "codex-rs/app-server/src/external_agent_migration/service/memory.rs",
+        "codex-rs/app-server/src/external_agent_migration/service/memory_tests.rs",
         "codex-rs/app-server/src/external_agent_migration/service/utils.rs",
         "codex-rs/app-server/src/external_agent_migration/service_tests.rs",
         "codex-rs/external-agent-migration/src/lib.rs",
         "codex-rs/external-agent-migration/src/lib_tests.rs",
         "justfile"
       ],
-      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped migration remains separate.",
+      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": "c61390d3acc273e711b0e90feaa9dadd43b5a792",
@@ -1581,14 +1584,22 @@
         "import_repo_skills_rejects_symlinked_destination_root",
         "import_repo_hooks_rejects_symlinked_target_file",
         "import_repo_hooks_rejects_symlinked_target_parent",
-        "subagent_import_skips_dangling_symlink_target"
+        "subagent_import_skips_dangling_symlink_target",
+        "rejects_memory_project_keys_that_are_not_single_components",
+        "rejects_symlinked_memory_destination_ancestors",
+        "detect_rejects_symlinked_stale_memory_project",
+        "rejects_symlinked_memory_instructions_before_project_mutation",
+        "rejects_symlinked_memory_resource_and_scope_leaves",
+        "ensure_migration_path_rejects_parent_after_missing_component",
+        "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
       ],
       "owner": "downstream",
-      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. It protects against static redirected repository paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, and dangling target leaves with equivalent regression coverage.",
+      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "filesystem-containment",
       "hotspot_files": [
         "codex-rs/app-server/src/external_agent_migration/service.rs",
+        "codex-rs/app-server/src/external_agent_migration/service/memory.rs",
         "codex-rs/external-agent-migration/src/lib.rs"
       ],
       "extraction_target": "upstream external-agent migration containment"
