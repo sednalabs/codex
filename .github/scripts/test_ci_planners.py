@@ -2609,7 +2609,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
         commands = [line for line in body.splitlines() if "cargo nextest run" in line]
 
         self.assertTrue(commands)
+        self.assertTrue(
+            all(
+                'RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}"'
+                in command
+                for command in commands
+            )
+        )
         self.assertTrue(all("--no-tests=fail" in command for command in commands))
+        self.assertTrue(all("--exact" in command for command in commands))
         package_selectors = {
             "codex-protocol": (
                 "models::inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
