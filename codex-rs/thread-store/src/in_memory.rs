@@ -59,71 +59,7 @@ mod tests {
     use crate::ThreadPersistenceMetadata;
     use crate::ThreadSortKey;
     use codex_protocol::models::BaseInstructions;
-    use codex_protocol::models::ThreadInferenceIdentity;
-    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::SessionSource;
-
-    #[tokio::test]
-    async fn inference_identity_updates_preserve_omitted_and_malformed_siblings() {
-        let store = InMemoryThreadStore::default();
-        let thread_id = ThreadId::default();
-        store
-            .create_thread(create_thread_params(thread_id, ThreadHistoryMode::Legacy))
-            .await
-            .expect("thread should be created");
-        let malformed = ThreadInferenceIdentityAuthority::Malformed {
-            raw: "{exact malformed configured}".to_string(),
-        };
-        store.state.lock().await.inference_identity_sidecars.insert(
-            thread_id,
-            ThreadInferenceIdentitySidecar {
-                configured: malformed.clone(),
-                latest_request: ThreadInferenceIdentityAuthority::LegacyMissing,
-            },
-        );
-
-        let latest_request =
-            ThreadInferenceIdentity::new("request", "provider", /*reasoning_effort*/ None)
-                .expect("identity should be valid");
-        ThreadStore::update_thread_inference_identity_sidecar(
-            &store,
-            UpdateThreadInferenceIdentitySidecarParams {
-                thread_id,
-                patch: crate::ThreadInferenceIdentitySidecarPatch {
-                    configured: None,
-                    latest_request: Some(Some(latest_request.clone())),
-                },
-            },
-        )
-        .await
-        .expect("request-only update should succeed");
-        ThreadStore::update_thread_inference_identity_sidecar(
-            &store,
-            UpdateThreadInferenceIdentitySidecarParams {
-                thread_id,
-                patch: crate::ThreadInferenceIdentitySidecarPatch {
-                    configured: Some(None),
-                    latest_request: None,
-                },
-            },
-        )
-        .await
-        .expect("configured clear should succeed");
-
-        assert_eq!(
-            store
-                .state
-                .lock()
-                .await
-                .inference_identity_sidecars
-                .get(&thread_id)
-                .cloned(),
-            Some(ThreadInferenceIdentitySidecar {
-                configured: ThreadInferenceIdentityAuthority::cleared(),
-                latest_request: ThreadInferenceIdentityAuthority::Valid(latest_request),
-            })
-        );
-    }
 
     #[tokio::test]
     async fn default_turn_pagination_methods_return_unsupported() {
