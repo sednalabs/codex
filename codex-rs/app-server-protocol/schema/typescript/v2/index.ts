@@ -99,6 +99,7 @@ export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputCo
 export type { DynamicToolCallParams } from "./DynamicToolCallParams";
 export type { DynamicToolCallResponse } from "./DynamicToolCallResponse";
 export type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
+export type { EnvironmentConnectionNotification } from "./EnvironmentConnectionNotification";
 export type { ErrorNotification } from "./ErrorNotification";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
 export type { ExperimentalFeature } from "./ExperimentalFeature";

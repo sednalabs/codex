@@ -1274,6 +1274,21 @@
       ],
       "type": "string"
     },
+    "EnvironmentConnectionNotification": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ErrorNotification": {
       "properties": {
         "error": {
@@ -7188,6 +7203,42 @@
         "params"
       ],
       "title": "Thread/goal/clearedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/environment/connected",
+          "title": "Thread/environment/connectedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/EnvironmentConnectionNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/environment/connectedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/environment/disconnected",
+          "title": "Thread/environment/disconnectedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/EnvironmentConnectionNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/environment/disconnectedNotification",
       "type": "object"
     },
     {
