@@ -1406,6 +1406,7 @@ mod tests {
             /*live_network_config*/ None,
             "active-model",
             /*reasoning_effort*/ None,
+            /*model_messages*/ None,
         )
         .expect("guardian config");
         let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();

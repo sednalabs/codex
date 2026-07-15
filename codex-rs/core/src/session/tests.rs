@@ -6834,6 +6834,7 @@ async fn unknown_turn_environment_returns_error() {
                         cwd: codex_utils_path_uri::PathUri::from_abs_path(
                             original_configuration.cwd(),
                         ),
+                        workspace_roots: Vec::new(),
                     }],
                 )),
                 ..Default::default()
