@@ -2612,7 +2612,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertTrue(all("--no-tests=fail" in command for command in commands))
         package_selectors = {
             "codex-protocol": (
-                "inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
+                "models::inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
             ),
             "codex-state": (
                 "inference_identity::tests::authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",

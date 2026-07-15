@@ -46,4 +46,20 @@ fn inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing() {
             latest_request: ThreadInferenceIdentityAuthority::LegacyMissing,
         }
     );
+
+    let malformed = ThreadInferenceIdentitySidecar {
+        configured: ThreadInferenceIdentityAuthority::Malformed {
+            raw: "{exact invalid configured}".to_string(),
+        },
+        latest_request: ThreadInferenceIdentityAuthority::Malformed {
+            raw: "[exact invalid request]".to_string(),
+        },
+    };
+    assert_eq!(
+        serde_json::from_str::<ThreadInferenceIdentitySidecar>(
+            &serde_json::to_string(&malformed).expect("malformed sidecar should serialize"),
+        )
+        .expect("malformed sidecar should deserialize"),
+        malformed
+    );
 }
