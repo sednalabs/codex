@@ -34,6 +34,19 @@ If your `origin` remote still points at the personal namespace, update it:
 git remote set-url origin git@github.com:sednalabs/codex.git
 ```
 
+## External-agent migration containment
+
+Repository-scoped external-agent detection and import canonicalize the project
+selected by the trusted local app-server client. Before file-backed migration
+work begins, static source and destination paths under that project are checked
+without following symlinks; settings leaves, MCP configuration leaves, hook
+scripts, source roots, destination roots, and dangling target leaves fail
+closed. Home-scoped migration remains separate. These checks prevent migration
+through repository symlinks; they are not a handle-relative authorization
+boundary against a checkout being replaced concurrently. Shared target-leaf
+checks also avoid overwriting symlink entries during home-scoped migration,
+without applying the repository-root preflight to home sources.
+
 ## Validation policy
 
 - use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
@@ -62,17 +75,17 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-12`):
+Current downstream audit baseline (validated on `2026-07-15`):
 
 - downstream branch `main` code tree:
-  `8ad2d045a555fa8454cf4a657caa39dc3ddbc772`
+  `e8f9d7600e6cb80cc50300f6af287b3843a6f9b1`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+  `38b064c31b1f7464b281006316ec878ed23fea77`
 - `upstream/main`:
-  `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+  `38b064c31b1f7464b281006316ec878ed23fea77`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1657` downstream ahead
+  `0` upstream ahead, `1712` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
