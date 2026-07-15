@@ -19,6 +19,9 @@ impl StateRuntime {
         } = update;
         let configured = configured.encode()?;
         let latest_request = latest_request.encode()?;
+        if configured.is_none() && latest_request.is_none() {
+            return Ok(false);
+        }
         let thread_id = thread_id.to_string();
         let result = match (configured.as_deref(), latest_request.as_deref()) {
             (Some(configured), Some(latest_request)) => {
@@ -49,7 +52,7 @@ impl StateRuntime {
                 .execute(self.pool.as_ref())
                 .await?
             }
-            (None, None) => return Ok(false),
+            (None, None) => unreachable!("all-omitted update returned above"),
         };
         Ok(result.rows_affected() > 0)
     }
