@@ -1,3 +1,4 @@
+use codex_protocol::ThreadId;
 use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use serde::Deserialize;
@@ -150,6 +151,19 @@ mod strict_optional_identity {
             .transpose()?;
         Ok(Some(identity))
     }
+}
+
+impl ThreadInferenceIdentitySidecarPatch {
+    pub fn is_empty(&self) -> bool {
+        self.configured.is_none() && self.latest_request.is_none()
+    }
+}
+
+/// Parameters for atomically updating inference identity authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateThreadInferenceIdentitySidecarParams {
+    pub thread_id: ThreadId,
+    pub patch: ThreadInferenceIdentitySidecarPatch,
 }
 
 #[cfg(test)]
