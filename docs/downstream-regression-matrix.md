@@ -343,6 +343,11 @@ for a removed crate path.
 - Cache-boundary checks must use upstream's `connector_runtime` and
   `tool_catalog_cache` ownership: raw complete snapshots publish before local
   filtering, and the removed `codex_apps_cache.rs` path must stay absent.
+- Upstream cache-safety checks
+  `tool_catalog_cache_bypasses_remote_sourced_environment_variables`,
+  `mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools`,
+  and `regular_mcp_definition_cache_preserves_live_session_state` must remain
+  green alongside the downstream complete-catalogue checks.
 
 ## Validation notes
 
