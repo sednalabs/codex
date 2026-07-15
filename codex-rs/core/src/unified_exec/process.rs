@@ -208,12 +208,9 @@ impl UnifiedExecProcess {
     pub(super) async fn wait_for_output_completion(&self) {
         let output_task = self.output_task.lock().await.take();
         if let Some(mut output_task) = output_task {
-            if tokio::time::timeout(
-                Duration::from_millis(IO_DRAIN_TIMEOUT_MS),
-                &mut output_task,
-            )
-            .await
-            .is_err()
+            if tokio::time::timeout(Duration::from_millis(IO_DRAIN_TIMEOUT_MS), &mut output_task)
+                .await
+                .is_err()
             {
                 output_task.abort();
                 let _ = output_task.await;
@@ -391,11 +388,8 @@ impl UnifiedExecProcess {
         *managed.output_task.get_mut() = Some(Self::spawn_local_output_task(
             stdout_rx,
             stderr_rx,
-            Arc::clone(&managed.output_buffer),
+            managed.output_handles(),
             Arc::clone(&managed.aggregated_output),
-            Arc::clone(&managed.output_notify),
-            Arc::clone(&managed.output_closed),
-            Arc::clone(&managed.output_closed_notify),
             managed.output_tx.clone(),
         ));
 
@@ -578,6 +572,9 @@ impl UnifiedExecProcess {
                         } else {
                             state
                         });
+                        if exited {
+                            cancellation_token.cancel();
+                        }
                     }
                     if closed {
                         output_closed.store(true, Ordering::Release);
@@ -619,6 +616,7 @@ impl UnifiedExecProcess {
                         let mut state = state_tx.borrow().clone();
                         state.sandbox_denied |= sandbox_denied.unwrap_or(false);
                         let _ = state_tx.send_replace(state.exited(Some(exit_code)));
+                        cancellation_token.cancel();
                     }
                     ExecProcessEvent::Closed { seq } => {
                         if seq <= last_seq {
@@ -645,13 +643,17 @@ impl UnifiedExecProcess {
     fn spawn_local_output_task(
         mut stdout_rx: mpsc::Receiver<Vec<u8>>,
         mut stderr_rx: mpsc::Receiver<Vec<u8>>,
-        buffer: OutputBuffer,
+        output_handles: OutputHandles,
         aggregated_output: OutputBuffer,
-        output_notify: Arc<Notify>,
-        output_closed: Arc<AtomicBool>,
-        output_closed_notify: Arc<Notify>,
         output_tx: broadcast::Sender<Vec<u8>>,
     ) -> JoinHandle<()> {
+        let OutputHandles {
+            output_buffer,
+            output_notify,
+            output_closed,
+            output_closed_notify,
+            cancellation_token: _,
+        } = output_handles;
         tokio::spawn(async move {
             let mut stdout_open = true;
             let mut stderr_open = true;
@@ -661,7 +663,7 @@ impl UnifiedExecProcess {
                         match chunk {
                             Some(chunk) => {
                                 Self::record_and_broadcast_output_chunk(
-                                    &buffer,
+                                    &output_buffer,
                                     &aggregated_output,
                                     &output_notify,
                                     &output_tx,
@@ -676,7 +678,7 @@ impl UnifiedExecProcess {
                         match chunk {
                             Some(chunk) => {
                                 Self::record_and_broadcast_output_chunk(
-                                    &buffer,
+                                    &output_buffer,
                                     &aggregated_output,
                                     &output_notify,
                                     &output_tx,

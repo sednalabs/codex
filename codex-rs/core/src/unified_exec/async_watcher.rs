@@ -47,10 +47,8 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
 
         let mut pending = Vec::<u8>::new();
         let mut emitted_deltas: usize = 0;
-        let source_closed = UnifiedExecProcess::wait_for_output_closed_handles(
-            output_closed,
-            output_closed_notify,
-        );
+        let source_closed =
+            UnifiedExecProcess::wait_for_output_closed_handles(output_closed, output_closed_notify);
         tokio::pin!(source_closed);
 
         loop {
