@@ -159,6 +159,33 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.external-agent-session-migration-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "core-carry"
+      ],
+      "setup_class": "rust_minimal",
+      "batch_weight_seconds": 240,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "external-agent-session-migration-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.skill-loader-fixture-hermeticity-targeted",
       "groups": [
         "core"

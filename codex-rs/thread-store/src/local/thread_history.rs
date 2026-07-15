@@ -325,6 +325,7 @@ WHERE thread_id = ? AND turn_id = ?
             | ThreadItem::FileChange { .. }
             | ThreadItem::McpToolCall { .. }
             | ThreadItem::DynamicToolCall { .. }
+            | ThreadItem::ComputerUseCall { .. }
             | ThreadItem::CollabAgentToolCall { .. }
             | ThreadItem::SubAgentActivity { .. }
             | ThreadItem::WebSearch(_)
