@@ -1605,7 +1605,7 @@ mod tests {
             runtime
                 .update_thread_inference_identity_authority(
                     thread_id,
-                    None,
+                    /*configured*/ None,
                     Some(request.as_str()),
                 )
                 .await
@@ -1626,11 +1626,11 @@ mod tests {
             runtime.update_thread_inference_identity_authority(
                 thread_id,
                 Some(configured.as_str()),
-                None,
+                /*latest_request*/ None,
             ),
             runtime.update_thread_inference_identity_authority(
                 thread_id,
-                None,
+                /*configured*/ None,
                 Some(next_request.as_str()),
             ),
         );
