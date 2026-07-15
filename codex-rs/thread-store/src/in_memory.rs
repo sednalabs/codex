@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionContextWindow;
@@ -29,6 +30,8 @@ use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
+use crate::ThreadInferenceIdentitySidecarPatch;
 use crate::ThreadMetadataPatch;
 use crate::ThreadPage;
 use crate::ThreadRelationFilter;
@@ -36,6 +39,7 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
+use crate::UpdateThreadInferenceIdentitySidecarParams;
 use crate::UpdateThreadMetadataParams;
 use crate::error::reject_paginated_history_mode;
 use crate::types::canonical_history_mode_from_rollout_items;
@@ -350,6 +354,10 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "in_memory_inference_identity_tests.rs"]
+mod inference_identity_tests;
+
 fn stores_guard() -> MutexGuard<'static, HashMap<String, Arc<InMemoryThreadStore>>> {
     match stores().lock() {
         Ok(guard) => guard,
@@ -393,6 +401,7 @@ struct InMemoryThreadStoreState {
     calls: InMemoryThreadStoreCalls,
     created_threads: HashMap<ThreadId, CreateThreadParams>,
     histories: HashMap<ThreadId, Vec<RolloutItem>>,
+    inference_identity_sidecars: HashMap<ThreadId, ThreadInferenceIdentitySidecar>,
     metadata_updates: HashMap<ThreadId, ThreadMetadataPatch>,
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
@@ -423,6 +432,9 @@ impl InMemoryThreadStore {
         reject_paginated_history_mode(params.history_mode)?;
         let mut state = self.state.lock().await;
         state.calls.create_thread += 1;
+        state
+            .inference_identity_sidecars
+            .insert(params.thread_id, ThreadInferenceIdentitySidecar::default());
         let session_meta = SessionMeta {
             session_id: params.session_id,
             id: params.thread_id,
@@ -468,6 +480,10 @@ impl InMemoryThreadStore {
             .map(canonical_history_mode_from_rollout_items)
             .unwrap_or_else(|| history_mode_from_state(&state, params.thread_id));
         reject_paginated_history_mode(history_mode)?;
+        state
+            .inference_identity_sidecars
+            .entry(params.thread_id)
+            .or_default();
         if let Some(history) = params.history {
             state
                 .histories
@@ -587,11 +603,48 @@ impl InMemoryThreadStore {
         stored_thread_from_state(&state, params.thread_id, /*include_history*/ false)
     }
 
+    async fn update_thread_inference_identity_sidecar(
+        &self,
+        params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreResult<()> {
+        if params.patch.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.state.lock().await;
+        if !state.created_threads.contains_key(&params.thread_id) {
+            return Err(ThreadStoreError::ThreadNotFound {
+                thread_id: params.thread_id,
+            });
+        }
+        let ThreadInferenceIdentitySidecarPatch {
+            configured,
+            latest_request,
+        } = params.patch;
+        let sidecar = state
+            .inference_identity_sidecars
+            .entry(params.thread_id)
+            .or_default();
+        if let Some(configured) = configured {
+            sidecar.configured = configured.map_or_else(
+                ThreadInferenceIdentityAuthority::cleared,
+                ThreadInferenceIdentityAuthority::Valid,
+            );
+        }
+        if let Some(latest_request) = latest_request {
+            sidecar.latest_request = latest_request.map_or_else(
+                ThreadInferenceIdentityAuthority::cleared,
+                ThreadInferenceIdentityAuthority::Valid,
+            );
+        }
+        Ok(())
+    }
+
     async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()> {
         let mut state = self.state.lock().await;
         state.calls.delete_thread += 1;
         let existed = state.histories.remove(&params.thread_id).is_some();
         state.created_threads.remove(&params.thread_id);
+        state.inference_identity_sidecars.remove(&params.thread_id);
         state.names.remove(&params.thread_id);
         state.metadata_updates.remove(&params.thread_id);
         state
@@ -712,6 +765,13 @@ impl ThreadStore for InMemoryThreadStore {
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(InMemoryThreadStore::update_thread_metadata(self, params))
+    }
+
+    fn update_thread_inference_identity_sidecar(
+        &self,
+        params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(InMemoryThreadStore::update_thread_inference_identity_sidecar(self, params))
     }
 
     fn archive_thread(&self, _params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {
