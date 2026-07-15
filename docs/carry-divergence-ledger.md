@@ -939,6 +939,29 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
+### External-Agent Session Import Compatibility
+
+- Upstream consolidated the former downstream session-import crate into
+  `codex-external-agent-migration::sessions`. Preserve the imported-session
+  ledger, source-content SHA-256 identity, and single-pass record parsing while
+  using the upstream module and package layout.
+- The workspace uses `sha2` 0.11, so content hashes retain the downstream
+  explicit hexadecimal encoder rather than relying on the older digest
+  formatting implementation. Callers inside the consolidated module must
+  resolve that helper through the `sessions` module, not the crate root.
+- `codex.external-agent-session-migration-targeted` is the focused hosted
+  guardrail for future upstream moves. The divergence registry deliberately
+  lists only the five session files that remain different from upstream so
+  adjacent upstream-owned migration code is not hidden from the audit.
+- Primary files:
+  - `codex-rs/external-agent-migration/src/sessions/export.rs`
+  - `codex-rs/external-agent-migration/src/sessions/ledger.rs`
+  - `codex-rs/external-agent-migration/src/sessions/ledger_tests.rs`
+  - `codex-rs/external-agent-migration/src/sessions/mod.rs`
+  - `codex-rs/external-agent-migration/src/sessions/records.rs`
+  - `.github/validation-lanes.json`
+  - `justfile`
+
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:

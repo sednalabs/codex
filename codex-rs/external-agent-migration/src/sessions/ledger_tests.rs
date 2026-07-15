@@ -33,7 +33,7 @@ fn completed_imports_do_not_read_source_files() {
         &codex_home,
         vec![CompletedExternalAgentSessionImport {
             source_path: source_path.clone(),
-            source_content_sha256: crate::digest_hex(Sha256::digest(contents)),
+            source_content_sha256: super::super::digest_hex(Sha256::digest(contents)),
             imported_thread_id,
         }],
     )
@@ -54,7 +54,7 @@ fn completed_import_refreshes_existing_record_metadata() {
     let contents = b"session contents";
     std::fs::write(&source_path, contents).expect("source");
     let source_path = std::fs::canonicalize(source_path).expect("canonical source");
-    let content_sha256 = crate::digest_hex(Sha256::digest(contents));
+    let content_sha256 = super::super::digest_hex(Sha256::digest(contents));
     let first_thread_id = ThreadId::new();
     let second_thread_id = ThreadId::new();
 
