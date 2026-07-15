@@ -386,6 +386,7 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                     environments: Some(vec![TurnEnvironmentParams {
                         environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
                         cwd: serde_json::from_value::<LegacyAppPathString>(json!(NATIVE_CWD))?,
+                        runtime_workspace_roots: None,
                     }]),
                     ..Default::default()
                 })

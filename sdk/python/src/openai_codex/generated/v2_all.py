@@ -4061,7 +4061,6 @@ class ThreadDeleteParams(BaseModel):
 
 
 class ThreadDeleteResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -4075,7 +4074,6 @@ class ThreadDeletedNotification(BaseModel):
 
 
 class ThreadExtra(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
