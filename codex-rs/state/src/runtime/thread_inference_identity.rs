@@ -1,9 +1,39 @@
 use codex_protocol::ThreadId;
+use sqlx::Row;
 
 use super::StateRuntime;
+use crate::ThreadInferenceIdentityAuthoritySnapshot;
 use crate::ThreadInferenceIdentityAuthorityUpdate;
+use crate::decode_thread_inference_identity_authority;
 
 impl StateRuntime {
+    /// Reads both persisted inference-identity authorities without collapsing a missing row into
+    /// legacy-missing authority.
+    pub async fn get_thread_inference_identity_authority(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<ThreadInferenceIdentityAuthoritySnapshot>> {
+        let row = sqlx::query(
+            "SELECT configured_inference_identity_authority, latest_request_inference_identity_authority FROM threads WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(|row| {
+            let configured: Option<String> =
+                row.try_get("configured_inference_identity_authority")?;
+            let latest_request: Option<String> =
+                row.try_get("latest_request_inference_identity_authority")?;
+            Ok(ThreadInferenceIdentityAuthoritySnapshot {
+                configured: decode_thread_inference_identity_authority(configured.as_deref()),
+                latest_request: decode_thread_inference_identity_authority(
+                    latest_request.as_deref(),
+                ),
+            })
+        })
+        .transpose()
+    }
+
     /// Canonically encodes and atomically updates only the supplied inference-identity columns.
     ///
     /// Returns whether a projection row was updated. `false` means either that both fields were

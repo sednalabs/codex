@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use codex_protocol::ThreadId;
 use codex_protocol::models::ThreadInferenceIdentity;
+use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use tokio::sync::Barrier;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
 use super::StateRuntime;
 use crate::ThreadInferenceIdentityAuthorityFieldUpdate;
+use crate::ThreadInferenceIdentityAuthoritySnapshot;
 use crate::ThreadInferenceIdentityAuthorityUpdate;
 use crate::runtime::test_support::test_thread_metadata;
 use crate::runtime::test_support::unique_temp_dir;
@@ -267,6 +269,115 @@ async fn independently_spawned_single_field_updates_converge_exactly() {
     assert_eq!(
         audit_events,
         vec!["configured".to_string(), "latest_request".to_string()]
+    );
+
+    let codex_home = runtime.codex_home().to_path_buf();
+    runtime.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
+async fn authority_snapshot_preserves_exact_states_across_rollout_reconciliation() {
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000703").expect("valid thread id");
+    let missing_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000798").expect("valid thread id");
+    let runtime = runtime_with_thread(thread_id).await;
+
+    assert_eq!(
+        (
+            runtime
+                .get_thread_inference_identity_authority(missing_id)
+                .await
+                .expect("missing projection lookup should succeed"),
+            runtime
+                .get_thread_inference_identity_authority(thread_id)
+                .await
+                .expect("legacy projection lookup should succeed"),
+        ),
+        (
+            None,
+            Some(ThreadInferenceIdentityAuthoritySnapshot::default()),
+        )
+    );
+
+    let valid_update = set_update("configured-valid");
+    let valid_raw = encoded(&valid_update);
+    let malformed_raw = "{exact malformed latest-request bytes}";
+    seed_raw_row(&runtime, thread_id, &valid_raw, malformed_raw).await;
+    let expected = ThreadInferenceIdentityAuthoritySnapshot {
+        configured: ThreadInferenceIdentityAuthority::Valid(
+            ThreadInferenceIdentity::new(
+                "configured-valid",
+                "provider",
+                /*reasoning_effort*/ None,
+            )
+            .expect("identity should be valid"),
+        ),
+        latest_request: ThreadInferenceIdentityAuthority::Malformed {
+            raw: malformed_raw.to_string(),
+        },
+    };
+    assert_eq!(
+        runtime
+            .get_thread_inference_identity_authority(thread_id)
+            .await
+            .expect("typed projection lookup should succeed"),
+        Some(expected.clone())
+    );
+
+    runtime
+        .upsert_thread(&test_thread_metadata(
+            runtime.codex_home(),
+            thread_id,
+            runtime.codex_home().to_path_buf(),
+        ))
+        .await
+        .expect("rollout reconciliation should succeed");
+    assert_eq!(
+        (
+            raw_row(&runtime, thread_id).await,
+            runtime
+                .get_thread_inference_identity_authority(thread_id)
+                .await
+                .expect("reconciled projection lookup should succeed"),
+        ),
+        (
+            Some((Some(valid_raw), Some(malformed_raw.to_string()))),
+            Some(expected),
+        )
+    );
+
+    let cleared_raw = encoded(&ThreadInferenceIdentityAuthorityFieldUpdate::Clear);
+    sqlx::query(
+        "UPDATE threads SET configured_inference_identity_authority = NULL, latest_request_inference_identity_authority = ? WHERE id = ?",
+    )
+    .bind(cleared_raw)
+    .bind(thread_id.to_string())
+    .execute(runtime.pool.as_ref())
+    .await
+    .expect("clear and legacy fixture should be stored");
+    assert_eq!(
+        runtime
+            .get_thread_inference_identity_authority(thread_id)
+            .await
+            .expect("clear and legacy projection lookup should succeed"),
+        Some(ThreadInferenceIdentityAuthoritySnapshot {
+            configured: ThreadInferenceIdentityAuthority::LegacyMissing,
+            latest_request: ThreadInferenceIdentityAuthority::Cleared,
+        })
+    );
+
+    sqlx::query("DROP TABLE threads")
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("error fixture should remove the projection table");
+    assert!(
+        runtime
+            .get_thread_inference_identity_authority(thread_id)
+            .await
+            .is_err(),
+        "database read errors must propagate instead of becoming legacy-missing authority"
     );
 
     let codex_home = runtime.codex_home().to_path_buf();

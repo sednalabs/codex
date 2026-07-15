@@ -14,6 +14,13 @@ use serde::de::Visitor;
 
 pub const THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION: u8 = 1;
 
+/// Complete inference-identity authority read from one persisted thread projection.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ThreadInferenceIdentityAuthoritySnapshot {
+    pub configured: ThreadInferenceIdentityAuthority,
+    pub latest_request: ThreadInferenceIdentityAuthority,
+}
+
 /// Presence-aware inference identity authority update for durable state writes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ThreadInferenceIdentityAuthorityUpdate {
