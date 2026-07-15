@@ -582,6 +582,9 @@
             "experimental_windows_sandbox": {
               "type": "boolean"
             },
+            "external_agent_memory_import": {
+              "type": "boolean"
+            },
             "external_migration": {
               "type": "boolean"
             },
@@ -6270,6 +6273,9 @@
           "type": "boolean"
         },
         "experimental_windows_sandbox": {
+          "type": "boolean"
+        },
+        "external_agent_memory_import": {
           "type": "boolean"
         },
         "external_migration": {

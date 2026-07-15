@@ -139,9 +139,10 @@ core-startup-sync-targeted:
 external-agent-session-migration-targeted:
     cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
 
-# Focused repository-containment slice for external-agent detection and import.
+# Focused containment slice for repository and memory migration paths.
 external-agent-migration-containment-targeted:
-    cargo test --locked -p codex-app-server external_agent_migration::service::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-app-server external_agent_migration::service:: --lib -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::external_agent_config::external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation -- --exact --test-threads=1
     cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
 
 # Focused downstream sub-agent surface contract slice.

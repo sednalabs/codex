@@ -38,6 +38,7 @@ fn service_for_cursor_paths(
         external_agent_home,
         analytics_events_client: None,
         source,
+        state_db: None,
     }
 }
 
@@ -160,6 +161,43 @@ fn assert_is_symlink(path: &Path) {
 }
 
 #[tokio::test]
+async fn detect_does_not_offer_memory_for_an_unsupported_source() {
+    let root = TempDir::new().expect("create tempdir");
+    let external_agent_home = root.path().join(".cursor");
+    let codex_home = root.path().join(".codex");
+    let project_root = external_agent_home.join("projects/project-a");
+    let project_memory = project_root.join("memory");
+    let project_cwd = root.path().join("project-a-cwd");
+    fs::create_dir_all(&project_memory).expect("create project memory");
+    fs::create_dir_all(&project_cwd).expect("create project cwd");
+    fs::write(project_memory.join("MEMORY.md"), "project memory").expect("write project memory");
+    fs::write(
+        project_root.join("session.jsonl"),
+        serde_json::json!({
+            "type": "user",
+            "cwd": project_cwd,
+            "timestamp": "2026-07-13T00:00:00Z",
+            "message": { "content": "remember this" },
+        })
+        .to_string(),
+    )
+    .expect("write project session");
+    let mut service = service_for_paths(external_agent_home, codex_home);
+    service.source = ExternalAgentSource::Cur;
+
+    let items = service
+        .detect(ExternalAgentConfigDetectOptions {
+            include_home: true,
+            include_memory: true,
+            cwds: None,
+        })
+        .await
+        .expect("detect");
+
+    assert_eq!(items, Vec::<ExternalAgentConfigMigrationItem>::new());
+}
+
+#[tokio::test]
 async fn detect_home_lists_config_skills_and_agents_md() {
     let (_root, external_agent_home, codex_home) = fixture_paths();
     let agents_skills = codex_home
@@ -181,6 +219,7 @@ async fn detect_home_lists_config_skills_and_agents_md() {
     let items = service_for_paths(external_agent_home.clone(), codex_home.clone())
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -251,6 +290,7 @@ async fn detect_home_lists_recent_sessions() {
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -297,6 +337,7 @@ async fn detect_repo_lists_agents_md_for_each_cwd() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![nested, repo_root.clone()]),
     })
     .await
@@ -371,6 +412,7 @@ async fn detect_repo_still_reports_non_plugin_items_when_home_config_is_invalid(
     let items = service_for_paths(root.path().join(EXTERNAL_AGENT_DIR), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
         .await
@@ -469,6 +511,7 @@ async fn detect_repo_lists_mcp_hooks_commands_and_subagents() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root.clone()]),
     })
     .await
@@ -562,6 +605,7 @@ async fn detect_repo_skips_hooks_when_only_unsupported_hooks_exist() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root]),
     })
     .await
@@ -842,6 +886,7 @@ async fn detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_check
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![linked_cwd]),
     })
     .await
@@ -873,6 +918,7 @@ async fn detect_repo_rejects_symlinked_local_settings() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root]),
     })
     .await
@@ -903,6 +949,7 @@ async fn detect_repo_rejects_symlinked_mcp_source() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root]),
     })
     .await
@@ -939,6 +986,7 @@ async fn detect_cursor_repo_rejects_symlinked_source_files() {
         )
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root]),
         })
         .await
@@ -1333,6 +1381,7 @@ url = "https://example.com/mixed-transport"
         service
             .detect(ExternalAgentConfigDetectOptions {
                 include_home: false,
+                include_memory: false,
                 cwds: Some(vec![repo_root.clone()]),
             })
             .await
@@ -1385,6 +1434,7 @@ url = "https://example.com/mixed-transport"
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root.clone()]),
     })
     .await
@@ -1779,6 +1829,7 @@ async fn detect_home_skips_config_when_target_already_has_supported_fields() {
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -1800,6 +1851,7 @@ async fn detect_home_skips_skills_when_all_skill_directories_exist() {
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -1968,6 +2020,7 @@ async fn detect_repo_prefers_non_empty_external_agent_agents_source() {
     )
     .detect(ExternalAgentConfigDetectOptions {
         include_home: false,
+        include_memory: false,
         cwds: Some(vec![repo_root.clone()]),
     })
     .await
@@ -2337,6 +2390,7 @@ async fn detect_home_lists_enabled_plugins_from_settings() {
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -2422,6 +2476,7 @@ async fn detect_home_uses_materialized_known_marketplace_for_inline_npm_source()
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -2561,6 +2616,7 @@ async fn detect_home_plugins_uses_local_settings_over_project_settings() {
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -2622,6 +2678,7 @@ enabled = true
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
         .await
@@ -2685,6 +2742,7 @@ enabled = false
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root]),
         })
         .await
@@ -2727,6 +2785,7 @@ async fn detect_repo_skips_plugins_without_explicit_enabled_in_codex() {
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root]),
         })
         .await
@@ -2784,6 +2843,7 @@ enabled = true
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
         .await
@@ -2829,6 +2889,7 @@ async fn detect_home_skips_plugins_without_marketplace_source() {
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -2859,6 +2920,7 @@ async fn detect_home_skips_plugins_with_invalid_marketplace_source() {
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -2968,6 +3030,7 @@ source = "owner/debug-marketplace"
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
         .await
@@ -3325,6 +3388,7 @@ async fn detect_home_supports_relative_external_agent_plugin_marketplace_path() 
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -3371,6 +3435,7 @@ async fn detect_home_infers_external_official_marketplace_when_missing_from_sett
     let items = service_for_paths(external_agent_home.clone(), codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: true,
+            include_memory: false,
             cwds: None,
         })
         .await
@@ -3575,6 +3640,7 @@ async fn detect_repo_supports_project_relative_external_agent_plugin_marketplace
     let items = service_for_paths(external_agent_home, codex_home)
         .detect(ExternalAgentConfigDetectOptions {
             include_home: false,
+            include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
         .await
