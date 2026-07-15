@@ -74,6 +74,7 @@ mod recovery;
 mod remote_control;
 #[cfg(test)]
 mod test_support;
+mod thread_inference_identity;
 mod threads;
 pub mod usage;
 
