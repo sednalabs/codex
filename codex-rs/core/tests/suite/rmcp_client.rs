@@ -202,6 +202,10 @@ pub(super) fn remote_aware_stdio_server_bin() -> anyhow::Result<String> {
     copy_binary_to_remote_env(&container_name, Path::new(&bin), "test_stdio_server")
 }
 
+pub(super) fn remote_aware_stdio_server_cwd() -> Option<PathBuf> {
+    is_remote_test_environment().then_some(PathBuf::from("/tmp"))
+}
+
 /// Builds a collision-resistant in-container path for copied test binaries.
 fn unique_remote_path(binary_name: &str) -> anyhow::Result<String> {
     let unique_suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -291,12 +295,7 @@ fn stdio_transport(
     env: Option<HashMap<String, String>>,
     env_vars: Vec<McpServerEnvVar>,
 ) -> McpServerTransportConfig {
-    let cwd = if is_remote_test_environment() {
-        Some(PathBuf::from("/tmp"))
-    } else {
-        None
-    };
-    stdio_transport_with_cwd(command, env, env_vars, cwd)
+    stdio_transport_with_cwd(command, env, env_vars, remote_aware_stdio_server_cwd())
 }
 
 fn stdio_transport_with_cwd(
