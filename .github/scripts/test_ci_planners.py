@@ -2619,6 +2619,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertTrue(all("--no-tests=fail" in command for command in commands))
         self.assertTrue(all("--exact" in command for command in commands))
         package_selectors = {
+            "codex-core": (
+                "tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models",
+            ),
             "codex-protocol": (
                 "models::inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
             ),
@@ -2644,6 +2647,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(matching), 1, msg=f"{selector} must resolve once")
                 self.assertIn("--exact", matching[0])
+                self.assertTrue(matching[0].endswith(f"-- {selector} --exact"))
                 self.assertEqual(
                     [candidate for candidate in all_proof_selectors if candidate in matching[0]],
                     [selector],
