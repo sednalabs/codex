@@ -3,6 +3,7 @@ use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use pretty_assertions::assert_eq;
 
 use super::ThreadInferenceIdentitySidecar;
+use super::ThreadInferenceIdentitySidecarPatch;
 
 #[test]
 fn inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing() {
@@ -62,4 +63,37 @@ fn inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing() {
         .expect("malformed sidecar should deserialize"),
         malformed
     );
+}
+
+#[test]
+fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
+    let identity =
+        ThreadInferenceIdentity::new("m", "p", /*reasoning_effort*/ None).expect("valid identity");
+    let valid = r#"{"configured":{"model":"m","model_provider_id":"p","reasoning_effort":null}}"#;
+    let expected = |configured, latest_request| ThreadInferenceIdentitySidecarPatch {
+        configured,
+        latest_request,
+    };
+    let cases = [
+        ("{}", expected(None, None)),
+        (r#"{"configured":null}"#, expected(Some(None), None)),
+        (valid, expected(Some(Some(identity)), None)),
+        (
+            r#"{"configured":null,"latest_request":null}"#,
+            expected(Some(None), Some(None)),
+        ),
+    ];
+    for (raw, expected) in cases {
+        let decoded =
+            serde_json::from_str::<ThreadInferenceIdentitySidecarPatch>(raw).expect("valid patch");
+        assert_eq!(decoded, expected);
+        assert_eq!(serde_json::to_string(&decoded).expect("encode patch"), raw);
+    }
+    for invalid in [
+        r#"{"configured":{"status":"malformed","raw":"bad"}}"#,
+        r#"{"configured":{"model":"","model_provider_id":"p","reasoning_effort":null}}"#,
+        r#"{"configured":null,"configured":null}"#,
+    ] {
+        assert!(serde_json::from_str::<ThreadInferenceIdentitySidecarPatch>(invalid).is_err());
+    }
 }
