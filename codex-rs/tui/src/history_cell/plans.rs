@@ -133,6 +133,10 @@ impl HistoryCell for ProposedPlanCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         raw_lines_from_source(&self.plan_markdown)
     }
+
+    fn transcript_copy_markdown(&self) -> Option<&str> {
+        Some(&self.plan_markdown)
+    }
 }
 
 impl HistoryCell for ProposedPlanStreamCell {

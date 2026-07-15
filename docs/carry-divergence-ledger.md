@@ -801,7 +801,12 @@ docs-only refresh commit that records this snapshot.
   falling back to generic `Working`.
 - Selected-turn copy keeps `CopyStatus` success/error feedback in the
   transcript overlay footer, including clipboard failures and expiry/replacement
-  behavior, so copy actions never fail silently.
+  behavior, so copy actions never fail silently. The copied payload remains
+  `## User\n\n<prompt>\n\n## Assistant\n\n<markdown>` and takes the last
+  finalized source-backed assistant or proposed-plan markdown before the next
+  visible prompt. After upstream moved retry safety to source-preserving forks,
+  this path intentionally reads canonical transcript cells and carries no
+  ordinal cache, rollback truncation, or rollback-only error state.
 - Bottom-pane transient views run their pre-draw tick and completion path so
   request-user-input overlays and other timed active views can redraw,
   auto-resolve, and pop through the same active-view seam instead of stalling
@@ -826,6 +831,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app.rs`
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
   - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/Cargo.toml`
   - `codex-rs/Cargo.lock`
@@ -841,10 +847,14 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
   - `codex-rs/tui/src/chatwidget/interaction.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
   - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
   - `codex-rs/tui/src/chatwidget/protocol.rs`
   - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/history_cell/plans.rs`
   - `codex-rs/tui/src/pager_overlay.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`

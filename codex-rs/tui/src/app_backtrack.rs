@@ -475,15 +475,15 @@ impl App {
     }
 
     fn copy_transcript_turn(&mut self, user_cell_idx: usize) -> crate::chatwidget::CopyStatus {
-        let Some(user_cell) = self.transcript_cells.get(user_cell_idx).and_then(|cell| {
-            cell.as_any()
-                .downcast_ref::<crate::history_cell::UserHistoryCell>()
-        }) else {
+        let Some((user_prompt, agent_markdown)) =
+            transcript_turn_copy_source(&self.transcript_cells, user_cell_idx)
+        else {
             return self.chat_widget.copy_last_agent_markdown_for_overlay();
         };
-        let user_turn_count = user_count(&self.transcript_cells[..=user_cell_idx]);
-        self.chat_widget
-            .copy_agent_turn_markdown_for_overlay(user_turn_count, &user_cell.message)
+        self.chat_widget.copy_transcript_turn_markdown_for_overlay(
+            &user_prompt,
+            agent_markdown.as_deref(),
+        )
     }
 
     /// Handle Enter in overlay backtrack preview: confirm selection and reset state.
@@ -687,6 +687,28 @@ pub(crate) fn user_count(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) ->
     user_positions_iter(cells).count()
 }
 
+fn transcript_turn_copy_source(
+    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
+    user_cell_idx: usize,
+) -> Option<(String, Option<String>)> {
+    let selected = cells.get(user_cell_idx)?;
+    if !selected.is_user_prompt() {
+        return None;
+    }
+    let user_cell = selected.as_any().downcast_ref::<UserHistoryCell>()?;
+    let markdown = cells
+        .iter()
+        .skip(user_cell_idx.saturating_add(1))
+        .take_while(|cell| {
+            !cell.is_user_prompt() && cell.as_any().downcast_ref::<SessionInfoCell>().is_none()
+        })
+        .filter_map(|cell| cell.transcript_copy_markdown())
+        .last()
+        .map(str::to_owned);
+
+    Some((user_cell.message.clone(), markdown))
+}
+
 fn has_backtrack_target(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> bool {
     user_count(cells) > 0
 }
@@ -795,6 +817,22 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn user_history_cell(message: &str) -> Arc<dyn HistoryCell> {
+        Arc::new(UserHistoryCell {
+            message: message.to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        })
+    }
+
+    fn agent_markdown_cell(markdown: &str) -> Arc<dyn HistoryCell> {
+        Arc::new(crate::history_cell::AgentMarkdownCell::new(
+            markdown.to_string(),
+            PathBuf::from("/tmp").as_path(),
+        ))
     }
 
     fn turn(turn_id: &str, status: TurnStatus, user_messages: usize) -> Turn {
@@ -1176,6 +1214,60 @@ mod tests {
                 render_mode: HistoryRenderMode::Raw,
                 detail_mode: crate::history_cell::TranscriptDetailMode::Verbose,
             }
+        );
+    }
+
+    #[test]
+    fn transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown() {
+        let cells = vec![
+            user_history_cell("first prompt"),
+            agent_markdown_cell("draft response"),
+            agent_markdown_cell("first response"),
+            user_history_cell("second prompt"),
+            agent_markdown_cell("second response"),
+        ];
+
+        assert_eq!(
+            transcript_turn_copy_source(&cells, 0),
+            Some((
+                "first prompt".to_string(),
+                Some("first response".to_string()),
+            ))
+        );
+    }
+
+    #[test]
+    fn transcript_turn_copy_source_supports_proposed_plan() {
+        let cells: Vec<Arc<dyn HistoryCell>> = vec![
+            user_history_cell("plan this"),
+            Arc::new(crate::history_cell::new_proposed_plan(
+                "1. Inspect\n2. Repair".to_string(),
+                PathBuf::from("/tmp").as_path(),
+            )),
+        ];
+
+        assert_eq!(
+            transcript_turn_copy_source(&cells, 0),
+            Some((
+                "plan this".to_string(),
+                Some("1. Inspect\n2. Repair".to_string()),
+            ))
+        );
+    }
+
+    #[test]
+    fn transcript_turn_copy_source_requires_finalized_markdown() {
+        let cells: Vec<Arc<dyn HistoryCell>> = vec![
+            user_history_cell("unfinished prompt"),
+            Arc::new(AgentMessageCell::new(
+                vec![Line::from("streaming response")],
+                /*is_first_line*/ true,
+            )),
+        ];
+
+        assert_eq!(
+            transcript_turn_copy_source(&cells, 0),
+            Some(("unfinished prompt".to_string(), None))
         );
     }
 
