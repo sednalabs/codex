@@ -675,6 +675,48 @@ ON CONFLICT(id) DO NOTHING
         Ok(result.rows_affected() > 0)
     }
 
+    /// Atomically updates only the supplied inference-identity authority columns.
+    pub async fn update_thread_inference_identity_authority(
+        &self,
+        thread_id: ThreadId,
+        configured: Option<&str>,
+        latest_request: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let thread_id = thread_id.to_string();
+        let result = match (configured, latest_request) {
+            (Some(configured), Some(latest_request)) => {
+                sqlx::query(
+                    "UPDATE threads SET configured_inference_identity_authority = ?, latest_request_inference_identity_authority = ? WHERE id = ?",
+                )
+                .bind(configured)
+                .bind(latest_request)
+                .bind(thread_id)
+                .execute(self.pool.as_ref())
+                .await?
+            }
+            (Some(configured), None) => {
+                sqlx::query(
+                    "UPDATE threads SET configured_inference_identity_authority = ? WHERE id = ?",
+                )
+                .bind(configured)
+                .bind(thread_id)
+                .execute(self.pool.as_ref())
+                .await?
+            }
+            (None, Some(latest_request)) => {
+                sqlx::query(
+                    "UPDATE threads SET latest_request_inference_identity_authority = ? WHERE id = ?",
+                )
+                .bind(latest_request)
+                .bind(thread_id)
+                .execute(self.pool.as_ref())
+                .await?
+            }
+            (None, None) => return Ok(false),
+        };
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update_thread_title(
         &self,
         thread_id: ThreadId,
@@ -1518,9 +1560,12 @@ mod tests {
     use super::*;
     use crate::Anchor;
     use crate::DirectionalThreadSpawnEdgeStatus;
+    use crate::encode_thread_inference_identity_authority;
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use anyhow::Result;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GitInfo;
     use codex_protocol::protocol::SessionMeta;
@@ -1530,6 +1575,85 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn inference_identity_updates_preserve_siblings_and_do_not_lose_concurrent_patches() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = ThreadId::default();
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.clone(),
+            ))
+            .await
+            .expect("thread should exist");
+
+        let malformed_configured = "{exact malformed configured}";
+        sqlx::query("UPDATE threads SET configured_inference_identity_authority = ? WHERE id = ?")
+            .bind(malformed_configured)
+            .bind(thread_id.to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("malformed fixture should be stored");
+
+        let request = encoded_identity("request");
+        assert!(
+            runtime
+                .update_thread_inference_identity_authority(
+                    thread_id,
+                    None,
+                    Some(request.as_str()),
+                )
+                .await
+                .expect("request-only update should succeed")
+        );
+        let configured_raw: String = sqlx::query_scalar(
+            "SELECT configured_inference_identity_authority FROM threads WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("configured authority should be readable");
+        assert_eq!(configured_raw, malformed_configured);
+
+        let configured = encoded_identity("configured");
+        let next_request = encoded_identity("next-request");
+        let (configured_result, request_result) = tokio::join!(
+            runtime.update_thread_inference_identity_authority(
+                thread_id,
+                Some(configured.as_str()),
+                None,
+            ),
+            runtime.update_thread_inference_identity_authority(
+                thread_id,
+                None,
+                Some(next_request.as_str()),
+            ),
+        );
+        assert!(configured_result.expect("configured update should succeed"));
+        assert!(request_result.expect("request update should succeed"));
+        let stored: (String, String) = sqlx::query_as(
+            "SELECT configured_inference_identity_authority, latest_request_inference_identity_authority FROM threads WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("authorities should be readable");
+        assert_eq!(stored, (configured, next_request));
+    }
+
+    fn encoded_identity(model: &str) -> String {
+        encode_thread_inference_identity_authority(&ThreadInferenceIdentityAuthority::Valid(
+            ThreadInferenceIdentity::new(model, "provider", /*reasoning_effort*/ None)
+                .expect("identity should be valid"),
+        ))
+        .expect("authority should encode")
+        .expect("valid authority should be non-null")
+    }
 
     #[tokio::test]
     async fn upsert_thread_keeps_creation_memory_mode_for_existing_rows() {

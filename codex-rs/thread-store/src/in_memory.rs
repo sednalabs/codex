@@ -29,6 +29,7 @@ use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadMetadataPatch;
 use crate::ThreadPage;
 use crate::ThreadRelationFilter;
@@ -36,6 +37,7 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
+use crate::UpdateThreadInferenceIdentitySidecarParams;
 use crate::UpdateThreadMetadataParams;
 use crate::error::reject_paginated_history_mode;
 use crate::types::canonical_history_mode_from_rollout_items;
@@ -57,7 +59,71 @@ mod tests {
     use crate::ThreadPersistenceMetadata;
     use crate::ThreadSortKey;
     use codex_protocol::models::BaseInstructions;
+    use codex_protocol::models::ThreadInferenceIdentity;
+    use codex_protocol::models::ThreadInferenceIdentityAuthority;
     use codex_protocol::protocol::SessionSource;
+
+    #[tokio::test]
+    async fn inference_identity_updates_preserve_omitted_and_malformed_siblings() {
+        let store = InMemoryThreadStore::default();
+        let thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(thread_id, ThreadHistoryMode::Legacy))
+            .await
+            .expect("thread should be created");
+        let malformed = ThreadInferenceIdentityAuthority::Malformed {
+            raw: "{exact malformed configured}".to_string(),
+        };
+        store.state.lock().await.inference_identity_sidecars.insert(
+            thread_id,
+            ThreadInferenceIdentitySidecar {
+                configured: malformed.clone(),
+                latest_request: ThreadInferenceIdentityAuthority::LegacyMissing,
+            },
+        );
+
+        let latest_request =
+            ThreadInferenceIdentity::new("request", "provider", /*reasoning_effort*/ None)
+                .expect("identity should be valid");
+        ThreadStore::update_thread_inference_identity_sidecar(
+            &store,
+            UpdateThreadInferenceIdentitySidecarParams {
+                thread_id,
+                patch: crate::ThreadInferenceIdentitySidecarPatch {
+                    configured: None,
+                    latest_request: Some(Some(latest_request.clone())),
+                },
+            },
+        )
+        .await
+        .expect("request-only update should succeed");
+        ThreadStore::update_thread_inference_identity_sidecar(
+            &store,
+            UpdateThreadInferenceIdentitySidecarParams {
+                thread_id,
+                patch: crate::ThreadInferenceIdentitySidecarPatch {
+                    configured: Some(None),
+                    latest_request: None,
+                },
+            },
+        )
+        .await
+        .expect("configured clear should succeed");
+
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .await
+                .inference_identity_sidecars
+                .get(&thread_id)
+                .cloned(),
+            Some(ThreadInferenceIdentitySidecar {
+                configured: ThreadInferenceIdentityAuthority::cleared(),
+                latest_request: ThreadInferenceIdentityAuthority::Valid(latest_request),
+            })
+        );
+    }
 
     #[tokio::test]
     async fn default_turn_pagination_methods_return_unsupported() {
@@ -393,6 +459,7 @@ struct InMemoryThreadStoreState {
     calls: InMemoryThreadStoreCalls,
     created_threads: HashMap<ThreadId, CreateThreadParams>,
     histories: HashMap<ThreadId, Vec<RolloutItem>>,
+    inference_identity_sidecars: HashMap<ThreadId, ThreadInferenceIdentitySidecar>,
     metadata_updates: HashMap<ThreadId, ThreadMetadataPatch>,
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
@@ -587,11 +654,34 @@ impl InMemoryThreadStore {
         stored_thread_from_state(&state, params.thread_id, /*include_history*/ false)
     }
 
+    async fn update_thread_inference_identity_sidecar(
+        &self,
+        params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreResult<()> {
+        if params.patch.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.state.lock().await;
+        if !state.created_threads.contains_key(&params.thread_id) {
+            return Err(ThreadStoreError::ThreadNotFound {
+                thread_id: params.thread_id,
+            });
+        }
+        params.patch.apply_to(
+            state
+                .inference_identity_sidecars
+                .entry(params.thread_id)
+                .or_default(),
+        );
+        Ok(())
+    }
+
     async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()> {
         let mut state = self.state.lock().await;
         state.calls.delete_thread += 1;
         let existed = state.histories.remove(&params.thread_id).is_some();
         state.created_threads.remove(&params.thread_id);
+        state.inference_identity_sidecars.remove(&params.thread_id);
         state.names.remove(&params.thread_id);
         state.metadata_updates.remove(&params.thread_id);
         state
@@ -712,6 +802,13 @@ impl ThreadStore for InMemoryThreadStore {
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(InMemoryThreadStore::update_thread_metadata(self, params))
+    }
+
+    fn update_thread_inference_identity_sidecar(
+        &self,
+        params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(InMemoryThreadStore::update_thread_inference_identity_sidecar(self, params))
     }
 
     fn archive_thread(&self, _params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {
