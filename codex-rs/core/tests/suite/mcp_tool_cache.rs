@@ -27,6 +27,9 @@ use super::rmcp_client::remote_aware_stdio_server_bin;
 
 const SERVER_NAME: &str = "cached_rmcp";
 const NAMESPACE: &str = "mcp__cached_rmcp";
+const TEST_MCP_STARTUP_TIMEOUT_SECS: u64 = 10;
+const TEST_MCP_PROCESS_OBSERVATION_TIMEOUT: Duration =
+    Duration::from_secs(TEST_MCP_STARTUP_TIMEOUT_SECS + 5);
 
 fn user_turn(prompt: &str) -> Op {
     Op::UserInput {
@@ -76,8 +79,9 @@ async fn wait_for_new_pid(
     fs: &dyn ExecutorFileSystem,
     path: &PathUri,
     previous_pid: Option<&str>,
+    process_stage: &str,
 ) -> anyhow::Result<String> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(TEST_MCP_PROCESS_OBSERVATION_TIMEOUT, async {
         loop {
             if let Ok(contents) = fs.read_file_text(path, /*sandbox*/ None).await {
                 let pid = contents.trim();
@@ -89,7 +93,7 @@ async fn wait_for_new_pid(
         }
     })
     .await
-    .context("timed out waiting for a new MCP server process")
+    .with_context(|| format!("timed out waiting for the {process_stage} MCP server process"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -122,7 +126,7 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
                         "MCP_TEST_PID_FILE": pid_file,
                     },
                     "enabled_tools": ["cwd", "echo"],
-                    "startup_timeout_sec": 10,
+                    "startup_timeout_sec": TEST_MCP_STARTUP_TIMEOUT_SECS,
                 }))
                 .expect("test MCP server configuration"),
             );
@@ -149,7 +153,13 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
     )
     .await;
     fixture.codex.submit(user_turn("use the echo tool")).await?;
-    let first_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;
+    let first_pid = wait_for_new_pid(
+        fs.as_ref(),
+        &pid_file,
+        /*previous_pid*/ None,
+        "initial",
+    )
+    .await?;
     fs.write_file(&barrier_file, b"ready".to_vec(), /*sandbox*/ None)
         .await?;
     wait_for_event(&fixture.codex, |event| {
@@ -185,7 +195,13 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
         .thread_manager
         .start_thread(fixture.config.clone())
         .await?;
-    let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&first_pid)).await?;
+    let second_pid = wait_for_new_pid(
+        fs.as_ref(),
+        &pid_file,
+        Some(&first_pid),
+        "replacement",
+    )
+    .await?;
     let second_process = process_label(&second_pid);
 
     let app_only_call_id = "cached-app-only-call";

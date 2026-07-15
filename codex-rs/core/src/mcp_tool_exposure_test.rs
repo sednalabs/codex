@@ -180,7 +180,7 @@ async fn prefers_one_provenance_visible_direct_tool_for_equivalent_routes() {
     let mut expected_tool = direct_tool.clone();
     append_namespace_note(&mut expected_tool, PREFERRED_DIRECT_ROUTE_NOTE);
 
-    let source_tools = [direct_tool.clone(), app_tool.clone(), app_tool];
+    let source_tools = [direct_tool, app_tool.clone(), app_tool];
     let tools = reconcile_direct_and_app_tools(
         filter_non_codex_apps_mcp_tools_only(&source_tools),
         filter_codex_apps_mcp_tools(&source_tools, connectors.as_slice(), &config),
