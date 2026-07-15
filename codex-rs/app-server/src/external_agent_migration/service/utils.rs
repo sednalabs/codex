@@ -17,7 +17,24 @@ pub(super) fn copy_dir_recursive(
     target: &Path,
     rewrite_profile: RewriteProfile,
 ) -> io::Result<()> {
-    fs::create_dir_all(target)?;
+    let source_metadata = fs::symlink_metadata(source)?;
+    if !source_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("migration source `{}` is not a directory", source.display()),
+        ));
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("migration target `{}` is not a directory", target.display()),
+            ));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => fs::create_dir_all(target)?,
+        Err(err) => return Err(err),
+    }
 
     for entry in fs::read_dir(source)? {
         let entry = entry?;

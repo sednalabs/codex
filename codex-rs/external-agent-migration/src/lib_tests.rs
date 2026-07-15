@@ -537,6 +537,46 @@ fn subagent_target_preserves_dotted_file_stem() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn subagent_import_skips_dangling_symlink_target() {
+    let root = tempfile::TempDir::new().expect("create tempdir");
+    let source_agents = root.path().join("source-agents");
+    let target_agents = root.path().join("target-agents");
+    let linked_target = root.path().join("outside-agent.toml");
+    fs::create_dir_all(&source_agents).expect("create source agents");
+    fs::create_dir_all(&target_agents).expect("create target agents");
+    fs::write(
+        source_agents.join("reviewer.md"),
+        "---\nname: reviewer\ndescription: Review code\n---\nReview carefully.\n",
+    )
+    .expect("write source agent");
+    std::os::unix::fs::symlink(&linked_target, target_agents.join("reviewer.toml"))
+        .expect("create target symlink");
+
+    assert_eq!(
+        missing_subagent_names(&source_agents, &target_agents).expect("detect missing subagents"),
+        Vec::<String>::new()
+    );
+
+    assert_eq!(
+        import_subagents_with_rewrite_profile(
+            &source_agents,
+            &target_agents,
+            TEST_REWRITE_PROFILE,
+        )
+        .expect("import subagents"),
+        Vec::<String>::new()
+    );
+    assert!(!linked_target.exists());
+    assert!(
+        fs::symlink_metadata(target_agents.join("reviewer.toml"))
+            .expect("read target symlink metadata")
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[test]
 fn frontmatter_accepts_crlf_delimiters() {
     let document = parse_document_content(

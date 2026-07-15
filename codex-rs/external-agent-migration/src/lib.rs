@@ -189,7 +189,7 @@ pub fn missing_subagent_names(
         let Some(target) = subagent_target_file(&source_file, target_agents) else {
             continue;
         };
-        if !target.exists() {
+        if path_is_missing_without_follow(&target)? {
             names.push(metadata.name);
         }
     }
@@ -211,7 +211,7 @@ pub fn import_subagents_with_rewrite_profile(
         let Some(target) = subagent_target_file(&source_file, target_agents) else {
             continue;
         };
-        if target.exists() {
+        if !path_is_missing_without_follow(&target)? {
             continue;
         }
         let document = parse_document(&source_file)?;
@@ -809,7 +809,17 @@ fn copy_hook_scripts(source_external_agent_dir: &Path, target_config_dir: &Path)
 }
 
 fn copy_dir_recursive_skip_existing(source: &Path, target: &Path) -> io::Result<()> {
-    fs::create_dir_all(target)?;
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("hook migration target `{}` is not a directory", target.display()),
+            ));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => fs::create_dir_all(target)?,
+        Err(err) => return Err(err),
+    }
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let source_path = entry.path();
@@ -817,7 +827,7 @@ fn copy_dir_recursive_skip_existing(source: &Path, target: &Path) -> io::Result<
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             copy_dir_recursive_skip_existing(&source_path, &target_path)?;
-        } else if file_type.is_file() && !target_path.exists() {
+        } else if file_type.is_file() && path_is_missing_without_follow(&target_path)? {
             fs::copy(source_path, target_path)?;
         }
     }
@@ -1252,14 +1262,24 @@ impl FrontmatterValue {
 }
 
 fn is_missing_or_empty_text_file(path: &Path) -> io::Result<bool> {
-    if !path.exists() {
-        return Ok(true);
-    }
-    if !path.is_file() {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    };
+    if !metadata.is_file() {
         return Ok(false);
     }
 
     Ok(fs::read_to_string(path)?.trim().is_empty())
+}
+
+fn path_is_missing_without_follow(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err),
+    }
 }
 
 fn rewrite_external_agent_terms(content: &str, rewrite_profile: RewriteProfile) -> String {
