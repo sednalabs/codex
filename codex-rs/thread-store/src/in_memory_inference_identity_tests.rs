@@ -9,6 +9,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 
 use super::*;
+use crate::ThreadInferenceIdentitySidecar;
+use crate::ThreadInferenceIdentitySidecarPatch;
 use crate::ThreadPersistenceMetadata;
 
 #[tokio::test]
@@ -119,13 +121,46 @@ async fn identity_patch_preserves_omitted_state_and_thread_isolation() {
 }
 
 #[tokio::test]
-async fn identity_sidecar_lifecycle_does_not_resurrect_deleted_state() {
+async fn identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect() {
     let store = InMemoryThreadStore::default();
     let thread_id = thread_id(4);
+    let stale_sidecar = ThreadInferenceIdentitySidecar {
+        configured: ThreadInferenceIdentityAuthority::Valid(identity("stale-configured")),
+        latest_request: ThreadInferenceIdentityAuthority::cleared(),
+    };
     store
-        .create_thread(create_thread_params(thread_id))
+        .state
+        .lock()
+        .await
+        .inference_identity
+        .sidecars
+        .insert(thread_id, stale_sidecar.clone());
+    assert_eq!(
+        sidecars(&store).await,
+        HashMap::from([(thread_id, stale_sidecar)])
+    );
+
+    ThreadStore::create_thread(&store, create_thread_params(thread_id))
         .await
         .expect("thread should be created");
+    assert_eq!(
+        sidecars(&store).await,
+        HashMap::from([(thread_id, ThreadInferenceIdentitySidecar::default())])
+    );
+
+    assert_eq!(
+        store
+            .state
+            .lock()
+            .await
+            .inference_identity
+            .sidecars
+            .remove(&thread_id),
+        Some(ThreadInferenceIdentitySidecar::default())
+    );
+    ThreadStore::resume_thread(&store, resume_thread_params(thread_id))
+        .await
+        .expect("resume should restore missing sidecar state");
     assert_eq!(
         sidecars(&store).await,
         HashMap::from([(thread_id, ThreadInferenceIdentitySidecar::default())])
@@ -144,18 +179,9 @@ async fn identity_sidecar_lifecycle_does_not_resurrect_deleted_state() {
     )
     .await
     .expect("configured update should succeed");
-    ThreadStore::resume_thread(
-        &store,
-        ResumeThreadParams {
-            thread_id,
-            rollout_path: None,
-            history: None,
-            include_archived: false,
-            metadata: thread_metadata(),
-        },
-    )
-    .await
-    .expect("resume should preserve the sidecar");
+    ThreadStore::resume_thread(&store, resume_thread_params(thread_id))
+        .await
+        .expect("resume should preserve the sidecar");
     assert_eq!(
         sidecars(&store).await,
         HashMap::from([(
@@ -190,8 +216,7 @@ async fn identity_sidecar_lifecycle_does_not_resurrect_deleted_state() {
             if missing_thread_id == thread_id
     ));
 
-    store
-        .create_thread(create_thread_params(thread_id))
+    ThreadStore::create_thread(&store, create_thread_params(thread_id))
         .await
         .expect("thread should be recreated");
     assert_eq!(
@@ -212,7 +237,7 @@ fn identity(model: &str) -> ThreadInferenceIdentity {
 }
 
 fn thread_id(suffix: u8) -> ThreadId {
-    ThreadId::from_string(format!("00000000-0000-0000-0000-{suffix:012}"))
+    ThreadId::from_string(&format!("00000000-0000-0000-0000-{suffix:012}"))
         .expect("thread id should be valid")
 }
 
@@ -232,6 +257,16 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         multi_agent_version: None,
         history_mode: ThreadHistoryMode::Legacy,
         initial_window_id: uuid::Uuid::now_v7().to_string(),
+        metadata: thread_metadata(),
+    }
+}
+
+fn resume_thread_params(thread_id: ThreadId) -> ResumeThreadParams {
+    ResumeThreadParams {
+        thread_id,
+        rollout_path: None,
+        history: None,
+        include_archived: false,
         metadata: thread_metadata(),
     }
 }
