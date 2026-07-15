@@ -963,6 +963,34 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.thread-inference-identity-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "thread-inference-identity-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-persisted-subagent-descendants-targeted",
       "groups": [
         "core"
@@ -1897,6 +1925,24 @@
         "codex-rs/core/src/state/session.rs",
         "codex-rs/core/tests/suite/subagent_notifications.rs",
         "codex-rs/tools/src/spawn_agent.rs",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ]
+    },
+    {
+      "route_id": "thread-inference-identity",
+      "lane_ids": [
+        "codex.thread-inference-identity-targeted"
+      ],
+      "allowed_paths": [
         "codex-rs/protocol/src/inference_identity_tests.rs",
         "codex-rs/protocol/src/models.rs",
         "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
@@ -1904,20 +1950,43 @@
         "codex-rs/state/src/inference_identity_tests.rs",
         "codex-rs/state/src/lib.rs",
         "codex-rs/state/src/migrations_tests.rs",
-        "codex-rs/state/src/extract.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity_tests.rs",
         "codex-rs/thread-store/src/inference_identity.rs",
         "codex-rs/thread-store/src/inference_identity_tests.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
         "codex-rs/thread-store/src/lib.rs",
-        "codex-rs/thread-store/src/local/read_thread.rs",
-        "codex-rs/thread-store/src/local/update_thread_metadata.rs",
-        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/store.rs",
+        "codex-rs/thread-store/src/store_tests.rs",
         "codex-rs/thread-store/src/types.rs",
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
-        "docs/carry-divergence-ledger.md",
-        "docs/divergences/index.yaml",
-        "docs/downstream-regression-matrix.md",
+        ".github/workflows/sedna-heavy-tests.yml",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/protocol/src/inference_identity_tests.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
+        "codex-rs/state/src/inference_identity.rs",
+        "codex-rs/state/src/inference_identity_tests.rs",
+        "codex-rs/state/src/lib.rs",
+        "codex-rs/state/src/migrations_tests.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity_tests.rs",
+        "codex-rs/thread-store/src/inference_identity.rs",
+        "codex-rs/thread-store/src/inference_identity_tests.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
+        "codex-rs/thread-store/src/lib.rs",
+        "codex-rs/thread-store/src/store.rs",
+        "codex-rs/thread-store/src/store_tests.rs",
+        "codex-rs/thread-store/src/types.rs"
       ]
     },
     {

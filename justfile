@@ -345,6 +345,20 @@ core-subagent-model-pinning-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- migrations::tests::inference_identity_authority_migration_preserves_populated_0044_row --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- inference_identity::tests::inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing --exact
 
+# Atomic proof for the persisted inference-identity wire, patch, and backend contracts.
+thread-inference-identity-targeted:
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-protocol --no-fail-fast --no-tests=fail --lib -- models::inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- inference_identity::tests::authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- inference_identity::tests::typed_authority_field_updates_have_exact_canonical_results --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- migrations::tests::inference_identity_authority_migration_preserves_populated_0044_row --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- runtime::thread_inference_identity::tests::presence_patch_preserves_exact_raw_rows_and_missing_semantics --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state --no-fail-fast --no-tests=fail --lib -- runtime::thread_inference_identity::tests::independently_spawned_single_field_updates_converge_exactly --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- inference_identity::tests::inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- inference_identity::tests::inference_identity_sidecar_patch_has_strict_presence_serde_contract --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- store::tests::inference_identity_default_is_object_safe_empty_noop_and_stably_unsupported --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- in_memory::inference_identity_tests::identity_patch_preserves_omitted_state_and_thread_isolation --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- in_memory::inference_identity_tests::identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect --exact
+
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1

@@ -603,6 +603,28 @@ class DispatchSednaReleaseTests(unittest.TestCase):
 
 class RouteSelectionTests(unittest.TestCase):
     maxDiff = None
+    inference_identity_lane = "codex.thread-inference-identity-targeted"
+    inference_identity_paths = (
+        "codex-rs/protocol/src/inference_identity_tests.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
+        "codex-rs/state/src/inference_identity.rs",
+        "codex-rs/state/src/inference_identity_tests.rs",
+        "codex-rs/state/src/lib.rs",
+        "codex-rs/state/src/migrations_tests.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity.rs",
+        "codex-rs/state/src/runtime/thread_inference_identity_tests.rs",
+        "codex-rs/thread-store/src/inference_identity.rs",
+        "codex-rs/thread-store/src/inference_identity_tests.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity.rs",
+        "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
+        "codex-rs/thread-store/src/lib.rs",
+        "codex-rs/thread-store/src/store.rs",
+        "codex-rs/thread-store/src/store_tests.rs",
+        "codex-rs/thread-store/src/types.rs",
+    )
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -643,6 +665,50 @@ class RouteSelectionTests(unittest.TestCase):
                 "codex.spawn-agent-tool-model-surface-targeted",
             ],
         )
+
+    def test_inference_identity_complete_path_set_routes_and_materializes_lane(
+        self,
+    ) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            list(self.inference_identity_paths),
+            self.routes,
+        )
+        self.assertEqual(lanes, [self.inference_identity_lane])
+
+        payload = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "lab",
+            "--profile",
+            "targeted",
+            "--lane-set",
+            "all",
+            "--lanes",
+            ",".join(lanes),
+            "--catalog-path",
+            str(REPO_ROOT / ".github/validation-lanes.json"),
+        )
+        self.assertEqual(payload["selected_lane_ids"], lanes)
+        self.assertEqual(payload["planned_matrix"], payload["selected_matrix"])
+        self.assertEqual(
+            payload["selected_matrix"]["include"][0]["script_args"],
+            ["thread-inference-identity-targeted"],
+        )
+
+    def test_every_inference_identity_path_routes_to_atomic_lane(self) -> None:
+        for path in self.inference_identity_paths:
+            with self.subTest(path=path):
+                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                    [path],
+                    self.routes,
+                )
+                self.assertEqual(lanes, [self.inference_identity_lane])
+
+    def test_unrelated_path_does_not_route_to_inference_identity_lane(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/core/src/capacity_retry.rs"],
+            self.routes,
+        )
+        self.assertNotIn(self.inference_identity_lane, lanes)
 
     def test_openai_models_route_stays_out_of_app_server_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -2669,6 +2735,94 @@ class ValidationPlanScriptTests(unittest.TestCase):
             body,
         )
 
+    def test_inference_identity_recipe_materializes_each_source_selector_once(self) -> None:
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "thread-inference-identity-targeted"
+            ]
+        )
+        commands = [line for line in recipe.splitlines() if "cargo nextest run" in line]
+        selector_contracts = (
+            (
+                "codex-protocol",
+                "models::inference_identity_tests::thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
+                "codex-rs/protocol/src/inference_identity_tests.rs",
+            ),
+            (
+                "codex-state",
+                "inference_identity::tests::authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
+                "codex-rs/state/src/inference_identity_tests.rs",
+            ),
+            (
+                "codex-state",
+                "inference_identity::tests::typed_authority_field_updates_have_exact_canonical_results",
+                "codex-rs/state/src/inference_identity_tests.rs",
+            ),
+            (
+                "codex-state",
+                "migrations::tests::inference_identity_authority_migration_preserves_populated_0044_row",
+                "codex-rs/state/src/migrations_tests.rs",
+            ),
+            (
+                "codex-state",
+                "runtime::thread_inference_identity::tests::presence_patch_preserves_exact_raw_rows_and_missing_semantics",
+                "codex-rs/state/src/runtime/thread_inference_identity_tests.rs",
+            ),
+            (
+                "codex-state",
+                "runtime::thread_inference_identity::tests::independently_spawned_single_field_updates_converge_exactly",
+                "codex-rs/state/src/runtime/thread_inference_identity_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "inference_identity::tests::inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
+                "codex-rs/thread-store/src/inference_identity_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "inference_identity::tests::inference_identity_sidecar_patch_has_strict_presence_serde_contract",
+                "codex-rs/thread-store/src/inference_identity_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "store::tests::inference_identity_default_is_object_safe_empty_noop_and_stably_unsupported",
+                "codex-rs/thread-store/src/store_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "in_memory::inference_identity_tests::identity_patch_preserves_omitted_state_and_thread_isolation",
+                "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "in_memory::inference_identity_tests::identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect",
+                "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
+            ),
+        )
+        selectors = tuple(selector for _, selector, _ in selector_contracts)
+
+        self.assertEqual(len(commands), len(selector_contracts))
+        self.assertTrue(
+            all(
+                'RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}"'
+                in command
+                for command in commands
+            )
+        )
+        self.assertTrue(all("--no-tests=fail" in command for command in commands))
+        self.assertTrue(all("--exact" in command for command in commands))
+        for package, selector, source_path in selector_contracts:
+            matching = [command for command in commands if selector in command]
+            self.assertEqual(len(matching), 1)
+            self.assertTrue(matching[0].endswith(f"-- {selector} --exact"))
+            self.assertIn(f"-p {package}", matching[0])
+            self.assertEqual(
+                [candidate for candidate in selectors if candidate in matching[0]],
+                [selector],
+            )
+            source = (REPO_ROOT / source_path).read_text(encoding="utf-8")
+            self.assertEqual(source.count(f"fn {selector.rsplit('::', 1)[-1]}("), 1)
+
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
     ) -> None:
@@ -4170,7 +4324,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "22")
-        self.assertEqual(payload["rust_integration_max_parallel"], "23")
+        self.assertEqual(payload["rust_integration_max_parallel"], "24")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -4202,7 +4356,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "24")
-        self.assertEqual(payload["rust_integration_max_parallel"], "24")
+        self.assertEqual(payload["rust_integration_max_parallel"], "25")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
