@@ -1,6 +1,10 @@
+use codex_protocol::ThreadId;
+use codex_protocol::models::ThreadInferenceIdentity;
 use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::ClearableField;
 
 /// Optional typed sidecar for inference identity authority owned by a thread store.
 ///
@@ -13,6 +17,37 @@ pub struct ThreadInferenceIdentitySidecar {
     pub configured: ThreadInferenceIdentityAuthority,
     #[serde(default)]
     pub latest_request: ThreadInferenceIdentityAuthority,
+}
+
+/// Presence-aware inference identity update: omission is a no-op, `null` clears, and an identity
+/// sets valid authority. Legacy-missing and malformed authority cannot be written through it.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadInferenceIdentitySidecarPatch {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::optional_option"
+    )]
+    pub configured: ClearableField<ThreadInferenceIdentity>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::optional_option"
+    )]
+    pub latest_request: ClearableField<ThreadInferenceIdentity>,
+}
+
+impl ThreadInferenceIdentitySidecarPatch {
+    pub fn is_empty(&self) -> bool {
+        self.configured.is_none() && self.latest_request.is_none()
+    }
+}
+
+/// Parameters for atomically updating inference identity authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateThreadInferenceIdentitySidecarParams {
+    pub thread_id: ThreadId,
+    pub patch: ThreadInferenceIdentitySidecarPatch,
 }
 
 #[cfg(test)]

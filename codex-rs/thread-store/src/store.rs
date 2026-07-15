@@ -24,6 +24,7 @@ use crate::ThreadSearchPage;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
+use crate::UpdateThreadInferenceIdentitySidecarParams;
 use crate::UpdateThreadMetadataParams;
 
 /// Future returned by [`ThreadStore`] operations.
@@ -129,6 +130,22 @@ pub trait ThreadStore: Any + Send + Sync {
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread>;
 
+    /// Applies presence-aware inference authority. The default keeps existing implementations
+    /// source-compatible while making absent durable support explicit.
+    fn update_thread_inference_identity_sidecar(
+        &self,
+        params: UpdateThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        if params.patch.is_empty() {
+            return Box::pin(async { Ok(()) });
+        }
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "update_thread_inference_identity_sidecar",
+            })
+        })
+    }
+
     /// Archives a thread.
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()>;
 
@@ -138,3 +155,7 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Deletes a thread's persisted rollout data and associated metadata.
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()>;
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;
