@@ -192,7 +192,8 @@ pub(crate) struct ExternalAgentConfigMigrationItem {
 
 #[derive(Clone)]
 pub(crate) struct ExternalAgentConfigService {
-    codex_home: PathBuf,
+    pub(super) codex_home: PathBuf,
+    pub(super) connector_metadata_roots: Vec<PathBuf>,
     external_agent_home: PathBuf,
     analytics_events_client: Option<AnalyticsEventsClient>,
     source: ExternalAgentSource,
@@ -202,8 +203,10 @@ impl ExternalAgentConfigService {
     pub(crate) fn new(codex_home: PathBuf, analytics_events_client: AnalyticsEventsClient) -> Self {
         let source = ExternalAgentSource::default();
         let external_agent_home = default_external_agent_home(source);
+        let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
         Self {
             codex_home,
+            connector_metadata_roots,
             external_agent_home,
             analytics_events_client: Some(analytics_events_client),
             source,
@@ -212,11 +215,14 @@ impl ExternalAgentConfigService {
 
     #[cfg(test)]
     fn new_for_test(codex_home: PathBuf, external_agent_home: PathBuf) -> Self {
+        let source = ExternalAgentSource::default();
+        let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
         Self {
             codex_home,
+            connector_metadata_roots,
             external_agent_home,
             analytics_events_client: None,
-            source: ExternalAgentSource::default(),
+            source,
         }
     }
 
