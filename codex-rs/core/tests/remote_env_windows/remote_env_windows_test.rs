@@ -401,8 +401,9 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
             let host_cwd = codex_home.path().to_path_buf().abs();
             // TODO(anp): Return the selected environment's native cwd from thread/start.
             assert_eq!(response.cwd, host_cwd);
-            // TODO(anp): Derive runtime workspace roots from the selected remote environment.
-            assert_eq!(response.runtime_workspace_roots, vec![host_cwd]);
+            // Selected-environment roots are scoped to that environment rather than
+            // projected through the legacy top-level response field.
+            assert!(response.runtime_workspace_roots.is_empty());
             assert_eq!(
                 response.instruction_sources,
                 vec![LegacyAppPathString::from_path_uri(
