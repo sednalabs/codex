@@ -352,6 +352,7 @@ docs-only refresh commit that records this snapshot.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
 - A validated identity and strict versioned storage wire distinguish legacy absence, valid data, deliberate clears, and exact malformed diagnostics through a source-compatible optional store sidecar.
+- Dedicated protocol, codec, sidecar, and populated-0044 upgrade checks independently guard the strict wire through exact selectors in the model-pinning lane.
 - `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
 - The live tool-contract schema in
   `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` and

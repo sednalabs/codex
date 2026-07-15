@@ -240,6 +240,10 @@
       },
       "guardrail_lane": "codex.core-subagent-model-pinning-targeted",
       "tests": [
+        "thread_inference_identity_constructor_and_direct_serde_validate_without_normalizing",
+        "authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
+        "inference_identity_authority_migration_preserves_populated_0044_row",
+        "inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",

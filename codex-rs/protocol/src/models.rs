@@ -128,6 +128,10 @@ impl ThreadInferenceIdentityAuthority {
     }
 }
 
+#[cfg(test)]
+#[path = "inference_identity_tests.rs"]
+mod inference_identity_tests;
+
 /// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(
     Debug, Clone, Copy, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS,

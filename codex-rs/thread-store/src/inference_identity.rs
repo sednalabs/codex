@@ -14,3 +14,7 @@ pub struct ThreadInferenceIdentitySidecar {
     #[serde(default)]
     pub latest_request: ThreadInferenceIdentityAuthority,
 }
+
+#[cfg(test)]
+#[path = "inference_identity_tests.rs"]
+mod tests;
