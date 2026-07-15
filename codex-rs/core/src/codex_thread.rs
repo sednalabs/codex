@@ -211,8 +211,7 @@ impl CodexThread {
         call_id: &str,
         response: codex_protocol::computer_use::ComputerUseResponse,
     ) {
-        self.codex
-            .session
+        self.session
             .notify_computer_use_response(call_id, response)
             .await;
     }
