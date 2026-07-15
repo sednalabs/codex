@@ -2595,7 +2595,7 @@ async fn multi_agent_v2_followup_task_rejects_unexpected_model_without_sending()
         .start_thread((*turn.config).clone())
         .await
         .expect("root thread should start");
-    root.thread.codex.session.new_default_turn().await;
+    root.thread.session.new_default_turn().await;
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
     let session = Arc::new(session);
