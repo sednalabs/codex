@@ -344,7 +344,7 @@ async fn late_network_denial_grace_observes_cancellation_after_exit() {
 }
 
 #[tokio::test]
-async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
+async fn failed_initial_end_for_unstored_process_prefers_source_transcript() {
     let (session, turn, rx_event) = crate::session::tests::make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(
         Arc::clone(&session),
@@ -418,6 +418,40 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
     );
     assert_eq!(item.exit_code, Some(-1));
     assert_eq!(item.process_id.as_deref(), Some("123"));
+    assert_eq!(
+        item.aggregated_output.as_deref(),
+        Some("PARTIAL_TRANSCRIPT\nNetwork access denied")
+    );
+}
+
+#[tokio::test]
+async fn failed_exec_end_uses_fallback_when_source_transcript_is_empty() {
+    let (session, turn, rx_event) = crate::session::tests::make_session_and_context_with_rx().await;
+    emit_failed_exec_end_for_unified_exec(
+        session,
+        Arc::clone(&turn),
+        "call-unified-fallback".to_string(),
+        vec!["test-command".to_string()],
+        #[allow(deprecated)]
+        turn.cwd.clone().into(),
+        Some("123".to_string()),
+        Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default())),
+        "PRE_DENIAL_MARKER".to_string(),
+        "Network access denied".to_string(),
+        Duration::from_millis(7),
+    )
+    .await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), rx_event.recv())
+        .await
+        .expect("timed out waiting for failed command execution item")
+        .expect("event channel closed");
+    let codex_protocol::protocol::EventMsg::ItemCompleted(completed_event) = event.msg else {
+        panic!("expected ItemCompleted event");
+    };
+    let codex_protocol::items::TurnItem::CommandExecution(item) = completed_event.item else {
+        panic!("expected CommandExecution item");
+    };
     assert_eq!(
         item.aggregated_output.as_deref(),
         Some("PRE_DENIAL_MARKER\nNetwork access denied")

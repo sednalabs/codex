@@ -433,7 +433,7 @@ impl UnifiedExecProcessManager {
             );
         }
 
-        let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+        let transcript = process.aggregated_output();
         let event_ctx = ToolEventCtx::new(
             context.session.as_ref(),
             context.turn.as_ref(),
@@ -449,7 +449,7 @@ impl UnifiedExecProcessManager {
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
-        start_streaming_output(&process, context, Arc::clone(&transcript));
+        start_streaming_output(&process, context);
         let start = Instant::now();
         // Persist live sessions before the initial yield wait so interrupting the
         // turn cannot drop the last Arc and terminate the background process.
@@ -518,6 +518,9 @@ impl UnifiedExecProcessManager {
                 deferred_network_approval.take(),
             )
             .await;
+            if !process_started_alive {
+                process.wait_for_output_completion().await;
+            }
             emit_failed_initial_exec_end_if_unstored(
                 process_started_alive,
                 context,
@@ -538,6 +541,9 @@ impl UnifiedExecProcessManager {
                 deferred_network_approval.take(),
             )
             .await;
+            if !process_started_alive {
+                process.wait_for_output_completion().await;
+            }
             emit_failed_initial_exec_end_if_unstored(
                 process_started_alive,
                 context,
@@ -597,6 +603,9 @@ impl UnifiedExecProcessManager {
             )
             .await;
             if let Err(message) = finish_result {
+                if !process_started_alive {
+                    process.wait_for_output_completion().await;
+                }
                 emit_failed_initial_exec_end_if_unstored(
                     process_started_alive,
                     context,
@@ -611,6 +620,7 @@ impl UnifiedExecProcessManager {
                 self.release_process_id(request.process_id).await;
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
+            process.wait_for_output_completion().await;
             let exit_code = process.exit_code();
             let exit = exit_code.unwrap_or(-1);
             emit_exec_end_for_unified_exec(

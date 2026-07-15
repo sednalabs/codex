@@ -748,9 +748,11 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-full-lifecycle";
-    // This timing force the long-standing PTY
+    // The direct child outlives the initial yield, then exits while one
+    // descendant emits output inside the drain window and another keeps the
+    // descriptor open past it.
     let args = json!({
-        "cmd": "sleep 0.5; printf 'HELLO-FULL-LIFECYCLE'",
+        "cmd": "sleep 1.2; printf 'HEAD-FULL-LIFECYCLE'; (sleep 0.2; printf 'TAIL-FULL-LIFECYCLE') & sleep 30 &",
         "yield_time_ms": 1000,
     });
 
@@ -818,8 +820,17 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
         "end event should include process_id emitted by background watcher"
     );
     assert!(
-        end_event.aggregated_output.contains("HELLO-FULL-LIFECYCLE"),
-        "aggregated_output should contain the full PTY transcript; got {:?}",
+        end_event
+            .aggregated_output
+            .contains("HEAD-FULL-LIFECYCLE"),
+        "aggregated_output should contain output before source exit; got {:?}",
+        end_event.aggregated_output
+    );
+    assert!(
+        end_event
+            .aggregated_output
+            .contains("TAIL-FULL-LIFECYCLE"),
+        "aggregated_output should contain delayed descendant output; got {:?}",
         end_event.aggregated_output
     );
     Ok(())
@@ -3015,6 +3026,72 @@ PY
         Some(expected_original_token_count)
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_end_event_is_bounded_when_descendant_holds_output_open() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX-only command fixture");
+    skip_if_remote!(Ok(()), "covers the local PTY source-drain bound");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let call_id = "uexec-descendant-output";
+    let args = serde_json::json!({
+        "cmd": "printf 'HEAD-BEFORE-DESCENDANT'; (sleep 0.2; printf 'TAIL-FROM-DESCENDANT') & sleep 30 &",
+        "yield_time_ms": 1_000,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "run a command with inherited output",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let end_event = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandEnd(event) if event.call_id == call_id => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        end_event
+            .aggregated_output
+            .contains("HEAD-BEFORE-DESCENDANT")
+    );
+    assert!(
+        end_event
+            .aggregated_output
+            .contains("TAIL-FROM-DESCENDANT"),
+        "final output should include descendant output produced inside the drain window: {:?}",
+        end_event.aggregated_output
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     Ok(())
 }
 
