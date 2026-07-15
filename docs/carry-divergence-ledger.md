@@ -511,6 +511,8 @@ docs-only refresh commit that records this snapshot.
   daemonized descendant or broken backend cannot suppress the final event.
   Chunks recorded before that deadline remain authoritative; output produced
   only after the deadline is intentionally outside the completed transcript.
+- Exec-server exit events start that bounded drain immediately even when
+  inherited descriptors delay the later source-closed event.
 - The bounded transcript intentionally retains a head and tail and represents
   discarded middle bytes with an omission marker; this carry prevents delta
   lag from silently losing final output or corrupting that accounting.

@@ -154,6 +154,8 @@ User-visible behavior:
   deltas before the final command event. Chunks recorded before that bound are
   retained; output produced only after the deadline is outside the completed
   transcript.
+- An exec-server `Exited` event starts the same bound immediately, so a later
+  `Closed` event delayed by inherited descriptors cannot suppress completion.
 - Large output still intentionally retains only its head and tail, with an
   explicit marker for omitted middle bytes.
 

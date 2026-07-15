@@ -1,3 +1,4 @@
+use super::OutputHandles;
 use super::UnifiedExecProcess;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
@@ -13,6 +14,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn source_transcript_preserves_exec_end_when_delta_receiver_lags() {
@@ -29,11 +31,14 @@ async fn source_transcript_preserves_exec_end_when_delta_receiver_lags() {
     let source_task = UnifiedExecProcess::spawn_local_output_task(
         stdout_rx,
         stderr_rx,
-        Arc::clone(&output_buffer),
+        OutputHandles {
+            output_buffer: Arc::clone(&output_buffer),
+            output_notify,
+            output_closed: Arc::clone(&output_closed),
+            output_closed_notify,
+            cancellation_token: CancellationToken::new(),
+        },
         Arc::clone(&aggregated_output),
-        output_notify,
-        Arc::clone(&output_closed),
-        output_closed_notify,
         output_tx,
     );
 

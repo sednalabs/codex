@@ -460,7 +460,7 @@
         ".github/validation-lanes.json",
         "justfile"
       ],
-      "behavior": "Unified exec records source output in a bounded, non-draining final transcript before updating the drainable response buffer or publishing best-effort delta events. Final command events wait for bounded source closure and delta-stream ordering, so a lagging delta receiver cannot silently remove output or corrupt omission accounting in ExecCommandEnd while a descendant-held stream cannot suppress finalization indefinitely.",
+      "behavior": "Unified exec records source output in a bounded, non-draining final transcript before updating the drainable response buffer or publishing best-effort delta events. Final command events wait for bounded source closure and delta-stream ordering, and exec-server exit events start that bound even when inherited descriptors delay the source-closed event. A lagging delta receiver therefore cannot silently remove output or corrupt omission accounting in ExecCommandEnd while a descendant-held stream cannot suppress finalization indefinitely.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -476,7 +476,7 @@
         "unified_exec_end_event_is_bounded_when_descendant_holds_output_open"
       ],
       "owner": "downstream",
-      "notes": "The final transcript remains intentionally bounded: it retains the configured head and tail and inserts an explicit marker for omitted middle bytes. Source closure uses the established exec I/O drain timeout so inherited descriptors or abnormal backend teardown cannot hang finalization. Chunks recorded before that deadline remain authoritative; output produced only after the deadline is intentionally outside the completed transcript. Preserve this direct fix only until upstream has equivalent source-owned bounded aggregation, bounded source-close ordering, and regression coverage.",
+      "notes": "The final transcript remains intentionally bounded: it retains the configured head and tail and inserts an explicit marker for omitted middle bytes. Source closure uses the established exec I/O drain timeout so inherited descriptors or abnormal backend teardown cannot hang finalization; exec-server Exited starts that timeout without waiting indefinitely for Closed. Chunks recorded before that deadline remain authoritative; output produced only after the deadline is intentionally outside the completed transcript. Preserve this direct fix only until upstream has equivalent source-owned bounded aggregation, bounded source-close ordering, and regression coverage.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
       "hotspot_files": [

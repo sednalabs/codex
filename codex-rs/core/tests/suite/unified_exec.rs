@@ -820,16 +820,12 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
         "end event should include process_id emitted by background watcher"
     );
     assert!(
-        end_event
-            .aggregated_output
-            .contains("HEAD-FULL-LIFECYCLE"),
+        end_event.aggregated_output.contains("HEAD-FULL-LIFECYCLE"),
         "aggregated_output should contain output before source exit; got {:?}",
         end_event.aggregated_output
     );
     assert!(
-        end_event
-            .aggregated_output
-            .contains("TAIL-FULL-LIFECYCLE"),
+        end_event.aggregated_output.contains("TAIL-FULL-LIFECYCLE"),
         "aggregated_output should contain delayed descendant output; got {:?}",
         end_event.aggregated_output
     );
@@ -3070,28 +3066,29 @@ async fn unified_exec_end_event_is_bounded_when_descendant_holds_output_open() -
     )
     .await?;
 
-    let end_event = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::ExecCommandEnd(event) if event.call_id == call_id => Some(event.clone()),
-        _ => None,
-    })
-    .await;
+    let mut end_event = None;
+    let mut turn_completed = false;
+    while end_event.is_none() || !turn_completed {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ExecCommandEnd(event) if event.call_id == call_id => {
+                end_event = Some(event);
+            }
+            EventMsg::TurnComplete(_) => turn_completed = true,
+            _ => {}
+        }
+    }
+    let end_event = end_event.expect("expected ExecCommandEnd event");
     assert!(
         end_event
             .aggregated_output
             .contains("HEAD-BEFORE-DESCENDANT")
     );
     assert!(
-        end_event
-            .aggregated_output
-            .contains("TAIL-FROM-DESCENDANT"),
+        end_event.aggregated_output.contains("TAIL-FROM-DESCENDANT"),
         "final output should include descendant output produced inside the drain window: {:?}",
         end_event.aggregated_output
     );
 
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
     Ok(())
 }
 
