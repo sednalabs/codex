@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
 
-const COLLABORATION_NAMESPACE: &str = "collaboration";
+const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 const SPAWN_CALL_ID: &str = "spawn-worker";
 const FOLLOWUP_CALL_ID: &str = "followup-worker";
 const INITIAL_PROMPT: &str = "spawn a durable worker";
@@ -83,7 +83,7 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
             ev_response_created("resp-spawn-1"),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                COLLABORATION_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -180,7 +180,7 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
             ev_response_created("resp-followup-1"),
             ev_function_call_with_namespace(
                 FOLLOWUP_CALL_ID,
-                COLLABORATION_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "followup_task",
                 &followup_args,
             ),
