@@ -102,6 +102,9 @@ fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
         r#"{"configured":{"model":"","model_provider_id":"p","reasoning_effort":null}}"#,
         r#"{"configured":{"model":"m","model_provider_id":"p"}}"#,
         r#"{"latest_request":{"model":"m","model_provider_id":"p"}}"#,
+        r#"{"configured":null,"configured":null}"#,
+        r#"{"configured":{"model":"first","model":"second","model_provider_id":"p","reasoning_effort":null}}"#,
+        r#"{"latest_request":{"model":"m","model_provider_id":"first","model_provider_id":"second","reasoning_effort":null}}"#,
         r#"{"configured":{"model":"m","model_provider_id":"p","reasoning_effort":null,"reasoning_effort":"high"}}"#,
     ] {
         assert!(serde_json::from_str::<ThreadInferenceIdentitySidecarPatch>(invalid).is_err());
