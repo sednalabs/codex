@@ -2090,10 +2090,6 @@
             "null"
           ]
         },
-        "expose_spawn_agent_model_overrides": {
-          "description": "Exposes `model` and `reasoning_effort` on the multi-agent v2 spawn tool and adds corresponding guidance to root and subagent usage hints.",
-          "type": "boolean"
-        },
         "hide_spawn_agent_metadata": {
           "type": [
             "boolean",
@@ -3733,13 +3729,19 @@
         "auto_compact_fallback_buffer_tokens": {
           "description": "Additional tokens available after the compaction threshold for fallback note-taking.",
           "format": "int64",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "auto_compact_fallback_prompt": {
           "description": "Developer message sampled before an automatic context-window rollover.",
           "maxLength": 2000,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "enabled": {
           "type": [

@@ -1007,6 +1007,8 @@ async fn output_free_esc_interrupt_keeps_prompt_and_opens_blank_composer() {
     chat.bottom_pane.ensure_status_indicator();
 
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!chat.bottom_pane.should_interrupt_running_task(esc));
+    chat.handle_key_event(esc);
     assert!(chat.bottom_pane.should_interrupt_running_task(esc));
     chat.handle_key_event(esc);
 

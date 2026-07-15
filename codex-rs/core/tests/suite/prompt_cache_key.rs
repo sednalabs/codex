@@ -19,7 +19,7 @@ use serde_json::json;
 const ROOT_PROMPT: &str = "delegate the cache audit";
 const CHILD_TASK: &str = "inspect the repository";
 const SPAWN_CALL_ID: &str = "spawn-worker";
-const COLLABORATION_NAMESPACE: &str = "collaboration";
+const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     serde_json::from_slice::<Value>(&request.body).is_ok_and(|body| body.to_string().contains(text))
@@ -54,7 +54,7 @@ async fn api_key_subagent_uses_session_id_as_prompt_cache_key() -> Result<()> {
             ev_response_created("root-response-1"),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                COLLABORATION_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
