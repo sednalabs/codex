@@ -139,6 +139,11 @@ core-startup-sync-targeted:
 external-agent-session-migration-targeted:
     cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
 
+# Focused repository-containment slice for external-agent detection and import.
+external-agent-migration-containment-targeted:
+    cargo test --locked -p codex-app-server external_agent_migration::service::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
+
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields

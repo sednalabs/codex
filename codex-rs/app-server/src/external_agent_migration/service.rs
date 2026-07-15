@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
@@ -38,7 +39,6 @@ use self::source::PluginDetectionContext;
 use self::source::SourceFeature;
 #[cfg(test)]
 use self::source_cla::CONFIG_DIR as EXTERNAL_AGENT_DIR;
-#[cfg(test)]
 use self::source_cla::CONFIG_MD as EXTERNAL_AGENT_CONFIG_MD;
 #[cfg(test)]
 use self::source_cla::KNOWN_MARKETPLACES_PATH as EXTERNAL_AGENT_KNOWN_MARKETPLACES_PATH;
@@ -50,6 +50,10 @@ use self::utils::rewrite_external_agent_terms;
 
 const EXTERNAL_AGENT_CONFIG_DETECT_METRIC: &str = "codex.external_agent_config.detect";
 const EXTERNAL_AGENT_CONFIG_IMPORT_METRIC: &str = "codex.external_agent_config.import";
+const REPO_EXTERNAL_AGENT_LOCAL_SETTINGS_FILE: &str = "settings.local.json";
+const REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE: &str = ".mcp.json";
+const REPO_EXTERNAL_AGENT_PROJECT_CONFIG_FILE: &str = ".claude.json";
+const REPO_EXTERNAL_AGENT_HOOKS_DIR: &str = "hooks";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalAgentConfigDetectOptions {
@@ -478,6 +482,9 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("config.toml"),
             |repo_root| repo_root.join(".codex").join("config.toml"),
         );
+        if let Some(repo_root) = repo_root {
+            ensure_repo_migration_path(repo_root, &target_config)?;
+        }
         if let Some(settings) = settings.as_ref() {
             let migrated = build_config_from_external(settings, self.source)?;
             if !is_empty_toml_table(&migrated) {
@@ -557,6 +564,10 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("hooks.json"),
             |repo_root| repo_root.join(".codex").join("hooks.json"),
         );
+        if let Some(repo_root) = repo_root {
+            self.ensure_repo_hook_sources(repo_root)?;
+            ensure_repo_migration_path(repo_root, &target_hooks)?;
+        }
         let hook_event_names = self
             .source
             .hook_event_names(source_external_agent_dir.as_path(), &target_hooks)?;
@@ -589,6 +600,10 @@ impl ExternalAgentConfigService {
             || self.home_target_skills_dir(),
             |repo_root| repo_root.join(".agents").join("skills"),
         );
+        if let Some(repo_root) = repo_root {
+            ensure_repo_migration_path(repo_root, &source_skills)?;
+            ensure_repo_migration_path(repo_root, &target_skills)?;
+        }
         let skill_names = missing_subdirectory_names(&source_skills, &target_skills)?;
         let skills_count = skill_names.len();
         if skills_count > 0 {
@@ -617,6 +632,10 @@ impl ExternalAgentConfigService {
             || self.home_target_skills_dir(),
             |repo_root| repo_root.join(".agents").join("skills"),
         );
+        if let Some(repo_root) = repo_root {
+            ensure_repo_migration_path(repo_root, &source_commands)?;
+            ensure_repo_migration_path(repo_root, &target_command_skills)?;
+        }
         let commands_count = self
             .source
             .count_missing_commands(&source_commands, &target_command_skills)?;
@@ -649,6 +668,10 @@ impl ExternalAgentConfigService {
             || self.codex_home.join("agents"),
             |repo_root| repo_root.join(".codex").join("agents"),
         );
+        if let Some(repo_root) = repo_root {
+            ensure_repo_migration_path(repo_root, &source_subagents)?;
+            ensure_repo_migration_path(repo_root, &target_subagents)?;
+        }
         let subagents_count = count_missing_subagents(&source_subagents, &target_subagents)?;
         if subagents_count > 0 {
             let subagent_names = missing_subagent_names(&source_subagents, &target_subagents)?;
@@ -817,6 +840,9 @@ impl ExternalAgentConfigService {
 
     fn effective_source_settings(&self, repo_root: Option<&Path>) -> io::Result<Option<JsonValue>> {
         let source_settings = self.source_settings(repo_root);
+        if let Some(repo_root) = repo_root {
+            self.ensure_repo_settings_sources(repo_root)?;
+        }
         self.source.effective_settings(&source_settings)
     }
 
@@ -825,6 +851,9 @@ impl ExternalAgentConfigService {
         repo_root: Option<&Path>,
         settings: Option<JsonValue>,
     ) -> io::Result<TomlValue> {
+        if let Some(repo_root) = repo_root {
+            self.ensure_repo_mcp_sources(repo_root)?;
+        }
         let settings = if self.source.supports(SourceFeature::Config) {
             self.mcp_settings(repo_root, settings)?
         } else {
@@ -841,7 +870,45 @@ impl ExternalAgentConfigService {
         &self,
         repo_root: &Path,
     ) -> io::Result<Vec<InstructionSourceGroup>> {
+        ensure_repo_migration_path(repo_root, &repo_root.join(EXTERNAL_AGENT_CONFIG_MD))?;
+        ensure_repo_migration_path(
+            repo_root,
+            &repo_root
+                .join(self.source.config_dir())
+                .join(EXTERNAL_AGENT_CONFIG_MD),
+        )?;
         self.source.repo_instruction_source_groups(repo_root)
+    }
+
+    fn ensure_repo_settings_sources(&self, repo_root: &Path) -> io::Result<()> {
+        let source_dir = self.source_config_dir(Some(repo_root));
+        for source in [
+            source_dir.join(self.source.settings_file_name(/*project_scope*/ true)),
+            source_dir.join(REPO_EXTERNAL_AGENT_LOCAL_SETTINGS_FILE),
+        ] {
+            ensure_repo_migration_path(repo_root, &source)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_repo_mcp_sources(&self, repo_root: &Path) -> io::Result<()> {
+        for source in [
+            repo_root.join(REPO_EXTERNAL_AGENT_MCP_CONFIG_FILE),
+            repo_root.join(REPO_EXTERNAL_AGENT_PROJECT_CONFIG_FILE),
+        ] {
+            ensure_repo_migration_path(repo_root, &source)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_repo_hook_sources(&self, repo_root: &Path) -> io::Result<()> {
+        self.ensure_repo_settings_sources(repo_root)?;
+        ensure_repo_migration_path(
+            repo_root,
+            &self
+                .source_config_dir(Some(repo_root))
+                .join(REPO_EXTERNAL_AGENT_HOOKS_DIR),
+        )
     }
 
     fn home_agents_md_sources(&self) -> io::Result<Vec<PathBuf>> {
@@ -1101,10 +1168,11 @@ impl ExternalAgentConfigService {
         }
         let repo_root = find_repo_root(cwd)?;
         let (source_settings, target_config) = if let Some(repo_root) = repo_root.as_ref() {
-            (
-                self.source_settings(Some(repo_root)),
-                repo_root.join(".codex").join("config.toml"),
-            )
+            let source_settings = self.source_settings(Some(repo_root));
+            let target_config = repo_root.join(".codex").join("config.toml");
+            ensure_repo_migration_path(repo_root, &source_settings)?;
+            ensure_repo_migration_path(repo_root, &target_config)?;
+            (source_settings, target_config)
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(None);
         } else {
@@ -1156,7 +1224,9 @@ impl ExternalAgentConfigService {
     fn import_mcp_server_config(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let repo_root = find_repo_root(cwd)?;
         let target_config = if let Some(repo_root) = repo_root.as_ref() {
-            repo_root.join(".codex").join("config.toml")
+            let target_config = repo_root.join(".codex").join("config.toml");
+            ensure_repo_migration_path(repo_root, &target_config)?;
+            target_config
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(Vec::new());
         } else {
@@ -1198,10 +1268,11 @@ impl ExternalAgentConfigService {
 
     fn import_subagents(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let (source_agents, target_agents) = if let Some(repo_root) = find_repo_root(cwd)? {
-            (
-                repo_root.join(self.source.config_dir()).join("agents"),
-                repo_root.join(".codex").join("agents"),
-            )
+            let source_agents = repo_root.join(self.source.config_dir()).join("agents");
+            let target_agents = repo_root.join(".codex").join("agents");
+            ensure_repo_migration_path(&repo_root, &source_agents)?;
+            ensure_repo_migration_path(&repo_root, &target_agents)?;
+            (source_agents, target_agents)
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(Vec::new());
         } else {
@@ -1217,10 +1288,12 @@ impl ExternalAgentConfigService {
     fn import_hooks(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let (source_external_agent_dir, target_hooks) =
             if let Some(repo_root) = find_repo_root(cwd)? {
-                (
-                    self.source_config_dir(Some(repo_root.as_path())),
-                    repo_root.join(".codex").join("hooks.json"),
-                )
+                let source_external_agent_dir =
+                    self.source_config_dir(Some(repo_root.as_path()));
+                let target_hooks = repo_root.join(".codex").join("hooks.json");
+                self.ensure_repo_hook_sources(&repo_root)?;
+                ensure_repo_migration_path(&repo_root, &target_hooks)?;
+                (source_external_agent_dir, target_hooks)
             } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
                 return Ok(Vec::new());
             } else {
@@ -1245,10 +1318,11 @@ impl ExternalAgentConfigService {
 
     fn import_commands(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let (source_commands, target_skills) = if let Some(repo_root) = find_repo_root(cwd)? {
-            (
-                repo_root.join(self.source.config_dir()).join("commands"),
-                repo_root.join(".agents").join("skills"),
-            )
+            let source_commands = repo_root.join(self.source.config_dir()).join("commands");
+            let target_skills = repo_root.join(".agents").join("skills");
+            ensure_repo_migration_path(&repo_root, &source_commands)?;
+            ensure_repo_migration_path(&repo_root, &target_skills)?;
+            (source_commands, target_skills)
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(Vec::new());
         } else {
@@ -1264,10 +1338,11 @@ impl ExternalAgentConfigService {
 
     fn import_skills(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let (source_skills, target_skills) = if let Some(repo_root) = find_repo_root(cwd)? {
-            (
-                repo_root.join(self.source.config_dir()).join("skills"),
-                repo_root.join(".agents").join("skills"),
-            )
+            let source_skills = repo_root.join(self.source.config_dir()).join("skills");
+            let target_skills = repo_root.join(".agents").join("skills");
+            ensure_repo_migration_path(&repo_root, &source_skills)?;
+            ensure_repo_migration_path(&repo_root, &target_skills)?;
+            (source_skills, target_skills)
         } else if cwd.is_some_and(|cwd| !cwd.as_os_str().is_empty()) {
             return Ok(Vec::new());
         } else {
@@ -1316,6 +1391,10 @@ impl ExternalAgentConfigService {
                     return Ok(None);
                 };
                 let target_agents_md = group.scope.join("AGENTS.md");
+                for source in &group.sources {
+                    ensure_repo_migration_path(&repo_root, source)?;
+                }
+                ensure_repo_migration_path(&repo_root, &target_agents_md)?;
                 (group.sources, target_agents_md)
             } else {
                 let source_agents_md = self.home_agents_md_sources()?;
@@ -1406,15 +1485,16 @@ fn find_repo_root(cwd: Option<&Path>) -> io::Result<Option<PathBuf>> {
         return Ok(None);
     };
 
-    let mut current = if cwd.is_absolute() {
+    let requested_path = if cwd.is_absolute() {
         cwd.to_path_buf()
     } else {
         std::env::current_dir()?.join(cwd)
     };
-
-    if !current.exists() {
-        return Ok(None);
-    }
+    let mut current = match fs::canonicalize(requested_path) {
+        Ok(current) => current,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
 
     if current.is_file() {
         let Some(parent) = current.parent() else {
@@ -1435,6 +1515,39 @@ fn find_repo_root(cwd: Option<&Path>) -> io::Result<Option<PathBuf>> {
     }
 
     Ok(Some(fallback))
+}
+
+fn ensure_repo_migration_path(repo_root: &Path, path: &Path) -> io::Result<()> {
+    let relative = path.strip_prefix(repo_root).map_err(|_| {
+        invalid_data_error(format!(
+            "migration path `{}` is outside repository `{}`",
+            path.display(),
+            repo_root.display()
+        ))
+    })?;
+    let mut current = repo_root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(invalid_data_error(format!(
+                "migration path `{}` is not a normalized repository path",
+                path.display()
+            )));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(invalid_data_error(format!(
+                    "migration path `{}` contains symlink component `{}`",
+                    path.display(),
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 fn collect_subdirectory_names(path: &Path) -> io::Result<HashSet<OsString>> {
@@ -1466,10 +1579,12 @@ fn missing_subdirectory_names(source: &Path, target: &Path) -> io::Result<Vec<St
 }
 
 fn is_missing_or_empty_text_file(path: &Path) -> io::Result<bool> {
-    if !path.exists() {
-        return Ok(true);
-    }
-    if !path.is_file() {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    };
+    if !metadata.is_file() {
         return Ok(false);
     }
 
