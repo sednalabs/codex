@@ -45,4 +45,20 @@ async fn inference_identity_default_is_object_safe_empty_noop_and_stably_unsuppo
         panic!("non-empty default should be unsupported");
     };
     assert_eq!(operation, "update_thread_inference_identity_sidecar");
+
+    let latest_request_only = UpdateThreadInferenceIdentitySidecarParams {
+        thread_id: ThreadId::default(),
+        patch: ThreadInferenceIdentitySidecarPatch {
+            configured: None,
+            latest_request: Some(None),
+        },
+    };
+    assert!(matches!(
+        store
+            .update_thread_inference_identity_sidecar(latest_request_only)
+            .await,
+        Err(ThreadStoreError::Unsupported {
+            operation: "update_thread_inference_identity_sidecar"
+        })
+    ));
 }
