@@ -16,7 +16,7 @@
       "type": "boolean"
     },
     "source": {
-      "description": "Optional import-source selector. Missing or unrecognized values use the default source for backwards compatibility.",
+      "description": "Optional import-source selector. Missing or unrecognized values use the default source for\nbackwards compatibility.",
       "type": [
         "string",
         "null"

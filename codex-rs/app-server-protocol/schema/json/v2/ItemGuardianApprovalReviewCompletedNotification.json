@@ -182,7 +182,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/LegacyAppPathString"
+                  "$ref": "#/$defs/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -234,7 +234,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/LegacyAppPathString"
+                  "$ref": "#/$defs/LegacyAppPathString"
                 },
                 {
                   "type": "null"

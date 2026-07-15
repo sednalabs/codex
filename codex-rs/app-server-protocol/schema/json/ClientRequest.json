@@ -756,6 +756,19 @@
       ],
       "type": "object"
     },
+    "EnvironmentStatusParams": {
+      "description": "Parameters for reading the current status of one configured environment.",
+      "properties": {
+        "environmentId": {
+          "description": "Environment id to inspect.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {
@@ -816,7 +829,7 @@
           "type": "boolean"
         },
         "source": {
-          "description": "Optional import-source selector. Missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Optional import-source selector. Missing or unrecognized values use the default source for\nbackwards compatibility.",
           "type": [
             "string",
             "null"
@@ -834,7 +847,7 @@
           "type": "array"
         },
         "source": {
-          "description": "Import-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Import-source selector used to produce the migration items. Pass the same value to detection\nand import; missing or unrecognized values use the default source for backwards\ncompatibility.",
           "type": [
             "string",
             "null"
@@ -4026,6 +4039,13 @@
             "null"
           ]
         },
+        "beforeTurnId": {
+          "description": "Optional turn id to fork before, excluding that turn and all later turns.\nCannot be combined with `last_turn_id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config": {
           "additionalProperties": true,
           "type": [
@@ -4038,6 +4058,10 @@
             "string",
             "null"
           ]
+        },
+        "deferGoalContinuation": {
+          "description": "When true, carry the source thread's current goal into the fork without\nstarting its initial automatic continuation. The next explicit turn owns\nthe goal lifecycle, and normal automatic continuation resumes after it.",
+          "type": "boolean"
         },
         "developerInstructions": {
           "type": [
@@ -4637,7 +4661,7 @@
           ]
         },
         "codexResponseHandoffPrefix": {
-          "description": "Optional prefix added to automatic V1 Codex commentary sent with\n`conversation.handoff.append` when `codexResponsesAsItems` is not true. Final answers are\nsent without the prefix.",
+          "description": "Optional prefix added to automatic V1 or V3 Codex commentary sent through the selected\nBidi handoff wire event when `codexResponsesAsItems` is not true. Final answers are sent\nwithout the prefix.",
           "type": [
             "string",
             "null"
@@ -5554,7 +5578,7 @@
         "runtimeWorkspaceRoots": {
           "description": "Environment-native runtime workspace roots. Omitted defaults to `cwd`.",
           "items": {
-            "$ref": "#/definitions/LegacyAppPathString"
+            "$ref": "#/$defs/LegacyAppPathString"
           },
           "type": [
             "array",
