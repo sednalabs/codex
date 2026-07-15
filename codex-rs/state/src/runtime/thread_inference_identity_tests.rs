@@ -196,6 +196,7 @@ async fn independently_spawned_single_field_updates_converge_exactly() {
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000702").expect("valid thread id");
     let runtime = runtime_with_thread(thread_id).await;
+    install_update_audit(&runtime).await;
     let barrier = Arc::new(Barrier::new(/*n*/ 3));
     let configured = set_update("spawned-configured");
     let latest_request = set_update("spawned-latest-request");
@@ -257,6 +258,12 @@ async fn independently_spawned_single_field_updates_converge_exactly() {
             Some((Some(configured_raw), Some(latest_request_raw))),
         )
     );
+    let mut audit_events = audit_events(&runtime).await;
+    audit_events.sort();
+    assert_eq!(
+        audit_events,
+        vec!["configured".to_string(), "latest_request".to_string()]
+    );
 }
 
 async fn runtime_with_thread(thread_id: ThreadId) -> Arc<StateRuntime> {
@@ -314,4 +321,24 @@ async fn raw_row(runtime: &StateRuntime, thread_id: ThreadId) -> Option<RawAutho
     .fetch_optional(runtime.pool.as_ref())
     .await
     .expect("raw authority row should be readable")
+}
+
+async fn install_update_audit(runtime: &StateRuntime) {
+    for statement in [
+        "CREATE TABLE inference_identity_update_audit (event TEXT NOT NULL)",
+        "CREATE TRIGGER audit_configured_inference_identity_update AFTER UPDATE OF configured_inference_identity_authority ON threads BEGIN INSERT INTO inference_identity_update_audit (event) VALUES ('configured'); END",
+        "CREATE TRIGGER audit_latest_request_inference_identity_update AFTER UPDATE OF latest_request_inference_identity_authority ON threads BEGIN INSERT INTO inference_identity_update_audit (event) VALUES ('latest_request'); END",
+    ] {
+        sqlx::query(statement)
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("update audit fixture should install");
+    }
+}
+
+async fn audit_events(runtime: &StateRuntime) -> Vec<String> {
+    sqlx::query_scalar("SELECT event FROM inference_identity_update_audit")
+        .fetch_all(runtime.pool.as_ref())
+        .await
+        .expect("update audit events should be readable")
 }
