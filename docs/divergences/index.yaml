@@ -213,10 +213,15 @@
       "surface": [
         "spawn overrides",
         "agent inventory",
-        "blocking waits"
+        "blocking waits",
+        "strict inference identity authority wire"
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
+        "codex-rs/state/src/inference_identity.rs",
+        "codex-rs/thread-store/src/inference_identity.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -227,13 +232,13 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire and optional store sidecar while richer inventory and wait behavior remain capability-declared.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted",
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
