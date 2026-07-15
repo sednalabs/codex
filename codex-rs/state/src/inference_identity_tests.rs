@@ -4,6 +4,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 
 use super::ThreadInferenceIdentityAuthorityEncodeError;
+use super::ThreadInferenceIdentityAuthorityFieldUpdate;
 use super::decode_thread_inference_identity_authority;
 use super::encode_thread_inference_identity_authority;
 
@@ -130,6 +131,34 @@ fn authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics() {
         }),
         Err(ThreadInferenceIdentityAuthorityEncodeError::MalformedAuthority)
     ));
+}
+
+#[test]
+fn typed_authority_field_updates_have_exact_canonical_results() {
+    assert_eq!(
+        ThreadInferenceIdentityAuthorityFieldUpdate::Omit
+            .encode()
+            .expect("omission should encode"),
+        None
+    );
+    assert_eq!(
+        ThreadInferenceIdentityAuthorityFieldUpdate::Clear
+            .encode()
+            .expect("clear should encode"),
+        Some(r#"{"version":1,"authority":{"status":"cleared","value":{}}}"#.to_string())
+    );
+    assert_eq!(
+        ThreadInferenceIdentityAuthorityFieldUpdate::Set(
+            ThreadInferenceIdentity::new("model", "provider", /*reasoning_effort*/ None)
+                .expect("identity should be valid"),
+        )
+        .encode()
+        .expect("identity should encode"),
+        Some(
+            r#"{"version":1,"authority":{"status":"valid","value":{"model":"model","model_provider_id":"provider","reasoning_effort":null}}}"#
+                .to_string(),
+        )
+    );
 }
 
 fn assert_malformed(raw: &str) {

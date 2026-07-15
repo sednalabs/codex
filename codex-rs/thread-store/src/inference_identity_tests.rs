@@ -90,7 +90,9 @@ fn inference_identity_sidecar_patch_has_strict_presence_serde_contract() {
         assert_eq!(serde_json::to_string(&decoded).expect("encode patch"), raw);
     }
     for invalid in [
+        r#"{"configuredd":null}"#,
         r#"{"configured":{"status":"malformed","raw":"bad"}}"#,
+        r#"{"configured":{"model":"m","model_provider_id":"p","reasoning_effort":null,"status":"valid","raw":"bad"}}"#,
         r#"{"configured":{"model":"","model_provider_id":"p","reasoning_effort":null}}"#,
         r#"{"configured":null,"configured":null}"#,
     ] {
