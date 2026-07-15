@@ -53,8 +53,12 @@ mod strict_optional_identity {
     struct StrictThreadInferenceIdentity {
         model: String,
         model_provider_id: String,
-        reasoning_effort: Option<ReasoningEffort>,
+        reasoning_effort: RequiredNullableReasoningEffort,
     }
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct RequiredNullableReasoningEffort(Option<ReasoningEffort>);
 
     pub fn serialize<S>(
         value: &ClearableField<ThreadInferenceIdentity>,
@@ -78,7 +82,7 @@ mod strict_optional_identity {
                 ThreadInferenceIdentity::new(
                     identity.model,
                     identity.model_provider_id,
-                    identity.reasoning_effort,
+                    identity.reasoning_effort.0,
                 )
                 .map_err(D::Error::custom)
             })
