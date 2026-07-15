@@ -26,6 +26,7 @@ on:
           - core-ledger-smoke
           - core-runtime-surface-smoke
           - codex.external-agent-session-migration-targeted
+          - codex.external-agent-migration-containment-targeted
           - codex.skill-loader-fixture-hermeticity-targeted
           - codex.core-startup-sync-targeted
           - codex.core-subagent-surface-targeted
