@@ -2,7 +2,6 @@ mod archive_thread;
 mod create_thread;
 mod delete_thread;
 mod helpers;
-mod inference_identity;
 mod list_threads;
 mod live_writer;
 mod read_thread;
@@ -41,7 +40,6 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
-use crate::UpdateThreadInferenceIdentitySidecarParams;
 use crate::UpdateThreadMetadataParams;
 
 /// Local filesystem/SQLite-backed implementation of [`ThreadStore`].
@@ -308,13 +306,6 @@ impl ThreadStore for LocalThreadStore {
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(async move { update_thread_metadata::update_thread_metadata(self, params).await })
-    }
-
-    fn update_thread_inference_identity_sidecar(
-        &self,
-        params: UpdateThreadInferenceIdentitySidecarParams,
-    ) -> ThreadStoreFuture<'_, ()> {
-        Box::pin(async move { inference_identity::update(self, params).await })
     }
 
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {

@@ -675,15 +675,16 @@ ON CONFLICT(id) DO NOTHING
         Ok(result.rows_affected() > 0)
     }
 
-    /// Atomically updates only the supplied inference-identity authority columns.
+    /// Canonically encodes and atomically updates only the supplied inference-identity columns.
     pub async fn update_thread_inference_identity_authority(
         &self,
         thread_id: ThreadId,
-        configured: Option<&str>,
-        latest_request: Option<&str>,
+        update: crate::ThreadInferenceIdentityAuthorityUpdate,
     ) -> anyhow::Result<bool> {
+        let configured = update.configured.encode()?;
+        let latest_request = update.latest_request.encode()?;
         let thread_id = thread_id.to_string();
-        let result = match (configured, latest_request) {
+        let result = match (configured.as_deref(), latest_request.as_deref()) {
             (Some(configured), Some(latest_request)) => {
                 sqlx::query(
                     "UPDATE threads SET configured_inference_identity_authority = ?, latest_request_inference_identity_authority = ? WHERE id = ?",

@@ -14,6 +14,39 @@ use serde::de::Visitor;
 
 pub const THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION: u8 = 1;
 
+/// Presence-aware authority update accepted by [`crate::StateRuntime`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ThreadInferenceIdentityAuthorityUpdate {
+    pub configured: ThreadInferenceIdentityAuthorityFieldUpdate,
+    pub latest_request: ThreadInferenceIdentityAuthorityFieldUpdate,
+}
+
+/// Typed update for one durable inference-identity authority column.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ThreadInferenceIdentityAuthorityFieldUpdate {
+    /// Preserve the stored column exactly as it is.
+    #[default]
+    Omit,
+    /// Persist the canonical explicit-clear authority.
+    Clear,
+    /// Persist a validated identity using the canonical authority encoding.
+    Set(ThreadInferenceIdentity),
+}
+
+impl ThreadInferenceIdentityAuthorityFieldUpdate {
+    pub(crate) fn encode(
+        &self,
+    ) -> Result<Option<String>, ThreadInferenceIdentityAuthorityEncodeError> {
+        match self {
+            Self::Omit => Ok(None),
+            Self::Clear => encode_writable_authority(WritableAuthority::Cleared).map(Some),
+            Self::Set(identity) => {
+                encode_writable_authority(WritableAuthority::Valid(identity)).map(Some)
+            }
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredThreadInferenceIdentityEnvelopeV1 {
@@ -229,7 +262,25 @@ pub fn encode_thread_inference_identity_authority(
 ) -> Result<Option<String>, ThreadInferenceIdentityAuthorityEncodeError> {
     let authority = match authority {
         ThreadInferenceIdentityAuthority::LegacyMissing => return Ok(None),
-        ThreadInferenceIdentityAuthority::Valid(identity) => {
+        ThreadInferenceIdentityAuthority::Valid(identity) => WritableAuthority::Valid(identity),
+        ThreadInferenceIdentityAuthority::Cleared => WritableAuthority::Cleared,
+        ThreadInferenceIdentityAuthority::Malformed { .. } => {
+            return Err(ThreadInferenceIdentityAuthorityEncodeError::MalformedAuthority);
+        }
+    };
+    encode_writable_authority(authority).map(Some)
+}
+
+enum WritableAuthority<'a> {
+    Valid(&'a ThreadInferenceIdentity),
+    Cleared,
+}
+
+fn encode_writable_authority(
+    authority: WritableAuthority<'_>,
+) -> Result<String, ThreadInferenceIdentityAuthorityEncodeError> {
+    let authority = match authority {
+        WritableAuthority::Valid(identity) => {
             identity
                 .validate()
                 .map_err(ThreadInferenceIdentityAuthorityEncodeError::InvalidIdentity)?;
@@ -239,20 +290,14 @@ pub fn encode_thread_inference_identity_authority(
                 reasoning_effort: identity.reasoning_effort().cloned(),
             })
         }
-        ThreadInferenceIdentityAuthority::Cleared => {
-            StoredThreadInferenceIdentityAuthorityV1::Cleared(
-                StoredThreadInferenceIdentityClearedV1 {},
-            )
-        }
-        ThreadInferenceIdentityAuthority::Malformed { .. } => {
-            return Err(ThreadInferenceIdentityAuthorityEncodeError::MalformedAuthority);
-        }
+        WritableAuthority::Cleared => StoredThreadInferenceIdentityAuthorityV1::Cleared(
+            StoredThreadInferenceIdentityClearedV1 {},
+        ),
     };
     serde_json::to_string(&StoredThreadInferenceIdentityEnvelopeV1 {
         version: THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION,
         authority,
     })
-    .map(Some)
     .map_err(ThreadInferenceIdentityAuthorityEncodeError::Serialization)
 }
 
