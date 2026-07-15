@@ -115,10 +115,43 @@
         "SESSIONS"
       ],
       "type": "string"
+    },
+    "ExternalAgentImportedConnectorCandidate": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sessionCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/ExternalAgentImportedConnectorSource"
+        }
+      },
+      "required": [
+        "name",
+        "sessionCount",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentImportedConnectorSource": {
+      "enum": [
+        "remoteMcpServersConfig"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "connectors": {
+      "items": {
+        "$ref": "#/$defs/ExternalAgentImportedConnectorCandidate"
+      },
+      "type": "array"
+    },
     "data": {
       "items": {
         "$ref": "#/$defs/ExternalAgentConfigImportHistory"
@@ -127,6 +160,7 @@
     }
   },
   "required": [
+    "connectors",
     "data"
   ],
   "title": "ExternalAgentConfigImportHistoriesReadResponse",
