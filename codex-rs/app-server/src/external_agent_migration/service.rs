@@ -20,6 +20,7 @@ use codex_external_agent_migration::count_missing_subagents;
 use codex_external_agent_migration::missing_subagent_names;
 use codex_external_agent_migration::sessions::ExternalAgentSessionMigration;
 use codex_protocol::protocol::Product;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -1489,7 +1490,10 @@ fn find_repo_root(cwd: Option<&Path>) -> io::Result<Option<PathBuf>> {
     } else {
         std::env::current_dir()?.join(cwd)
     };
-    let mut current = match fs::canonicalize(requested_path) {
+    let mut current = match AbsolutePathBuf::from_absolute_path(requested_path)
+        .and_then(|path| path.canonicalize())
+        .map(AbsolutePathBuf::into_path_buf)
+    {
         Ok(current) => current,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),

@@ -485,13 +485,9 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                     .map(str::trim),
                 Some(r"<cwd>C:\windows</cwd>"),
             );
-            let host_workspace_roots = format!(
-                "<workspace_roots><root>{}</root></workspace_roots>",
-                codex_home.path().display()
-            );
-            // TODO(anp): Derive model-visible workspace roots from the selected remote environment
-            // and render them using its native path convention.
-            assert!(environment_context.contains(&host_workspace_roots));
+            let remote_workspace_roots =
+                format!("<workspace_roots><root>{NATIVE_CWD}</root></workspace_roots>");
+            assert!(environment_context.contains(&remote_workspace_roots));
 
             Ok(())
         })
