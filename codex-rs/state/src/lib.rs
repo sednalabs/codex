@@ -36,6 +36,8 @@ pub use extract::apply_rollout_item;
 pub use extract::rollout_item_affects_thread_metadata;
 pub use inference_identity::THREAD_INFERENCE_IDENTITY_AUTHORITY_VERSION;
 pub use inference_identity::ThreadInferenceIdentityAuthorityEncodeError;
+pub use inference_identity::ThreadInferenceIdentityAuthorityFieldUpdate;
+pub use inference_identity::ThreadInferenceIdentityAuthorityUpdate;
 pub use inference_identity::decode_thread_inference_identity_authority;
 pub use inference_identity::encode_thread_inference_identity_authority;
 pub use model::AgentJob;
