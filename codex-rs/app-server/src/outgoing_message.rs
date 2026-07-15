@@ -635,7 +635,7 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let outgoing_message = OutgoingMessage::AppServerNotification(notification);
+        let outgoing_message = timestamped_server_notification(notification);
         if let Err(err) = self
             .sender
             .send(OutgoingEnvelope::ToConnection {
