@@ -302,7 +302,7 @@ async fn forward_events(
                         msg: EventMsg::TokenCount(_),
                         ..
                     } => {
-                        if !forward_event_or_shutdown(&codex, &tx_sub, &cancel_token, event).await
+                        if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, event).await
                         {
                             break;
                         }
