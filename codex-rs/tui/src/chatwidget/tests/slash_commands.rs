@@ -2065,13 +2065,10 @@ async fn slash_copy_stores_clipboard_lease_and_preserves_it_on_failure() {
 #[tokio::test]
 async fn transcript_turn_copy_includes_user_prompt_and_agent_markdown() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.transcript.record_visible_user_turn();
-    chat.transcript
-        .record_agent_markdown("first response".to_string());
 
-    let status = chat.copy_agent_turn_markdown_with(
-        /*user_turn_count*/ 1,
+    let status = chat.copy_transcript_turn_markdown_with(
         "first prompt",
+        Some("first response"),
         |markdown| {
             assert_eq!(
                 markdown,

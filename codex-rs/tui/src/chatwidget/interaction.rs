@@ -261,14 +261,14 @@ impl ChatWidget {
         self.copy_last_agent_markdown_with(crate::clipboard_copy::copy_to_clipboard)
     }
 
-    pub(crate) fn copy_agent_turn_markdown_for_overlay(
+    pub(crate) fn copy_transcript_turn_markdown_for_overlay(
         &mut self,
-        user_turn_count: usize,
         user_prompt: &str,
+        agent_markdown: Option<&str>,
     ) -> CopyStatus {
-        self.copy_agent_turn_markdown_with(
-            user_turn_count,
+        self.copy_transcript_turn_markdown_with(
             user_prompt,
+            agent_markdown,
             crate::clipboard_copy::copy_to_clipboard,
         )
     }
@@ -282,23 +282,17 @@ impl ChatWidget {
             Some(markdown) if !markdown.is_empty() => {
                 self.copy_markdown_result(&markdown, "Copied last message to clipboard", copy_fn)
             }
-            _ if self.transcript.copy_history_evicted_by_rollback => CopyStatus::Error(format!(
-                "Cannot copy that response after rewinding. Only the most recent {MAX_AGENT_COPY_HISTORY} responses are available to /copy."
-            )),
             _ => CopyStatus::Error("No agent response to copy".into()),
         }
     }
 
-    pub(super) fn copy_agent_turn_markdown_with(
+    pub(super) fn copy_transcript_turn_markdown_with(
         &mut self,
-        user_turn_count: usize,
         user_prompt: &str,
+        agent_markdown: Option<&str>,
         copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
     ) -> CopyStatus {
-        match self
-            .transcript
-            .agent_markdown_for_user_turn(user_turn_count)
-        {
+        match agent_markdown {
             Some(markdown) if !markdown.is_empty() => {
                 let markdown = format!("## User\n\n{user_prompt}\n\n## Assistant\n\n{markdown}");
                 self.copy_markdown_result(&markdown, "Copied selected turn to clipboard", copy_fn)

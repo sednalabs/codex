@@ -459,6 +459,10 @@ impl HistoryCell for AgentMarkdownCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         raw_lines_from_source(&self.markdown_source)
     }
+
+    fn transcript_copy_markdown(&self) -> Option<&str> {
+        Some(&self.markdown_source)
+    }
 }
 
 /// Transient active-cell representation of the mutable tail of an agent stream.

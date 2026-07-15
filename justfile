@@ -254,8 +254,14 @@ tui-front-queue-submit-targeted:
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
     cargo test -p codex-tui footer_collapse_snapshots -- --exact --test-threads=1
 
-# Focused TUI transcript viewport redraw and clipping slice.
+# Focused TUI selected-turn copy feedback, viewport redraw, and clipping slice.
 tui-transcript-viewport-targeted:
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_supports_proposed_plan --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_requires_finalized_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::transcript_turn_copy_includes_user_prompt_and_agent_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1

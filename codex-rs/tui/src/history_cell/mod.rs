@@ -367,6 +367,11 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         false
     }
 
+    /// Returns finalized raw markdown that can represent this cell in a copied transcript turn.
+    fn transcript_copy_markdown(&self) -> Option<&str> {
+        None
+    }
+
     /// Returns a coarse "animation tick" when transcript output is time-dependent.
     ///
     /// The transcript overlay caches the rendered output of the in-flight active cell, so cells
