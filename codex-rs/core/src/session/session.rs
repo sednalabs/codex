@@ -278,7 +278,7 @@ impl SessionConfiguration {
         }
 
         let current_cwd = self.cwd().clone();
-        let mut next_environments = updates
+        let next_environments = updates
             .environments
             .clone()
             .unwrap_or_else(|| self.environments.clone());
