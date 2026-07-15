@@ -16,9 +16,9 @@ use crate::ThreadPersistenceMetadata;
 #[tokio::test]
 async fn identity_patch_preserves_omitted_state_and_thread_isolation() {
     let store = InMemoryThreadStore::default();
-    let first_thread_id = thread_id(1);
-    let second_thread_id = thread_id(2);
-    let missing_thread_id = thread_id(3);
+    let first_thread_id = thread_id(/*suffix*/ 1);
+    let second_thread_id = thread_id(/*suffix*/ 2);
+    let missing_thread_id = thread_id(/*suffix*/ 3);
     for thread_id in [first_thread_id, second_thread_id] {
         store
             .create_thread(create_thread_params(thread_id))
@@ -123,7 +123,7 @@ async fn identity_patch_preserves_omitted_state_and_thread_isolation() {
 #[tokio::test]
 async fn identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect() {
     let store = InMemoryThreadStore::default();
-    let thread_id = thread_id(4);
+    let thread_id = thread_id(/*suffix*/ 4);
     let stale_sidecar = ThreadInferenceIdentitySidecar {
         configured: ThreadInferenceIdentityAuthority::Valid(identity("stale-configured")),
         latest_request: ThreadInferenceIdentityAuthority::cleared(),
